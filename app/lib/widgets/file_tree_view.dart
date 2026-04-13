@@ -9,6 +9,14 @@ class FileTreeView extends StatelessWidget {
   final void Function(String parentPath, String name)? onCreateDirectory;
   final void Function(String path)? onDelete;
 
+  static bool _isValidFileName(String name) {
+    if (name.isEmpty) return false;
+    if (name.contains('/') || name.contains('\\')) return false;
+    if (name == '.' || name == '..') return false;
+    if (name.contains('\x00')) return false;
+    return true;
+  }
+
   const FileTreeView({
     super.key,
     required this.onFileTap,
@@ -171,6 +179,23 @@ class FileTreeView extends StatelessWidget {
     void Function(String name) onConfirm,
   ) {
     final controller = TextEditingController();
+
+    void handleSubmit(BuildContext dialogContext) {
+      final name = controller.text.trim();
+      if (!_isValidFileName(name)) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              r'Invalid name: must not contain / or \ or be . or ..',
+            ),
+          ),
+        );
+        return;
+      }
+      Navigator.pop(dialogContext);
+      onConfirm(name);
+    }
+
     showDialog(
       context: context,
       builder: (dialogContext) {
@@ -183,12 +208,7 @@ class FileTreeView extends StatelessWidget {
               hintText: 'Enter name',
               border: OutlineInputBorder(),
             ),
-            onSubmitted: (value) {
-              if (value.trim().isNotEmpty) {
-                Navigator.pop(dialogContext);
-                onConfirm(value.trim());
-              }
-            },
+            onSubmitted: (_) => handleSubmit(dialogContext),
           ),
           actions: [
             TextButton(
@@ -196,13 +216,7 @@ class FileTreeView extends StatelessWidget {
               child: const Text('Cancel'),
             ),
             FilledButton(
-              onPressed: () {
-                final name = controller.text.trim();
-                if (name.isNotEmpty) {
-                  Navigator.pop(dialogContext);
-                  onConfirm(name);
-                }
-              },
+              onPressed: () => handleSubmit(dialogContext),
               child: const Text('Create'),
             ),
           ],

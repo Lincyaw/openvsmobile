@@ -137,9 +137,9 @@ class ApiClient {
     final base = baseUrl.endsWith('/')
         ? baseUrl.substring(0, baseUrl.length - 1)
         : baseUrl;
-    final uri = Uri.parse('$base/api/search').replace(
-      queryParameters: {'token': token, 'q': query, 'path': path},
-    );
+    final uri = Uri.parse(
+      '$base/api/search',
+    ).replace(queryParameters: {'token': token, 'q': query, 'path': path});
     final response = await _client.get(uri, headers: _headers);
     if (response.statusCode != 200) {
       throw ApiException(

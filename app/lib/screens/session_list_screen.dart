@@ -401,6 +401,7 @@ class _SessionTile extends StatelessWidget {
           ],
         ],
       ),
+      isThreeLine: session.summary.isNotEmpty,
       trailing: const Icon(Icons.chevron_right),
       onTap: () {
         Navigator.of(context).push(

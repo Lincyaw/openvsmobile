@@ -30,6 +30,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
   static const double _fontSize = 13;
   static const double _lineHeight = 1.4;
   static const double _termPadding = 8;
+  static const int _maxBufferSize = 100 * 1024; // 100KB cap
 
   WebSocketChannel? _channel;
   StreamSubscription<dynamic>? _subscription;
@@ -142,7 +143,18 @@ class _TerminalScreenState extends State<TerminalScreen> {
         if (encoded != null) {
           final bytes = base64Decode(encoded);
           final text = utf8.decode(bytes, allowMalformed: true);
-          setState(() => _outputBuffer.write(text));
+          setState(() {
+            _outputBuffer.write(text);
+            if (_outputBuffer.length > _maxBufferSize) {
+              final content = _outputBuffer.toString();
+              _outputBuffer.clear();
+              final keepFrom = content.length - 80 * 1024;
+              final newlineIdx = content.indexOf('\n', keepFrom);
+              _outputBuffer.write(
+                content.substring(newlineIdx >= 0 ? newlineIdx + 1 : keepFrom),
+              );
+            }
+          });
           _scrollToBottom();
         }
         break;
