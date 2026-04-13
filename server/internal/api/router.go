@@ -54,6 +54,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/files/", s.handleFilesGet)
 	mux.HandleFunc("PUT /api/files/", s.handleFilesPut)
 	mux.HandleFunc("DELETE /api/files/", s.handleFilesDelete)
+	mux.HandleFunc("POST /api/files/", s.handleFilesPost)
 	mux.HandleFunc("GET /api/sessions", s.handleSessionsList)
 	mux.HandleFunc("GET /api/sessions/{id}/messages", s.handleSessionMessages)
 	mux.HandleFunc("GET /api/sessions/{id}/subagents/{agentId}/messages", s.handleSubagentMessages)

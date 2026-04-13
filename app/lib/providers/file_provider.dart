@@ -106,6 +106,59 @@ class FileProvider extends ChangeNotifier {
     await toggleExpand(node);
   }
 
+  /// Create a new empty file under [parentPath] with [name].
+  Future<void> createFile(String parentPath, String name) async {
+    final filePath = _joinPath(parentPath, name);
+    await apiClient.writeFile(filePath, '');
+    await _refreshParent(parentPath);
+  }
+
+  /// Create a new directory under [parentPath] with [name].
+  Future<void> createDirectory(String parentPath, String name) async {
+    final dirPath = _joinPath(parentPath, name);
+    await apiClient.createDirectory(dirPath);
+    await _refreshParent(parentPath);
+  }
+
+  /// Delete a file or directory at [path].
+  Future<void> deleteEntry(String path) async {
+    await apiClient.deleteFile(path);
+    final parentPath = path.contains('/')
+        ? path.substring(0, path.lastIndexOf('/'))
+        : '/';
+    final normalizedParent = parentPath.isEmpty ? '/' : parentPath;
+    await _refreshParent(normalizedParent);
+  }
+
+  /// Refresh the parent directory after a create/delete operation.
+  Future<void> _refreshParent(String parentPath) async {
+    // If the parent is the root project, refresh root nodes.
+    if (parentPath == _currentProject) {
+      await loadDirectory(_currentProject);
+      return;
+    }
+    // Find the node matching parentPath and refresh it.
+    final node = _findNode(_rootNodes, parentPath);
+    if (node != null) {
+      await refreshNode(node);
+    } else {
+      // Fallback: refresh root.
+      await loadDirectory(_currentProject);
+    }
+  }
+
+  /// Find a node by path in the tree.
+  FileTreeNode? _findNode(List<FileTreeNode> nodes, String path) {
+    for (final node in nodes) {
+      if (node.path == path) return node;
+      if (node.children != null) {
+        final found = _findNode(node.children!, path);
+        if (found != null) return found;
+      }
+    }
+    return null;
+  }
+
   /// Refresh the root.
   Future<void> refresh() async {
     await loadDirectory(_currentProject);
