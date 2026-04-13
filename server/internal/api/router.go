@@ -1,7 +1,9 @@
 package api
 
 import (
+	"log"
 	"net/http"
+	"time"
 
 	"github.com/Lincyaw/vscode-mobile/server/internal/claude"
 	"github.com/Lincyaw/vscode-mobile/server/internal/diagnostics"
@@ -80,8 +82,28 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/ws/files", s.handleWSFiles)
 	mux.HandleFunc("/ws/terminal", s.handleWSTerminal)
 
-	// Wrap with auth middleware.
-	return s.authMiddleware(mux)
+	// Wrap with auth and logging middlewares.
+	return s.loggingMiddleware(s.authMiddleware(mux))
+}
+
+// loggingMiddleware logs incoming HTTP requests with method, path, status, and duration.
+func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		wrapped := &responseRecorder{ResponseWriter: w, statusCode: http.StatusOK}
+		next.ServeHTTP(wrapped, r)
+		log.Printf("[HTTP] %s %s -> %d in %s", r.Method, r.URL.Path, wrapped.statusCode, time.Since(start))
+	})
+}
+
+type responseRecorder struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (rr *responseRecorder) WriteHeader(code int) {
+	rr.statusCode = code
+	rr.ResponseWriter.WriteHeader(code)
 }
 
 // authMiddleware checks the connection token.

@@ -99,6 +99,7 @@ func (pm *ProcessManager) StartConversation(workingDir string) (*Conversation, e
 	pm.active[conv.ID] = conv
 	pm.mu.Unlock()
 
+	log.Printf("[Claude] started conversation %s in %s", conv.ID, workingDir)
 	return conv, nil
 }
 
@@ -143,6 +144,7 @@ func (pm *ProcessManager) ResumeConversation(sessionID string) (*Conversation, e
 	pm.active[conv.ID] = conv
 	pm.mu.Unlock()
 
+	log.Printf("[Claude] resumed conversation %s", conv.ID)
 	return conv, nil
 }
 
@@ -204,6 +206,7 @@ func (c *Conversation) Close() error {
 
 	// Wait for output reader to finish.
 	<-c.done
+	log.Printf("[Claude] closed conversation %s", c.ID)
 	return nil
 }
 
@@ -247,6 +250,7 @@ func (pm *ProcessManager) Shutdown() {
 	pm.active = make(map[string]*Conversation)
 	pm.mu.Unlock()
 
+	log.Printf("[Claude] shutting down %d conversation(s)", len(conversations))
 	var wg sync.WaitGroup
 	for _, conv := range conversations {
 		wg.Add(1)

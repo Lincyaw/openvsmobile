@@ -151,6 +151,7 @@ func (c *Client) ConnectWithType(ctx context.Context, serverURL string, connecti
 	go c.readLoop()
 	go c.keepAliveLoop()
 
+	log.Printf("[VSCode] connected to %s (type=%d)", serverURL, connType)
 	return nil
 }
 
@@ -216,6 +217,7 @@ func (c *Client) Reconnect(ctx context.Context, serverURL string, connectionToke
 	go c.readLoop()
 	go c.keepAliveLoop()
 
+	log.Printf("[VSCode] reconnected to %s", serverURL)
 	return nil
 }
 
@@ -229,6 +231,7 @@ func (c *Client) ReconnectWithRetry(ctx context.Context, serverURL, connectionTo
 		if lastErr == nil {
 			return nil
 		}
+		log.Printf("[VSCode] reconnect attempt %d/%d failed: %v", i+1, maxRetries, lastErr)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -239,6 +242,7 @@ func (c *Client) ReconnectWithRetry(ctx context.Context, serverURL, connectionTo
 			delay = 30 * time.Second
 		}
 	}
+	log.Printf("[VSCode] reconnection failed after %d attempts: %v", maxRetries, lastErr)
 	return fmt.Errorf("reconnection failed after %d attempts: %w", maxRetries, lastErr)
 }
 
@@ -261,6 +265,7 @@ func (c *Client) Close() error {
 		}
 		c.writeMessageLocked(msg)
 		closeErr = c.conn.Close()
+		log.Printf("[VSCode] connection closed")
 	})
 	return closeErr
 }

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"log"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -61,9 +62,11 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	err = runErr
 
 	if err != nil {
+		log.Printf("[Diagnostics] error for path=%s workDir=%s: %v", filePath, workDir, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
+	log.Printf("[Diagnostics] path=%s workDir=%s", filePath, workDir)
 	writeJSON(w, http.StatusOK, results)
 }

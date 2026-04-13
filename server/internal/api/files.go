@@ -27,7 +27,7 @@ func (s *Server) handleFilesGet(w http.ResponseWriter, r *http.Request) {
 
 	stat, err := s.fs.Stat(path)
 	if err != nil {
-		log.Printf("stat error for %s: %v", path, err)
+		log.Printf("[Files] stat error for %s: %v", path, err)
 		http.Error(w, "file not found", http.StatusNotFound)
 		return
 	}
@@ -35,21 +35,23 @@ func (s *Server) handleFilesGet(w http.ResponseWriter, r *http.Request) {
 	if stat.IsDir {
 		entries, err := s.fs.ReadDir(path)
 		if err != nil {
-			log.Printf("readdir error for %s: %v", path, err)
+			log.Printf("[Files] readdir error for %s: %v", path, err)
 			http.Error(w, "failed to read directory", http.StatusInternalServerError)
 			return
 		}
+		log.Printf("[Files] listed directory %s (%d entries)", path, len(entries))
 		writeJSON(w, http.StatusOK, entries)
 		return
 	}
 
 	data, err := s.fs.ReadFile(path)
 	if err != nil {
-		log.Printf("readfile error for %s: %v", path, err)
+		log.Printf("[Files] readfile error for %s: %v", path, err)
 		http.Error(w, "failed to read file", http.StatusInternalServerError)
 		return
 	}
 
+	log.Printf("[Files] read file %s (%d bytes)", path, len(data))
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.WriteHeader(http.StatusOK)
 	w.Write(data)
@@ -80,11 +82,12 @@ func (s *Server) handleFilesPut(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	if err := s.fs.WriteFile(path, body); err != nil {
-		log.Printf("writefile error for %s: %v", path, err)
+		log.Printf("[Files] writefile error for %s: %v", path, err)
 		http.Error(w, "failed to write file", http.StatusInternalServerError)
 		return
 	}
 
+	log.Printf("[Files] wrote file %s (%d bytes)", path, len(body))
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -102,11 +105,12 @@ func (s *Server) handleFilesDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.fs.Delete(path); err != nil {
-		log.Printf("delete error for %s: %v", path, err)
+		log.Printf("[Files] delete error for %s: %v", path, err)
 		http.Error(w, "failed to delete file", http.StatusInternalServerError)
 		return
 	}
 
+	log.Printf("[Files] deleted %s", path)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -131,11 +135,12 @@ func (s *Server) handleFilesPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.fs.MkDir(path); err != nil {
-		log.Printf("mkdir error for %s: %v", path, err)
+		log.Printf("[Files] mkdir error for %s: %v", path, err)
 		http.Error(w, "failed to create directory", http.StatusInternalServerError)
 		return
 	}
 
+	log.Printf("[Files] created directory %s", path)
 	w.WriteHeader(http.StatusCreated)
 }
 

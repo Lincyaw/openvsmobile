@@ -32,6 +32,7 @@ func (s *Server) handleWSTerminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	log.Printf("[WS/Terminal] connection established")
 
 	// connMu protects writes to the WebSocket connection from concurrent goroutines.
 	var connMu sync.Mutex
@@ -69,8 +70,9 @@ func (s *Server) handleWSTerminal(w http.ResponseWriter, r *http.Request) {
 		_, rawMsg, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
-				log.Printf("terminal websocket read error: %v", err)
+				log.Printf("[WS/Terminal] read error: %v", err)
 			}
+			log.Printf("[WS/Terminal] connection closed")
 			return
 		}
 
@@ -150,6 +152,7 @@ func (s *Server) handleTermCreate(
 	*createdIDs = append(*createdIDs, msg.ID)
 	idsMu.Unlock()
 
+	log.Printf("[WS/Terminal] created terminal %s via websocket", msg.ID)
 	sendMsg(terminalMessage{Type: "created", ID: msg.ID})
 
 	// Start a goroutine to read PTY output and send to client.
@@ -207,5 +210,6 @@ func (s *Server) handleTermClose(msg terminalMessage, sendMsg func(terminalMessa
 		sendError(msg.ID, "close error: "+err.Error())
 		return
 	}
+	log.Printf("[WS/Terminal] closed terminal %s via websocket", msg.ID)
 	sendMsg(terminalMessage{Type: "closed", ID: msg.ID})
 }

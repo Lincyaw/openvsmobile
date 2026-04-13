@@ -32,13 +32,15 @@ func (s *Server) handleWSChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	log.Printf("[WS/Chat] connection established")
 
 	for {
 		_, msgData, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
-				log.Printf("websocket read error: %v", err)
+				log.Printf("[WS/Chat] read error: %v", err)
 			}
+			log.Printf("[WS/Chat] connection closed")
 			return
 		}
 
@@ -64,9 +66,11 @@ func (s *Server) handleWSChat(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleChatStart(conn *websocket.Conn, msg ChatMessage) {
 	conv, err := s.processManager.StartConversation(msg.WorkDir)
 	if err != nil {
+		log.Printf("[WS/Chat] failed to start conversation: %v", err)
 		writeWSError(conn, "failed to start conversation: "+err.Error())
 		return
 	}
+	log.Printf("[WS/Chat] started conversation %s (workDir=%s)", conv.ID, msg.WorkDir)
 
 	// Send the conversation ID back.
 	writeWSJSON(conn, map[string]string{
@@ -81,9 +85,11 @@ func (s *Server) handleChatStart(conn *websocket.Conn, msg ChatMessage) {
 func (s *Server) handleChatResume(conn *websocket.Conn, msg ChatMessage) {
 	conv, err := s.processManager.ResumeConversation(msg.SessionID)
 	if err != nil {
+		log.Printf("[WS/Chat] failed to resume conversation %s: %v", msg.SessionID, err)
 		writeWSError(conn, "failed to resume conversation: "+err.Error())
 		return
 	}
+	log.Printf("[WS/Chat] resumed conversation %s", conv.ID)
 
 	writeWSJSON(conn, map[string]string{
 		"type":           "resumed",
@@ -94,33 +100,34 @@ func (s *Server) handleChatResume(conn *websocket.Conn, msg ChatMessage) {
 }
 
 func (s *Server) handleChatSend(conn *websocket.Conn, msg ChatMessage) {
-	// Find existing conversation by looking at all active ones.
-	// For simplicity, we use the most recent one. In production,
-	// the client should include conversationId.
-	// For now, just send to any active conversation.
 	if msg.SessionID == "" {
 		writeWSError(conn, "missing sessionId for send")
 		return
 	}
 	conv, ok := s.processManager.GetConversation(msg.SessionID)
 	if !ok {
+		log.Printf("[WS/Chat] conversation not found: %s", msg.SessionID)
 		writeWSError(conn, "conversation not found: "+msg.SessionID)
 		return
 	}
 
 	if err := conv.Send(msg.Message); err != nil {
+		log.Printf("[WS/Chat] failed to send message to %s: %v", conv.ID, err)
 		writeWSError(conn, "failed to send message: "+err.Error())
+		return
 	}
+	log.Printf("[WS/Chat] sent message to conversation %s", conv.ID)
 }
 
 func (s *Server) streamOutput(conn *websocket.Conn, conv *claude.Conversation) {
 	for output := range conv.Output {
 		if err := writeWSJSON(conn, output); err != nil {
-			log.Printf("websocket write error: %v", err)
+			log.Printf("[WS/Chat] write error for conversation %s: %v", conv.ID, err)
 			return
 		}
 	}
 	// Conversation ended.
+	log.Printf("[WS/Chat] conversation %s ended", conv.ID)
 	writeWSJSON(conn, map[string]string{"type": "closed"})
 	s.processManager.RemoveConversation(conv.ID)
 }

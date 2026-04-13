@@ -21,6 +21,7 @@ func (s *Server) handleSessionsList(w http.ResponseWriter, r *http.Request) {
 	} else {
 		sessions = s.sessionIndex.ListSessions()
 	}
+	log.Printf("[Sessions] listed sessions (query=%q, project=%q, count=%d)", query, project, len(sessions))
 	writeJSON(w, http.StatusOK, sessions)
 }
 
@@ -37,12 +38,13 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) {
 			http.Error(w, "session not found", http.StatusNotFound)
 		} else {
-			log.Printf("error fetching session messages for %s: %v", sessionID, err)
+			log.Printf("[Sessions] error fetching messages for %s: %v", sessionID, err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 		}
 		return
 	}
 
+	log.Printf("[Sessions] fetched messages for %s (count=%d)", sessionID, len(messages))
 	writeJSON(w, http.StatusOK, messages)
 }
 
@@ -60,12 +62,13 @@ func (s *Server) handleSubagentMessages(w http.ResponseWriter, r *http.Request) 
 		if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) {
 			http.Error(w, "subagent messages not found", http.StatusNotFound)
 		} else {
-			log.Printf("error fetching subagent messages for %s/%s: %v", sessionID, agentID, err)
+			log.Printf("[Sessions] error fetching subagent messages for %s/%s: %v", sessionID, agentID, err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 		}
 		return
 	}
 
+	log.Printf("[Sessions] fetched subagent messages for %s/%s (count=%d)", sessionID, agentID, len(messages))
 	writeJSON(w, http.StatusOK, messages)
 }
 
@@ -83,11 +86,12 @@ func (s *Server) handleSubagentMeta(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) {
 			http.Error(w, "subagent meta not found", http.StatusNotFound)
 		} else {
-			log.Printf("error fetching subagent meta for %s/%s: %v", sessionID, agentID, err)
+			log.Printf("[Sessions] error fetching subagent meta for %s/%s: %v", sessionID, agentID, err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 		}
 		return
 	}
 
+	log.Printf("[Sessions] fetched subagent meta for %s/%s", sessionID, agentID)
 	writeJSON(w, http.StatusOK, meta)
 }

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 
@@ -20,9 +21,11 @@ func (s *Server) handleGitStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid path: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	log.Printf("[Git] status path=%s", path)
 
 	entries, err := s.git.Status(path)
 	if err != nil {
+		log.Printf("[Git] status error for %s: %v", path, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -45,6 +48,7 @@ func (s *Server) handleGitDiff(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid path: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	log.Printf("[Git] diff path=%s", path)
 
 	filePath := r.URL.Query().Get("file")
 	if filePath != "" {
@@ -58,6 +62,7 @@ func (s *Server) handleGitDiff(w http.ResponseWriter, r *http.Request) {
 
 	diff, err := s.git.Diff(path, filePath, staged)
 	if err != nil {
+		log.Printf("[Git] diff error for %s: %v", path, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -78,6 +83,7 @@ func (s *Server) handleGitLog(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid path: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	log.Printf("[Git] log path=%s", path)
 
 	count := 20
 	if c := r.URL.Query().Get("count"); c != "" {
@@ -88,6 +94,7 @@ func (s *Server) handleGitLog(w http.ResponseWriter, r *http.Request) {
 
 	entries, err := s.git.Log(path, count)
 	if err != nil {
+		log.Printf("[Git] log error for %s: %v", path, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -110,9 +117,11 @@ func (s *Server) handleGitBranches(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid path: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	log.Printf("[Git] branches path=%s", path)
 
 	info, err := s.git.BranchInfo(path)
 	if err != nil {
+		log.Printf("[Git] branches error for %s: %v", path, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -154,9 +163,11 @@ func (s *Server) handleGitStage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.git.Stage(path, file); err != nil {
+		log.Printf("[Git] stage error for %s/%s: %v", path, file, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	log.Printf("[Git] staged %s in %s", file, path)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -182,9 +193,11 @@ func (s *Server) handleGitUnstage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.git.Unstage(path, file); err != nil {
+		log.Printf("[Git] unstage error for %s/%s: %v", path, file, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	log.Printf("[Git] unstaged %s in %s", file, path)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -209,8 +222,10 @@ func (s *Server) handleGitCommit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.git.Commit(path, req.Message); err != nil {
+		log.Printf("[Git] commit error in %s: %v", path, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	log.Printf("[Git] committed in %s: %s", path, req.Message)
 	w.WriteHeader(http.StatusOK)
 }

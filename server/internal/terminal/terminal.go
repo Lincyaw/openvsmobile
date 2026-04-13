@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"sync"
@@ -91,6 +92,7 @@ func (m *Manager) Create(id string, shell string, workDir string, rows, cols uin
 	}()
 
 	m.terminals[id] = t
+	log.Printf("[Terminal] created terminal %s (shell=%s, workDir=%s, rows=%d, cols=%d)", id, shell, workDir, rows, cols)
 	return t, nil
 }
 
@@ -117,6 +119,7 @@ func (m *Manager) Resize(id string, rows, cols uint16) error {
 	}
 	t.rows = rows
 	t.cols = cols
+	log.Printf("[Terminal] resized terminal %s to rows=%d, cols=%d", id, rows, cols)
 	return nil
 }
 
@@ -135,6 +138,7 @@ func (m *Manager) Close(id string) error {
 	if t.cmd.Process != nil {
 		_ = t.cmd.Process.Kill()
 	}
+	log.Printf("[Terminal] closed terminal %s", id)
 	return t.ptmx.Close()
 }
 

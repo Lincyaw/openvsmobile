@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -145,6 +146,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		results = []searchResult{}
 	}
 
+	log.Printf("[Search] query=%q path=%s results=%d", query, searchPath, len(results))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(results)
 }
