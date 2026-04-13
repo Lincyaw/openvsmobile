@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../main.dart' show serverBaseUrl, serverAuthToken;
 import 'git_screen.dart';
+import 'settings_screen.dart';
 import 'terminal_screen.dart';
 
 class MoreScreen extends StatelessWidget {
@@ -32,7 +33,7 @@ class MoreScreen extends StatelessWidget {
             onTap: () {
               Navigator.of(context).push(
                 MaterialPageRoute(
-                  builder: (_) => const TerminalScreen(
+                  builder: (_) => TerminalScreen(
                     baseUrl: serverBaseUrl,
                     token: serverAuthToken,
                   ),
@@ -47,9 +48,9 @@ class MoreScreen extends StatelessWidget {
             subtitle: const Text('App configuration'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Settings coming soon')),
-              );
+              Navigator.of(
+                context,
+              ).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
             },
           ),
           const Divider(),
