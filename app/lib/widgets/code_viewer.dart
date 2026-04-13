@@ -103,6 +103,7 @@ class _CodeViewerState extends State<CodeViewer> {
   double _baseScaleFontSize = 13.0;
   String? _selectedText;
   bool _showToolbar = false;
+  int _selectionGeneration = 0;
 
   // Cached computations to avoid re-running on every zoom frame.
   Map<int, Diagnostic>? _cachedDiagnosticsByLine;
@@ -277,6 +278,7 @@ class _CodeViewerState extends State<CodeViewer> {
               child: SelectionArea(
                 onSelectionChanged: (value) {
                   final text = value?.plainText;
+                  _selectionGeneration++;
                   if (text != null &&
                       text.isNotEmpty &&
                       text != _selectedText) {
@@ -285,8 +287,9 @@ class _CodeViewerState extends State<CodeViewer> {
                       _showToolbar = true;
                     });
                   } else if ((text == null || text.isEmpty) && _showToolbar) {
+                    final expectedGeneration = _selectionGeneration;
                     Future.delayed(const Duration(milliseconds: 300), () {
-                      if (mounted) {
+                      if (mounted && _selectionGeneration == expectedGeneration) {
                         setState(() {
                           _showToolbar = false;
                         });
@@ -310,48 +313,50 @@ class _CodeViewerState extends State<CodeViewer> {
                           color: isDark
                               ? const Color(0xFF1E1E1E)
                               : const Color(0xFFF5F5F5),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: List.generate(
-                              lines.length,
-                              (i) {
-                                final lineNum = i + 1;
-                                final diag = _diagnosticsByLine[lineNum];
-                                return SizedBox(
-                                  height: _fontSize * 1.5,
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    mainAxisAlignment: MainAxisAlignment.end,
-                                    children: [
-                                      if (diag != null)
-                                        Tooltip(
-                                          message: '${diag.severity}: ${diag.message}',
-                                          child: Icon(
-                                            _severityIcon(diag.severity),
-                                            size: _fontSize,
-                                            color: _severityColor(diag.severity),
+                          child: RepaintBoundary(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: List.generate(
+                                lines.length,
+                                (i) {
+                                  final lineNum = i + 1;
+                                  final diag = _diagnosticsByLine[lineNum];
+                                  return SizedBox(
+                                    height: _fontSize * 1.5,
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      mainAxisAlignment: MainAxisAlignment.end,
+                                      children: [
+                                        if (diag != null)
+                                          Tooltip(
+                                            message: '${diag.severity}: ${diag.message}',
+                                            child: Icon(
+                                              _severityIcon(diag.severity),
+                                              size: _fontSize,
+                                              color: _severityColor(diag.severity),
+                                            ),
                                           ),
+                                        if (diag != null)
+                                          const SizedBox(width: 2),
+                                        Text(
+                                          '$lineNum',
+                                          style: TextStyle(
+                                            fontFamily: 'monospace',
+                                            fontSize: _fontSize,
+                                            height: 1.5,
+                                            color: diag != null
+                                                ? _severityColor(diag.severity)
+                                                : (isDark
+                                                    ? Colors.grey.shade600
+                                                    : Colors.grey.shade400),
+                                          ),
+                                          textAlign: TextAlign.right,
                                         ),
-                                      if (diag != null)
-                                        const SizedBox(width: 2),
-                                      Text(
-                                        '$lineNum',
-                                        style: TextStyle(
-                                          fontFamily: 'monospace',
-                                          fontSize: _fontSize,
-                                          height: 1.5,
-                                          color: diag != null
-                                              ? _severityColor(diag.severity)
-                                              : (isDark
-                                                  ? Colors.grey.shade600
-                                                  : Colors.grey.shade400),
-                                        ),
-                                        textAlign: TextAlign.right,
-                                      ),
-                                    ],
-                                  ),
-                                );
-                              },
+                                      ],
+                                    ),
+                                  );
+                                },
+                              ),
                             ),
                           ),
                         ),

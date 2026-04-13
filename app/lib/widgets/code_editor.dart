@@ -24,6 +24,7 @@ class _CodeEditorState extends State<CodeEditor> {
   late ScrollController _editorScrollController;
   late FocusNode _focusNode;
   double _fontSize = 13.0;
+  double _baseScaleFontSize = 13.0;
   bool _isSyncing = false;
 
   @override
@@ -90,11 +91,13 @@ class _CodeEditorState extends State<CodeEditor> {
     final lineNumberWidth = '${lines.length}'.length * 10.0 + 24.0;
 
     return GestureDetector(
-      onScaleStart: (_) {},
+      onScaleStart: (_) {
+        _baseScaleFontSize = _fontSize;
+      },
       onScaleUpdate: (details) {
         if (details.pointerCount >= 2) {
           setState(() {
-            _fontSize = (_fontSize * details.scale).clamp(8.0, 32.0);
+            _fontSize = (_baseScaleFontSize * details.scale).clamp(8.0, 32.0);
           });
         }
       },
@@ -109,23 +112,25 @@ class _CodeEditorState extends State<CodeEditor> {
               controller: _lineNumberScrollController,
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: List.generate(
-                    lines.length,
-                    (i) => SizedBox(
-                      height: _fontSize * 1.5,
-                      child: Text(
-                        '${i + 1}',
-                        style: TextStyle(
-                          fontFamily: 'monospace',
-                          fontSize: _fontSize,
-                          height: 1.5,
-                          color: isDark
-                              ? Colors.grey.shade600
-                              : Colors.grey.shade400,
+                child: RepaintBoundary(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: List.generate(
+                      lines.length,
+                      (i) => SizedBox(
+                        height: _fontSize * 1.5,
+                        child: Text(
+                          '${i + 1}',
+                          style: TextStyle(
+                            fontFamily: 'monospace',
+                            fontSize: _fontSize,
+                            height: 1.5,
+                            color: isDark
+                                ? Colors.grey.shade600
+                                : Colors.grey.shade400,
+                          ),
+                          textAlign: TextAlign.right,
                         ),
-                        textAlign: TextAlign.right,
                       ),
                     ),
                   ),
