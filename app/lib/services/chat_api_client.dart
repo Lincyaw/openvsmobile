@@ -7,27 +7,33 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/chat_message.dart';
 import '../models/session.dart';
 import 'api_client.dart' show ApiException;
+import 'settings_service.dart';
 
 /// API client for chat-specific endpoints.
 /// Separate from Group C's ApiClient to avoid conflicts.
 class ChatApiClient {
-  final String baseUrl;
-  final String token;
+  final SettingsService _settings;
   final http.Client _client;
 
   ChatApiClient({
-    required this.baseUrl,
-    required this.token,
+    required SettingsService settings,
     http.Client? client,
-  }) : _client = client ?? http.Client();
+  }) : _settings = settings,
+       _client = client ?? http.Client();
+
+  String get baseUrl => _settings.serverUrl;
+  String get token => _settings.authToken;
 
   Map<String, String> get _headers => {'Authorization': 'Bearer $token'};
 
-  Uri _buildUri(String path) {
+  Uri _buildUri(String path, {Map<String, String>? extraParams}) {
     final base = baseUrl.endsWith('/')
         ? baseUrl.substring(0, baseUrl.length - 1)
         : baseUrl;
-    return Uri.parse('$base$path').replace(queryParameters: {'token': token});
+    if (extraParams != null && extraParams.isNotEmpty) {
+      return Uri.parse('$base$path').replace(queryParameters: extraParams);
+    }
+    return Uri.parse('$base$path');
   }
 
   /// Fetch all sessions. Supports optional search query and project filter.
@@ -35,16 +41,14 @@ class ChatApiClient {
     String? query,
     String? project,
   }) async {
-    final params = <String, String>{'token': token};
+    final params = <String, String>{};
     if (query != null && query.isNotEmpty) params['q'] = query;
     if (project != null && project.isNotEmpty) params['project'] = project;
 
-    final base = baseUrl.endsWith('/')
-        ? baseUrl.substring(0, baseUrl.length - 1)
-        : baseUrl;
-    final uri = Uri.parse(
-      '$base/api/sessions',
-    ).replace(queryParameters: params);
+    final uri = _buildUri(
+      '/api/sessions',
+      extraParams: params.isNotEmpty ? params : null,
+    );
     final response = await _client.get(uri, headers: _headers);
     if (response.statusCode != 200) {
       throw ApiException(
@@ -112,6 +116,7 @@ class ChatApiClient {
   }
 
   /// Connect to the chat WebSocket.
+  /// Token is passed as query param because WebSocket cannot set custom headers.
   WebSocketChannel connectWebSocket() {
     final wsBase = baseUrl
         .replaceFirst('https://', 'wss://')

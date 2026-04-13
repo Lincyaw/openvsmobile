@@ -1,5 +1,4 @@
 import 'package:flutter/foundation.dart';
-import '../models/file_entry.dart';
 import '../models/search_result.dart';
 import '../services/api_client.dart';
 
@@ -66,14 +65,14 @@ class SearchProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final results = <SearchResult>[];
-      await _searchRecursive(
-        rootPath,
-        query.toLowerCase(),
-        results,
-        maxDepth: 5,
-      );
-      _results = results;
+      final rawResults = await apiClient.searchFiles(query, rootPath);
+      _results = rawResults
+          .map((e) => SearchResult(
+                path: e['path'] as String,
+                name: e['name'] as String,
+                isDirectory: e['isDir'] as bool,
+              ))
+          .toList();
       _error = null;
     } catch (e) {
       _error = e.toString();
@@ -107,51 +106,6 @@ class SearchProvider extends ChangeNotifier {
     } finally {
       _isSearching = false;
       notifyListeners();
-    }
-  }
-
-  Future<void> _searchRecursive(
-    String dirPath,
-    String lowerQuery,
-    List<SearchResult> results, {
-    int maxDepth = 5,
-    int currentDepth = 0,
-  }) async {
-    if (currentDepth >= maxDepth || results.length >= 100) return;
-
-    List<FileEntry> entries;
-    try {
-      entries = await apiClient.listDirectory(dirPath);
-    } catch (_) {
-      return;
-    }
-
-    for (final entry in entries) {
-      final fullPath = dirPath.endsWith('/')
-          ? '$dirPath${entry.name}'
-          : '$dirPath/${entry.name}';
-
-      if (entry.name.toLowerCase().contains(lowerQuery)) {
-        results.add(
-          SearchResult(
-            path: fullPath,
-            name: entry.name,
-            isDirectory: entry.isDir,
-          ),
-        );
-        if (results.length >= 100) return;
-      }
-
-      if (entry.isDir) {
-        await _searchRecursive(
-          fullPath,
-          lowerQuery,
-          results,
-          maxDepth: maxDepth,
-          currentDepth: currentDepth + 1,
-        );
-        if (results.length >= 100) return;
-      }
     }
   }
 

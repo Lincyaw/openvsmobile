@@ -96,6 +96,14 @@ class ChatProvider extends ChangeNotifier {
   void _ensureConnected() {
     if (_isConnected && _channel != null) return;
 
+    // If we had a previous connection that dropped, the old conversationId
+    // is no longer valid on the new connection.
+    if (_conversationId != null) {
+      _error = 'Connection lost. Please start a new conversation.';
+      _conversationId = null;
+      _isStreaming = false;
+    }
+
     _channel = _apiClient.connectWebSocket();
     _subscription = _channel!.stream.listen(
       _onMessage,
@@ -137,7 +145,11 @@ class ChatProvider extends ChangeNotifier {
 
   /// Send a message in the current conversation.
   void sendMessage(String text) {
-    if (_conversationId == null) return;
+    if (_conversationId == null) {
+      // No active conversation — start a new one with this message.
+      queueAndStart(text);
+      return;
+    }
 
     // Build user message text, including code context if present
     String messageText = text;
@@ -260,6 +272,8 @@ class ChatProvider extends ChangeNotifier {
   void _onDone() {
     _isConnected = false;
     _isStreaming = false;
+    // Don't clear _conversationId here — _ensureConnected will handle it
+    // on the next user action, showing the reconnection message.
     notifyListeners();
   }
 

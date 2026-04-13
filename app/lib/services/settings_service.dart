@@ -1,9 +1,10 @@
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 const _defaultServerUrl = 'http://10.0.2.2:8080';
 const _defaultAuthToken = 'dev-token';
 
-class SettingsService {
+class SettingsService extends ChangeNotifier {
   static const _keyServerUrl = 'server_url';
   static const _keyAuthToken = 'auth_token';
 
@@ -28,5 +29,6 @@ class SettingsService {
     _authToken = token;
     await prefs.setString(_keyServerUrl, url);
     await prefs.setString(_keyAuthToken, token);
+    notifyListeners();
   }
 }

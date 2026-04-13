@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/chat_provider.dart';
 import '../providers/file_provider.dart';
+import '../providers/git_provider.dart';
 import '../providers/editor_provider.dart';
 import '../providers/workspace_provider.dart';
 import '../widgets/file_tree_view.dart';
@@ -258,6 +259,7 @@ class FilesScreen extends StatelessWidget {
     ws.setWorkspace(path);
     context.read<FileProvider>().setProject(path);
     context.read<ChatProvider>().setWorkspace(path);
+    context.read<GitProvider>().setWorkDir(path);
   }
 }
 

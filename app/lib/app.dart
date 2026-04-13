@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'main.dart' show serverBaseUrl, serverAuthToken;
 import 'providers/workspace_provider.dart';
 import 'screens/files_screen.dart';
 import 'screens/chat_screen.dart';
 import 'screens/search_screen.dart';
 import 'screens/terminal_screen.dart';
 import 'screens/more_screen.dart';
+import 'services/settings_service.dart';
 
 class VSCodeMobileApp extends StatelessWidget {
   const VSCodeMobileApp({super.key});
@@ -45,13 +45,14 @@ class _MainShellState extends State<MainShell> {
   @override
   Widget build(BuildContext context) {
     final wsPath = context.watch<WorkspaceProvider>().currentPath;
+    final settings = context.watch<SettingsService>();
 
     final tabs = <Widget>[
       const FilesScreen(),
       const SearchScreen(),
       TerminalScreen(
-        baseUrl: serverBaseUrl,
-        token: serverAuthToken,
+        baseUrl: settings.serverUrl,
+        token: settings.authToken,
         workDir: wsPath,
         isActive: _currentIndex == 2,
       ),

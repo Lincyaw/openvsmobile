@@ -150,3 +150,72 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(results)
 }
+
+// fileSearchResult represents a file name search match.
+type fileSearchResult struct {
+	Path  string `json:"path"`
+	Name  string `json:"name"`
+	IsDir bool   `json:"isDir"`
+}
+
+// handleSearchFiles handles GET /api/search/files?q=<pattern>&path=<dir>&max=100.
+func (s *Server) handleSearchFiles(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query().Get("q")
+	if query == "" {
+		http.Error(w, "missing q parameter", http.StatusBadRequest)
+		return
+	}
+
+	rawPath := r.URL.Query().Get("path")
+	if rawPath == "" {
+		rawPath = "/"
+	}
+	searchPath, err := sanitizePath(rawPath, true)
+	if err != nil {
+		http.Error(w, "invalid path: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	maxResults := 100
+	if m := r.URL.Query().Get("max"); m != "" {
+		if v, err := strconv.Atoi(m); err == nil && v > 0 {
+			maxResults = v
+		}
+	}
+
+	lowerQuery := strings.ToLower(query)
+	var results []fileSearchResult
+
+	_ = filepath.WalkDir(searchPath, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+
+		// Skip excluded directories.
+		if d.IsDir() && skipDirs[d.Name()] {
+			return filepath.SkipDir
+		}
+
+		if len(results) >= maxResults {
+			return filepath.SkipAll
+		}
+
+		if strings.Contains(strings.ToLower(d.Name()), lowerQuery) {
+			results = append(results, fileSearchResult{
+				Path:  path,
+				Name:  d.Name(),
+				IsDir: d.IsDir(),
+			})
+		}
+
+		return nil
+	})
+
+	if results == nil {
+		results = []fileSearchResult{}
+	}
+
+	log.Printf("[Search] file search query=%q path=%s results=%d", query, searchPath, len(results))
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(results)
+}

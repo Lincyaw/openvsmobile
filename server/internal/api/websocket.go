@@ -11,10 +11,12 @@ import (
 	"github.com/Lincyaw/vscode-mobile/server/internal/claude"
 )
 
-// upgrader uses the default CheckOrigin (same-origin policy).
-// The mobile app connects directly via IP/localhost, so origin checking
-// does not affect it; this prevents cross-site WebSocket hijacking from browsers.
-var upgrader = websocket.Upgrader{}
+var upgrader = websocket.Upgrader{
+	// Allow connections from any origin. The mobile client connects
+	// directly or through a reverse proxy; origin-based protection is
+	// not meaningful here — authentication is handled by the auth middleware.
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
 
 // ChatMessage is the message format for the /ws/chat WebSocket.
 type ChatMessage struct {
@@ -34,6 +36,25 @@ func (s *Server) handleWSChat(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close()
 	log.Printf("[WS/Chat] connection established")
 
+	// Track the active conversation so we can clean it up when the
+	// WebSocket closes (e.g. client disconnects).
+	var activeConv *claude.Conversation
+	var activeConvMu sync.Mutex
+	defer func() {
+		activeConvMu.Lock()
+		if activeConv != nil {
+			activeConv.Close()
+			s.processManager.RemoveConversation(activeConv.ID)
+		}
+		activeConvMu.Unlock()
+	}()
+
+	setActiveConv := func(conv *claude.Conversation) {
+		activeConvMu.Lock()
+		activeConv = conv
+		activeConvMu.Unlock()
+	}
+
 	for {
 		_, msgData, err := conn.ReadMessage()
 		if err != nil {
@@ -52,9 +73,9 @@ func (s *Server) handleWSChat(w http.ResponseWriter, r *http.Request) {
 
 		switch chatMsg.Type {
 		case "start":
-			s.handleChatStart(conn, chatMsg)
+			s.handleChatStart(conn, chatMsg, setActiveConv)
 		case "resume":
-			s.handleChatResume(conn, chatMsg)
+			s.handleChatResume(conn, chatMsg, setActiveConv)
 		case "send":
 			s.handleChatSend(conn, chatMsg)
 		default:
@@ -63,7 +84,7 @@ func (s *Server) handleWSChat(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleChatStart(conn *websocket.Conn, msg ChatMessage) {
+func (s *Server) handleChatStart(conn *websocket.Conn, msg ChatMessage, setActiveConv func(*claude.Conversation)) {
 	conv, err := s.processManager.StartConversation(msg.WorkDir)
 	if err != nil {
 		log.Printf("[WS/Chat] failed to start conversation: %v", err)
@@ -71,6 +92,7 @@ func (s *Server) handleChatStart(conn *websocket.Conn, msg ChatMessage) {
 		return
 	}
 	log.Printf("[WS/Chat] started conversation %s (workDir=%s)", conv.ID, msg.WorkDir)
+	setActiveConv(conv)
 
 	// Send the conversation ID back.
 	writeWSJSON(conn, map[string]string{
@@ -82,7 +104,7 @@ func (s *Server) handleChatStart(conn *websocket.Conn, msg ChatMessage) {
 	go s.streamOutput(conn, conv)
 }
 
-func (s *Server) handleChatResume(conn *websocket.Conn, msg ChatMessage) {
+func (s *Server) handleChatResume(conn *websocket.Conn, msg ChatMessage, setActiveConv func(*claude.Conversation)) {
 	conv, err := s.processManager.ResumeConversation(msg.SessionID)
 	if err != nil {
 		log.Printf("[WS/Chat] failed to resume conversation %s: %v", msg.SessionID, err)
@@ -90,6 +112,7 @@ func (s *Server) handleChatResume(conn *websocket.Conn, msg ChatMessage) {
 		return
 	}
 	log.Printf("[WS/Chat] resumed conversation %s", conv.ID)
+	setActiveConv(conv)
 
 	writeWSJSON(conn, map[string]string{
 		"type":           "resumed",
@@ -129,6 +152,7 @@ func (s *Server) streamOutput(conn *websocket.Conn, conv *claude.Conversation) {
 	// Conversation ended.
 	log.Printf("[WS/Chat] conversation %s ended", conv.ID)
 	writeWSJSON(conn, map[string]string{"type": "closed"})
+	conv.Close()
 	s.processManager.RemoveConversation(conv.ID)
 }
 

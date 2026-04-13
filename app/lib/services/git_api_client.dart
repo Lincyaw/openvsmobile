@@ -2,18 +2,21 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/git_models.dart';
 import 'api_client.dart' show ApiException;
+import 'settings_service.dart';
 
 /// API client for Git-related endpoints.
 class GitApiClient {
-  final String baseUrl;
-  final String token;
+  final SettingsService _settings;
   final http.Client _client;
 
   GitApiClient({
-    required this.baseUrl,
-    required this.token,
+    required SettingsService settings,
     http.Client? client,
-  }) : _client = client ?? http.Client();
+  }) : _settings = settings,
+       _client = client ?? http.Client();
+
+  String get baseUrl => _settings.serverUrl;
+  String get token => _settings.authToken;
 
   Map<String, String> get _headers => {'Authorization': 'Bearer $token'};
 
@@ -21,8 +24,10 @@ class GitApiClient {
     final base = baseUrl.endsWith('/')
         ? baseUrl.substring(0, baseUrl.length - 1)
         : baseUrl;
-    final params = {'token': token, ...?queryParams};
-    return Uri.parse('$base$path').replace(queryParameters: params);
+    if (queryParams != null && queryParams.isNotEmpty) {
+      return Uri.parse('$base$path').replace(queryParameters: queryParams);
+    }
+    return Uri.parse('$base$path');
   }
 
   /// Get git status for [path].

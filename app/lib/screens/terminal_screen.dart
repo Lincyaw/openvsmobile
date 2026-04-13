@@ -60,14 +60,33 @@ class _TerminalScreenState extends State<TerminalScreen> {
   }
 
   @override
+  void didUpdateWidget(TerminalScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.workDir != oldWidget.workDir && _hasConnected) {
+      // Workspace changed — reconnect terminal in new directory.
+      _reconnect();
+    }
+    if (widget.isActive && !oldWidget.isActive && !_hasConnected) {
+      _ensureConnected();
+    }
+  }
+
+  @override
   void dispose() {
-    _sendClose();
-    _subscription?.cancel();
-    _channel?.sink.close();
+    _disconnect();
     _outputController.dispose();
     _inputController.dispose();
     _focusNode.dispose();
     super.dispose();
+  }
+
+  /// Clean up the current WebSocket connection and subscription.
+  void _disconnect() {
+    _sendClose();
+    _subscription?.cancel();
+    _subscription = null;
+    _channel?.sink.close();
+    _channel = null;
   }
 
   void _ensureConnected() {
@@ -111,6 +130,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
   }
 
   void _connect() {
+    _disconnect(); // Clean up any existing connection before creating a new one.
     final wsBase = widget.baseUrl
         .replaceFirst('https://', 'wss://')
         .replaceFirst('http://', 'ws://');
@@ -234,7 +254,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
   }
 
   void _reconnect() {
-    _sendClose();
+    _disconnect();
     setState(() {
       _lines.clear();
       _lines.add('');

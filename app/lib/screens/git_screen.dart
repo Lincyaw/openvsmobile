@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/git_provider.dart';
+import '../providers/workspace_provider.dart';
 import '../models/git_models.dart';
 import 'diff_screen.dart';
 
@@ -20,7 +21,10 @@ class _GitScreenState extends State<GitScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<GitProvider>().refreshAll();
+      final workDir = context.read<WorkspaceProvider>().currentPath;
+      final gitProvider = context.read<GitProvider>();
+      gitProvider.setWorkDir(workDir);
+      gitProvider.refreshAll();
     });
   }
 

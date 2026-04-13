@@ -3,22 +3,29 @@ import 'package:http/http.dart' as http;
 import '../models/diagnostic.dart';
 import '../models/file_entry.dart';
 import '../models/search_result.dart';
+import 'settings_service.dart';
 
 class ApiClient {
-  final String baseUrl;
-  final String token;
+  final SettingsService _settings;
   final http.Client _client;
 
-  ApiClient({required this.baseUrl, required this.token, http.Client? client})
-    : _client = client ?? http.Client();
+  ApiClient({required SettingsService settings, http.Client? client})
+    : _settings = settings,
+      _client = client ?? http.Client();
+
+  String get baseUrl => _settings.serverUrl;
+  String get token => _settings.authToken;
 
   Map<String, String> get _headers => {'Authorization': 'Bearer $token'};
 
-  Uri _buildUri(String path) {
+  Uri _buildUri(String path, {Map<String, String>? extraParams}) {
     final base = baseUrl.endsWith('/')
         ? baseUrl.substring(0, baseUrl.length - 1)
         : baseUrl;
-    return Uri.parse('$base$path').replace(queryParameters: {'token': token});
+    if (extraParams != null && extraParams.isNotEmpty) {
+      return Uri.parse('$base$path').replace(queryParameters: extraParams);
+    }
+    return Uri.parse('$base$path');
   }
 
   /// List directory contents at [path].
@@ -85,12 +92,10 @@ class ApiClient {
   /// Create a directory at [path].
   Future<void> createDirectory(String path) async {
     final normalizedPath = path.startsWith('/') ? path : '/$path';
-    final base = baseUrl.endsWith('/')
-        ? baseUrl.substring(0, baseUrl.length - 1)
-        : baseUrl;
-    final uri = Uri.parse(
-      '$base/api/files$normalizedPath',
-    ).replace(queryParameters: {'token': token, 'type': 'directory'});
+    final uri = _buildUri(
+      '/api/files$normalizedPath',
+      extraParams: {'type': 'directory'},
+    );
     final response = await _client.post(uri, headers: _headers);
     if (response.statusCode != 201) {
       throw ApiException(
@@ -105,15 +110,10 @@ class ApiClient {
     String? filePath,
     String workDir = '/',
   }) async {
-    final params = <String, String>{'token': token, 'workDir': workDir};
+    final params = <String, String>{'workDir': workDir};
     if (filePath != null) params['path'] = filePath;
 
-    final base = baseUrl.endsWith('/')
-        ? baseUrl.substring(0, baseUrl.length - 1)
-        : baseUrl;
-    final uri = Uri.parse(
-      '$base/api/diagnostics',
-    ).replace(queryParameters: params);
+    final uri = _buildUri('/api/diagnostics', extraParams: params);
     final response = await _client.get(uri, headers: _headers);
     if (response.statusCode != 200) {
       throw ApiException(
@@ -134,12 +134,10 @@ class ApiClient {
     String query,
     String path,
   ) async {
-    final base = baseUrl.endsWith('/')
-        ? baseUrl.substring(0, baseUrl.length - 1)
-        : baseUrl;
-    final uri = Uri.parse(
-      '$base/api/search',
-    ).replace(queryParameters: {'token': token, 'q': query, 'path': path});
+    final uri = _buildUri(
+      '/api/search',
+      extraParams: {'q': query, 'path': path},
+    );
     final response = await _client.get(uri, headers: _headers);
     if (response.statusCode != 200) {
       throw ApiException(
@@ -151,6 +149,26 @@ class ApiClient {
     return jsonList
         .map((e) => ContentSearchResult.fromJson(e as Map<String, dynamic>))
         .toList();
+  }
+
+  /// Search for files by name under [path].
+  Future<List<Map<String, dynamic>>> searchFiles(
+    String query,
+    String path,
+  ) async {
+    final uri = _buildUri(
+      '/api/search/files',
+      extraParams: {'q': query, 'path': path},
+    );
+    final response = await _client.get(uri, headers: _headers);
+    if (response.statusCode != 200) {
+      throw ApiException(
+        'Failed to search files: ${response.statusCode}',
+        response.statusCode,
+      );
+    }
+    return (jsonDecode(response.body) as List<dynamic>)
+        .cast<Map<String, dynamic>>();
   }
 
   void dispose() {

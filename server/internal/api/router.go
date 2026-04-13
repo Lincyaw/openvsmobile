@@ -1,8 +1,11 @@
 package api
 
 import (
+	"bufio"
 	"log"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Lincyaw/vscode-mobile/server/internal/claude"
@@ -71,8 +74,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/git/unstage", s.handleGitUnstage)
 	mux.HandleFunc("POST /api/git/commit", s.handleGitCommit)
 
-	// Search endpoint.
+	// Search endpoints.
 	mux.HandleFunc("GET /api/search", s.handleSearch)
+	mux.HandleFunc("GET /api/search/files", s.handleSearchFiles)
 
 	// Diagnostics endpoint.
 	mux.HandleFunc("GET /api/diagnostics", s.handleDiagnostics)
@@ -81,6 +85,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/ws/chat", s.handleWSChat)
 	mux.HandleFunc("/ws/files", s.handleWSFiles)
 	mux.HandleFunc("/ws/terminal", s.handleWSTerminal)
+
+	// Health-check endpoint (unauthenticated for connectivity tests).
+	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"ok"}`))
+	})
 
 	// Wrap with auth and logging middlewares.
 	return s.loggingMiddleware(s.authMiddleware(mux))
@@ -92,7 +102,13 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		start := time.Now()
 		wrapped := &responseRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(wrapped, r)
-		log.Printf("[HTTP] %s %s -> %d in %s", r.Method, r.URL.Path, wrapped.statusCode, time.Since(start))
+		status := wrapped.statusCode
+		// If the connection was hijacked for WebSocket, the status stays at the
+		// default 200 because WriteHeader was never called through the wrapper.
+		if status == http.StatusOK && strings.HasPrefix(r.URL.Path, "/ws/") {
+			status = http.StatusSwitchingProtocols
+		}
+		log.Printf("[HTTP] %s %s -> %d in %s", r.Method, r.URL.Path, status, time.Since(start))
 	})
 }
 
@@ -106,9 +122,30 @@ func (rr *responseRecorder) WriteHeader(code int) {
 	rr.ResponseWriter.WriteHeader(code)
 }
 
+// Hijack implements http.Hijacker so that WebSocket upgrades work
+// through the logging middleware. Without this, gorilla/websocket's
+// Upgrade() fails with "response does not implement http.Hijacker".
+func (rr *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return rr.ResponseWriter.(http.Hijacker).Hijack()
+}
+
+// Flush implements http.Flusher for streaming responses.
+func (rr *responseRecorder) Flush() {
+	if f, ok := rr.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // authMiddleware checks the connection token.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Health endpoint is unauthenticated so the client can verify
+		// connectivity before checking credentials.
+		if r.URL.Path == "/api/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		if s.token == "" {
 			next.ServeHTTP(w, r)
 			return

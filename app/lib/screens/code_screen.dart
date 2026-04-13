@@ -17,6 +17,40 @@ class CodeScreen extends StatefulWidget {
 class _CodeScreenState extends State<CodeScreen> {
   bool _showChat = false;
 
+  Future<void> _confirmClose(
+    BuildContext context,
+    EditorProvider editorProvider,
+  ) async {
+    final file = editorProvider.currentFile;
+    if (file == null) return;
+
+    if (file.hasUnsavedChanges) {
+      final result = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Unsaved Changes'),
+          content: Text('${file.name} has unsaved changes. Close anyway?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Discard'),
+            ),
+          ],
+        ),
+      );
+      if (result != true) return;
+    }
+
+    editorProvider.closeFile(editorProvider.currentFileIndex);
+    if (context.mounted) {
+      Navigator.of(context).pop();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Consumer<EditorProvider>(
@@ -98,11 +132,10 @@ class _CodeScreenState extends State<CodeScreen> {
                   onPressed: () => editorProvider.enterEditMode(),
                 ),
               PopupMenuButton<String>(
-                onSelected: (value) {
+                onSelected: (value) async {
                   switch (value) {
                     case 'close':
-                      editorProvider.closeFile(editorProvider.currentFileIndex);
-                      Navigator.of(context).pop();
+                      await _confirmClose(context, editorProvider);
                       break;
                   }
                 },
