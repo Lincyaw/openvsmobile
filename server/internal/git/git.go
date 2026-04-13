@@ -15,7 +15,7 @@ type Git struct {
 // StatusEntry represents a single file's git status.
 type StatusEntry struct {
 	Path     string `json:"path"`
-	Status   string `json:"status"`   // "modified", "added", "deleted", "renamed", "untracked"
+	Status   string `json:"status"` // "modified", "added", "deleted", "renamed", "untracked"
 	Staged   bool   `json:"staged"`
 	WorkTree string `json:"workTree"` // Single-char status code
 	Index    string `json:"index"`    // Single-char status code
@@ -183,4 +183,28 @@ func (g *Git) BranchInfo(path string) (*BranchInfo, error) {
 func (g *Git) Show(path string, ref string, filePath string) (string, error) {
 	dir := g.resolveDir(path)
 	return g.run("-C", dir, "show", ref+":"+filePath)
+}
+
+// Stage runs `git add <file>` to stage a file.
+func (g *Git) Stage(path string, file string) error {
+	dir := g.resolveDir(path)
+	_, err := g.run("-C", dir, "add", file)
+	return err
+}
+
+// Unstage runs `git reset HEAD -- <file>` to unstage a file.
+func (g *Git) Unstage(path string, file string) error {
+	dir := g.resolveDir(path)
+	_, err := g.run("-C", dir, "reset", "HEAD", "--", file)
+	return err
+}
+
+// Commit runs `git commit -m <message>`.
+func (g *Git) Commit(path string, message string) error {
+	if message == "" {
+		return fmt.Errorf("commit message must not be empty")
+	}
+	dir := g.resolveDir(path)
+	_, err := g.run("-C", dir, "commit", "-m", message)
+	return err
 }

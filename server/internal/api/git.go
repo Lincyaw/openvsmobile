@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -117,4 +118,99 @@ func (s *Server) handleGitBranches(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, info)
+}
+
+// gitPathFileRequest is the JSON body for stage/unstage requests.
+type gitPathFileRequest struct {
+	Path string `json:"path"`
+	File string `json:"file"`
+}
+
+// gitCommitRequest is the JSON body for commit requests.
+type gitCommitRequest struct {
+	Path    string `json:"path"`
+	Message string `json:"message"`
+}
+
+// handleGitStage handles POST /api/git/stage.
+func (s *Server) handleGitStage(w http.ResponseWriter, r *http.Request) {
+	var req gitPathFileRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Path == "" || req.File == "" {
+		http.Error(w, "missing 'path' or 'file' field", http.StatusBadRequest)
+		return
+	}
+	path, err := sanitizePath(req.Path, true)
+	if err != nil {
+		http.Error(w, "invalid path: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	file, err := sanitizeRelativePath(req.File, path)
+	if err != nil {
+		http.Error(w, "invalid file path: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.git.Stage(path, file); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleGitUnstage handles POST /api/git/unstage.
+func (s *Server) handleGitUnstage(w http.ResponseWriter, r *http.Request) {
+	var req gitPathFileRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Path == "" || req.File == "" {
+		http.Error(w, "missing 'path' or 'file' field", http.StatusBadRequest)
+		return
+	}
+	path, err := sanitizePath(req.Path, true)
+	if err != nil {
+		http.Error(w, "invalid path: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	file, err := sanitizeRelativePath(req.File, path)
+	if err != nil {
+		http.Error(w, "invalid file path: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.git.Unstage(path, file); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleGitCommit handles POST /api/git/commit.
+func (s *Server) handleGitCommit(w http.ResponseWriter, r *http.Request) {
+	var req gitCommitRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Path == "" {
+		http.Error(w, "missing 'path' field", http.StatusBadRequest)
+		return
+	}
+	if req.Message == "" {
+		http.Error(w, "commit message must not be empty", http.StatusBadRequest)
+		return
+	}
+	path, err := sanitizePath(req.Path, true)
+	if err != nil {
+		http.Error(w, "invalid path: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.git.Commit(path, req.Message); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }

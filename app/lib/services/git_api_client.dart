@@ -98,6 +98,54 @@ class GitApiClient {
     return GitBranchInfo.fromJson(json);
   }
 
+  /// Stage a file at [path] in the repo at [repoPath].
+  Future<void> stageFile(String repoPath, String file) async {
+    final uri = _buildUri('/api/git/stage');
+    final response = await _client.post(
+      uri,
+      headers: {..._headers, 'Content-Type': 'application/json'},
+      body: jsonEncode({'path': repoPath, 'file': file}),
+    );
+    if (response.statusCode != 200) {
+      throw ApiException(
+        'Failed to stage file: ${response.body}',
+        response.statusCode,
+      );
+    }
+  }
+
+  /// Unstage a file at [path] in the repo at [repoPath].
+  Future<void> unstageFile(String repoPath, String file) async {
+    final uri = _buildUri('/api/git/unstage');
+    final response = await _client.post(
+      uri,
+      headers: {..._headers, 'Content-Type': 'application/json'},
+      body: jsonEncode({'path': repoPath, 'file': file}),
+    );
+    if (response.statusCode != 200) {
+      throw ApiException(
+        'Failed to unstage file: ${response.body}',
+        response.statusCode,
+      );
+    }
+  }
+
+  /// Commit staged changes in the repo at [repoPath] with [message].
+  Future<void> commit(String repoPath, String message) async {
+    final uri = _buildUri('/api/git/commit');
+    final response = await _client.post(
+      uri,
+      headers: {..._headers, 'Content-Type': 'application/json'},
+      body: jsonEncode({'path': repoPath, 'message': message}),
+    );
+    if (response.statusCode != 200) {
+      throw ApiException(
+        'Failed to commit: ${response.body}',
+        response.statusCode,
+      );
+    }
+  }
+
   void dispose() {
     _client.close();
   }
