@@ -261,7 +261,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
                       border: InputBorder.none,
                       hintText: 'Enter command...',
                       hintStyle: TextStyle(
-                        color: colorScheme.onSurfaceVariant.withOpacity(0.5),
+                        color: colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
                       ),
                       isDense: true,
                       contentPadding:
@@ -278,7 +278,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
                     size: 20,
                     color: _connected
                         ? colorScheme.primary
-                        : colorScheme.onSurfaceVariant.withOpacity(0.3),
+                        : colorScheme.onSurfaceVariant.withValues(alpha: 0.3),
                   ),
                   onPressed: _connected
                       ? () => _onSubmit(_inputController.text)
