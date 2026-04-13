@@ -7,6 +7,7 @@ class SessionMeta {
   final DateTime startedAt;
   final String kind;
   final String entrypoint;
+  final String summary;
 
   const SessionMeta({
     required this.pid,
@@ -15,6 +16,7 @@ class SessionMeta {
     required this.startedAt,
     required this.kind,
     required this.entrypoint,
+    this.summary = '',
   });
 
   factory SessionMeta.fromJson(Map<String, dynamic> json) {
@@ -24,11 +26,12 @@ class SessionMeta {
       cwd: json['cwd'] as String? ?? '',
       startedAt: json['startedAt'] != null
           ? (json['startedAt'] is int
-              ? DateTime.fromMillisecondsSinceEpoch(json['startedAt'] as int)
-              : DateTime.parse(json['startedAt'] as String))
+                ? DateTime.fromMillisecondsSinceEpoch(json['startedAt'] as int)
+                : DateTime.parse(json['startedAt'] as String))
           : DateTime.now(),
       kind: json['kind'] as String? ?? '',
       entrypoint: json['entrypoint'] as String? ?? '',
+      summary: json['summary'] as String? ?? '',
     );
   }
 

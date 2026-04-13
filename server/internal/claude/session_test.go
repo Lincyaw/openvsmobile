@@ -216,6 +216,118 @@ func TestExtractAgentIDFromResult(t *testing.T) {
 	}
 }
 
+func TestExtractSummaryStringContent(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionsDir := filepath.Join(tmpDir, "sessions")
+	projectDir := filepath.Join(tmpDir, "projects", "test-project")
+	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a JSONL with a user message as string content.
+	jsonlContent := `{"type":"system","subtype":"init"}
+{"type":"user","content":"Help me refactor the login module"}
+{"type":"assistant","content":[{"type":"text","text":"Sure, I can help."}]}
+`
+	os.WriteFile(filepath.Join(projectDir, "sess-summary1.jsonl"), []byte(jsonlContent), 0644)
+
+	// Write session metadata.
+	meta := SessionMeta{PID: 100, SessionID: "sess-summary1", Cwd: "/test", StartedAt: 1700000000000}
+	data, _ := json.Marshal(meta)
+	os.WriteFile(filepath.Join(sessionsDir, "100.json"), data, 0644)
+
+	idx := NewSessionIndex(tmpDir)
+	if err := idx.ScanSessions(); err != nil {
+		t.Fatal(err)
+	}
+
+	sessions := idx.ListSessions()
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	if sessions[0].Summary != "Help me refactor the login module" {
+		t.Fatalf("expected summary 'Help me refactor the login module', got %q", sessions[0].Summary)
+	}
+}
+
+func TestExtractSummaryArrayContent(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionsDir := filepath.Join(tmpDir, "sessions")
+	projectDir := filepath.Join(tmpDir, "projects", "test-project")
+	os.MkdirAll(sessionsDir, 0755)
+	os.MkdirAll(projectDir, 0755)
+
+	// User message with array content blocks.
+	jsonlContent := `{"type":"system","subtype":"init"}
+{"type":"user","content":[{"type":"text","text":"Explain this error in my code"}]}
+`
+	os.WriteFile(filepath.Join(projectDir, "sess-summary2.jsonl"), []byte(jsonlContent), 0644)
+
+	meta := SessionMeta{PID: 200, SessionID: "sess-summary2", Cwd: "/test", StartedAt: 1700000000000}
+	data, _ := json.Marshal(meta)
+	os.WriteFile(filepath.Join(sessionsDir, "200.json"), data, 0644)
+
+	idx := NewSessionIndex(tmpDir)
+	idx.ScanSessions()
+
+	sessions := idx.ListSessions()
+	if sessions[0].Summary != "Explain this error in my code" {
+		t.Fatalf("expected summary text, got %q", sessions[0].Summary)
+	}
+}
+
+func TestExtractSummaryTruncation(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionsDir := filepath.Join(tmpDir, "sessions")
+	projectDir := filepath.Join(tmpDir, "projects", "test-project")
+	os.MkdirAll(sessionsDir, 0755)
+	os.MkdirAll(projectDir, 0755)
+
+	longText := ""
+	for i := 0; i < 200; i++ {
+		longText += "a"
+	}
+	jsonlContent := fmt.Sprintf(`{"type":"user","content":"%s"}`, longText)
+	os.WriteFile(filepath.Join(projectDir, "sess-summary3.jsonl"), []byte(jsonlContent), 0644)
+
+	meta := SessionMeta{PID: 300, SessionID: "sess-summary3", Cwd: "/test", StartedAt: 1700000000000}
+	data, _ := json.Marshal(meta)
+	os.WriteFile(filepath.Join(sessionsDir, "300.json"), data, 0644)
+
+	idx := NewSessionIndex(tmpDir)
+	idx.ScanSessions()
+
+	sessions := idx.ListSessions()
+	// 120 chars + "..."
+	if len([]rune(sessions[0].Summary)) != 123 {
+		t.Fatalf("expected truncated summary of 123 runes, got %d", len([]rune(sessions[0].Summary)))
+	}
+}
+
+func TestExtractSummaryNoJSONL(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionsDir := filepath.Join(tmpDir, "sessions")
+	projectDir := filepath.Join(tmpDir, "projects", "test-project")
+	os.MkdirAll(sessionsDir, 0755)
+	os.MkdirAll(projectDir, 0755)
+
+	// No JSONL file for this session.
+	meta := SessionMeta{PID: 400, SessionID: "sess-nosummary", Cwd: "/test", StartedAt: 1700000000000}
+	data, _ := json.Marshal(meta)
+	os.WriteFile(filepath.Join(sessionsDir, "400.json"), data, 0644)
+
+	idx := NewSessionIndex(tmpDir)
+	idx.ScanSessions()
+
+	sessions := idx.ListSessions()
+	if sessions[0].Summary != "" {
+		t.Fatalf("expected empty summary, got %q", sessions[0].Summary)
+	}
+}
+
 func TestScanAndListSessions(t *testing.T) {
 	// Create temp directory structure.
 	tmpDir := t.TempDir()
@@ -226,22 +338,22 @@ func TestScanAndListSessions(t *testing.T) {
 
 	// Write session files.
 	meta1 := SessionMeta{
-		PID:       1234,
-		SessionID: "sess-001",
-		Cwd:       "/home/test",
-		StartedAt: 1700000000000,
-		Kind:      "interactive",
+		PID:        1234,
+		SessionID:  "sess-001",
+		Cwd:        "/home/test",
+		StartedAt:  1700000000000,
+		Kind:       "interactive",
 		Entrypoint: "cli",
 	}
 	data1, _ := json.Marshal(meta1)
 	os.WriteFile(filepath.Join(sessionsDir, "1234.json"), data1, 0644)
 
 	meta2 := SessionMeta{
-		PID:       5678,
-		SessionID: "sess-002",
-		Cwd:       "/home/test2",
-		StartedAt: 1700000001000,
-		Kind:      "interactive",
+		PID:        5678,
+		SessionID:  "sess-002",
+		Cwd:        "/home/test2",
+		StartedAt:  1700000001000,
+		Kind:       "interactive",
 		Entrypoint: "cli",
 	}
 	data2, _ := json.Marshal(meta2)
