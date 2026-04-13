@@ -456,7 +456,7 @@ requirements:
       directory traversal attacks. Add sanitizePath() call consistent
       with git and files handlers.
     priority: P0
-    status: planned
+    status: implemented
     code:
       - server/internal/api/search.go
     tests: []
@@ -470,7 +470,7 @@ requirements:
       content search triggers a full server-side file walk. Add a 300ms
       debounce timer to both search modes.
     priority: P1
-    status: planned
+    status: implemented
     code:
       - app/lib/screens/search_screen.dart
     tests: []
@@ -484,7 +484,7 @@ requirements:
       trimming old content when exceeded. Also preserve ANSI state
       across WebSocket message chunks by storing _SgrState and remainder.
     priority: P1
-    status: planned
+    status: implemented
     code:
       - app/lib/screens/terminal_screen.dart
       - app/lib/widgets/ansi_text.dart
@@ -498,7 +498,7 @@ requirements:
       '..', and special characters. Add client-side validation to
       reject names containing path separators or traversal patterns.
     priority: P1
-    status: planned
+    status: implemented
     code:
       - app/lib/widgets/file_tree_view.dart
     tests: []
@@ -511,7 +511,7 @@ requirements:
       isThreeLine:true on ListTile, causing potential clipping of the
       summary text. Add isThreeLine when summary is present.
     priority: P2
-    status: planned
+    status: implemented
     code:
       - app/lib/screens/session_list_screen.dart
     tests: []
