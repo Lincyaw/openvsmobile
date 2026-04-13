@@ -14,27 +14,10 @@ class FilesScreen extends StatelessWidget {
       appBar: AppBar(
         title: Consumer<FileProvider>(
           builder: (context, fileProvider, child) {
-            return DropdownButton<String>(
-              value: fileProvider.currentProject,
-              underline: const SizedBox.shrink(),
-              icon: const Icon(Icons.arrow_drop_down),
-              items: [
-                DropdownMenuItem(
-                  value: fileProvider.currentProject,
-                  child: Text(
-                    fileProvider.currentProject == '/'
-                        ? 'Root'
-                        : fileProvider.currentProject.split('/').last,
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ),
-                ),
-              ],
-              onChanged: (value) {
-                if (value != null) {
-                  fileProvider.setProject(value);
-                }
-              },
-            );
+            final name = fileProvider.currentProject == '/'
+                ? 'Files'
+                : fileProvider.currentProject.split('/').last;
+            return Text(name);
           },
         ),
         actions: [
