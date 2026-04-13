@@ -255,10 +255,7 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      _sessions = await _apiClient.getSessions(
-        query: query,
-        project: project,
-      );
+      _sessions = await _apiClient.getSessions(query: query, project: project);
     } catch (e) {
       _error = e.toString();
     } finally {

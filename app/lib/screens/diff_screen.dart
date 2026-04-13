@@ -48,10 +48,7 @@ class DiffScreen extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: List.generate(lines.length, (index) {
                         final line = lines[index];
-                        return _DiffLine(
-                          text: line,
-                          colorScheme: colorScheme,
-                        );
+                        return _DiffLine(text: line, colorScheme: colorScheme);
                       }),
                     ),
                   ),
@@ -66,10 +63,7 @@ class _DiffLine extends StatelessWidget {
   final String text;
   final ColorScheme colorScheme;
 
-  const _DiffLine({
-    required this.text,
-    required this.colorScheme,
-  });
+  const _DiffLine({required this.text, required this.colorScheme});
 
   @override
   Widget build(BuildContext context) {

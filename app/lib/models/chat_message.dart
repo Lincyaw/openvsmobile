@@ -87,14 +87,15 @@ class ContentBlock {
       signature: json['signature'] as String?,
       id: json['id'] as String? ?? toolUse?['id'] as String?,
       name: json['name'] as String? ?? toolUse?['name'] as String?,
-      input: json['input'] as Map<String, dynamic>? ??
+      input:
+          json['input'] as Map<String, dynamic>? ??
           _parseInput(toolUse?['input']),
       fileAnnotation: annotation,
-      toolUseId: json['tool_use_id'] as String? ??
+      toolUseId:
+          json['tool_use_id'] as String? ??
           toolResult?['tool_use_id'] as String?,
       resultContent: json['content'] ?? toolResult?['content'],
-      isError: json['is_error'] as bool? ??
-          toolResult?['is_error'] as bool?,
+      isError: json['is_error'] as bool? ?? toolResult?['is_error'] as bool?,
     );
   }
 

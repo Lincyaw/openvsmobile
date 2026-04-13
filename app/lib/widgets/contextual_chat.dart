@@ -87,7 +87,9 @@ class _ContextualChatState extends State<ContextualChat> {
                   _buildHeader(context, provider),
                   if (provider.codeContext != null)
                     _buildContextBadge(context, provider),
-                  Expanded(child: _buildMessageList(provider, sheetScrollController)),
+                  Expanded(
+                    child: _buildMessageList(provider, sheetScrollController),
+                  ),
                   _buildInputBar(context, provider),
                 ],
               ),
@@ -180,7 +182,10 @@ class _ContextualChatState extends State<ContextualChat> {
     );
   }
 
-  Widget _buildMessageList(ChatProvider provider, ScrollController sheetScrollController) {
+  Widget _buildMessageList(
+    ChatProvider provider,
+    ScrollController sheetScrollController,
+  ) {
     _activeScrollController = sheetScrollController;
     final messages = provider.allMessages;
 

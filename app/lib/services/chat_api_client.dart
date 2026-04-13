@@ -42,9 +42,9 @@ class ChatApiClient {
     final base = baseUrl.endsWith('/')
         ? baseUrl.substring(0, baseUrl.length - 1)
         : baseUrl;
-    final uri = Uri.parse('$base/api/sessions').replace(
-      queryParameters: params,
-    );
+    final uri = Uri.parse(
+      '$base/api/sessions',
+    ).replace(queryParameters: params);
     final response = await _client.get(uri, headers: _headers);
     if (response.statusCode != 200) {
       throw ApiException(
@@ -79,7 +79,9 @@ class ChatApiClient {
     String sessionId,
     String agentId,
   ) async {
-    final uri = _buildUri('/api/sessions/$sessionId/subagents/$agentId/messages');
+    final uri = _buildUri(
+      '/api/sessions/$sessionId/subagents/$agentId/messages',
+    );
     final response = await _client.get(uri, headers: _headers);
     if (response.statusCode != 200) {
       throw ApiException(

@@ -80,7 +80,9 @@ class _SubagentCardState extends State<SubagentCard> {
       final provider = context.read<ChatProvider>();
       final results = await Future.wait([
         provider.loadSubagentMessages(sessionId, agentId),
-        provider.loadSubagentMeta(sessionId, agentId).catchError((_) => <String, dynamic>{}),
+        provider
+            .loadSubagentMeta(sessionId, agentId)
+            .catchError((_) => <String, dynamic>{}),
       ]);
       if (mounted) {
         setState(() {
@@ -142,8 +144,11 @@ class _SubagentCardState extends State<SubagentCard> {
                 color: Colors.teal.withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(6),
               ),
-              child: const Icon(Icons.smart_toy_outlined,
-                  size: 18, color: Colors.teal),
+              child: const Icon(
+                Icons.smart_toy_outlined,
+                size: 18,
+                color: Colors.teal,
+              ),
             ),
             const SizedBox(width: 10),
             Expanded(
@@ -161,7 +166,9 @@ class _SubagentCardState extends State<SubagentCard> {
                       const SizedBox(width: 8),
                       Container(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 6, vertical: 2),
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
                         decoration: BoxDecoration(
                           color: Colors.teal.withValues(alpha: 0.15),
                           borderRadius: BorderRadius.circular(4),
@@ -211,9 +218,7 @@ class _SubagentCardState extends State<SubagentCard> {
         padding: const EdgeInsets.all(12),
         child: Text(
           _error!,
-          style: theme.textTheme.bodySmall?.copyWith(
-            color: colorScheme.error,
-          ),
+          style: theme.textTheme.bodySmall?.copyWith(color: colorScheme.error),
         ),
       );
     }
@@ -233,9 +238,7 @@ class _SubagentCardState extends State<SubagentCard> {
 
     return Container(
       decoration: BoxDecoration(
-        border: Border(
-          top: BorderSide(color: colorScheme.outlineVariant),
-        ),
+        border: Border(top: BorderSide(color: colorScheme.outlineVariant)),
       ),
       constraints: const BoxConstraints(maxHeight: 400),
       child: ListView.builder(
@@ -244,8 +247,9 @@ class _SubagentCardState extends State<SubagentCard> {
         itemCount: messages.length,
         itemBuilder: (context, index) {
           final msg = messages[index];
-          final nextMsg =
-              index + 1 < messages.length ? messages[index + 1] : null;
+          final nextMsg = index + 1 < messages.length
+              ? messages[index + 1]
+              : null;
           return ChatBubble(message: msg, nextMessage: nextMsg);
         },
       ),

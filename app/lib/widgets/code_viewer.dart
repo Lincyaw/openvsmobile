@@ -119,7 +119,8 @@ class _CodeViewerState extends State<CodeViewer> {
       final map = <int, Diagnostic>{};
       for (final d in widget.diagnostics) {
         final existing = map[d.line];
-        if (existing == null || _severityRank(d.severity) > _severityRank(existing.severity)) {
+        if (existing == null ||
+            _severityRank(d.severity) > _severityRank(existing.severity)) {
           map[d.line] = d;
         }
       }
@@ -130,28 +131,40 @@ class _CodeViewerState extends State<CodeViewer> {
 
   int _severityRank(String severity) {
     switch (severity) {
-      case 'error': return 3;
-      case 'warning': return 2;
-      case 'info': return 1;
-      default: return 0;
+      case 'error':
+        return 3;
+      case 'warning':
+        return 2;
+      case 'info':
+        return 1;
+      default:
+        return 0;
     }
   }
 
   Color _severityColor(String severity) {
     switch (severity) {
-      case 'error': return const Color(0xFFFF4444);
-      case 'warning': return const Color(0xFFFF8800);
-      case 'info': return const Color(0xFF4488FF);
-      default: return const Color(0xFF888888);
+      case 'error':
+        return const Color(0xFFFF4444);
+      case 'warning':
+        return const Color(0xFFFF8800);
+      case 'info':
+        return const Color(0xFF4488FF);
+      default:
+        return const Color(0xFF888888);
     }
   }
 
   IconData _severityIcon(String severity) {
     switch (severity) {
-      case 'error': return Icons.error;
-      case 'warning': return Icons.warning;
-      case 'info': return Icons.info_outline;
-      default: return Icons.circle;
+      case 'error':
+        return Icons.error;
+      case 'warning':
+        return Icons.warning;
+      case 'info':
+        return Icons.info_outline;
+      default:
+        return Icons.circle;
     }
   }
 
@@ -210,7 +223,10 @@ class _CodeViewerState extends State<CodeViewer> {
     }
   }
 
-  List<TextSpan> _buildHighlightedSpans(_SyntaxTheme syntaxTheme, Brightness brightness) {
+  List<TextSpan> _buildHighlightedSpans(
+    _SyntaxTheme syntaxTheme,
+    Brightness brightness,
+  ) {
     if (_cachedHighlightedSpans != null &&
         _cachedContent == widget.content &&
         _cachedFileName == widget.fileName &&
@@ -224,7 +240,9 @@ class _CodeViewerState extends State<CodeViewer> {
       final result = highlight.parse(widget.content, language: _language);
       _cachedHighlightedSpans = _convertNodes(result.nodes ?? [], syntaxTheme);
     } catch (_) {
-      _cachedHighlightedSpans = [TextSpan(text: widget.content, style: syntaxTheme.defaultStyle)];
+      _cachedHighlightedSpans = [
+        TextSpan(text: widget.content, style: syntaxTheme.defaultStyle),
+      ];
     }
     return _cachedHighlightedSpans!;
   }
@@ -289,7 +307,8 @@ class _CodeViewerState extends State<CodeViewer> {
                   } else if ((text == null || text.isEmpty) && _showToolbar) {
                     final expectedGeneration = _selectionGeneration;
                     Future.delayed(const Duration(milliseconds: 300), () {
-                      if (mounted && _selectionGeneration == expectedGeneration) {
+                      if (mounted &&
+                          _selectionGeneration == expectedGeneration) {
                         setState(() {
                           _showToolbar = false;
                         });
@@ -305,7 +324,9 @@ class _CodeViewerState extends State<CodeViewer> {
                       children: [
                         // Line numbers with diagnostic gutter
                         Container(
-                          width: lineNumberWidth + (widget.diagnostics.isNotEmpty ? 20.0 : 0.0),
+                          width:
+                              lineNumberWidth +
+                              (widget.diagnostics.isNotEmpty ? 20.0 : 0.0),
                           padding: const EdgeInsets.symmetric(
                             vertical: 8,
                             horizontal: 4,
@@ -316,47 +337,47 @@ class _CodeViewerState extends State<CodeViewer> {
                           child: RepaintBoundary(
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.end,
-                              children: List.generate(
-                                lines.length,
-                                (i) {
-                                  final lineNum = i + 1;
-                                  final diag = _diagnosticsByLine[lineNum];
-                                  return SizedBox(
-                                    height: _fontSize * 1.5,
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      mainAxisAlignment: MainAxisAlignment.end,
-                                      children: [
-                                        if (diag != null)
-                                          Tooltip(
-                                            message: '${diag.severity}: ${diag.message}',
-                                            child: Icon(
-                                              _severityIcon(diag.severity),
-                                              size: _fontSize,
-                                              color: _severityColor(diag.severity),
+                              children: List.generate(lines.length, (i) {
+                                final lineNum = i + 1;
+                                final diag = _diagnosticsByLine[lineNum];
+                                return SizedBox(
+                                  height: _fontSize * 1.5,
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    mainAxisAlignment: MainAxisAlignment.end,
+                                    children: [
+                                      if (diag != null)
+                                        Tooltip(
+                                          message:
+                                              '${diag.severity}: ${diag.message}',
+                                          child: Icon(
+                                            _severityIcon(diag.severity),
+                                            size: _fontSize,
+                                            color: _severityColor(
+                                              diag.severity,
                                             ),
                                           ),
-                                        if (diag != null)
-                                          const SizedBox(width: 2),
-                                        Text(
-                                          '$lineNum',
-                                          style: TextStyle(
-                                            fontFamily: 'monospace',
-                                            fontSize: _fontSize,
-                                            height: 1.5,
-                                            color: diag != null
-                                                ? _severityColor(diag.severity)
-                                                : (isDark
+                                        ),
+                                      if (diag != null)
+                                        const SizedBox(width: 2),
+                                      Text(
+                                        '$lineNum',
+                                        style: TextStyle(
+                                          fontFamily: 'monospace',
+                                          fontSize: _fontSize,
+                                          height: 1.5,
+                                          color: diag != null
+                                              ? _severityColor(diag.severity)
+                                              : (isDark
                                                     ? Colors.grey.shade600
                                                     : Colors.grey.shade400),
-                                          ),
-                                          textAlign: TextAlign.right,
                                         ),
-                                      ],
-                                    ),
-                                  );
-                                },
-                              ),
+                                        textAlign: TextAlign.right,
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              }),
                             ),
                           ),
                         ),
@@ -370,7 +391,10 @@ class _CodeViewerState extends State<CodeViewer> {
                                 fontSize: _fontSize,
                                 height: 1.5,
                               ),
-                              children: _buildHighlightedSpans(syntaxTheme, isDark ? Brightness.dark : Brightness.light),
+                              children: _buildHighlightedSpans(
+                                syntaxTheme,
+                                isDark ? Brightness.dark : Brightness.light,
+                              ),
                             ),
                           ),
                         ),

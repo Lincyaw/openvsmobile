@@ -167,7 +167,9 @@ class EditorProvider extends ChangeNotifier {
       );
       // Filter to only diagnostics for the current file.
       _diagnostics = allDiags
-          .where((d) => file.path.endsWith(d.filePath) || d.filePath == file.path)
+          .where(
+            (d) => file.path.endsWith(d.filePath) || d.filePath == file.path,
+          )
           .toList();
     } catch (_) {
       _diagnostics = [];
