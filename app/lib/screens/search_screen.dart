@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../models/search_result.dart';
 import '../providers/search_provider.dart';
 import '../providers/editor_provider.dart';
 import 'code_screen.dart';
