@@ -67,9 +67,9 @@ type Client struct {
 	reconnectionToken string
 
 	// outgoing message tracking for PersistentProtocol
-	outgoingMsgID  atomic.Uint32
-	outgoingAckID  atomic.Uint32
-	incomingMsgID  atomic.Uint32
+	outgoingMsgID atomic.Uint32
+	outgoingAckID atomic.Uint32
+	incomingMsgID atomic.Uint32
 
 	// ipcClient is the IPC channel multiplexer attached to this connection.
 	ipcClient *IPCClient

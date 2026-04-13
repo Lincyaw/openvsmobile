@@ -14,15 +14,15 @@ import (
 type ProtocolMessageType uint8
 
 const (
-	ProtocolMessageNone         ProtocolMessageType = 0
-	ProtocolMessageRegular      ProtocolMessageType = 1
-	ProtocolMessageControl      ProtocolMessageType = 2
-	ProtocolMessageAck          ProtocolMessageType = 3
-	ProtocolMessageDisconnect   ProtocolMessageType = 5
-	ProtocolMessageReplayReq    ProtocolMessageType = 6
-	ProtocolMessagePause        ProtocolMessageType = 7
-	ProtocolMessageResume       ProtocolMessageType = 8
-	ProtocolMessageKeepAlive    ProtocolMessageType = 9
+	ProtocolMessageNone       ProtocolMessageType = 0
+	ProtocolMessageRegular    ProtocolMessageType = 1
+	ProtocolMessageControl    ProtocolMessageType = 2
+	ProtocolMessageAck        ProtocolMessageType = 3
+	ProtocolMessageDisconnect ProtocolMessageType = 5
+	ProtocolMessageReplayReq  ProtocolMessageType = 6
+	ProtocolMessagePause      ProtocolMessageType = 7
+	ProtocolMessageResume     ProtocolMessageType = 8
+	ProtocolMessageKeepAlive  ProtocolMessageType = 9
 )
 
 // ProtocolHeaderLength is the fixed header size for PersistentProtocol frames (13 bytes).
@@ -105,21 +105,21 @@ const (
 type RequestType int
 
 const (
-	RequestTypePromise      RequestType = 100
+	RequestTypePromise       RequestType = 100
 	RequestTypePromiseCancel RequestType = 101
-	RequestTypeEventListen  RequestType = 102
-	RequestTypeEventDispose RequestType = 103
+	RequestTypeEventListen   RequestType = 102
+	RequestTypeEventDispose  RequestType = 103
 )
 
 // ResponseType mirrors the TypeScript ResponseType enum in ipc.ts.
 type ResponseType int
 
 const (
-	ResponseTypeInitialize     ResponseType = 200
-	ResponseTypePromiseSuccess ResponseType = 201
-	ResponseTypePromiseError   ResponseType = 202
+	ResponseTypeInitialize      ResponseType = 200
+	ResponseTypePromiseSuccess  ResponseType = 201
+	ResponseTypePromiseError    ResponseType = 202
 	ResponseTypePromiseErrorObj ResponseType = 203
-	ResponseTypeEventFire      ResponseType = 204
+	ResponseTypeEventFire       ResponseType = 204
 )
 
 // writeVQL writes a variable-length quantity encoded integer.

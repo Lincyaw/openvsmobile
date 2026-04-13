@@ -15,17 +15,17 @@ import (
 )
 
 const (
-	defaultClaudeBin  = "claude"
-	shutdownTimeout   = 5 * time.Second
+	defaultClaudeBin = "claude"
+	shutdownTimeout  = 5 * time.Second
 )
 
 // ProcessManager manages Claude CLI processes.
 type ProcessManager struct {
-	mu          sync.RWMutex
-	claudeBin   string
-	workingDir  string
-	active      map[string]*Conversation
-	shutdownCh  chan struct{}
+	mu         sync.RWMutex
+	claudeBin  string
+	workingDir string
+	active     map[string]*Conversation
+	shutdownCh chan struct{}
 }
 
 // NewProcessManager creates a new ProcessManager.
@@ -43,15 +43,15 @@ func NewProcessManager(claudeBin, workingDir string) *ProcessManager {
 
 // Conversation represents a running Claude CLI process.
 type Conversation struct {
-	ID       string
-	cmd      *exec.Cmd
-	stdin    io.WriteCloser
-	stdout   io.ReadCloser
-	Output   chan StreamOutput
-	done     chan struct{}
-	cancel   context.CancelFunc
-	mu       sync.Mutex
-	closed   bool
+	ID     string
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	stdout io.ReadCloser
+	Output chan StreamOutput
+	done   chan struct{}
+	cancel context.CancelFunc
+	mu     sync.Mutex
+	closed bool
 }
 
 // StartConversation spawns a new Claude CLI process.

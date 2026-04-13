@@ -98,15 +98,15 @@ func (s *Server) handleWSTerminal(w http.ResponseWriter, r *http.Request) {
 // allowedShells is the set of permitted shell commands for terminal creation.
 // Any shell not in this list is rejected to prevent arbitrary command execution.
 var allowedShells = map[string]bool{
-	"":             true, // empty means default (/bin/bash)
-	"/bin/bash":    true,
-	"/bin/sh":      true,
-	"/bin/zsh":     true,
+	"":              true, // empty means default (/bin/bash)
+	"/bin/bash":     true,
+	"/bin/sh":       true,
+	"/bin/zsh":      true,
 	"/usr/bin/bash": true,
 	"/usr/bin/zsh":  true,
-	"bash":         true,
-	"sh":           true,
-	"zsh":          true,
+	"bash":          true,
+	"sh":            true,
+	"zsh":           true,
 }
 
 func (s *Server) handleTermCreate(

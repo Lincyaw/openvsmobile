@@ -20,14 +20,14 @@ type searchResult struct {
 
 // skipDirs contains directory names to skip during search.
 var skipDirs = map[string]bool{
-	".git":              true,
-	"node_modules":      true,
-	"vendor":            true,
-	".dart_tool":        true,
-	"build":             true,
-	".flutter-plugins":  true,
-	".idea":             true,
-	"__pycache__":       true,
+	".git":             true,
+	"node_modules":     true,
+	"vendor":           true,
+	".dart_tool":       true,
+	"build":            true,
+	".flutter-plugins": true,
+	".idea":            true,
+	"__pycache__":      true,
 }
 
 // maxFileSize is the maximum file size to scan (1MB).
@@ -56,9 +56,14 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	searchPath := r.URL.Query().Get("path")
-	if searchPath == "" {
-		searchPath = "/"
+	rawPath := r.URL.Query().Get("path")
+	if rawPath == "" {
+		rawPath = "/"
+	}
+	searchPath, err := sanitizePath(rawPath, true)
+	if err != nil {
+		http.Error(w, "invalid path: "+err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	maxResults := 50
