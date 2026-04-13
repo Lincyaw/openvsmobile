@@ -5,9 +5,17 @@ import '../providers/chat_provider.dart';
 import '../providers/editor_provider.dart';
 import '../widgets/code_viewer.dart';
 import '../widgets/code_editor.dart';
+import '../widgets/contextual_chat.dart';
 
-class CodeScreen extends StatelessWidget {
+class CodeScreen extends StatefulWidget {
   const CodeScreen({super.key});
+
+  @override
+  State<CodeScreen> createState() => _CodeScreenState();
+}
+
+class _CodeScreenState extends State<CodeScreen> {
+  bool _showChat = false;
 
   @override
   Widget build(BuildContext context) {
@@ -111,39 +119,50 @@ class CodeScreen extends StatelessWidget {
               ),
             ],
           ),
-          body: isEditing
-              ? CodeEditor(
-                  content: file.currentContent,
-                  fileName: file.name,
-                  onContentChanged: (content) {
-                    editorProvider.updateContent(content);
-                  },
-                  onSave: hasChanges
-                      ? () => editorProvider.saveCurrentFile()
-                      : null,
-                )
-              : CodeViewer(
-                  content: file.currentContent,
-                  fileName: file.name,
-                  diagnostics: editorProvider.diagnostics,
-                  onAskAi: (selectedText) {
-                    editorProvider.setSelectedText(selectedText);
-                    // Set code context on ChatProvider so contextual chat
-                    // includes the selected code snippet.
-                    final lines = selectedText.split('\n');
-                    context.read<ChatProvider>().setCodeContext(
-                      CodeContext(
-                        filePath: file.path,
-                        startLine: 1,
-                        endLine: lines.length,
-                        selectedText: selectedText,
-                      ),
-                    );
-                  },
-                  onEditRequested: () {
-                    editorProvider.enterEditMode();
+          body: Stack(
+            children: [
+              isEditing
+                  ? CodeEditor(
+                      content: file.currentContent,
+                      fileName: file.name,
+                      onContentChanged: (content) {
+                        editorProvider.updateContent(content);
+                      },
+                      onSave: hasChanges
+                          ? () => editorProvider.saveCurrentFile()
+                          : null,
+                    )
+                  : CodeViewer(
+                      content: file.currentContent,
+                      fileName: file.name,
+                      diagnostics: editorProvider.diagnostics,
+                      onAskAi: (selectedText) {
+                        editorProvider.setSelectedText(selectedText);
+                        // Set code context on ChatProvider so contextual chat
+                        // includes the selected code snippet.
+                        final lines = selectedText.split('\n');
+                        context.read<ChatProvider>().setCodeContext(
+                          CodeContext(
+                            filePath: file.path,
+                            startLine: 1,
+                            endLine: lines.length,
+                            selectedText: selectedText,
+                          ),
+                        );
+                        setState(() => _showChat = true);
+                      },
+                      onEditRequested: () {
+                        editorProvider.enterEditMode();
+                      },
+                    ),
+              if (_showChat)
+                ContextualChat(
+                  onExpandToFullChat: () {
+                    setState(() => _showChat = false);
                   },
                 ),
+            ],
+          ),
         );
       },
     );

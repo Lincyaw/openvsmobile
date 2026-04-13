@@ -20,12 +20,12 @@ class ContextualChat extends StatefulWidget {
 
 class _ContextualChatState extends State<ContextualChat> {
   final _controller = TextEditingController();
-  final _scrollController = ScrollController();
+  ScrollController? _activeScrollController;
+  int _lastMessageCount = 0;
 
   @override
   void dispose() {
     _controller.dispose();
-    _scrollController.dispose();
     super.dispose();
   }
 
@@ -47,9 +47,10 @@ class _ContextualChatState extends State<ContextualChat> {
 
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
+      final controller = _activeScrollController;
+      if (controller != null && controller.hasClients) {
+        controller.animateTo(
+          controller.position.maxScrollExtent,
           duration: const Duration(milliseconds: 200),
           curve: Curves.easeOut,
         );
@@ -63,7 +64,7 @@ class _ContextualChatState extends State<ContextualChat> {
       initialChildSize: 0.4,
       minChildSize: 0.15,
       maxChildSize: 0.85,
-      builder: (context, scrollController) {
+      builder: (context, sheetScrollController) {
         return Consumer<ChatProvider>(
           builder: (context, provider, _) {
             return Container(
@@ -86,7 +87,7 @@ class _ContextualChatState extends State<ContextualChat> {
                   _buildHeader(context, provider),
                   if (provider.codeContext != null)
                     _buildContextBadge(context, provider),
-                  Expanded(child: _buildMessageList(provider)),
+                  Expanded(child: _buildMessageList(provider, sheetScrollController)),
                   _buildInputBar(context, provider),
                 ],
               ),
@@ -179,7 +180,8 @@ class _ContextualChatState extends State<ContextualChat> {
     );
   }
 
-  Widget _buildMessageList(ChatProvider provider) {
+  Widget _buildMessageList(ChatProvider provider, ScrollController sheetScrollController) {
+    _activeScrollController = sheetScrollController;
     final messages = provider.allMessages;
 
     if (messages.isEmpty && !provider.isStreaming) {
@@ -197,13 +199,16 @@ class _ContextualChatState extends State<ContextualChat> {
       );
     }
 
-    // Auto-scroll when new messages arrive
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _scrollToBottom();
-    });
+    // Auto-scroll only when new messages arrive
+    if (messages.length != _lastMessageCount) {
+      _lastMessageCount = messages.length;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _scrollToBottom();
+      });
+    }
 
     return ListView.builder(
-      controller: _scrollController,
+      controller: sheetScrollController,
       padding: const EdgeInsets.symmetric(vertical: 8),
       itemCount: messages.length,
       itemBuilder: (context, index) {
