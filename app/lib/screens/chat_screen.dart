@@ -279,17 +279,10 @@ class _ChatScreenState extends State<ChatScreen> {
           const SizedBox(width: 8),
           IconButton(
             icon: provider.isStreaming
-                ? SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: colorScheme.primary,
-                    ),
-                  )
+                ? Icon(Icons.stop_circle, color: colorScheme.error)
                 : Icon(Icons.send, color: colorScheme.primary),
             onPressed: provider.isStreaming
-                ? null
+                ? () => provider.stopStreaming()
                 : () => _sendMessage(provider),
             constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
           ),

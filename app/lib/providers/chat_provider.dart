@@ -288,6 +288,26 @@ class ChatProvider extends ChangeNotifier {
     return await _apiClient.getSubagentMeta(sessionId, agentId);
   }
 
+  /// Stop the current streaming response.
+  void stopStreaming() {
+    if (!_isStreaming) return;
+    _isStreaming = false;
+    // Close the WebSocket to abort the server-side stream, then reconnect
+    // on the next user action.
+    _subscription?.cancel();
+    _channel?.sink.close();
+    _channel = null;
+    _isConnected = false;
+    // Commit whatever partial content we have as a final assistant message.
+    if (_streamingBlocks.isNotEmpty) {
+      _messages.add(
+        ChatMessage(role: 'assistant', content: List.from(_streamingBlocks)),
+      );
+      _streamingBlocks.clear();
+    }
+    notifyListeners();
+  }
+
   /// Disconnect and clean up.
   void disconnect() {
     _subscription?.cancel();

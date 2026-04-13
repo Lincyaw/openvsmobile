@@ -351,7 +351,7 @@ class _SessionTile extends StatelessWidget {
         ),
       ),
       title: Text(
-        session.projectName,
+        DateFormat.MMMd().add_jm().format(session.startedAt),
         style: theme.textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w500),
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
@@ -359,7 +359,7 @@ class _SessionTile extends StatelessWidget {
       subtitle: Row(
         children: [
           Text(
-            _formatTimeAgo(session.startedAt),
+            session.projectName,
             style: theme.textTheme.bodySmall?.copyWith(
               color: colorScheme.onSurfaceVariant,
             ),
@@ -394,15 +394,4 @@ class _SessionTile extends StatelessWidget {
     );
   }
 
-  String _formatTimeAgo(DateTime dateTime) {
-    final now = DateTime.now();
-    final diff = now.difference(dateTime);
-
-    if (diff.inMinutes < 1) return 'Just now';
-    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
-    if (diff.inHours < 24) return '${diff.inHours}h ago';
-    if (diff.inDays < 7) return '${diff.inDays}d ago';
-
-    return DateFormat.MMMd().format(dateTime);
-  }
 }
