@@ -4,6 +4,15 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+/// Strip ANSI escape sequences from raw PTY output.
+String _stripAnsi(String text) {
+  return text.replaceAll(
+    RegExp(
+        r'\x1B\[[0-9;]*[a-zA-Z]|\x1B\].*?\x07|\x1B[()][0-9A-B]|\x1B\[[\?]?[0-9;]*[hlm]'),
+    '',
+  );
+}
+
 /// Simple terminal screen that connects to the Go server's /ws/terminal
 /// WebSocket endpoint. Sends/receives base64-encoded PTY I/O.
 class TerminalScreen extends StatefulWidget {
@@ -91,7 +100,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
         if (encoded != null) {
           final bytes = base64Decode(encoded);
           final text = utf8.decode(bytes, allowMalformed: true);
-          setState(() => _outputBuffer.write(text));
+          setState(() => _outputBuffer.write(_stripAnsi(text)));
           _scrollToBottom();
         }
         break;
@@ -143,6 +152,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
+    final isDark = theme.brightness == Brightness.dark;
 
     return Scaffold(
       appBar: AppBar(
@@ -177,20 +187,40 @@ class _TerminalScreenState extends State<TerminalScreen> {
                 ),
               ],
             ),
+          if (!_connected && _error == null)
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  SizedBox(width: 8),
+                  Text('Connecting...'),
+                ],
+              ),
+            ),
           Expanded(
             child: Container(
-              color: const Color(0xFF1E1E1E),
+              color: isDark
+                  ? const Color(0xFF1E1E1E)
+                  : const Color(0xFFF5F5F5),
               width: double.infinity,
               padding: const EdgeInsets.all(8),
               child: SingleChildScrollView(
                 controller: _outputController,
                 child: SelectableText(
                   _outputBuffer.toString(),
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontFamily: 'monospace',
                     fontSize: 13,
                     height: 1.4,
-                    color: Color(0xFFD4D4D4),
+                    color: isDark
+                        ? const Color(0xFFD4D4D4)
+                        : const Color(0xFF1E1E1E),
                   ),
                 ),
               ),
@@ -203,14 +233,16 @@ class _TerminalScreenState extends State<TerminalScreen> {
               top: 4,
               bottom: MediaQuery.of(context).padding.bottom + 4,
             ),
-            color: const Color(0xFF252526),
+            color: isDark
+                ? const Color(0xFF252526)
+                : colorScheme.surfaceContainerHigh,
             child: Row(
               children: [
-                const Text(
+                Text(
                   '\$ ',
                   style: TextStyle(
                     fontFamily: 'monospace',
-                    color: Color(0xFF4EC9B0),
+                    color: colorScheme.primary,
                     fontSize: 14,
                   ),
                 ),
@@ -218,17 +250,22 @@ class _TerminalScreenState extends State<TerminalScreen> {
                   child: TextField(
                     controller: _inputController,
                     focusNode: _focusNode,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontFamily: 'monospace',
                       fontSize: 13,
-                      color: Color(0xFFD4D4D4),
+                      color: isDark
+                          ? const Color(0xFFD4D4D4)
+                          : colorScheme.onSurface,
                     ),
-                    decoration: const InputDecoration(
+                    decoration: InputDecoration(
                       border: InputBorder.none,
                       hintText: 'Enter command...',
-                      hintStyle: TextStyle(color: Color(0xFF666666)),
+                      hintStyle: TextStyle(
+                        color: colorScheme.onSurfaceVariant.withOpacity(0.5),
+                      ),
                       isDense: true,
-                      contentPadding: EdgeInsets.symmetric(vertical: 8),
+                      contentPadding:
+                          const EdgeInsets.symmetric(vertical: 8),
                     ),
                     onSubmitted: _onSubmit,
                     textInputAction: TextInputAction.send,
@@ -240,8 +277,8 @@ class _TerminalScreenState extends State<TerminalScreen> {
                     Icons.send,
                     size: 20,
                     color: _connected
-                        ? const Color(0xFF4EC9B0)
-                        : const Color(0xFF666666),
+                        ? colorScheme.primary
+                        : colorScheme.onSurfaceVariant.withOpacity(0.3),
                   ),
                   onPressed: _connected
                       ? () => _onSubmit(_inputController.text)
