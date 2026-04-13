@@ -96,6 +96,54 @@ class GitProvider extends ChangeNotifier {
     }
   }
 
+  /// Stage a file and refresh status.
+  Future<void> stageFile(String file) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      await apiClient.stageFile(_workDir, file);
+      await refreshAll();
+    } catch (e) {
+      _error = e.toString();
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  /// Unstage a file and refresh status.
+  Future<void> unstageFile(String file) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      await apiClient.unstageFile(_workDir, file);
+      await refreshAll();
+    } catch (e) {
+      _error = e.toString();
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  /// Commit staged changes with a message and refresh.
+  Future<void> commit(String message) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      await apiClient.commit(_workDir, message);
+      await refreshAll();
+    } catch (e) {
+      _error = e.toString();
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
   /// Refresh all git data: status, branches, and log.
   Future<void> refreshAll() async {
     _isLoading = true;

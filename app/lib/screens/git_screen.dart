@@ -160,14 +160,28 @@ class _TabChip extends StatelessWidget {
   }
 }
 
-class _ChangesView extends StatelessWidget {
+class _ChangesView extends StatefulWidget {
   final List<GitStatusEntry> entries;
 
   const _ChangesView({required this.entries});
 
   @override
+  State<_ChangesView> createState() => _ChangesViewState();
+}
+
+class _ChangesViewState extends State<_ChangesView> {
+  final TextEditingController _commitMessageController =
+      TextEditingController();
+
+  @override
+  void dispose() {
+    _commitMessageController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    if (entries.isEmpty) {
+    if (widget.entries.isEmpty) {
       return ListView(
         children: [
           const SizedBox(height: 120),
@@ -193,10 +207,18 @@ class _ChangesView extends StatelessWidget {
       );
     }
 
+    final stagedCount = widget.entries.where((e) => e.staged).length;
+
     return ListView.builder(
-      itemCount: entries.length,
+      itemCount: widget.entries.length + (stagedCount > 0 ? 1 : 0),
       itemBuilder: (context, index) {
-        final entry = entries[index];
+        // Show commit section at the top when there are staged files.
+        if (stagedCount > 0 && index == 0) {
+          return _buildCommitSection(context, stagedCount);
+        }
+
+        final entryIndex = stagedCount > 0 ? index - 1 : index;
+        final entry = widget.entries[entryIndex];
         return ListTile(
           leading: _StatusIcon(status: entry.status),
           title: Text(
@@ -209,14 +231,35 @@ class _ChangesView extends StatelessWidget {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
-          trailing: entry.staged
-              ? Chip(
-                  label: const Text('Staged'),
-                  labelStyle: const TextStyle(fontSize: 11),
-                  padding: EdgeInsets.zero,
-                  visualDensity: VisualDensity.compact,
-                )
-              : null,
+          trailing: IconButton(
+            icon: Icon(
+              entry.staged
+                  ? Icons.remove_circle_outline
+                  : Icons.add_circle_outline,
+              color: entry.staged ? Colors.orange : Colors.green,
+            ),
+            tooltip: entry.staged ? 'Unstage' : 'Stage',
+            onPressed: () {
+              final gitProvider = context.read<GitProvider>();
+              if (entry.staged) {
+                gitProvider.unstageFile(entry.path).then((_) {
+                  if (context.mounted && gitProvider.error != null) {
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(SnackBar(content: Text(gitProvider.error!)));
+                  }
+                });
+              } else {
+                gitProvider.stageFile(entry.path).then((_) {
+                  if (context.mounted && gitProvider.error != null) {
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(SnackBar(content: Text(gitProvider.error!)));
+                  }
+                });
+              }
+            },
+          ),
           onTap: () {
             final gitProvider = context.read<GitProvider>();
             gitProvider.loadDiff(file: entry.path, staged: entry.staged).then((
@@ -236,6 +279,68 @@ class _ChangesView extends StatelessWidget {
           },
         );
       },
+    );
+  }
+
+  Widget _buildCommitSection(BuildContext context, int stagedCount) {
+    return Padding(
+      padding: const EdgeInsets.all(12),
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                '$stagedCount staged file${stagedCount == 1 ? '' : 's'}',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _commitMessageController,
+                decoration: const InputDecoration(
+                  hintText: 'Commit message',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                maxLines: 3,
+                minLines: 1,
+              ),
+              const SizedBox(height: 8),
+              FilledButton.icon(
+                icon: const Icon(Icons.check),
+                label: const Text('Commit'),
+                onPressed: () {
+                  final message = _commitMessageController.text.trim();
+                  if (message.isEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Commit message cannot be empty'),
+                      ),
+                    );
+                    return;
+                  }
+                  final gitProvider = context.read<GitProvider>();
+                  gitProvider.commit(message).then((_) {
+                    if (context.mounted) {
+                      if (gitProvider.error != null) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text(gitProvider.error!)),
+                        );
+                      } else {
+                        _commitMessageController.clear();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Commit successful')),
+                        );
+                      }
+                    }
+                  });
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
