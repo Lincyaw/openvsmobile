@@ -110,6 +110,35 @@ func (s *Server) handleFilesDelete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleFilesPost handles POST /api/files/*path.
+// Currently supports creating directories when ?type=directory is set.
+func (s *Server) handleFilesPost(w http.ResponseWriter, r *http.Request) {
+	path, err := extractFilePath(r)
+	if err != nil {
+		http.Error(w, "invalid path: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if s.fs == nil {
+		http.Error(w, "file system not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	entryType := r.URL.Query().Get("type")
+	if entryType != "directory" {
+		http.Error(w, "unsupported type: must be 'directory'", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.fs.MkDir(path); err != nil {
+		log.Printf("mkdir error for %s: %v", path, err)
+		http.Error(w, "failed to create directory", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+}
+
 // extractFilePath extracts the file path from the request URL.
 // It cleans the path to prevent directory traversal attacks.
 func extractFilePath(r *http.Request) (string, error) {

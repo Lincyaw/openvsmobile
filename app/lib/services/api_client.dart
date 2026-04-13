@@ -81,6 +81,24 @@ class ApiClient {
     }
   }
 
+  /// Create a directory at [path].
+  Future<void> createDirectory(String path) async {
+    final normalizedPath = path.startsWith('/') ? path : '/$path';
+    final base = baseUrl.endsWith('/')
+        ? baseUrl.substring(0, baseUrl.length - 1)
+        : baseUrl;
+    final uri = Uri.parse(
+      '$base/api/files$normalizedPath',
+    ).replace(queryParameters: {'token': token, 'type': 'directory'});
+    final response = await _client.post(uri, headers: _headers);
+    if (response.statusCode != 201) {
+      throw ApiException(
+        'Failed to create directory: ${response.statusCode}',
+        response.statusCode,
+      );
+    }
+  }
+
   /// Fetch diagnostics for a file or directory.
   Future<List<Diagnostic>> getDiagnostics({
     String? filePath,
@@ -92,9 +110,9 @@ class ApiClient {
     final base = baseUrl.endsWith('/')
         ? baseUrl.substring(0, baseUrl.length - 1)
         : baseUrl;
-    final uri = Uri.parse('$base/api/diagnostics').replace(
-      queryParameters: params,
-    );
+    final uri = Uri.parse(
+      '$base/api/diagnostics',
+    ).replace(queryParameters: params);
     final response = await _client.get(uri, headers: _headers);
     if (response.statusCode != 200) {
       throw ApiException(
