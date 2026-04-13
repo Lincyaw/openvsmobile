@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/search_provider.dart';
@@ -14,9 +16,11 @@ class SearchScreen extends StatefulWidget {
 class _SearchScreenState extends State<SearchScreen> {
   final _controller = TextEditingController();
   final _focusNode = FocusNode();
+  Timer? _debounce;
 
   @override
   void dispose() {
+    _debounce?.cancel();
     _controller.dispose();
     _focusNode.dispose();
     super.dispose();
@@ -112,7 +116,10 @@ class _SearchScreenState extends State<SearchScreen> {
                   ),
                   onChanged: (value) {
                     setState(() {});
-                    _onSearch(value);
+                    _debounce?.cancel();
+                    _debounce = Timer(const Duration(milliseconds: 300), () {
+                      _onSearch(value);
+                    });
                   },
                   onSubmitted: _onSearch,
                   textInputAction: TextInputAction.search,
@@ -236,9 +243,9 @@ class _SearchScreenState extends State<SearchScreen> {
           leading: const Icon(Icons.text_snippet),
           title: Text(
             '$fileName:${result.line}',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
+            style: Theme.of(
+              context,
+            ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.bold),
           ),
           subtitle: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -268,9 +275,9 @@ class _SearchScreenState extends State<SearchScreen> {
     if (matchIndex == -1) {
       return Text(
         line.trim(),
-        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              fontFamily: 'monospace',
-            ),
+        style: Theme.of(
+          context,
+        ).textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
         maxLines: 2,
         overflow: TextOverflow.ellipsis,
       );
@@ -284,16 +291,17 @@ class _SearchScreenState extends State<SearchScreen> {
       maxLines: 2,
       overflow: TextOverflow.ellipsis,
       text: TextSpan(
-        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              fontFamily: 'monospace',
-            ),
+        style: Theme.of(
+          context,
+        ).textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
         children: [
           TextSpan(text: before.trimLeft()),
           TextSpan(
             text: match,
             style: TextStyle(
-              backgroundColor:
-                  Theme.of(context).colorScheme.primary.withValues(alpha: 0.3),
+              backgroundColor: Theme.of(
+                context,
+              ).colorScheme.primary.withValues(alpha: 0.3),
               fontWeight: FontWeight.bold,
             ),
           ),
@@ -317,8 +325,8 @@ class _SearchScreenState extends State<SearchScreen> {
           Text(
             'No results for "$query"',
             style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                  color: Theme.of(context).colorScheme.outline,
-                ),
+              color: Theme.of(context).colorScheme.outline,
+            ),
           ),
         ],
       ),
