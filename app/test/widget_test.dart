@@ -1,6 +1,8 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:vscode_mobile/app.dart';
+import 'package:vscode_mobile/main.dart' as vscode_main;
 import 'package:vscode_mobile/services/api_client.dart';
 import 'package:vscode_mobile/services/chat_api_client.dart';
 import 'package:vscode_mobile/services/git_api_client.dart';
@@ -9,39 +11,53 @@ import 'package:vscode_mobile/providers/editor_provider.dart';
 import 'package:vscode_mobile/providers/chat_provider.dart';
 import 'package:vscode_mobile/providers/git_provider.dart';
 import 'package:vscode_mobile/providers/search_provider.dart';
+import 'package:vscode_mobile/providers/workspace_provider.dart';
+
+Widget buildTestApp() {
+  const baseUrl = 'http://localhost:0';
+  const token = 'test-token';
+
+  final apiClient = ApiClient(baseUrl: baseUrl, token: token);
+  final chatApiClient = ChatApiClient(baseUrl: baseUrl, token: token);
+  final gitApiClient = GitApiClient(baseUrl: baseUrl, token: token);
+
+  vscode_main.serverBaseUrl = baseUrl;
+  vscode_main.serverAuthToken = token;
+
+  return MultiProvider(
+    providers: [
+      ChangeNotifierProvider(create: (_) => WorkspaceProvider()),
+      ChangeNotifierProvider(
+        create: (_) => FileProvider(apiClient: apiClient)..setProject('/'),
+      ),
+      ChangeNotifierProvider(
+        create: (_) => EditorProvider(apiClient: apiClient),
+      ),
+      ChangeNotifierProvider(
+        create: (_) => ChatProvider(apiClient: chatApiClient),
+      ),
+      ChangeNotifierProvider(
+        create: (_) => GitProvider(apiClient: gitApiClient),
+      ),
+      ChangeNotifierProvider(
+        create: (_) => SearchProvider(apiClient: apiClient),
+      ),
+    ],
+    child: const VSCodeMobileApp(),
+  );
+}
 
 void main() {
-  testWidgets('App renders smoke test', (WidgetTester tester) async {
-    // Use a dummy base URL -- no real HTTP calls are made in this test.
-    const baseUrl = 'http://localhost:0';
-    const token = 'test-token';
+  testWidgets('App renders navigation bar with all tabs', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(buildTestApp());
 
-    final apiClient = ApiClient(baseUrl: baseUrl, token: token);
-    final chatApiClient = ChatApiClient(baseUrl: baseUrl, token: token);
-    final gitApiClient = GitApiClient(baseUrl: baseUrl, token: token);
-
-    await tester.pumpWidget(
-      MultiProvider(
-        providers: [
-          ChangeNotifierProvider(
-            create: (_) => FileProvider(apiClient: apiClient)..setProject('/'),
-          ),
-          ChangeNotifierProvider(
-            create: (_) => EditorProvider(apiClient: apiClient),
-          ),
-          ChangeNotifierProvider(
-            create: (_) => ChatProvider(apiClient: chatApiClient),
-          ),
-          ChangeNotifierProvider(
-            create: (_) => GitProvider(apiClient: gitApiClient),
-          ),
-          ChangeNotifierProvider(
-            create: (_) => SearchProvider(apiClient: apiClient),
-          ),
-        ],
-        child: const VSCodeMobileApp(),
-      ),
-    );
+    // The bottom navigation bar should show all 5 tabs.
     expect(find.text('Files'), findsWidgets);
+    expect(find.text('Search'), findsWidgets);
+    expect(find.text('Terminal'), findsWidgets);
+    expect(find.text('Chat'), findsWidgets);
+    expect(find.text('More'), findsWidgets);
   });
 }

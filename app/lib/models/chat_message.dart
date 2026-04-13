@@ -99,6 +99,20 @@ class ContentBlock {
     );
   }
 
+  /// Effective file path: from annotation first, then from tool input.
+  String? get effectiveFilePath {
+    if (fileAnnotation?.filePath != null) return fileAnnotation!.filePath;
+    if (input == null) return null;
+    return input!['file_path'] as String? ?? input!['path'] as String?;
+  }
+
+  /// Effective command: from annotation first, then from tool input.
+  String? get effectiveCommand {
+    if (fileAnnotation?.command != null) return fileAnnotation!.command;
+    if (input == null) return null;
+    return input!['command'] as String?;
+  }
+
   static Map<String, dynamic>? _parseInput(dynamic raw) {
     if (raw is Map<String, dynamic>) return raw;
     return null;

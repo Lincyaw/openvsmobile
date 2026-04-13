@@ -6,14 +6,21 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../models/chat_message.dart';
 import '../models/session.dart';
+import '../providers/workspace_provider.dart';
 import '../services/chat_api_client.dart';
 
 /// State management for chat functionality.
 /// Manages WebSocket connection, messages, and code context.
+/// Each workspace has its own conversation context — switching workspaces
+/// clears the active conversation and reloads sessions for the new workspace.
 class ChatProvider extends ChangeNotifier {
   final ChatApiClient _apiClient;
 
   ChatProvider({required ChatApiClient apiClient}) : _apiClient = apiClient;
+
+  // -- Workspace binding --
+  String _workspacePath = '/';
+  String get workspacePath => _workspacePath;
 
   // -- Connection state --
   WebSocketChannel? _channel;
@@ -50,6 +57,23 @@ class ChatProvider extends ChangeNotifier {
   String? _error;
   String? get error => _error;
 
+  /// Switch workspace context. Clears the active conversation and
+  /// reloads sessions scoped to the new workspace.
+  void setWorkspace(String path) {
+    if (path == _workspacePath) return;
+    _workspacePath = path;
+    // Inline clear without extra notifyListeners — we notify once below.
+    _messages.clear();
+    _streamingBlocks.clear();
+    _conversationId = null;
+    _pendingMessage = null;
+    _isStreaming = false;
+    _codeContext = null;
+    _error = null;
+    notifyListeners();
+    loadSessions();
+  }
+
   /// Set code context for contextual chat.
   void setCodeContext(CodeContext? context) {
     _codeContext = context;
@@ -81,21 +105,21 @@ class ChatProvider extends ChangeNotifier {
     _isConnected = true;
   }
 
-  /// Start a new conversation.
-  void startConversation({String workDir = '/'}) {
+  /// Start a new conversation in the current workspace.
+  void startConversation({String? workDir}) {
     _ensureConnected();
     _messages.clear();
     _streamingBlocks.clear();
     _conversationId = null;
     _error = null;
 
-    _channel!.sink.add(jsonEncode({'type': 'start', 'workDir': workDir}));
+    final dir = workDir ?? _workspacePath;
+    _channel!.sink.add(jsonEncode({'type': 'start', 'workDir': dir}));
     notifyListeners();
   }
 
-  /// Queue a message and start a new conversation.
-  /// The message will be sent automatically when the server confirms the session.
-  void queueAndStart(String text, {String workDir = '/'}) {
+  /// Queue a message and start a new conversation in the current workspace.
+  void queueAndStart(String text, {String? workDir}) {
     _pendingMessage = text;
     startConversation(workDir: workDir);
   }
@@ -193,7 +217,8 @@ class ChatProvider extends ChangeNotifier {
   }
 
   void _handleAssistantContent(Map<String, dynamic> msg) {
-    final rawContent = msg['content'] as List<dynamic>?;
+    final message = msg['message'] as Map<String, dynamic>?;
+    final rawContent = message?['content'] as List<dynamic>?;
     if (rawContent == null) return;
 
     _streamingBlocks.clear();
@@ -206,12 +231,18 @@ class ChatProvider extends ChangeNotifier {
   }
 
   void _handleResult(Map<String, dynamic> msg) {
-    final rawContent = msg['content'] as List<dynamic>?;
-    if (rawContent == null) return;
+    final resultText = msg['result'] as String?;
+    if (resultText == null && _streamingBlocks.isEmpty) return;
 
-    final blocks = rawContent
-        .map((b) => ContentBlock.fromJson(b as Map<String, dynamic>))
-        .toList();
+    // Prefer streaming blocks (richer content) over the plain-text result fallback.
+    List<ContentBlock> blocks;
+    if (_streamingBlocks.isNotEmpty) {
+      blocks = List.from(_streamingBlocks);
+    } else if (resultText != null) {
+      blocks = [ContentBlock(type: 'text', text: resultText)];
+    } else {
+      return;
+    }
 
     _messages.add(ChatMessage(role: 'assistant', content: blocks));
     _streamingBlocks.clear();
@@ -248,14 +279,25 @@ class ChatProvider extends ChangeNotifier {
     return list;
   }
 
-  /// Fetch session list from REST API, with optional search.
-  Future<void> loadSessions({String? query, String? project}) async {
+  /// Fetch session list from REST API.
+  /// Defaults to filtering by the current workspace project name.
+  /// Pass [allProjects] = true to show sessions from all workspaces.
+  Future<void> loadSessions({
+    String? query,
+    String? project,
+    bool allProjects = false,
+  }) async {
     _isLoadingSessions = true;
     _error = null;
     notifyListeners();
 
     try {
-      _sessions = await _apiClient.getSessions(query: query, project: project);
+      final effectiveProject =
+          allProjects ? null : (project ?? WorkspaceProvider.nameForPath(_workspacePath));
+      _sessions = await _apiClient.getSessions(
+        query: query,
+        project: effectiveProject,
+      );
     } catch (e) {
       _error = e.toString();
     } finally {

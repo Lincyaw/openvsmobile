@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../models/session.dart';
 import '../providers/chat_provider.dart';
+import '../providers/workspace_provider.dart';
 import 'session_detail_screen.dart';
 
 /// Screen showing past AI chat sessions with search, project grouping,
@@ -18,24 +21,44 @@ class SessionListScreen extends StatefulWidget {
 class _SessionListScreenState extends State<SessionListScreen> {
   final _searchController = TextEditingController();
   String _searchQuery = '';
+  bool _showAllProjects = false;
+  Timer? _debounce;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<ChatProvider>().loadSessions();
+      final provider = context.read<ChatProvider>();
+      if (provider.sessions.isEmpty && !provider.isLoadingSessions) {
+        provider.loadSessions();
+      }
     });
   }
 
   @override
   void dispose() {
+    _debounce?.cancel();
     _searchController.dispose();
     super.dispose();
   }
 
   void _onSearchChanged(String query) {
     setState(() => _searchQuery = query);
-    context.read<ChatProvider>().loadSessions(query: query);
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 300), () {
+      context.read<ChatProvider>().loadSessions(
+        query: query.isEmpty ? null : query,
+        allProjects: _showAllProjects,
+      );
+    });
+  }
+
+  void _toggleAllProjects(bool value) {
+    setState(() => _showAllProjects = value);
+    context.read<ChatProvider>().loadSessions(
+      query: _searchQuery.isEmpty ? null : _searchQuery,
+      allProjects: value,
+    );
   }
 
   /// Group sessions by project name, then sort each group by date descending.
@@ -97,7 +120,7 @@ class _SessionListScreenState extends State<SessionListScreen> {
         appBar: AppBar(
           title: const Text('Session History'),
           bottom: PreferredSize(
-            preferredSize: const Size.fromHeight(100),
+            preferredSize: const Size.fromHeight(140),
             child: Column(
               children: [
                 Padding(
@@ -131,6 +154,31 @@ class _SessionListScreenState extends State<SessionListScreen> {
                     textInputAction: TextInputAction.search,
                   ),
                 ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Consumer<WorkspaceProvider>(
+                    builder: (context, ws, _) {
+                      return Row(
+                        children: [
+                          FilterChip(
+                            label: Text(ws.displayName),
+                            selected: !_showAllProjects,
+                            onSelected: (selected) =>
+                                _toggleAllProjects(!selected),
+                            avatar: const Icon(Icons.folder, size: 16),
+                          ),
+                          const SizedBox(width: 8),
+                          FilterChip(
+                            label: const Text('All projects'),
+                            selected: _showAllProjects,
+                            onSelected: _toggleAllProjects,
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(height: 4),
                 const TabBar(
                   tabs: [
                     Tab(text: 'Timeline'),
@@ -172,6 +220,7 @@ class _SessionListScreenState extends State<SessionListScreen> {
     return RefreshIndicator(
       onRefresh: () => context.read<ChatProvider>().loadSessions(
         query: _searchQuery.isEmpty ? null : _searchQuery,
+        allProjects: _showAllProjects,
       ),
       child: ListView(children: widgets),
     );
@@ -184,6 +233,7 @@ class _SessionListScreenState extends State<SessionListScreen> {
     return RefreshIndicator(
       onRefresh: () => context.read<ChatProvider>().loadSessions(
         query: _searchQuery.isEmpty ? null : _searchQuery,
+        allProjects: _showAllProjects,
       ),
       child: ListView.builder(
         itemCount: projectNames.length,

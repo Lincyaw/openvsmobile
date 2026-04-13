@@ -57,31 +57,35 @@ class _ToolUseCardState extends State<ToolUseCard> {
     final IconData icon;
     final String subtitle;
     final Color iconColor;
+    final filePath = widget.toolUse.effectiveFilePath;
+    final command = widget.toolUse.effectiveCommand;
 
     switch (toolName) {
       case 'Edit':
         icon = Icons.edit_outlined;
         iconColor = Colors.orange;
-        subtitle = annotation?.filePath ?? 'Edit file';
+        subtitle = filePath ?? 'Edit file';
         break;
       case 'Write':
         icon = Icons.create_new_folder_outlined;
         iconColor = Colors.green;
-        subtitle = annotation?.filePath != null
-            ? 'Created: ${annotation!.filePath}'
-            : 'Write file';
+        subtitle = filePath != null ? 'Created: $filePath' : 'Write file';
         break;
       case 'Bash':
         icon = Icons.terminal;
         iconColor = Colors.blue;
-        subtitle = annotation?.command ?? 'Run command';
+        subtitle = command ?? 'Run command';
         break;
       case 'Read':
         icon = Icons.description_outlined;
         iconColor = Colors.purple;
-        subtitle = annotation?.filePath != null
-            ? 'Read: ${annotation!.filePath}'
-            : 'Read file';
+        subtitle = filePath != null ? 'Read: $filePath' : 'Read file';
+        break;
+      case 'Grep':
+      case 'Glob':
+        icon = Icons.search;
+        iconColor = Colors.indigo;
+        subtitle = filePath ?? widget.toolUse.input?['pattern'] as String? ?? 'Search';
         break;
       case 'Agent':
         icon = Icons.smart_toy_outlined;
@@ -96,7 +100,6 @@ class _ToolUseCardState extends State<ToolUseCard> {
 
     return InkWell(
       onTap: () {
-        final filePath = annotation?.filePath;
         if (filePath != null && widget.onFileTap != null) {
           widget.onFileTap!(filePath);
         }
@@ -138,6 +141,12 @@ class _ToolUseCardState extends State<ToolUseCard> {
                 ],
               ),
             ),
+            if (filePath != null && widget.onFileTap != null)
+              Icon(
+                Icons.chevron_right,
+                size: 18,
+                color: colorScheme.onSurfaceVariant,
+              ),
           ],
         ),
       ),

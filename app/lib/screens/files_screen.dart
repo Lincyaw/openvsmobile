@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../providers/chat_provider.dart';
 import '../providers/file_provider.dart';
 import '../providers/editor_provider.dart';
+import '../providers/workspace_provider.dart';
 import '../widgets/file_tree_view.dart';
 import 'code_screen.dart';
 
@@ -12,12 +14,24 @@ class FilesScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Consumer<FileProvider>(
-          builder: (context, fileProvider, child) {
-            final name = fileProvider.currentProject == '/'
-                ? 'Files'
-                : fileProvider.currentProject.split('/').last;
-            return Text(name);
+        title: Consumer<WorkspaceProvider>(
+          builder: (context, ws, _) {
+            return GestureDetector(
+              onTap: () => _showWorkspacePicker(context),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Flexible(
+                    child: Text(
+                      ws.displayName,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  const Icon(Icons.arrow_drop_down, size: 20),
+                ],
+              ),
+            );
           },
         ),
         actions: [
@@ -113,6 +127,137 @@ class FilesScreen extends StatelessWidget {
         ).showSnackBar(SnackBar(content: Text('Failed to delete: $e')));
       }
     }
+  }
+
+  void _showWorkspacePicker(BuildContext context) {
+    final ws = context.read<WorkspaceProvider>();
+    final controller = TextEditingController();
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        return DraggableScrollableSheet(
+          initialChildSize: 0.5,
+          minChildSize: 0.3,
+          maxChildSize: 0.8,
+          expand: false,
+          builder: (_, scrollController) {
+            return ListenableBuilder(
+              listenable: ws,
+              builder: (listCtx, _) {
+                final recent = ws.recentWorkspaces;
+                return Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Text(
+                        'Switch Workspace',
+                        style: Theme.of(listCtx).textTheme.titleMedium,
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: TextField(
+                        controller: controller,
+                        decoration: InputDecoration(
+                          hintText: 'Enter directory path...',
+                          prefixIcon: const Icon(Icons.folder_open),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          suffixIcon: IconButton(
+                            icon: const Icon(Icons.arrow_forward),
+                            onPressed: () {
+                              final path = controller.text.trim();
+                              if (path.isNotEmpty) {
+                                _switchWorkspace(context, path);
+                                Navigator.pop(sheetContext);
+                              }
+                            },
+                          ),
+                        ),
+                        onSubmitted: (path) {
+                          if (path.trim().isNotEmpty) {
+                            _switchWorkspace(context, path.trim());
+                            Navigator.pop(sheetContext);
+                          }
+                        },
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          'Recent',
+                          style: Theme.of(listCtx).textTheme.labelLarge
+                              ?.copyWith(
+                                color:
+                                    Theme.of(listCtx).colorScheme.onSurfaceVariant,
+                              ),
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: ListView.builder(
+                        controller: scrollController,
+                        itemCount: recent.length,
+                        itemBuilder: (_, index) {
+                          final path = recent[index];
+                          final isCurrent = path == ws.currentPath;
+                          final name = WorkspaceProvider.nameForPath(path);
+                          final colorScheme = Theme.of(listCtx).colorScheme;
+                          return ListTile(
+                            leading: Icon(
+                              Icons.folder,
+                              color: isCurrent ? colorScheme.primary : null,
+                            ),
+                            title: Text(
+                              name,
+                              style: isCurrent
+                                  ? TextStyle(
+                                      color: colorScheme.primary,
+                                      fontWeight: FontWeight.bold,
+                                    )
+                                  : null,
+                            ),
+                            subtitle: Text(
+                              path,
+                              style: Theme.of(listCtx).textTheme.bodySmall,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            trailing: isCurrent
+                                ? const Icon(Icons.check, size: 20)
+                                : IconButton(
+                                    icon: const Icon(Icons.close, size: 18),
+                                    onPressed: () => ws.removeFromRecent(path),
+                                  ),
+                            onTap: () {
+                              _switchWorkspace(context, path);
+                              Navigator.pop(sheetContext);
+                            },
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _switchWorkspace(BuildContext context, String path) {
+    final ws = context.read<WorkspaceProvider>();
+    ws.setWorkspace(path);
+    context.read<FileProvider>().setProject(path);
+    context.read<ChatProvider>().setWorkspace(path);
   }
 }
 

@@ -7,18 +7,22 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../widgets/ansi_text.dart';
 
-/// Simple terminal screen that connects to the Go server's /ws/terminal
+/// Terminal screen that connects to the Go server's /ws/terminal
 /// WebSocket endpoint. Sends/receives base64-encoded PTY I/O.
 class TerminalScreen extends StatefulWidget {
   final String baseUrl;
   final String token;
   final String workDir;
 
+  /// When false, defers WebSocket connection until the tab becomes active.
+  final bool isActive;
+
   const TerminalScreen({
     super.key,
     required this.baseUrl,
     required this.token,
     this.workDir = '/',
+    this.isActive = true,
   });
 
   @override
@@ -26,20 +30,24 @@ class TerminalScreen extends StatefulWidget {
 }
 
 class _TerminalScreenState extends State<TerminalScreen> {
-  // Terminal font metrics — used for adaptive sizing.
   static const double _fontSize = 13;
   static const double _lineHeight = 1.4;
   static const double _termPadding = 8;
-  static const int _maxBufferSize = 100 * 1024; // 100KB cap
+  static const int _maxLines = 2000;
 
   WebSocketChannel? _channel;
   StreamSubscription<dynamic>? _subscription;
   final _outputController = ScrollController();
   final _inputController = TextEditingController();
   final _focusNode = FocusNode();
-  final _outputBuffer = StringBuffer();
+
+  // Line-based buffer for terminal output.
+  final List<String> _lines = [''];
+  final _currentLine = StringBuffer();
+  String? _cachedOutput;
   String _terminalId = '';
   bool _connected = false;
+  bool _hasConnected = false;
   String? _error;
   int _cols = 80;
   int _rows = 24;
@@ -48,7 +56,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
   @override
   void initState() {
     super.initState();
-    _connect();
+    // Defer connection until first build to avoid connecting when tab is hidden.
   }
 
   @override
@@ -62,7 +70,12 @@ class _TerminalScreenState extends State<TerminalScreen> {
     super.dispose();
   }
 
-  /// Measure the width of a single monospace character at the configured size.
+  void _ensureConnected() {
+    if (_hasConnected) return;
+    _hasConnected = true;
+    _connect();
+  }
+
   double _getCharWidth() {
     if (_charWidth != null) return _charWidth!;
     final paragraph = ui.ParagraphBuilder(
@@ -74,7 +87,6 @@ class _TerminalScreenState extends State<TerminalScreen> {
     return _charWidth!;
   }
 
-  /// Calculate terminal columns and rows based on available pixel dimensions.
   (int, int) _calcTermSize(double width, double height) {
     final cw = _getCharWidth();
     final lineHeightPx = _fontSize * _lineHeight;
@@ -83,7 +95,6 @@ class _TerminalScreenState extends State<TerminalScreen> {
     return (cols, rows);
   }
 
-  /// Send a resize message to the server when terminal dimensions change.
   void _sendResize(int cols, int rows) {
     if (!_connected || _channel == null || _terminalId.isEmpty) return;
     if (cols == _cols && rows == _rows) return;
@@ -115,7 +126,6 @@ class _TerminalScreenState extends State<TerminalScreen> {
       onDone: () => setState(() => _connected = false),
     );
 
-    // Create a terminal session with adaptive dimensions.
     _terminalId = 'term-${DateTime.now().millisecondsSinceEpoch}';
     _channel!.sink.add(
       jsonEncode({
@@ -144,16 +154,8 @@ class _TerminalScreenState extends State<TerminalScreen> {
           final bytes = base64Decode(encoded);
           final text = utf8.decode(bytes, allowMalformed: true);
           setState(() {
-            _outputBuffer.write(text);
-            if (_outputBuffer.length > _maxBufferSize) {
-              final content = _outputBuffer.toString();
-              _outputBuffer.clear();
-              final keepFrom = content.length - 80 * 1024;
-              final newlineIdx = content.indexOf('\n', keepFrom);
-              _outputBuffer.write(
-                content.substring(newlineIdx >= 0 ? newlineIdx + 1 : keepFrom),
-              );
-            }
+            _appendOutput(text);
+            _cachedOutput = null;
           });
           _scrollToBottom();
         }
@@ -165,6 +167,40 @@ class _TerminalScreenState extends State<TerminalScreen> {
         setState(() => _error = msg['error'] as String?);
         break;
     }
+  }
+
+  /// Append PTY output, handling CR/LF properly.
+  /// Uses StringBuffer for the current line to avoid O(n^2) string concat.
+  void _appendOutput(String text) {
+    for (int i = 0; i < text.length; i++) {
+      final ch = text.codeUnitAt(i);
+
+      if (ch == 0x0A) {
+        // LF: commit current line and start a new one.
+        _lines[_lines.length - 1] = _currentLine.toString();
+        _lines.add('');
+        _currentLine.clear();
+      } else if (ch == 0x0D) {
+        // CR: if followed by LF, skip (CRLF handled as single newline).
+        if (i + 1 < text.length && text.codeUnitAt(i + 1) == 0x0A) {
+          continue;
+        }
+        // Standalone CR: overwrite current line content.
+        _currentLine.clear();
+      } else {
+        _currentLine.writeCharCode(ch);
+      }
+    }
+    _lines[_lines.length - 1] = _currentLine.toString();
+
+    if (_lines.length > _maxLines) {
+      _lines.removeRange(0, _lines.length - _maxLines);
+    }
+  }
+
+  String get _outputText {
+    _cachedOutput ??= _lines.join('\n');
+    return _cachedOutput!;
   }
 
   void _sendInput(String text) {
@@ -197,8 +233,23 @@ class _TerminalScreenState extends State<TerminalScreen> {
     _inputController.clear();
   }
 
+  void _reconnect() {
+    _sendClose();
+    setState(() {
+      _lines.clear();
+      _lines.add('');
+      _currentLine.clear();
+      _cachedOutput = null;
+      _connected = false;
+      _error = null;
+    });
+    _connect();
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (widget.isActive) _ensureConnected();
+
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final isDark = theme.brightness == Brightness.dark;
@@ -211,15 +262,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
             IconButton(
               icon: const Icon(Icons.refresh),
               tooltip: 'Reconnect',
-              onPressed: () {
-                _sendClose();
-                setState(() {
-                  _outputBuffer.clear();
-                  _connected = false;
-                  _error = null;
-                });
-                _connect();
-              },
+              onPressed: _reconnect,
             ),
         ],
       ),
@@ -255,13 +298,10 @@ class _TerminalScreenState extends State<TerminalScreen> {
           Expanded(
             child: LayoutBuilder(
               builder: (context, constraints) {
-                // Calculate adaptive terminal size from available space.
                 final (cols, rows) = _calcTermSize(
                   constraints.maxWidth,
                   constraints.maxHeight,
                 );
-                // Send resize if dimensions changed (deferred to avoid
-                // setState during build).
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   _sendResize(cols, rows);
                 });
@@ -279,7 +319,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
                   child: SingleChildScrollView(
                     controller: _outputController,
                     child: AnsiText(
-                      _outputBuffer.toString(),
+                      _outputText,
                       fontSize: _fontSize,
                       lineHeight: _lineHeight,
                       defaultForeground: fgColor,

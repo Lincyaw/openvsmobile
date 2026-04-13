@@ -61,7 +61,7 @@ func (pm *ProcessManager) StartConversation(workingDir string) (*Conversation, e
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	args := []string{"-p", "--output-format", "stream-json", "--input-format", "stream-json"}
+	args := []string{"-p", "--verbose", "--output-format", "stream-json", "--input-format", "stream-json"}
 
 	cmd := exec.CommandContext(ctx, pm.claudeBin, args...)
 	cmd.Dir = workingDir
@@ -105,7 +105,7 @@ func (pm *ProcessManager) StartConversation(workingDir string) (*Conversation, e
 // ResumeConversation resumes an existing Claude session.
 func (pm *ProcessManager) ResumeConversation(sessionID string) (*Conversation, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	args := []string{"-p", "-r", sessionID, "--output-format", "stream-json", "--input-format", "stream-json"}
+	args := []string{"-p", "--verbose", "-r", sessionID, "--output-format", "stream-json", "--input-format", "stream-json"}
 
 	cmd := exec.CommandContext(ctx, pm.claudeBin, args...)
 	cmd.Dir = pm.workingDir
@@ -156,8 +156,11 @@ func (c *Conversation) Send(message string) error {
 	}
 
 	input := StreamInput{
-		Type:    "user",
-		Content: message,
+		Type: "user",
+		Message: StreamInputMessage{
+			Role:    "user",
+			Content: message,
+		},
 	}
 	data, err := json.Marshal(input)
 	if err != nil {

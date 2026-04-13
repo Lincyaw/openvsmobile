@@ -26,17 +26,24 @@ openvscode-server/ — Git submodule: forked OpenVSCode Server (Gitpod)
 - May need modifications to expose additional APIs for the Flutter client
 
 ### Flutter client (app/)
-- Code file browser with syntax highlighting and LSP support (via OpenVSCode Server)
-- Project-level file management
+- Bottom navigation: Files, Search, Terminal, Chat, More (5 tabs)
+- Workspace management: switch between project directories, persisted recent list
+- Code file browser with syntax highlighting, scoped to current workspace
+- File/content search scoped to current workspace (file name + grep)
 - Simple code editing (mobile-optimized, no advanced editor features)
-- Git status and diff viewer
+- Terminal: PTY shell session with ANSI color rendering and adaptive sizing
+- Git status and diff viewer with stage/unstage/commit
 - AI chat: select code region → send to Claude → conversational review
 - Full-screen AI chat view (chat-app style) with clickable references to files/edits
 
 ### Go server (server/)
-- Process manager: spawn/manage `claude` CLI processes, WebSocket relay of stream-json
+- Process manager: spawn/manage `claude` CLI processes, WebSocket relay of stream-json (requires `--verbose` flag)
 - Session index: scan `~/.claude/sessions/` + `~/.claude/projects/` for conversation metadata
 - JSONL parser: structured message list API with file-operation block annotations
+- Terminal manager: PTY-based shell sessions via WebSocket
+- Git operations: status, diff, log, branches, stage, unstage, commit
+- Diagnostics: run language-specific linters and return structured results
+- Content search: grep/ripgrep across files
 - REST + WebSocket API for the Flutter client
 
 <!-- auto-harness:begin -->

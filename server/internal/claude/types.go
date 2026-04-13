@@ -100,9 +100,15 @@ type FileStat struct {
 	Size  int64  `json:"size"`
 }
 
-// StreamInput is the JSON sent to claude CLI stdin.
+// StreamInput is the JSON sent to claude CLI stdin (stream-json input format).
 type StreamInput struct {
-	Type    string `json:"type"`
+	Type    string             `json:"type"`
+	Message StreamInputMessage `json:"message"`
+}
+
+// StreamInputMessage is the message payload within a StreamInput.
+type StreamInputMessage struct {
+	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 

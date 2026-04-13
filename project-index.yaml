@@ -81,7 +81,10 @@ requirements:
     title: Claude CLI process manager
     description: >
       Go server spawns and manages claude CLI processes using
-      --input-format stream-json --output-format stream-json mode.
+      --verbose --input-format stream-json --output-format stream-json mode.
+      Input format: {"type":"user","message":{"role":"user","content":"..."}}.
+      Output types: system (init), assistant (content in message.content),
+      result (plain text in result field).
       Supports starting new conversations, resuming sessions (--resume),
       and graceful termination.
     priority: P0
@@ -124,7 +127,8 @@ requirements:
     title: Project file browser
     description: >
       Flutter FileTreeView widget: expandable directory tree with file type
-      icons. Project selector dropdown in app bar for switching workspaces.
+      icons. Project selector dropdown in app bar for switching workspaces
+      (via WorkspaceProvider with persisted recent list).
       Lazy-loads directory contents on expand (via GET /api/files/<path>).
       Bottom navigation tab "Files" hosts this view.
       See docs/ui-ux-design.md "Files Tab" for layout.
@@ -134,6 +138,7 @@ requirements:
       - app/lib/screens/files_screen.dart
       - app/lib/widgets/file_tree_view.dart
       - app/lib/providers/file_provider.dart
+      - app/lib/providers/workspace_provider.dart
       - app/lib/services/api_client.dart
       - app/lib/models/file_entry.dart
     tests: []
@@ -408,6 +413,7 @@ requirements:
       with line numbers and context. Flutter SearchScreen gets a toggle
       between "File name" and "File content" search modes. Content
       results show file path, line number, and matching line preview.
+      Search is scoped to current workspace via WorkspaceProvider.
       Tap navigates to code viewer at the matched line.
     priority: P1
     status: implemented
@@ -417,8 +423,7 @@ requirements:
       - app/lib/screens/search_screen.dart
       - app/lib/providers/search_provider.dart
       - app/lib/services/api_client.dart
-    tests:
-      - server/internal/api/search_test.go
+    tests: []
     depends_on: [REQ-003]
 
   - id: REQ-022
@@ -516,3 +521,70 @@ requirements:
       - app/lib/screens/session_list_screen.dart
     tests: []
     depends_on: [REQ-019]
+
+  - id: FIX-006
+    title: AI chat stream-json protocol mismatch
+    description: >
+      Three bugs prevented AI chat from working:
+      1) Go server missing --verbose flag (required for stream-json output).
+      2) Wrong input format: was {"type":"user","content":"..."}, must be
+         {"type":"user","message":{"role":"user","content":"..."}}.
+      3) Flutter client read content at wrong JSON path: assistant content
+         is at msg.message.content (not msg.content), result text is at
+         msg.result (not msg.content).
+    priority: P0
+    status: implemented
+    code:
+      - server/internal/claude/process.go
+      - server/internal/claude/types.go
+      - app/lib/providers/chat_provider.dart
+    tests: []
+    depends_on: [REQ-004]
+
+  - id: FIX-007
+    title: Terminal excessive newlines from CRLF and standalone CR
+    description: >
+      Terminal output showed many blank lines because raw PTY output uses
+      CRLF (\r\n) and standalone CR for cursor movement. The StringBuffer
+      didn't collapse these. Replaced with a line-based buffer that handles
+      CRLF as single newline and standalone CR as line overwrite.
+    priority: P1
+    status: implemented
+    code:
+      - app/lib/screens/terminal_screen.dart
+    tests: []
+    depends_on: [REQ-020]
+
+  - id: FIX-008
+    title: File browser and search scoped to workspace
+    description: >
+      File browser started at '/' and search searched the entire filesystem.
+      Added WorkspaceProvider to manage current workspace path (persisted
+      via SharedPreferences with recent list). File browser and search
+      now scoped to workspace. Workspace picker accessible from Files
+      tab title bar.
+    priority: P1
+    status: implemented
+    code:
+      - app/lib/providers/workspace_provider.dart
+      - app/lib/screens/files_screen.dart
+      - app/lib/screens/search_screen.dart
+      - app/lib/main.dart
+    tests: []
+    depends_on: [REQ-006, REQ-021]
+
+  - id: FIX-009
+    title: Terminal promoted to bottom navigation tab
+    description: >
+      Terminal was buried in More screen, now a first-class bottom nav
+      tab (position 3 of 5: Files, Search, Terminal, Chat, More).
+      Connection deferred until tab is first viewed to avoid eager
+      WebSocket/PTY creation.
+    priority: P1
+    status: implemented
+    code:
+      - app/lib/app.dart
+      - app/lib/screens/terminal_screen.dart
+      - app/lib/screens/more_screen.dart
+    tests: []
+    depends_on: [REQ-014, REQ-020]

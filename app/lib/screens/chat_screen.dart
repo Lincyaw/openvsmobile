@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../providers/chat_provider.dart';
 import '../providers/editor_provider.dart';
+import '../providers/workspace_provider.dart';
 import '../widgets/chat_bubble.dart';
 import 'code_screen.dart';
 import 'session_list_screen.dart';
@@ -59,7 +60,24 @@ class _ChatScreenState extends State<ChatScreen> {
       builder: (context, provider, _) {
         return Scaffold(
           appBar: AppBar(
-            title: const Text('AI Chat'),
+            title: Consumer<WorkspaceProvider>(
+              builder: (context, ws, _) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('AI Chat'),
+                    Text(
+                      ws.displayName,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
             actions: [
               IconButton(
                 icon: const Icon(Icons.history),

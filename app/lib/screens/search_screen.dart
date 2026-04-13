@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/search_provider.dart';
 import '../providers/editor_provider.dart';
+import '../providers/workspace_provider.dart';
 import 'code_screen.dart';
 
 class SearchScreen extends StatefulWidget {
@@ -28,10 +29,11 @@ class _SearchScreenState extends State<SearchScreen> {
 
   void _onSearch(String query) {
     final provider = context.read<SearchProvider>();
+    final rootPath = context.read<WorkspaceProvider>().currentPath;
     if (provider.searchMode == SearchMode.fileContent) {
-      provider.searchContent(query, '/');
+      provider.searchContent(query, rootPath);
     } else {
-      provider.search(query, '/');
+      provider.search(query, rootPath);
     }
   }
 
@@ -54,7 +56,24 @@ class _SearchScreenState extends State<SearchScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Search')),
+      appBar: AppBar(
+        title: Consumer<WorkspaceProvider>(
+          builder: (context, ws, _) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Search'),
+                Text(
+                  'in ${ws.displayName}',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
       body: Column(
         children: [
           // Search mode toggle

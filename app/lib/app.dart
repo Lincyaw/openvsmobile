@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'main.dart' show serverBaseUrl, serverAuthToken;
+import 'providers/workspace_provider.dart';
 import 'screens/files_screen.dart';
 import 'screens/chat_screen.dart';
 import 'screens/search_screen.dart';
+import 'screens/terminal_screen.dart';
 import 'screens/more_screen.dart';
 
 class VSCodeMobileApp extends StatelessWidget {
@@ -38,17 +42,25 @@ class MainShell extends StatefulWidget {
 class _MainShellState extends State<MainShell> {
   int _currentIndex = 0;
 
-  final List<Widget> _tabs = const [
-    FilesScreen(),
-    SearchScreen(),
-    ChatScreen(),
-    MoreScreen(),
-  ];
-
   @override
   Widget build(BuildContext context) {
+    final wsPath = context.watch<WorkspaceProvider>().currentPath;
+
+    final tabs = <Widget>[
+      const FilesScreen(),
+      const SearchScreen(),
+      TerminalScreen(
+        baseUrl: serverBaseUrl,
+        token: serverAuthToken,
+        workDir: wsPath,
+        isActive: _currentIndex == 2,
+      ),
+      const ChatScreen(),
+      const MoreScreen(),
+    ];
+
     return Scaffold(
-      body: IndexedStack(index: _currentIndex, children: _tabs),
+      body: IndexedStack(index: _currentIndex, children: tabs),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _currentIndex,
         onDestinationSelected: (index) {
@@ -64,6 +76,11 @@ class _MainShellState extends State<MainShell> {
             icon: Icon(Icons.search_outlined),
             selectedIcon: Icon(Icons.search),
             label: 'Search',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.terminal_outlined),
+            selectedIcon: Icon(Icons.terminal),
+            label: 'Terminal',
           ),
           NavigationDestination(
             icon: Icon(Icons.chat_outlined),

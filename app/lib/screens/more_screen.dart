@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
-import '../main.dart' show serverBaseUrl, serverAuthToken;
 import 'git_screen.dart';
 import 'settings_screen.dart';
-import 'terminal_screen.dart';
 
 class MoreScreen extends StatelessWidget {
   const MoreScreen({super.key});
@@ -22,23 +20,6 @@ class MoreScreen extends StatelessWidget {
               Navigator.of(
                 context,
               ).push(MaterialPageRoute(builder: (_) => const GitScreen()));
-            },
-          ),
-          const Divider(),
-          ListTile(
-            leading: const Icon(Icons.terminal),
-            title: const Text('Terminal'),
-            subtitle: const Text('Open a shell session'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => TerminalScreen(
-                    baseUrl: serverBaseUrl,
-                    token: serverAuthToken,
-                  ),
-                ),
-              );
             },
           ),
           const Divider(),

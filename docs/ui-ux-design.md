@@ -9,25 +9,26 @@
 
 ## Navigation Structure
 
-Bottom navigation bar with 4 tabs:
+Bottom navigation bar with 5 tabs:
 
 ```
-┌─────────────────────────────────────┐
-│                                     │
-│          [Active View]              │
-│                                     │
-├─────┬─────┬─────┬─────┬───────────┤
-│ 📁  │ 🔍  │ 💬  │ ⚙️  │           │
-│Files│Search│ Chat│ More│           │
-└─────┴─────┴─────┴─────┴───────────┘
+┌──────────────────────────────────────────┐
+│                                          │
+│             [Active View]                │
+│                                          │
+├────────┬────────┬─────┬──────┬──────────┤
+│  📁    │  🔍    │ >_  │  💬  │   ⚙️     │
+│ Files  │ Search │Term │ Chat │  More    │
+└────────┴────────┴─────┴──────┴──────────┘
 ```
 
 | Tab | View | Description |
 |-----|------|-------------|
-| Files | File Explorer | Project file tree + code viewer |
-| Search | Global Search | Grep across project files |
+| Files | File Explorer | Project file tree + code viewer (scoped to workspace) |
+| Search | Global Search | File name + content grep (scoped to workspace) |
+| Terminal | Shell | PTY terminal with ANSI colors, lazy-connected on first view |
 | Chat | AI Chat | Full-screen Claude conversation |
-| More | Settings/Git | Git status, diff, connections, settings |
+| More | Settings/Git | Git status, diff, settings |
 
 ## Screen Flows
 
@@ -35,7 +36,7 @@ Bottom navigation bar with 4 tabs:
 
 ```
 ┌─────────────────────────────┐
-│ ≡  ProjectName    ▼   [+]  │  ← Project selector dropdown
+│  ProjectName ▼  [refresh][+]│  ← Workspace picker (tap to switch)
 ├─────────────────────────────┤
 │ 📁 src/                    │
 │   📁 server/               │
@@ -46,9 +47,9 @@ Bottom navigation bar with 4 tabs:
 │ 📄 README.md               │
 │                             │
 │                             │
-├─────┬─────┬─────┬──────────┤
-│Files│Search│Chat │ More     │
-└─────┴─────┴─────┴──────────┘
+├──────┬──────┬────┬────┬────┤
+│Files │Search│Term│Chat│More│
+└──────┴──────┴────┴────┴────┘
 ```
 
 **Tap a file → Code Viewer:**
@@ -71,9 +72,9 @@ Bottom navigation bar with 4 tabs:
 │                               │
 ├───────────────────────────────┤
 │ [Ask AI]  [Edit]  [Copy]     │  ← Context toolbar (appears on selection)
-├─────┬─────┬─────┬────────────┤
-│Files│Search│Chat │ More       │
-└─────┴─────┴─────┴────────────┘
+├──────┬──────┬────┬────┬──────┤
+│Files │Search│Term│Chat│ More │
+└──────┴──────┴────┴────┴──────┘
 ```
 
 **Interactions:**
@@ -118,9 +119,9 @@ Bottom navigation bar with 4 tabs:
 │                             │
 ├─────────────────────────────┤
 │ [📎] Type a message... [→] │  ← 📎 = attach code context
-├─────┬─────┬─────┬──────────┤
-│Files│Search│Chat │ More     │
-└─────┴─────┴─────┴──────────┘
+├──────┬──────┬────┬────┬────┤
+│Files │Search│Term│Chat│More│
+└──────┴──────┴────┴────┴────┘
 ```
 
 **Message bubble types:**
@@ -186,40 +187,49 @@ When user taps "Ask AI" in code viewer, a bottom sheet slides up:
 - Can add more code selections via 📎 button
 - "Expand to full chat" button to move to Chat tab
 
-### 4. More Tab — Git & Settings
+### 4. Terminal Tab
+
+```
+┌─────────────────────────────┐
+│ Terminal          [refresh]  │
+├─────────────────────────────┤
+│ $ ssh user@server            │
+│ user@server:~$ ls            │
+│ Documents  Downloads  src    │
+│ user@server:~$ █             │
+│                              │
+│                              │
+│                              │
+├─────────────────────────────┤
+│ $ [Enter command...]    [→] │
+├──────┬──────┬────┬────┬────┤
+│Files │Search│Term│Chat│More│
+└──────┴──────┴────┴────┴────┘
+```
+
+- PTY-backed shell session via WebSocket
+- ANSI color rendering (SGR 8/16/256 colors, bold/italic/underline)
+- Adaptive terminal sizing based on screen dimensions
+- CR/LF handling: CRLF collapsed to single newline, standalone CR overwrites line
+- Lazy connection: WebSocket/PTY only created when Terminal tab is first viewed
+- Reconnect button in app bar
+
+### 5. More Tab — Git & Settings
 
 ```
 ┌─────────────────────────────┐
 │ More                        │
 ├─────────────────────────────┤
 │                             │
-│ Git                         │
-│ ┌─────────────────────────┐ │
-│ │ 🌿 main                 │ │  ← Current branch
-│ │ 2 modified, 1 untracked │ │
-│ └─────────────────────────┘ │
+│ Git Status               [>]│  ← View changes, log, branches
 │                             │
-│ Modified Files              │
-│  M  server/auth.go      [>]│  ← Tap → diff viewer
-│  M  server/handler.go   [>]│
-│  ?  server/new_file.go  [>]│
+│ Settings                 [>]│  ← Server URL, auth token
 │                             │
-│ Recent Commits              │
-│  a1b2c3d Fix auth flow      │
-│  b2c3d4e Add handler tests  │
+│ About                    [>]│  ← App info
 │                             │
-│ ─────────────────────────── │
-│                             │
-│ Connection                  │
-│  Server: 192.168.1.10:8080  │
-│  Status: 🟢 Connected       │
-│                             │
-│ Settings                    │
-│  Theme / Font size / ...    │
-│                             │
-├─────┬─────┬─────┬──────────┤
-│Files│Search│Chat │ More     │
-└─────┴─────┴─────┴──────────┘
+├──────┬──────┬────┬────┬────┤
+│Files │Search│Term│Chat│More│
+└──────┴──────┴────┴────┴────┘
 ```
 
 ### 5. Diff Viewer
@@ -238,9 +248,9 @@ When user taps "Ask AI" in code viewer, a bottom sheet slides up:
 │+ 45│       "auth: %w", err)  │
 │  44│   }                     │
 │                              │
-├─────┬─────┬─────┬───────────┤
-│Files│Search│Chat │ More      │
-└─────┴─────┴─────┴───────────┘
+├──────┬──────┬────┬────┬─────┤
+│Files │Search│Term│Chat│More │
+└──────┴──────┴────┴────┴─────┘
 ```
 
 ## Widget Component Library
@@ -259,6 +269,8 @@ When user taps "Ask AI" in code viewer, a bottom sheet slides up:
 | `SessionListTile` | Session preview with project name, time, summary | Session list |
 | `ContextBadge` | File:line reference pill | Contextual chat |
 | `SelectionToolbar` | Floating toolbar on code selection | Code view |
+| `AnsiText` | ANSI escape code renderer (SGR colors + styles) | Terminal |
+| `ThinkingBlock` | Collapsible thinking block accordion | Chat view |
 
 ### Navigation Patterns
 
@@ -270,7 +282,7 @@ When user taps "Ask AI" in code viewer, a bottom sheet slides up:
 | View file change from AI | Tap ToolUseCard in chat |
 | Expand subagent | Tap SubagentCard |
 | Toggle edit mode | Tap "Edit" button or pencil icon |
-| Switch project | Tap project name dropdown in Files tab |
+| Switch workspace | Tap workspace name in Files tab → picker with recent list + path input |
 | View diff | Tap modified file in Git section |
 
 ## Color & Typography
@@ -285,9 +297,10 @@ When user taps "Ask AI" in code viewer, a bottom sheet slides up:
 
 - **Provider** for reactive state
 - Key state objects:
-  - `ConnectionState` — server connection status
-  - `FileTreeState` — current project, expanded directories
-  - `EditorState` — open files, selections, edit mode
-  - `ChatState` — current conversation, message stream
-  - `SessionListState` — indexed sessions from Go server
-  - `GitState` — branch, status, diff data
+  - `WorkspaceProvider` — current workspace path, recent list (persisted)
+  - `FileProvider` — file tree nodes, scoped to workspace
+  - `EditorProvider` — open files, selections, edit mode
+  - `SearchProvider` — search results (file name + content), scoped to workspace
+  - `ChatProvider` — WebSocket connection, conversation messages, streaming state
+  - `GitProvider` — branch, status, diff, stage/unstage/commit
+  - `SettingsService` — server URL, auth token (persisted)

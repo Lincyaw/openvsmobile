@@ -10,6 +10,7 @@ import 'providers/editor_provider.dart';
 import 'providers/chat_provider.dart';
 import 'providers/git_provider.dart';
 import 'providers/search_provider.dart';
+import 'providers/workspace_provider.dart';
 
 // Compile-time defaults (overridable via --dart-define)
 const _defaultServerUrl = String.fromEnvironment(
@@ -22,8 +23,8 @@ const _defaultAuthToken = String.fromEnvironment(
 );
 
 // Runtime values loaded from SharedPreferences (set after settings load)
-late final String serverBaseUrl;
-late final String serverAuthToken;
+late String serverBaseUrl;
+late String serverAuthToken;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -50,17 +51,24 @@ void main() async {
     token: serverAuthToken,
   );
 
+  // Load workspace before building the widget tree.
+  final workspaceProvider = WorkspaceProvider();
+  await workspaceProvider.load();
+
   runApp(
     MultiProvider(
       providers: [
+        ChangeNotifierProvider.value(value: workspaceProvider),
         ChangeNotifierProvider(
-          create: (_) => FileProvider(apiClient: apiClient)..setProject('/'),
+          create: (_) => FileProvider(apiClient: apiClient)
+            ..setProject(workspaceProvider.currentPath),
         ),
         ChangeNotifierProvider(
           create: (_) => EditorProvider(apiClient: apiClient),
         ),
         ChangeNotifierProvider(
-          create: (_) => ChatProvider(apiClient: chatApiClient),
+          create: (_) => ChatProvider(apiClient: chatApiClient)
+            ..setWorkspace(workspaceProvider.currentPath),
         ),
         ChangeNotifierProvider(
           create: (_) => GitProvider(apiClient: gitApiClient),
