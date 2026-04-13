@@ -443,3 +443,76 @@ requirements:
     tests:
       - server/internal/git/git_test.go
     depends_on: [REQ-011]
+
+  # ============================================================
+  # Iteration 5: Bug fixes from code review audit
+  # ============================================================
+
+  - id: FIX-001
+    title: Search API path sanitization
+    description: >
+      handleSearch in search.go uses the path parameter directly without
+      calling sanitizePath(), unlike all other API handlers. This allows
+      directory traversal attacks. Add sanitizePath() call consistent
+      with git and files handlers.
+    priority: P0
+    status: planned
+    code:
+      - server/internal/api/search.go
+    tests: []
+    depends_on: [REQ-021]
+
+  - id: FIX-002
+    title: Search input debounce
+    description: >
+      SearchScreen fires a search on every keystroke (onChanged) with no
+      debounce. File name search triggers recursive API calls per directory,
+      content search triggers a full server-side file walk. Add a 300ms
+      debounce timer to both search modes.
+    priority: P1
+    status: planned
+    code:
+      - app/lib/screens/search_screen.dart
+    tests: []
+    depends_on: [REQ-021]
+
+  - id: FIX-003
+    title: Terminal output buffer unbounded growth
+    description: >
+      Terminal _outputBuffer (StringBuffer) grows without limit. Long
+      sessions cause memory exhaustion. Cap the buffer at ~100KB,
+      trimming old content when exceeded. Also preserve ANSI state
+      across WebSocket message chunks by storing _SgrState and remainder.
+    priority: P1
+    status: planned
+    code:
+      - app/lib/screens/terminal_screen.dart
+      - app/lib/widgets/ansi_text.dart
+    tests: []
+    depends_on: [REQ-020]
+
+  - id: FIX-004
+    title: File name validation in create dialog
+    description: >
+      File/folder creation dialog accepts any input including '/',
+      '..', and special characters. Add client-side validation to
+      reject names containing path separators or traversal patterns.
+    priority: P1
+    status: planned
+    code:
+      - app/lib/widgets/file_tree_view.dart
+    tests: []
+    depends_on: [REQ-018]
+
+  - id: FIX-005
+    title: Session tile layout with summary
+    description: >
+      _SessionTile subtitle changed from Row to Column but does not set
+      isThreeLine:true on ListTile, causing potential clipping of the
+      summary text. Add isThreeLine when summary is present.
+    priority: P2
+    status: planned
+    code:
+      - app/lib/screens/session_list_screen.dart
+    tests: []
+    depends_on: [REQ-019]
