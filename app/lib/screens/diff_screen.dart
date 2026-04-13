@@ -49,7 +49,6 @@ class DiffScreen extends StatelessWidget {
                       children: List.generate(lines.length, (index) {
                         final line = lines[index];
                         return _DiffLine(
-                          lineNumber: index + 1,
                           text: line,
                           colorScheme: colorScheme,
                         );
@@ -64,30 +63,29 @@ class DiffScreen extends StatelessWidget {
 }
 
 class _DiffLine extends StatelessWidget {
-  final int lineNumber;
   final String text;
   final ColorScheme colorScheme;
 
   const _DiffLine({
-    required this.lineNumber,
     required this.text,
     required this.colorScheme,
   });
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     Color? backgroundColor;
     Color textColor = colorScheme.onSurface;
 
     if (text.startsWith('+')) {
-      backgroundColor = Colors.green.withAlpha(40);
-      textColor = Colors.green.shade300;
+      backgroundColor = Colors.green.withAlpha(isDark ? 40 : 25);
+      textColor = isDark ? Colors.green.shade300 : Colors.green.shade800;
     } else if (text.startsWith('-')) {
-      backgroundColor = Colors.red.withAlpha(40);
-      textColor = Colors.red.shade300;
+      backgroundColor = Colors.red.withAlpha(isDark ? 40 : 25);
+      textColor = isDark ? Colors.red.shade300 : Colors.red.shade800;
     } else if (text.startsWith('@@')) {
-      backgroundColor = Colors.blue.withAlpha(40);
-      textColor = Colors.blue.shade300;
+      backgroundColor = Colors.blue.withAlpha(isDark ? 40 : 25);
+      textColor = isDark ? Colors.blue.shade300 : Colors.blue.shade800;
     }
 
     return Container(
@@ -95,19 +93,6 @@ class _DiffLine extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          SizedBox(
-            width: 48,
-            child: Text(
-              '$lineNumber',
-              textAlign: TextAlign.right,
-              style: TextStyle(
-                fontFamily: 'monospace',
-                fontSize: 13,
-                color: colorScheme.outline,
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
           Text(
             text,
             style: TextStyle(

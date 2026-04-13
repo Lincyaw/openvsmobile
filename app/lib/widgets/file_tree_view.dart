@@ -176,24 +176,29 @@ class _FileTreeItem extends StatelessWidget {
   }
 
   Widget _getFileIcon(String name, bool isDir, ThemeData theme) {
+    final isDark = theme.brightness == Brightness.dark;
     if (isDir) {
-      return Icon(Icons.folder, size: 20, color: Colors.amber.shade700);
+      return Icon(
+        Icons.folder,
+        size: 20,
+        color: isDark ? Colors.amber.shade400 : Colors.amber.shade700,
+      );
     }
 
     final ext = name.contains('.') ? name.split('.').last.toLowerCase() : '';
 
     switch (ext) {
       case 'dart':
-        return Icon(Icons.code, size: 20, color: Colors.blue.shade400);
+        return Icon(Icons.code, size: 20, color: isDark ? Colors.blue.shade300 : Colors.blue.shade600);
       case 'go':
-        return Icon(Icons.code, size: 20, color: Colors.cyan.shade400);
+        return Icon(Icons.code, size: 20, color: isDark ? Colors.cyan.shade300 : Colors.cyan.shade600);
       case 'ts':
       case 'tsx':
       case 'js':
       case 'jsx':
-        return Icon(Icons.javascript, size: 20, color: Colors.yellow.shade700);
+        return Icon(Icons.javascript, size: 20, color: isDark ? Colors.yellow.shade600 : Colors.yellow.shade800);
       case 'json':
-        return Icon(Icons.data_object, size: 20, color: Colors.orange.shade400);
+        return Icon(Icons.data_object, size: 20, color: isDark ? Colors.orange.shade300 : Colors.orange.shade600);
       case 'md':
       case 'txt':
         return Icon(
