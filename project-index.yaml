@@ -340,7 +340,7 @@ requirements:
       Settings UI: server URL field, auth token field, save button, test
       connection button. Accessible from More tab.
     priority: P0
-    status: planned
+    status: implemented
     code:
       - app/lib/screens/settings_screen.dart
       - app/lib/services/settings_service.dart
@@ -357,7 +357,7 @@ requirements:
       Add FAB or AppBar action on Files screen for "New File" / "New Folder"
       at root level. Confirmation dialog before delete.
     priority: P1
-    status: planned
+    status: implemented
     code:
       - app/lib/widgets/file_tree_view.dart
       - app/lib/screens/files_screen.dart
@@ -374,7 +374,7 @@ requirements:
       response. Flutter SessionMeta model and _SessionTile updated to
       display it.
     priority: P2
-    status: planned
+    status: implemented
     code:
       - server/internal/claude/session.go
       - server/internal/api/sessions.go
@@ -393,7 +393,7 @@ requirements:
       send resize messages via WebSocket. Support basic 8/16/256 colors
       and bold/italic/underline attributes.
     priority: P2
-    status: planned
+    status: implemented
     code:
       - app/lib/screens/terminal_screen.dart
       - app/lib/widgets/ansi_text.dart
@@ -410,7 +410,7 @@ requirements:
       results show file path, line number, and matching line preview.
       Tap navigates to code viewer at the matched line.
     priority: P1
-    status: planned
+    status: implemented
     code:
       - server/internal/api/search.go
       - server/internal/api/router.go
@@ -432,7 +432,7 @@ requirements:
       Flutter GitScreen changes view: add stage/unstage toggle buttons
       per file, commit button with message input dialog.
     priority: P1
-    status: planned
+    status: implemented
     code:
       - server/internal/git/git.go
       - server/internal/api/git.go
