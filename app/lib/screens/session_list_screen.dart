@@ -101,8 +101,10 @@ class _SessionListScreenState extends State<SessionListScreen> {
             child: Column(
               children: [
                 Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
                   child: TextField(
                     controller: _searchController,
                     decoration: InputDecoration(
@@ -168,9 +170,9 @@ class _SessionListScreenState extends State<SessionListScreen> {
   Widget _buildTimelineTab(List<SessionMeta> sessions) {
     final widgets = _buildTimelineList(sessions);
     return RefreshIndicator(
-      onRefresh: () => context
-          .read<ChatProvider>()
-          .loadSessions(query: _searchQuery.isEmpty ? null : _searchQuery),
+      onRefresh: () => context.read<ChatProvider>().loadSessions(
+        query: _searchQuery.isEmpty ? null : _searchQuery,
+      ),
       child: ListView(children: widgets),
     );
   }
@@ -180,9 +182,9 @@ class _SessionListScreenState extends State<SessionListScreen> {
     final projectNames = grouped.keys.toList()..sort();
 
     return RefreshIndicator(
-      onRefresh: () => context
-          .read<ChatProvider>()
-          .loadSessions(query: _searchQuery.isEmpty ? null : _searchQuery),
+      onRefresh: () => context.read<ChatProvider>().loadSessions(
+        query: _searchQuery.isEmpty ? null : _searchQuery,
+      ),
       child: ListView.builder(
         itemCount: projectNames.length,
         itemBuilder: (context, index) {
@@ -243,10 +245,12 @@ class _SessionListScreenState extends State<SessionListScreen> {
           ),
           const SizedBox(height: 16),
           Text(
-            _searchQuery.isNotEmpty ? 'No matching sessions' : 'No sessions yet',
+            _searchQuery.isNotEmpty
+                ? 'No matching sessions'
+                : 'No sessions yet',
             style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
           ),
         ],
       ),
@@ -266,9 +270,9 @@ class _DateHeader extends StatelessWidget {
       child: Text(
         label,
         style: Theme.of(context).textTheme.labelLarge?.copyWith(
-              color: Theme.of(context).colorScheme.primary,
-              fontWeight: FontWeight.w600,
-            ),
+          color: Theme.of(context).colorScheme.primary,
+          fontWeight: FontWeight.w600,
+        ),
       ),
     );
   }
@@ -278,10 +282,7 @@ class _ProjectGroup extends StatelessWidget {
   final String projectName;
   final List<SessionMeta> sessions;
 
-  const _ProjectGroup({
-    required this.projectName,
-    required this.sessions,
-  });
+  const _ProjectGroup({required this.projectName, required this.sessions});
 
   @override
   Widget build(BuildContext context) {
@@ -295,8 +296,7 @@ class _ProjectGroup extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
           child: Row(
             children: [
-              Icon(Icons.folder_outlined,
-                  size: 18, color: colorScheme.primary),
+              Icon(Icons.folder_outlined, size: 18, color: colorScheme.primary),
               const SizedBox(width: 8),
               Text(
                 projectName,
@@ -307,8 +307,7 @@ class _ProjectGroup extends StatelessWidget {
               ),
               const SizedBox(width: 8),
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                 decoration: BoxDecoration(
                   color: colorScheme.primaryContainer,
                   borderRadius: BorderRadius.circular(10),
@@ -356,29 +355,48 @@ class _SessionTile extends StatelessWidget {
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
       ),
-      subtitle: Row(
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            session.projectName,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: colorScheme.onSurfaceVariant,
-            ),
-          ),
-          if (session.entrypoint.isNotEmpty) ...[
-            const SizedBox(width: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: colorScheme.tertiaryContainer,
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: Text(
-                session.entrypoint,
-                style: theme.textTheme.labelSmall?.copyWith(
-                  color: colorScheme.onTertiaryContainer,
-                  fontSize: 10,
+          Row(
+            children: [
+              Text(
+                session.projectName,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
                 ),
               ),
+              if (session.entrypoint.isNotEmpty) ...[
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: colorScheme.tertiaryContainer,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    session.entrypoint,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: colorScheme.onTertiaryContainer,
+                      fontSize: 10,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          if (session.summary.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              session.summary,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
+              ),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
             ),
           ],
         ],
@@ -393,5 +411,4 @@ class _SessionTile extends StatelessWidget {
       },
     );
   }
-
 }

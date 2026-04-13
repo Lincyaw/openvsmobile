@@ -55,6 +55,7 @@ func (idx *SessionIndex) ScanSessions() error {
 			continue
 		}
 		if meta.SessionID != "" {
+			meta.Summary = idx.extractSummary(meta.SessionID)
 			idx.sessions = append(idx.sessions, meta)
 		}
 	}
@@ -148,6 +149,91 @@ func (idx *SessionIndex) GetSubagentMeta(sessionID, agentID string) (*SubagentMe
 		return nil, fmt.Errorf("parsing subagent meta: %w", err)
 	}
 	return &meta, nil
+}
+
+// extractSummary peeks at the JSONL file for a session and returns the first
+// user message text, truncated to 120 characters. It reads at most 10 lines
+// for efficiency.
+func (idx *SessionIndex) extractSummary(sessionID string) string {
+	jsonlPath, err := idx.findSessionJSONL(sessionID)
+	if err != nil {
+		return ""
+	}
+
+	f, err := os.Open(jsonlPath)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+
+	const maxLines = 10
+	for i := 0; i < maxLines && scanner.Scan(); i++ {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var typeHolder struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(line, &typeHolder) != nil {
+			continue
+		}
+		if typeHolder.Type != "user" && typeHolder.Type != "human" {
+			continue
+		}
+
+		text := extractFirstTextFromContent(line)
+		if text == "" {
+			continue
+		}
+
+		// Truncate to 120 characters.
+		if len([]rune(text)) > 120 {
+			text = string([]rune(text)[:120]) + "..."
+		}
+		return text
+	}
+
+	return ""
+}
+
+// extractFirstTextFromContent extracts the first text content from a user/human message line.
+func extractFirstTextFromContent(data []byte) string {
+	var raw struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(data, &raw) != nil || raw.Content == nil {
+		return ""
+	}
+
+	// Content can be a plain string.
+	if len(raw.Content) > 0 && raw.Content[0] == '"' {
+		var s string
+		if json.Unmarshal(raw.Content, &s) == nil {
+			return strings.TrimSpace(s)
+		}
+		return ""
+	}
+
+	// Content can be an array of blocks.
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw.Content, &blocks) != nil {
+		return ""
+	}
+	for _, b := range blocks {
+		if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
+			return strings.TrimSpace(b.Text)
+		}
+	}
+
+	return ""
 }
 
 // findSessionJSONL searches for the session JSONL file across project directories.

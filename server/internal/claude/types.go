@@ -4,17 +4,18 @@ import "encoding/json"
 
 // SessionMeta holds metadata about a Claude session.
 type SessionMeta struct {
-	PID       int    `json:"pid"`
-	SessionID string `json:"sessionId"`
-	Cwd       string `json:"cwd"`
-	StartedAt int64  `json:"startedAt"`
-	Kind      string `json:"kind"`
+	PID        int    `json:"pid"`
+	SessionID  string `json:"sessionId"`
+	Cwd        string `json:"cwd"`
+	StartedAt  int64  `json:"startedAt"`
+	Kind       string `json:"kind"`
 	Entrypoint string `json:"entrypoint"`
+	Summary    string `json:"summary"`
 }
 
 // Message represents a parsed JSONL message from a session log.
 type Message struct {
-	Type    string         `json:"type"`
+	Type    string          `json:"type"`
 	Content json.RawMessage `json:"content,omitempty"`
 
 	// Parsed content blocks (for assistant and user messages).
