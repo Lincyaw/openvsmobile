@@ -9,6 +9,7 @@ package-lock.json
 
 # Go
 server/bin/
+server/server_bin
 server/vendor/
 
 # IDE
