@@ -1,17 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
-/// Strip ANSI escape sequences from raw PTY output.
-String _stripAnsi(String text) {
-  return text.replaceAll(
-    RegExp(
-        r'\x1B\[[0-9;]*[a-zA-Z]|\x1B\].*?\x07|\x1B[()][0-9A-B]|\x1B\[[\?]?[0-9;]*[hlm]'),
-    '',
-  );
-}
+import '../widgets/ansi_text.dart';
 
 /// Simple terminal screen that connects to the Go server's /ws/terminal
 /// WebSocket endpoint. Sends/receives base64-encoded PTY I/O.
@@ -32,6 +26,11 @@ class TerminalScreen extends StatefulWidget {
 }
 
 class _TerminalScreenState extends State<TerminalScreen> {
+  // Terminal font metrics — used for adaptive sizing.
+  static const double _fontSize = 13;
+  static const double _lineHeight = 1.4;
+  static const double _termPadding = 8;
+
   WebSocketChannel? _channel;
   StreamSubscription<dynamic>? _subscription;
   final _outputController = ScrollController();
@@ -41,6 +40,9 @@ class _TerminalScreenState extends State<TerminalScreen> {
   String _terminalId = '';
   bool _connected = false;
   String? _error;
+  int _cols = 80;
+  int _rows = 24;
+  double? _charWidth;
 
   @override
   void initState() {
@@ -59,12 +61,50 @@ class _TerminalScreenState extends State<TerminalScreen> {
     super.dispose();
   }
 
+  /// Measure the width of a single monospace character at the configured size.
+  double _getCharWidth() {
+    if (_charWidth != null) return _charWidth!;
+    final paragraph = ui.ParagraphBuilder(
+      ui.ParagraphStyle(fontFamily: 'monospace', fontSize: _fontSize),
+    )..addText('M');
+    final p = paragraph.build()
+      ..layout(const ui.ParagraphConstraints(width: double.infinity));
+    _charWidth = p.maxIntrinsicWidth;
+    return _charWidth!;
+  }
+
+  /// Calculate terminal columns and rows based on available pixel dimensions.
+  (int, int) _calcTermSize(double width, double height) {
+    final cw = _getCharWidth();
+    final lineHeightPx = _fontSize * _lineHeight;
+    final cols = ((width - _termPadding * 2) / cw).floor().clamp(20, 300);
+    final rows = ((height) / lineHeightPx).floor().clamp(5, 100);
+    return (cols, rows);
+  }
+
+  /// Send a resize message to the server when terminal dimensions change.
+  void _sendResize(int cols, int rows) {
+    if (!_connected || _channel == null || _terminalId.isEmpty) return;
+    if (cols == _cols && rows == _rows) return;
+    _cols = cols;
+    _rows = rows;
+    _channel!.sink.add(
+      jsonEncode({
+        'type': 'resize',
+        'id': _terminalId,
+        'rows': rows,
+        'cols': cols,
+      }),
+    );
+  }
+
   void _connect() {
     final wsBase = widget.baseUrl
         .replaceFirst('https://', 'wss://')
         .replaceFirst('http://', 'ws://');
-    final base =
-        wsBase.endsWith('/') ? wsBase.substring(0, wsBase.length - 1) : wsBase;
+    final base = wsBase.endsWith('/')
+        ? wsBase.substring(0, wsBase.length - 1)
+        : wsBase;
     final uri = Uri.parse('$base/ws/terminal?token=${widget.token}');
 
     _channel = WebSocketChannel.connect(uri);
@@ -74,16 +114,18 @@ class _TerminalScreenState extends State<TerminalScreen> {
       onDone: () => setState(() => _connected = false),
     );
 
-    // Create a terminal session.
+    // Create a terminal session with adaptive dimensions.
     _terminalId = 'term-${DateTime.now().millisecondsSinceEpoch}';
-    _channel!.sink.add(jsonEncode({
-      'type': 'create',
-      'id': _terminalId,
-      'shell': '',
-      'workDir': widget.workDir,
-      'rows': 24,
-      'cols': 80,
-    }));
+    _channel!.sink.add(
+      jsonEncode({
+        'type': 'create',
+        'id': _terminalId,
+        'shell': '',
+        'workDir': widget.workDir,
+        'rows': _rows,
+        'cols': _cols,
+      }),
+    );
   }
 
   void _onMessage(dynamic data) {
@@ -100,7 +142,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
         if (encoded != null) {
           final bytes = base64Decode(encoded);
           final text = utf8.decode(bytes, allowMalformed: true);
-          setState(() => _outputBuffer.write(_stripAnsi(text)));
+          setState(() => _outputBuffer.write(text));
           _scrollToBottom();
         }
         break;
@@ -116,19 +158,14 @@ class _TerminalScreenState extends State<TerminalScreen> {
   void _sendInput(String text) {
     if (!_connected || _channel == null) return;
     final encoded = base64Encode(utf8.encode(text));
-    _channel!.sink.add(jsonEncode({
-      'type': 'input',
-      'id': _terminalId,
-      'data': encoded,
-    }));
+    _channel!.sink.add(
+      jsonEncode({'type': 'input', 'id': _terminalId, 'data': encoded}),
+    );
   }
 
   void _sendClose() {
     if (_channel == null || _terminalId.isEmpty) return;
-    _channel!.sink.add(jsonEncode({
-      'type': 'close',
-      'id': _terminalId,
-    }));
+    _channel!.sink.add(jsonEncode({'type': 'close', 'id': _terminalId}));
   }
 
   void _scrollToBottom() {
@@ -204,26 +241,40 @@ class _TerminalScreenState extends State<TerminalScreen> {
               ),
             ),
           Expanded(
-            child: Container(
-              color: isDark
-                  ? const Color(0xFF1E1E1E)
-                  : const Color(0xFFF5F5F5),
-              width: double.infinity,
-              padding: const EdgeInsets.all(8),
-              child: SingleChildScrollView(
-                controller: _outputController,
-                child: SelectableText(
-                  _outputBuffer.toString(),
-                  style: TextStyle(
-                    fontFamily: 'monospace',
-                    fontSize: 13,
-                    height: 1.4,
-                    color: isDark
-                        ? const Color(0xFFD4D4D4)
-                        : const Color(0xFF1E1E1E),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                // Calculate adaptive terminal size from available space.
+                final (cols, rows) = _calcTermSize(
+                  constraints.maxWidth,
+                  constraints.maxHeight,
+                );
+                // Send resize if dimensions changed (deferred to avoid
+                // setState during build).
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  _sendResize(cols, rows);
+                });
+
+                final fgColor = isDark
+                    ? const Color(0xFFD4D4D4)
+                    : const Color(0xFF1E1E1E);
+
+                return Container(
+                  color: isDark
+                      ? const Color(0xFF1E1E1E)
+                      : const Color(0xFFF5F5F5),
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(_termPadding),
+                  child: SingleChildScrollView(
+                    controller: _outputController,
+                    child: AnsiText(
+                      _outputBuffer.toString(),
+                      fontSize: _fontSize,
+                      lineHeight: _lineHeight,
+                      defaultForeground: fgColor,
+                    ),
                   ),
-                ),
-              ),
+                );
+              },
             ),
           ),
           Container(
@@ -261,11 +312,12 @@ class _TerminalScreenState extends State<TerminalScreen> {
                       border: InputBorder.none,
                       hintText: 'Enter command...',
                       hintStyle: TextStyle(
-                        color: colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                        color: colorScheme.onSurfaceVariant.withValues(
+                          alpha: 0.5,
+                        ),
                       ),
                       isDense: true,
-                      contentPadding:
-                          const EdgeInsets.symmetric(vertical: 8),
+                      contentPadding: const EdgeInsets.symmetric(vertical: 8),
                     ),
                     onSubmitted: _onSubmit,
                     textInputAction: TextInputAction.send,
@@ -283,8 +335,10 @@ class _TerminalScreenState extends State<TerminalScreen> {
                   onPressed: _connected
                       ? () => _onSubmit(_inputController.text)
                       : null,
-                  constraints:
-                      const BoxConstraints(minWidth: 40, minHeight: 40),
+                  constraints: const BoxConstraints(
+                    minWidth: 40,
+                    minHeight: 40,
+                  ),
                 ),
               ],
             ),
