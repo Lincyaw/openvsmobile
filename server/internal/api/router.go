@@ -65,6 +65,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/git/log", s.handleGitLog)
 	mux.HandleFunc("GET /api/git/branches", s.handleGitBranches)
 
+	// Search endpoint.
+	mux.HandleFunc("GET /api/search", s.handleSearch)
+
 	// Diagnostics endpoint.
 	mux.HandleFunc("GET /api/diagnostics", s.handleDiagnostics)
 

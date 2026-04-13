@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/diagnostic.dart';
 import '../models/file_entry.dart';
+import '../models/search_result.dart';
 
 class ApiClient {
   final String baseUrl;
@@ -107,6 +108,30 @@ class ApiClient {
     final List<dynamic> jsonList = decoded as List<dynamic>;
     return jsonList
         .map((e) => Diagnostic.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Search file contents for [query] under [path].
+  Future<List<ContentSearchResult>> searchContent(
+    String query,
+    String path,
+  ) async {
+    final base = baseUrl.endsWith('/')
+        ? baseUrl.substring(0, baseUrl.length - 1)
+        : baseUrl;
+    final uri = Uri.parse('$base/api/search').replace(
+      queryParameters: {'token': token, 'q': query, 'path': path},
+    );
+    final response = await _client.get(uri, headers: _headers);
+    if (response.statusCode != 200) {
+      throw ApiException(
+        'Failed to search content: ${response.statusCode}',
+        response.statusCode,
+      );
+    }
+    final List<dynamic> jsonList = jsonDecode(response.body) as List<dynamic>;
+    return jsonList
+        .map((e) => ContentSearchResult.fromJson(e as Map<String, dynamic>))
         .toList();
   }
 
