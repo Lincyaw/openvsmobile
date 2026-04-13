@@ -1,0 +1,328 @@
+project:
+  name: vscode-mobile
+  languages: [dart, go]
+  description: >
+    Flutter Android client for OpenVSCode Server with Go server as protocol
+    translator and Claude AI integration layer.
+
+requirements:
+  # ============================================================
+  # Iteration 1: Core connectivity + code browsing + AI chat
+  # ============================================================
+
+  # --- Go Server: OpenVSCode Protocol Layer ---
+
+  - id: REQ-001
+    title: VS Code WebSocket protocol client
+    description: >
+      Go server connects to OpenVSCode Server via WebSocket, completes the
+      3-step handshake (auth → sign → connectionType=Management), and
+      maintains a persistent Management connection with reconnection support.
+      Protocol layers: standard WebSocket → JSON handshake (AuthRequest →
+      SignRequest → ConnectionTypeRequest) → PersistentProtocol binary frames
+      → IPC channel messages. Reference: openvscode-server/src/vs/platform/
+      remote/common/remoteAgentConnection.ts and src/vs/base/parts/ipc/
+      common/ipc.net.ts for frame format.
+    priority: P0
+    status: implemented
+    code:
+      - server/internal/vscode/protocol.go
+      - server/internal/vscode/client.go
+      - server/internal/vscode/ipc.go
+    tests:
+      - server/internal/vscode/protocol_test.go
+      - server/internal/vscode/integration_test.go
+    depends_on: []
+
+  - id: REQ-002
+    title: File system channel proxy
+    description: >
+      Go server proxies the "remoteFilesystem" IPC channel (registered in
+      serverServices.ts as REMOTE_FILE_SYSTEM_CHANNEL_NAME), translating
+      VS Code binary IPC into JSON API for Flutter. Operations: readdir,
+      readFile, writeFile, stat, rename, delete, mkdir, watch (event stream).
+      Server-side implementation: RemoteAgentFileSystemProviderChannel
+      extending AbstractDiskFileSystemProviderChannel. URI transformation
+      via IURITransformer for remote authority mapping.
+    priority: P0
+    status: implemented
+    code:
+      - server/internal/vscode/filesystem.go
+      - server/internal/api/fs_adapter.go
+    tests:
+      - server/internal/vscode/filesystem_test.go
+      - server/internal/api/fs_adapter_test.go
+    depends_on: [REQ-001]
+
+  - id: REQ-003
+    title: Go server HTTP/WebSocket API
+    description: >
+      Go server exposes a unified API for the Flutter client.
+      REST endpoints: GET /api/files/* (list/read), PUT /api/files/* (write),
+      GET /api/sessions (list Claude sessions), GET /api/sessions/:id/messages.
+      WebSocket endpoints: /ws/files (file watch events), /ws/chat (AI
+      conversation stream), /ws/terminal (terminal I/O).
+      Auth: connection token passed as query parameter or header.
+    priority: P0
+    status: implemented
+    code:
+      - server/internal/api/router.go
+      - server/internal/api/files.go
+      - server/internal/api/sessions.go
+      - server/internal/api/websocket.go
+      - server/cmd/server/main.go
+    tests:
+      - server/internal/api/handler_test.go
+    depends_on: [REQ-001]
+
+  # --- Go Server: Claude AI Layer ---
+
+  - id: REQ-004
+    title: Claude CLI process manager
+    description: >
+      Go server spawns and manages claude CLI processes using
+      --input-format stream-json --output-format stream-json mode.
+      Supports starting new conversations, resuming sessions (--resume),
+      and graceful termination.
+    priority: P0
+    status: implemented
+    code:
+      - server/internal/claude/process.go
+      - server/internal/claude/types.go
+    tests:
+      - server/internal/claude/process_test.go
+    depends_on: [REQ-003]
+
+  - id: REQ-005
+    title: Claude session history API
+    description: >
+      Go server scans ~/.claude/sessions/<pid>.json (metadata: sessionId,
+      cwd, startedAt, entrypoint) and ~/.claude/projects/<slug>/<sessionId>.jsonl
+      (conversation). JSONL types: user (content: text or tool_result blocks),
+      assistant (content: text, thinking, tool_use blocks), system, attachment,
+      file-history-snapshot (trackedFileBackups with original file content),
+      permission-mode, queue-operation, last-prompt.
+      Subagent data: <sessionId>/subagents/agent-<agentId>.jsonl + .meta.json.
+      Link parent→subagent: Agent tool_use → tool_result contains agentId string
+      → load subagent JSONL. Meta has agentType and description.
+      API annotates tool_use blocks of type Edit/Write/Bash with file paths
+      and line numbers for client-side navigation.
+      See docs/claude-session-format.md for full schema.
+    priority: P0
+    status: implemented
+    code:
+      - server/internal/claude/session.go
+      - server/internal/claude/types.go
+      - server/internal/api/sessions.go
+    tests:
+      - server/internal/claude/session_test.go
+    depends_on: [REQ-003]
+
+  # --- Flutter Client: Code Browsing ---
+
+  - id: REQ-006
+    title: Project file browser
+    description: >
+      Flutter FileTreeView widget: expandable directory tree with file type
+      icons. Project selector dropdown in app bar for switching workspaces.
+      Lazy-loads directory contents on expand (via GET /api/files/<path>).
+      Bottom navigation tab "Files" hosts this view.
+      See docs/ui-ux-design.md "Files Tab" for layout.
+    priority: P0
+    status: implemented
+    code:
+      - app/lib/screens/files_screen.dart
+      - app/lib/widgets/file_tree_view.dart
+      - app/lib/providers/file_provider.dart
+      - app/lib/services/api_client.dart
+      - app/lib/models/file_entry.dart
+    tests: []
+    depends_on: [REQ-002, REQ-003]
+
+  - id: REQ-007
+    title: Code viewer with syntax highlighting
+    description: >
+      Flutter CodeViewer widget with syntax highlighting via highlight or
+      flutter_highlight package (TextMate grammar compatible). Features:
+      line numbers, horizontal scroll, pinch-to-zoom font size.
+      Long-press enters selection mode with drag handles. Selection toolbar
+      slides up with "Ask AI" / "Edit" / "Copy" actions.
+      See docs/ui-ux-design.md "Code Viewer" for interaction spec.
+    priority: P0
+    status: implemented
+    code:
+      - app/lib/widgets/code_viewer.dart
+      - app/lib/screens/code_screen.dart
+      - app/lib/providers/editor_provider.dart
+    tests: []
+    depends_on: [REQ-006]
+
+  - id: REQ-008
+    title: Simple code editing
+    description: >
+      Flutter CodeEditor widget extending CodeViewer. Edit mode activated
+      by toolbar button. Shows cursor, soft keyboard, basic operations:
+      insert, delete, select-and-replace. Save button triggers PUT
+      /api/files/<path> through Go server to OpenVSCode Server.
+      No advanced features (no multi-cursor, snippets, bracket matching).
+    priority: P0
+    status: implemented
+    code:
+      - app/lib/widgets/code_editor.dart
+    tests: []
+    depends_on: [REQ-007]
+
+  # --- Flutter Client: AI Chat ---
+
+  - id: REQ-009
+    title: Contextual AI chat (code selection)
+    description: >
+      User taps "Ask AI" in selection toolbar → draggable bottom sheet slides
+      up over code viewer. Context badge shows file:lines. Messages sent via
+      WebSocket /ws/chat, Go server pipes to claude CLI stdin (stream-json).
+      Streaming responses rendered as they arrive. 📎 button to add more
+      code selections. "Expand" button moves to full Chat tab.
+      See docs/ui-ux-design.md "Contextual AI Chat" for layout.
+    priority: P0
+    status: implemented
+    code:
+      - app/lib/widgets/contextual_chat.dart
+    tests: []
+    depends_on: [REQ-004, REQ-007]
+
+  - id: REQ-010
+    title: Full-screen AI chat view
+    description: >
+      Chat tab with chat-app-style UI. ChatBubble widgets for user/assistant.
+      Assistant content blocks rendered as: text → markdown with code blocks,
+      thinking → collapsed accordion, tool_use:Edit → ToolUseCard showing
+      file path + line range (tap → code viewer with diff highlighted),
+      tool_use:Write → "created file" card, tool_use:Bash → command card
+      with collapsible output + status icon, tool_use:Agent → SubagentCard
+      (expandable, shows subagent type badge + full conversation).
+      tool_result rendered inline below its tool_use.
+      Header: "Sessions" → session list, "New Chat" → start conversation.
+      Session list shows all sessions grouped by project with timestamps.
+      See docs/ui-ux-design.md "Chat Tab" for full spec.
+    priority: P0
+    status: implemented
+    code:
+      - app/lib/screens/chat_screen.dart
+      - app/lib/screens/session_list_screen.dart
+      - app/lib/screens/session_detail_screen.dart
+      - app/lib/widgets/chat_bubble.dart
+      - app/lib/widgets/tool_use_card.dart
+      - app/lib/widgets/thinking_block.dart
+      - app/lib/providers/chat_provider.dart
+      - app/lib/services/chat_api_client.dart
+      - app/lib/models/chat_message.dart
+      - app/lib/models/session.dart
+    tests: []
+    depends_on: [REQ-004, REQ-005]
+
+  # ============================================================
+  # Iteration 2: Git/Diff + LSP + polish
+  # ============================================================
+
+  - id: REQ-011
+    title: Git status view
+    description: >
+      Flutter view showing git status: modified/staged/untracked files,
+      current branch, recent commits. Data sourced via terminal channel
+      or dedicated git commands through Go server.
+    priority: P1
+    status: implemented
+    code:
+      - server/internal/git/git.go
+      - server/internal/api/git.go
+      - app/lib/screens/git_screen.dart
+      - app/lib/providers/git_provider.dart
+      - app/lib/services/git_api_client.dart
+      - app/lib/models/git_models.dart
+    tests:
+      - server/internal/git/git_test.go
+    depends_on: [REQ-003]
+
+  - id: REQ-012
+    title: Diff viewer
+    description: >
+      Side-by-side or unified diff view for changed files.
+      Syntax-highlighted diff with add/remove coloring.
+      Accessible from git status view and from AI chat file-change cards.
+    priority: P1
+    status: implemented
+    code:
+      - app/lib/screens/diff_screen.dart
+    tests: []
+    depends_on: [REQ-011, REQ-007]
+
+  - id: REQ-013
+    title: LSP diagnostics integration
+    description: >
+      Run language-specific diagnostic commands (go vet, dart analyze, eslint,
+      pylint) via the Go server, parse output into structured diagnostics,
+      and display inline in the code viewer with gutter icons and severity
+      coloring. Pragmatic approach using CLI tools instead of full LSP proxy.
+    priority: P1
+    status: implemented
+    code:
+      - server/internal/diagnostics/diagnostics.go
+      - server/internal/api/diagnostics.go
+      - app/lib/models/diagnostic.dart
+      - app/lib/widgets/code_viewer.dart
+      - app/lib/providers/editor_provider.dart
+      - app/lib/services/api_client.dart
+    tests:
+      - server/internal/diagnostics/diagnostics_test.go
+    depends_on: [REQ-001, REQ-003, REQ-007]
+
+  - id: REQ-014
+    title: Terminal channel proxy
+    description: >
+      Go server provides PTY-based terminal I/O via WebSocket to the
+      Flutter client. Supports creating/resizing/destroying terminal
+      sessions. Uses creack/pty for direct PTY management.
+    priority: P1
+    status: implemented
+    code:
+      - server/internal/terminal/terminal.go
+      - server/internal/api/terminal.go
+    tests:
+      - server/internal/terminal/terminal_test.go
+    depends_on: [REQ-001, REQ-003]
+
+  # ============================================================
+  # Iteration 3: Nice-to-have
+  # ============================================================
+
+  - id: REQ-015
+    title: OpenVSCode Server upstream sync tooling
+    description: >
+      Shell script to fetch upstream changes from
+      gitpod-io/openvscode-server, merge into fork, and report
+      conflicts. Supports --dry-run mode.
+    priority: P2
+    status: implemented
+    code:
+      - scripts/sync-upstream.sh
+    tests: []
+    depends_on: []
+
+  - id: REQ-016
+    title: AI chat history browser
+    description: >
+      Browse all past Claude sessions with search and filtering.
+      Timeline view with date section headers, project grouping tab.
+      Server-side search via query params. Tap a session to see full
+      conversation with navigable references.
+    priority: P2
+    status: implemented
+    code:
+      - server/internal/claude/session.go
+      - server/internal/api/sessions.go
+      - app/lib/screens/session_list_screen.dart
+      - app/lib/providers/chat_provider.dart
+      - app/lib/services/chat_api_client.dart
+    tests:
+      - server/internal/claude/session_test.go
+    depends_on: [REQ-005, REQ-010]

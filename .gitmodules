@@ -1,0 +1,3 @@
+[submodule "openvscode-server"]
+	path = openvscode-server
+	url = git@github.com:Lincyaw/openvscode-server.git

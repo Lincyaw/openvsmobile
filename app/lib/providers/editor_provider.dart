@@ -1,0 +1,192 @@
+import 'package:flutter/foundation.dart';
+import '../models/diagnostic.dart';
+import '../services/api_client.dart';
+
+/// Represents an open file with its content and edit state.
+class OpenFile {
+  final String path;
+  final String name;
+  String originalContent;
+  String currentContent;
+  bool isEditing;
+
+  OpenFile({
+    required this.path,
+    required this.name,
+    required this.originalContent,
+    String? currentContent,
+    this.isEditing = false,
+  }) : currentContent = currentContent ?? originalContent;
+
+  bool get hasUnsavedChanges => currentContent != originalContent;
+}
+
+class EditorProvider extends ChangeNotifier {
+  final ApiClient apiClient;
+
+  final List<OpenFile> _openFiles = [];
+  int _currentFileIndex = -1;
+  String? _selectedText;
+  bool _isLoading = false;
+  String? _error;
+
+  // Diagnostics for the current file.
+  List<Diagnostic> _diagnostics = [];
+  List<Diagnostic> get diagnostics => List.unmodifiable(_diagnostics);
+  bool _isLoadingDiagnostics = false;
+  bool get isLoadingDiagnostics => _isLoadingDiagnostics;
+
+  EditorProvider({required this.apiClient});
+
+  List<OpenFile> get openFiles => List.unmodifiable(_openFiles);
+  OpenFile? get currentFile =>
+      _currentFileIndex >= 0 && _currentFileIndex < _openFiles.length
+      ? _openFiles[_currentFileIndex]
+      : null;
+  int get currentFileIndex => _currentFileIndex;
+  String? get selectedText => _selectedText;
+  bool get isLoading => _isLoading;
+  String? get error => _error;
+
+  /// Open a file by path. If already open, switch to it.
+  Future<void> openFile(String path) async {
+    final existingIndex = _openFiles.indexWhere((f) => f.path == path);
+    if (existingIndex >= 0) {
+      _currentFileIndex = existingIndex;
+      notifyListeners();
+      return;
+    }
+
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final content = await apiClient.readFile(path);
+      final name = path.split('/').last;
+      final file = OpenFile(path: path, name: name, originalContent: content);
+      _openFiles.add(file);
+      _currentFileIndex = _openFiles.length - 1;
+      loadDiagnostics();
+    } catch (e) {
+      _error = e.toString();
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  void closeFile(int index) {
+    if (index < 0 || index >= _openFiles.length) return;
+    _openFiles.removeAt(index);
+    if (_currentFileIndex >= _openFiles.length) {
+      _currentFileIndex = _openFiles.length - 1;
+    }
+    notifyListeners();
+  }
+
+  void switchToFile(int index) {
+    if (index >= 0 && index < _openFiles.length) {
+      _currentFileIndex = index;
+      notifyListeners();
+    }
+  }
+
+  void toggleEditMode() {
+    final file = currentFile;
+    if (file == null) return;
+    file.isEditing = !file.isEditing;
+    notifyListeners();
+  }
+
+  void enterEditMode() {
+    final file = currentFile;
+    if (file == null) return;
+    file.isEditing = true;
+    notifyListeners();
+  }
+
+  void exitEditMode() {
+    final file = currentFile;
+    if (file == null) return;
+    file.isEditing = false;
+    notifyListeners();
+  }
+
+  void updateContent(String content) {
+    final file = currentFile;
+    if (file == null) return;
+    file.currentContent = content;
+    notifyListeners();
+  }
+
+  void setSelectedText(String? text) {
+    _selectedText = text;
+    notifyListeners();
+  }
+
+  /// Save the current file to the server.
+  Future<bool> saveCurrentFile() async {
+    final file = currentFile;
+    if (file == null) return false;
+
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      await apiClient.writeFile(file.path, file.currentContent);
+      file.originalContent = file.currentContent;
+      _isLoading = false;
+      notifyListeners();
+      loadDiagnostics(); // Refresh diagnostics after save.
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      _isLoading = false;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  bool get hasUnsavedChanges => _openFiles.any((f) => f.hasUnsavedChanges);
+
+  /// Load diagnostics for the current file.
+  Future<void> loadDiagnostics() async {
+    final file = currentFile;
+    if (file == null) return;
+
+    _isLoadingDiagnostics = true;
+    notifyListeners();
+
+    try {
+      final workDir = _extractWorkDir(file.path);
+      final allDiags = await apiClient.getDiagnostics(
+        filePath: file.path,
+        workDir: workDir,
+      );
+      // Filter to only diagnostics for the current file.
+      _diagnostics = allDiags
+          .where((d) => file.path.endsWith(d.filePath) || d.filePath == file.path)
+          .toList();
+    } catch (_) {
+      _diagnostics = [];
+    } finally {
+      _isLoadingDiagnostics = false;
+      notifyListeners();
+    }
+  }
+
+  List<Diagnostic> diagnosticsForLine(int line) {
+    return _diagnostics.where((d) => d.line == line).toList();
+  }
+
+  String _extractWorkDir(String filePath) {
+    final parts = filePath.split('/');
+    // Return everything except the last component (the filename).
+    if (parts.length > 1) {
+      return parts.sublist(0, parts.length - 1).join('/');
+    }
+    return '/';
+  }
+}
