@@ -35,10 +35,20 @@ type Server struct {
 	termManager      *terminal.Manager
 	diagnosticRunner *diagnostics.Runner
 	fileWatchHub     *FileWatchHub
+	fileWatcher      *FileWatcher
 }
 
 // NewServer creates a new API server.
 func NewServer(fs FileSystem, sessionIndex *claude.SessionIndex, pm *claude.ProcessManager, token string, gitClient *git.Git, termMgr *terminal.Manager, diagRunner *diagnostics.Runner) *Server {
+	hub := NewFileWatchHub()
+	var fw *FileWatcher
+	if fs != nil {
+		var err error
+		fw, err = NewFileWatcher(hub)
+		if err != nil {
+			log.Printf("[Server] failed to create file watcher: %v", err)
+		}
+	}
 	return &Server{
 		fs:               fs,
 		sessionIndex:     sessionIndex,
@@ -47,8 +57,17 @@ func NewServer(fs FileSystem, sessionIndex *claude.SessionIndex, pm *claude.Proc
 		git:              gitClient,
 		termManager:      termMgr,
 		diagnosticRunner: diagRunner,
-		fileWatchHub:     NewFileWatchHub(),
+		fileWatchHub:     hub,
+		fileWatcher:      fw,
 	}
+}
+
+// Close releases server resources.
+func (s *Server) Close() error {
+	if s.fileWatcher != nil {
+		return s.fileWatcher.Close()
+	}
+	return nil
 }
 
 // Handler returns the top-level HTTP handler with all routes.
@@ -70,9 +89,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/git/diff", s.handleGitDiff)
 	mux.HandleFunc("GET /api/git/log", s.handleGitLog)
 	mux.HandleFunc("GET /api/git/branches", s.handleGitBranches)
+	mux.HandleFunc("GET /api/git/show", s.handleGitShowCommit)
 	mux.HandleFunc("POST /api/git/stage", s.handleGitStage)
 	mux.HandleFunc("POST /api/git/unstage", s.handleGitUnstage)
 	mux.HandleFunc("POST /api/git/commit", s.handleGitCommit)
+	mux.HandleFunc("POST /api/git/checkout", s.handleGitCheckout)
 
 	// Search endpoints.
 	mux.HandleFunc("GET /api/search", s.handleSearch)

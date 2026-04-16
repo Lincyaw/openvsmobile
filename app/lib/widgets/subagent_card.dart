@@ -11,12 +11,14 @@ class SubagentCard extends StatefulWidget {
   final ContentBlock toolUse;
   final ContentBlock? toolResult;
   final String? sessionId;
+  final void Function(String filePath)? onFileTap;
 
   const SubagentCard({
     super.key,
     required this.toolUse,
     this.toolResult,
     this.sessionId,
+    this.onFileTap,
   });
 
   @override
@@ -250,7 +252,11 @@ class _SubagentCardState extends State<SubagentCard> {
           final nextMsg = index + 1 < messages.length
               ? messages[index + 1]
               : null;
-          return ChatBubble(message: msg, nextMessage: nextMsg);
+          return ChatBubble(
+            message: msg,
+            nextMessage: nextMsg,
+            onFileTap: widget.onFileTap,
+          );
         },
       ),
     );

@@ -40,7 +40,7 @@ class GitApiClient {
         response.statusCode,
       );
     }
-    final List<dynamic> jsonList = jsonDecode(response.body) as List<dynamic>;
+    final List<dynamic> jsonList = (jsonDecode(response.body) as List<dynamic>?) ?? [];
     return jsonList
         .map((e) => GitStatusEntry.fromJson(e as Map<String, dynamic>))
         .toList();
@@ -83,7 +83,7 @@ class GitApiClient {
         response.statusCode,
       );
     }
-    final List<dynamic> jsonList = jsonDecode(response.body) as List<dynamic>;
+    final List<dynamic> jsonList = (jsonDecode(response.body) as List<dynamic>?) ?? [];
     return jsonList
         .map((e) => GitLogEntry.fromJson(e as Map<String, dynamic>))
         .toList();
@@ -146,6 +146,38 @@ class GitApiClient {
     if (response.statusCode != 200) {
       throw ApiException(
         'Failed to commit: ${response.body}',
+        response.statusCode,
+      );
+    }
+  }
+
+  /// Get diff/output for a specific commit [hash] in repo at [path].
+  Future<String> getShowCommit(String path, String hash) async {
+    final uri = _buildUri(
+      '/api/git/show',
+      queryParams: {'path': path, 'hash': hash},
+    );
+    final response = await _client.get(uri, headers: _headers);
+    if (response.statusCode != 200) {
+      throw ApiException(
+        'Failed to get commit diff: ${response.statusCode}',
+        response.statusCode,
+      );
+    }
+    return response.body;
+  }
+
+  /// Checkout [branch] in repo at [repoPath].
+  Future<void> checkoutBranch(String repoPath, String branch) async {
+    final uri = _buildUri('/api/git/checkout');
+    final response = await _client.post(
+      uri,
+      headers: {..._headers, 'Content-Type': 'application/json'},
+      body: jsonEncode({'path': repoPath, 'branch': branch}),
+    );
+    if (response.statusCode != 200) {
+      throw ApiException(
+        'Failed to checkout branch: ${response.body}',
         response.statusCode,
       );
     }

@@ -105,7 +105,12 @@ func (s *Server) handleChatStart(conn *websocket.Conn, msg ChatMessage, setActiv
 }
 
 func (s *Server) handleChatResume(conn *websocket.Conn, msg ChatMessage, setActiveConv func(*claude.Conversation)) {
-	conv, err := s.processManager.ResumeConversation(msg.SessionID)
+	cwd, err := s.sessionIndex.GetSessionCwd(msg.SessionID)
+	if err != nil {
+		log.Printf("[WS/Chat] failed to get session cwd for %s: %v", msg.SessionID, err)
+		cwd = ""
+	}
+	conv, err := s.processManager.ResumeConversation(msg.SessionID, cwd)
 	if err != nil {
 		log.Printf("[WS/Chat] failed to resume conversation %s: %v", msg.SessionID, err)
 		writeWSError(conn, "failed to resume conversation: "+err.Error())
@@ -160,6 +165,7 @@ func (s *Server) streamOutput(conn *websocket.Conn, conv *claude.Conversation) {
 type FileWatchClient struct {
 	conn *websocket.Conn
 	mu   sync.Mutex
+	path string
 }
 
 // FileWatchHub manages file watch WebSocket connections.
@@ -211,6 +217,7 @@ func (h *FileWatchHub) removeClient(client *FileWatchClient) {
 }
 
 // handleWSFiles handles the /ws/files WebSocket endpoint for file watch events.
+// Clients can send {"type":"watch","path":"/workspace"} to change the watched directory.
 func (s *Server) handleWSFiles(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -223,11 +230,22 @@ func (s *Server) handleWSFiles(w http.ResponseWriter, r *http.Request) {
 	s.fileWatchHub.addClient(client)
 	defer s.fileWatchHub.removeClient(client)
 
-	// Keep the connection open; read messages to detect close.
+	// Keep the connection open; read messages to detect close and handle watch requests.
 	for {
-		_, _, err := conn.ReadMessage()
+		_, data, err := conn.ReadMessage()
 		if err != nil {
 			break
+		}
+
+		var msg map[string]string
+		if json.Unmarshal(data, &msg) == nil && msg["type"] == "watch" {
+			if path := msg["path"]; path != "" && client.path != path {
+				client.path = path
+				if s.fileWatcher != nil {
+					s.fileWatcher.SetWorkDir(path)
+					log.Printf("[WS/Files] watching path=%s", path)
+				}
+			}
 		}
 	}
 }

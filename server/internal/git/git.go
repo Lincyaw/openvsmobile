@@ -185,6 +185,19 @@ func (g *Git) Show(path string, ref string, filePath string) (string, error) {
 	return g.run("-C", dir, "show", ref+":"+filePath)
 }
 
+// ShowCommit runs `git show <hash>` and returns the commit diff/output.
+func (g *Git) ShowCommit(path string, hash string) (string, error) {
+	dir := g.resolveDir(path)
+	return g.run("-C", dir, "show", hash)
+}
+
+// Checkout runs `git checkout <branch>`.
+func (g *Git) Checkout(path string, branch string) error {
+	dir := g.resolveDir(path)
+	_, err := g.run("-C", dir, "checkout", branch)
+	return err
+}
+
 // Stage runs `git add <file>` to stage a file.
 func (g *Git) Stage(path string, file string) error {
 	dir := g.resolveDir(path)

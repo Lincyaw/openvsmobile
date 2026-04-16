@@ -5,6 +5,7 @@ import '../providers/chat_provider.dart';
 import '../providers/editor_provider.dart';
 import '../providers/workspace_provider.dart';
 import '../widgets/chat_bubble.dart';
+import '../widgets/app_bar_menu.dart';
 import 'code_screen.dart';
 import 'session_list_screen.dart';
 
@@ -97,6 +98,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   provider.clearConversation();
                 },
               ),
+              const AppBarMenu(),
             ],
           ),
           body: Column(

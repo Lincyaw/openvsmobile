@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/chat_provider.dart';
+import '../providers/editor_provider.dart';
 import 'chat_bubble.dart';
+import '../screens/code_screen.dart';
 
 /// Draggable bottom sheet chat panel for contextual AI chat (REQ-009).
 ///
@@ -221,7 +223,25 @@ class _ContextualChatState extends State<ContextualChat> {
         final nextMsg = index + 1 < messages.length
             ? messages[index + 1]
             : null;
-        return ChatBubble(message: msg, nextMessage: nextMsg);
+        return ChatBubble(
+          message: msg,
+          nextMessage: nextMsg,
+          onFileTap: (filePath) {
+            final editorProvider = context.read<EditorProvider>();
+            editorProvider.openFile(filePath).then((_) {
+              if (context.mounted) {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => ChangeNotifierProvider.value(
+                      value: editorProvider,
+                      child: const CodeScreen(),
+                    ),
+                  ),
+                );
+              }
+            });
+          },
+        );
       },
     );
   }

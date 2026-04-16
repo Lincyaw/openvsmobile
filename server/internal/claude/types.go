@@ -116,5 +116,8 @@ type StreamInputMessage struct {
 type StreamOutput struct {
 	Type       string          `json:"type"`
 	Content    json.RawMessage `json:"content,omitempty"`
+	Message    json.RawMessage `json:"message,omitempty"`
 	StopReason string          `json:"stop_reason,omitempty"`
+	Result     string          `json:"result,omitempty"`
+	Subtype    string          `json:"subtype,omitempty"`
 }

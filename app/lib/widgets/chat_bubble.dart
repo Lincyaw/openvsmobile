@@ -44,6 +44,14 @@ class ChatBubble extends StatelessWidget {
     final colorScheme = theme.colorScheme;
     final text = message.textContent;
 
+    // Hide implicit tool-result carrier messages; they are rendered
+    // inline inside the preceding assistant tool-use card.
+    final isToolResultOnly = message.content.isNotEmpty &&
+        message.content.every((b) => b.type == 'tool_result');
+    if (isToolResultOnly) {
+      return const SizedBox.shrink();
+    }
+
     return Align(
       alignment: Alignment.centerRight,
       child: ConstrainedBox(
@@ -87,6 +95,11 @@ class ChatBubble extends StatelessWidget {
       }
     }
 
+    final contentWidgets = _buildContentBlocks(theme, colorScheme, toolResults);
+    if (contentWidgets.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
     return Align(
       alignment: Alignment.centerLeft,
       child: ConstrainedBox(
@@ -107,7 +120,7 @@ class ChatBubble extends StatelessWidget {
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: _buildContentBlocks(theme, colorScheme, toolResults),
+            children: contentWidgets,
           ),
         ),
       ),
@@ -161,6 +174,7 @@ class ChatBubble extends StatelessWidget {
                 toolUse: block,
                 toolResult: matchedResult,
                 sessionId: sessionId,
+                onFileTap: onFileTap,
               ),
             );
           } else {

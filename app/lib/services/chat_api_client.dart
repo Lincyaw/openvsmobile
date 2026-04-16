@@ -56,7 +56,7 @@ class ChatApiClient {
         response.statusCode,
       );
     }
-    final List<dynamic> jsonList = jsonDecode(response.body) as List<dynamic>;
+    final List<dynamic> jsonList = (jsonDecode(response.body) as List<dynamic>?) ?? [];
     return jsonList
         .map((e) => SessionMeta.fromJson(e as Map<String, dynamic>))
         .toList();
@@ -72,7 +72,7 @@ class ChatApiClient {
         response.statusCode,
       );
     }
-    final List<dynamic> jsonList = jsonDecode(response.body) as List<dynamic>;
+    final List<dynamic> jsonList = (jsonDecode(response.body) as List<dynamic>?) ?? [];
     return jsonList
         .map((e) => ChatMessage.fromJson(e as Map<String, dynamic>))
         .toList();
@@ -93,7 +93,7 @@ class ChatApiClient {
         response.statusCode,
       );
     }
-    final List<dynamic> jsonList = jsonDecode(response.body) as List<dynamic>;
+    final List<dynamic> jsonList = (jsonDecode(response.body) as List<dynamic>?) ?? [];
     return jsonList
         .map((e) => ChatMessage.fromJson(e as Map<String, dynamic>))
         .toList();

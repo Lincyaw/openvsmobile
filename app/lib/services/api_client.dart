@@ -39,7 +39,7 @@ class ApiClient {
         response.statusCode,
       );
     }
-    final List<dynamic> jsonList = jsonDecode(response.body) as List<dynamic>;
+    final List<dynamic> jsonList = (jsonDecode(response.body) as List<dynamic>?) ?? [];
     return jsonList
         .map((e) => FileEntry.fromJson(e as Map<String, dynamic>))
         .toList();
@@ -123,7 +123,7 @@ class ApiClient {
     }
     final decoded = jsonDecode(response.body);
     if (decoded == null) return [];
-    final List<dynamic> jsonList = decoded as List<dynamic>;
+    final List<dynamic> jsonList = (decoded as List<dynamic>?) ?? [];
     return jsonList
         .map((e) => Diagnostic.fromJson(e as Map<String, dynamic>))
         .toList();
@@ -145,7 +145,7 @@ class ApiClient {
         response.statusCode,
       );
     }
-    final List<dynamic> jsonList = jsonDecode(response.body) as List<dynamic>;
+    final List<dynamic> jsonList = (jsonDecode(response.body) as List<dynamic>?) ?? [];
     return jsonList
         .map((e) => ContentSearchResult.fromJson(e as Map<String, dynamic>))
         .toList();
@@ -167,7 +167,7 @@ class ApiClient {
         response.statusCode,
       );
     }
-    return (jsonDecode(response.body) as List<dynamic>)
+    return ((jsonDecode(response.body) as List<dynamic>?) ?? [])
         .cast<Map<String, dynamic>>();
   }
 

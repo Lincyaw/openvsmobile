@@ -50,11 +50,10 @@ void main() {
   ) async {
     await tester.pumpWidget(buildTestApp());
 
-    // The bottom navigation bar should show all 5 tabs.
+    // The bottom navigation bar should show all 4 tabs.
     expect(find.text('Files'), findsWidgets);
-    expect(find.text('Search'), findsWidgets);
     expect(find.text('Terminal'), findsWidgets);
     expect(find.text('Chat'), findsWidgets);
-    expect(find.text('More'), findsWidgets);
+    expect(find.text('Git'), findsWidgets);
   });
 }

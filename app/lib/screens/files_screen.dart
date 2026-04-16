@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/chat_provider.dart';
@@ -5,11 +7,67 @@ import '../providers/file_provider.dart';
 import '../providers/git_provider.dart';
 import '../providers/editor_provider.dart';
 import '../providers/workspace_provider.dart';
+import '../providers/search_provider.dart';
 import '../widgets/file_tree_view.dart';
+import '../widgets/app_bar_menu.dart';
 import 'code_screen.dart';
 
-class FilesScreen extends StatelessWidget {
+class FilesScreen extends StatefulWidget {
   const FilesScreen({super.key});
+
+  @override
+  State<FilesScreen> createState() => _FilesScreenState();
+}
+
+class _FilesScreenState extends State<FilesScreen> {
+  final _searchController = TextEditingController();
+  final _searchFocusNode = FocusNode();
+  Timer? _debounce;
+
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    _searchController.dispose();
+    _searchFocusNode.dispose();
+    super.dispose();
+  }
+
+  void _onSearch(String query) {
+    final provider = context.read<SearchProvider>();
+    final rootPath = context.read<WorkspaceProvider>().currentPath;
+    if (provider.searchMode == SearchMode.fileContent) {
+      provider.searchContent(query, rootPath);
+    } else {
+      provider.search(query, rootPath);
+    }
+  }
+
+  void _onResultTap(String path, String name) {
+    final editorProvider = context.read<EditorProvider>();
+    editorProvider.openFile(path).then((_) {
+      if (mounted) {
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => ChangeNotifierProvider.value(
+              value: editorProvider,
+              child: const CodeScreen(),
+            ),
+          ),
+        );
+      }
+    });
+  }
+
+  void _switchWorkspace(BuildContext context, String path) {
+    final ws = context.read<WorkspaceProvider>();
+    ws.setWorkspace(path);
+    context.read<FileProvider>().setProject(path);
+    context.read<ChatProvider>().setWorkspace(path);
+    context.read<GitProvider>().setWorkDir(path);
+    // Clear search when workspace changes.
+    _searchController.clear();
+    context.read<SearchProvider>().clearResults();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -43,91 +101,281 @@ class FilesScreen extends StatelessWidget {
               context.read<FileProvider>().refresh();
             },
           ),
+          const AppBarMenu(),
         ],
       ),
-      body: FileTreeView(
-        onFileTap: (path, name) {
-          final editorProvider = context.read<EditorProvider>();
-          editorProvider.openFile(path).then((_) {
-            if (context.mounted) {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => ChangeNotifierProvider.value(
-                    value: editorProvider,
-                    child: const CodeScreen(),
+      body: Column(
+        children: [
+          // Search controls
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+            child: Consumer<SearchProvider>(
+              builder: (context, provider, _) {
+                return SegmentedButton<SearchMode>(
+                  segments: const [
+                    ButtonSegment(
+                      value: SearchMode.fileName,
+                      label: Text('Files'),
+                      icon: Icon(Icons.insert_drive_file),
+                    ),
+                    ButtonSegment(
+                      value: SearchMode.fileContent,
+                      label: Text('Content'),
+                      icon: Icon(Icons.text_snippet),
+                    ),
+                  ],
+                  selected: {provider.searchMode},
+                  onSelectionChanged: (selected) {
+                    provider.setSearchMode(selected.first);
+                    if (_searchController.text.isNotEmpty) {
+                      _onSearch(_searchController.text);
+                    }
+                  },
+                );
+              },
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: Consumer<SearchProvider>(
+              builder: (context, provider, _) {
+                return TextField(
+                  controller: _searchController,
+                  focusNode: _searchFocusNode,
+                  decoration: InputDecoration(
+                    hintText: provider.searchMode == SearchMode.fileContent
+                        ? 'Search in file contents...'
+                        : 'Search files...',
+                    prefixIcon: const Icon(Icons.search),
+                    suffixIcon: _searchController.text.isNotEmpty
+                        ? IconButton(
+                            icon: const Icon(Icons.clear),
+                            onPressed: () {
+                              _searchController.clear();
+                              context.read<SearchProvider>().clearResults();
+                              setState(() {});
+                            },
+                          )
+                        : null,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    filled: true,
                   ),
-                ),
-              );
-            }
-          });
-        },
-        onCreateFile: (parentPath, name) =>
-            _handleCreateFile(context, parentPath, name),
-        onCreateDirectory: (parentPath, name) =>
-            _handleCreateDirectory(context, parentPath, name),
-        onDelete: (path) => _handleDelete(context, path),
+                  onChanged: (value) {
+                    setState(() {});
+                    _debounce?.cancel();
+                    _debounce = Timer(const Duration(milliseconds: 300), () {
+                      _onSearch(value);
+                    });
+                  },
+                  onSubmitted: _onSearch,
+                  textInputAction: TextInputAction.search,
+                );
+              },
+            ),
+          ),
+          // Content: file tree or search results
+          Expanded(
+            child: Consumer<SearchProvider>(
+              builder: (context, provider, _) {
+                if (provider.query.isNotEmpty) {
+                  return _buildSearchResults(provider);
+                }
+                return FileTreeView(
+                  onFileTap: (path, name) {
+                    final editorProvider = context.read<EditorProvider>();
+                    editorProvider.openFile(path).then((_) {
+                      if (context.mounted) {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => ChangeNotifierProvider.value(
+                              value: editorProvider,
+                              child: const CodeScreen(),
+                            ),
+                          ),
+                        );
+                      }
+                    });
+                  },
+                  onCreateFile: (parentPath, name) =>
+                      _handleCreateFile(context, parentPath, name),
+                  onCreateDirectory: (parentPath, name) =>
+                      _handleCreateDirectory(context, parentPath, name),
+                  onDelete: (path) => _handleDelete(context, path),
+                );
+              },
+            ),
+          ),
+        ],
       ),
       floatingActionButton: _RootActionButton(),
     );
   }
 
-  void _handleCreateFile(
-    BuildContext context,
-    String parentPath,
-    String name,
-  ) async {
-    try {
-      await context.read<FileProvider>().createFile(parentPath, name);
-      if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Created file: $name')));
-      }
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Failed to create file: $e')));
-      }
+  Widget _buildSearchResults(SearchProvider provider) {
+    if (provider.isSearching) {
+      return const Center(child: CircularProgressIndicator());
     }
+
+    if (provider.error != null) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.error_outline,
+              size: 48,
+              color: Theme.of(context).colorScheme.error,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Search failed',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              provider.error!,
+              style: Theme.of(context).textTheme.bodySmall,
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (provider.searchMode == SearchMode.fileContent) {
+      if (provider.contentResults.isEmpty) {
+        return _buildEmptyState(provider.query);
+      }
+      return ListView.builder(
+        itemCount: provider.contentResults.length,
+        itemBuilder: (context, index) {
+          final result = provider.contentResults[index];
+          final fileName = result.file.split('/').last;
+          return ListTile(
+            leading: const Icon(Icons.text_snippet),
+            title: Text(
+              '$fileName:${result.line}',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodyMedium
+                  ?.copyWith(fontWeight: FontWeight.bold),
+            ),
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  result.file,
+                  style: Theme.of(context).textTheme.bodySmall,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 4),
+                _buildHighlightedLine(result.content, provider.query),
+              ],
+            ),
+            isThreeLine: true,
+            onTap: () => _onResultTap(result.file, fileName),
+          );
+        },
+      );
+    }
+
+    if (provider.results.isEmpty) {
+      return _buildEmptyState(provider.query);
+    }
+    return ListView.builder(
+      itemCount: provider.results.length,
+      itemBuilder: (context, index) {
+        final result = provider.results[index];
+        return ListTile(
+          leading: Icon(
+            result.isDirectory ? Icons.folder : Icons.insert_drive_file,
+            color: result.isDirectory
+                ? Theme.of(context).colorScheme.primary
+                : null,
+          ),
+          title: Text(result.name),
+          subtitle: Text(
+            result.path,
+            style: Theme.of(context).textTheme.bodySmall,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          onTap: result.isDirectory
+              ? null
+              : () => _onResultTap(result.path, result.name),
+        );
+      },
+    );
   }
 
-  void _handleCreateDirectory(
-    BuildContext context,
-    String parentPath,
-    String name,
-  ) async {
-    try {
-      await context.read<FileProvider>().createDirectory(parentPath, name);
-      if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Created folder: $name')));
-      }
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Failed to create folder: $e')));
-      }
+  Widget _buildHighlightedLine(String line, String query) {
+    final lowerLine = line.toLowerCase();
+    final lowerQuery = query.toLowerCase();
+    final matchIndex = lowerLine.indexOf(lowerQuery);
+
+    if (matchIndex == -1) {
+      return Text(
+        line.trim(),
+        style: Theme.of(context)
+            .textTheme
+            .bodySmall
+            ?.copyWith(fontFamily: 'monospace'),
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      );
     }
+
+    final before = line.substring(0, matchIndex);
+    final match = line.substring(matchIndex, matchIndex + query.length);
+    final after = line.substring(matchIndex + query.length);
+
+    return RichText(
+      maxLines: 2,
+      overflow: TextOverflow.ellipsis,
+      text: TextSpan(
+        style: Theme.of(context)
+            .textTheme
+            .bodySmall
+            ?.copyWith(fontFamily: 'monospace'),
+        children: [
+          TextSpan(text: before.trimLeft()),
+          TextSpan(
+            text: match,
+            style: TextStyle(
+              backgroundColor:
+                  Theme.of(context).colorScheme.primary.withValues(alpha: 0.3),
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          TextSpan(text: after),
+        ],
+      ),
+    );
   }
 
-  void _handleDelete(BuildContext context, String path) async {
-    try {
-      await context.read<FileProvider>().deleteEntry(path);
-      if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('Deleted successfully')));
-      }
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Failed to delete: $e')));
-      }
-    }
+  Widget _buildEmptyState(String query) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.search_off,
+            size: 64,
+            color: Theme.of(context).colorScheme.outline,
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'No results for "$query"',
+            style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                  color: Theme.of(context).colorScheme.outline,
+                ),
+          ),
+        ],
+      ),
+    );
   }
 
   void _showWorkspacePicker(BuildContext context) {
@@ -193,11 +441,12 @@ class FilesScreen extends StatelessWidget {
                         alignment: Alignment.centerLeft,
                         child: Text(
                           'Recent',
-                          style: Theme.of(listCtx).textTheme.labelLarge
-                              ?.copyWith(
-                                color:
-                                    Theme.of(listCtx).colorScheme.onSurfaceVariant,
-                              ),
+                          style:
+                              Theme.of(listCtx).textTheme.labelLarge?.copyWith(
+                                    color: Theme.of(listCtx)
+                                        .colorScheme
+                                        .onSurfaceVariant,
+                                  ),
                         ),
                       ),
                     ),
@@ -254,12 +503,63 @@ class FilesScreen extends StatelessWidget {
     );
   }
 
-  void _switchWorkspace(BuildContext context, String path) {
-    final ws = context.read<WorkspaceProvider>();
-    ws.setWorkspace(path);
-    context.read<FileProvider>().setProject(path);
-    context.read<ChatProvider>().setWorkspace(path);
-    context.read<GitProvider>().setWorkDir(path);
+  void _handleCreateFile(
+    BuildContext context,
+    String parentPath,
+    String name,
+  ) async {
+    try {
+      await context.read<FileProvider>().createFile(parentPath, name);
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Created file: $name')));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Failed to create file: $e')));
+      }
+    }
+  }
+
+  void _handleCreateDirectory(
+    BuildContext context,
+    String parentPath,
+    String name,
+  ) async {
+    try {
+      await context.read<FileProvider>().createDirectory(parentPath, name);
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Created folder: $name')));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Failed to create folder: $e')));
+      }
+    }
+  }
+
+  void _handleDelete(BuildContext context, String path) async {
+    try {
+      await context.read<FileProvider>().deleteEntry(path);
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Deleted successfully')));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Failed to delete: $e')));
+      }
+    }
   }
 }
 

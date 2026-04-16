@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/git_provider.dart';
 import '../providers/workspace_provider.dart';
+import '../providers/file_provider.dart';
 import '../models/git_models.dart';
+import '../widgets/app_bar_menu.dart';
 import 'diff_screen.dart';
 
 class GitScreen extends StatefulWidget {
@@ -16,33 +18,67 @@ enum _GitTab { changes, log, branches }
 
 class _GitScreenState extends State<GitScreen> {
   _GitTab _currentTab = _GitTab.changes;
+  String? _lastWorkDir;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final workDir = context.read<WorkspaceProvider>().currentPath;
-      final gitProvider = context.read<GitProvider>();
-      gitProvider.setWorkDir(workDir);
-      gitProvider.refreshAll();
+      _syncWorkDirAndRefresh();
+    });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncWorkDirAndRefresh();
+  }
+
+  void _syncWorkDirAndRefresh() {
+    final workDir = context.read<WorkspaceProvider>().currentPath;
+    if (_lastWorkDir == workDir) return;
+    _lastWorkDir = workDir;
+    final gitProvider = context.read<GitProvider>();
+    gitProvider.setWorkDir(workDir);
+    // Defer refresh to avoid notifyListeners during build.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) gitProvider.refreshAll();
     });
   }
 
   @override
   Widget build(BuildContext context) {
+    final wsName = context.select<WorkspaceProvider, String>(
+      (ws) => ws.displayName,
+    );
+
     return Consumer<GitProvider>(
       builder: (context, gitProvider, child) {
         final branchName = gitProvider.branchInfo?.current ?? '...';
 
         return Scaffold(
           appBar: AppBar(
-            title: Row(
-              mainAxisSize: MainAxisSize.min,
+            title: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Icon(Icons.commit, size: 20),
-                const SizedBox(width: 8),
-                Flexible(
-                  child: Text(branchName, overflow: TextOverflow.ellipsis),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.commit, size: 20),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        branchName,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+                Text(
+                  wsName,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
                 ),
               ],
             ),
@@ -52,6 +88,7 @@ class _GitScreenState extends State<GitScreen> {
                 tooltip: 'Refresh',
                 onPressed: () => gitProvider.refreshAll(),
               ),
+              const AppBarMenu(),
             ],
           ),
           body: Column(
@@ -453,9 +490,33 @@ class _LogView extends StatelessWidget {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => _onLogEntryTap(context, entry),
         );
       },
     );
+  }
+
+  void _onLogEntryTap(BuildContext context, GitLogEntry entry) async {
+    final gitProvider = context.read<GitProvider>();
+    await gitProvider.apiClient.getShowCommit(gitProvider.workDir, entry.hash).then((diff) {
+      if (context.mounted) {
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => DiffScreen(
+              fileName: entry.hash.substring(0, 7),
+              diffContent: diff,
+            ),
+          ),
+        );
+      }
+    }).catchError((e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to load commit diff: $e')),
+        );
+      }
+    });
   }
 }
 
@@ -519,9 +580,29 @@ class _BranchesView extends StatelessWidget {
                   padding: EdgeInsets.zero,
                   visualDensity: VisualDensity.compact,
                 )
-              : null,
+              : TextButton(
+                  onPressed: () => _onCheckout(context, branch),
+                  child: const Text('Switch'),
+                ),
         );
       },
     );
+  }
+
+  void _onCheckout(BuildContext context, String branch) async {
+    final gitProvider = context.read<GitProvider>();
+    await gitProvider.checkoutBranch(branch).then((_) {
+      if (context.mounted && gitProvider.error != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(gitProvider.error!)),
+        );
+      } else if (context.mounted) {
+        // Branch changed the working tree — refresh file tree so UI stays consistent.
+        context.read<FileProvider>().refresh();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Switched to $branch')),
+        );
+      }
+    });
   }
 }

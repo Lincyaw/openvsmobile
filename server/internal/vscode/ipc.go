@@ -109,7 +109,11 @@ type IPCChannel struct {
 // Call makes a request to this channel's command and waits for the response.
 func (ch *IPCChannel) Call(command string, arg interface{}) (interface{}, error) {
 	// Wait for the server to send the Initialize message before sending requests.
-	<-ch.ipc.initialized
+	select {
+	case <-ch.ipc.initialized:
+	case <-time.After(10 * time.Second):
+		return nil, fmt.Errorf("IPC channel not initialized after 10s")
+	}
 
 	id := ch.ipc.nextID()
 	resultCh := make(chan ipcResult, 1)

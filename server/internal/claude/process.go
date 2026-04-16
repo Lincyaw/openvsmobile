@@ -54,6 +54,21 @@ type Conversation struct {
 	closed bool
 }
 
+// claudeArgs returns the common CLI arguments for stream-json mode.
+func claudeArgs(sessionID string) []string {
+	args := []string{
+		"-p",
+		"--verbose",
+		"--output-format", "stream-json",
+		"--input-format", "stream-json",
+		"--permission-mode", "bypassPermissions",
+	}
+	if sessionID != "" {
+		args = append(args, "-r", sessionID)
+	}
+	return args
+}
+
 // StartConversation spawns a new Claude CLI process.
 func (pm *ProcessManager) StartConversation(workingDir string) (*Conversation, error) {
 	if workingDir == "" {
@@ -61,9 +76,7 @@ func (pm *ProcessManager) StartConversation(workingDir string) (*Conversation, e
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	args := []string{"-p", "--verbose", "--output-format", "stream-json", "--input-format", "stream-json"}
-
-	cmd := exec.CommandContext(ctx, pm.claudeBin, args...)
+	cmd := exec.CommandContext(ctx, pm.claudeBin, claudeArgs("")...)
 	cmd.Dir = workingDir
 
 	stdin, err := cmd.StdinPipe()
@@ -104,12 +117,14 @@ func (pm *ProcessManager) StartConversation(workingDir string) (*Conversation, e
 }
 
 // ResumeConversation resumes an existing Claude session.
-func (pm *ProcessManager) ResumeConversation(sessionID string) (*Conversation, error) {
-	ctx, cancel := context.WithCancel(context.Background())
-	args := []string{"-p", "--verbose", "-r", sessionID, "--output-format", "stream-json", "--input-format", "stream-json"}
+func (pm *ProcessManager) ResumeConversation(sessionID, workingDir string) (*Conversation, error) {
+	if workingDir == "" {
+		workingDir = pm.workingDir
+	}
 
-	cmd := exec.CommandContext(ctx, pm.claudeBin, args...)
-	cmd.Dir = pm.workingDir
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(ctx, pm.claudeBin, claudeArgs(sessionID)...)
+	cmd.Dir = workingDir
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

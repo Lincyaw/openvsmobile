@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../models/chat_message.dart';
@@ -17,6 +18,8 @@ class ChatProvider extends ChangeNotifier {
   final ChatApiClient _apiClient;
 
   ChatProvider({required ChatApiClient apiClient}) : _apiClient = apiClient;
+
+  static const _keySessionPrefix = 'chat_session_';
 
   // -- Workspace binding --
   String _workspacePath = '/';
@@ -74,6 +77,43 @@ class ChatProvider extends ChangeNotifier {
     loadSessions();
   }
 
+  /// Load persisted session for the current workspace if any.
+  Future<void> loadPersistedSession() async {
+    final prefs = await SharedPreferences.getInstance();
+    final sessionId = prefs.getString('$_keySessionPrefix$_workspacePath');
+    if (sessionId == null || sessionId.isEmpty) return;
+
+    try {
+      final messages = await loadSessionMessages(sessionId);
+      _conversationId = sessionId;
+      _messages.clear();
+      _messages.addAll(messages);
+      notifyListeners();
+    } catch (e) {
+      // Session no longer valid — clear persisted reference.
+      await prefs.remove('$_keySessionPrefix$_workspacePath');
+    }
+  }
+
+  Future<void> _persistSession() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (_conversationId != null) {
+      await prefs.setString(
+        '$_keySessionPrefix$_workspacePath',
+        _conversationId!,
+      );
+    } else {
+      await prefs.remove('$_keySessionPrefix$_workspacePath');
+    }
+  }
+
+  /// Inject pre-loaded historical messages (used when resuming a session).
+  void setHistoryMessages(List<ChatMessage> messages) {
+    _messages.clear();
+    _messages.addAll(messages);
+    notifyListeners();
+  }
+
   /// Set code context for contextual chat.
   void setCodeContext(CodeContext? context) {
     _codeContext = context;
@@ -89,6 +129,7 @@ class ChatProvider extends ChangeNotifier {
     _isStreaming = false;
     _codeContext = null;
     _error = null;
+    _persistSession();
     notifyListeners();
   }
 
@@ -135,7 +176,7 @@ class ChatProvider extends ChangeNotifier {
   /// Resume an existing conversation.
   void resumeConversation(String sessionId) {
     _ensureConnected();
-    _messages.clear();
+    // Don't clear local messages here — caller may have pre-loaded history.
     _streamingBlocks.clear();
     _error = null;
 
@@ -192,7 +233,11 @@ class ChatProvider extends ChangeNotifier {
 
     switch (type) {
       case 'started':
-        _conversationId = msg['conversationId'] as String?;
+        final newId = msg['conversationId'] as String?;
+        if (newId != _conversationId) {
+          _conversationId = newId;
+          _persistSession();
+        }
         if (_pendingMessage != null) {
           final pending = _pendingMessage!;
           _pendingMessage = null;
@@ -202,12 +247,24 @@ class ChatProvider extends ChangeNotifier {
         break;
 
       case 'resumed':
-        _conversationId = msg['conversationId'] as String?;
+        final newId = msg['conversationId'] as String?;
+        if (newId != _conversationId) {
+          _conversationId = newId;
+          _persistSession();
+        }
         notifyListeners();
         break;
 
       case 'assistant':
         _handleAssistantContent(msg);
+        break;
+
+      case 'user':
+        // Commit any pending assistant stream before recording the user
+        // message (which is typically a tool_result).
+        _commitStreamingMessage();
+        _messages.add(ChatMessage.fromJson(msg));
+        notifyListeners();
         break;
 
       case 'result':
@@ -221,6 +278,7 @@ class ChatProvider extends ChangeNotifier {
         break;
 
       case 'closed':
+        _commitStreamingMessage();
         _isConnected = false;
         _isStreaming = false;
         notifyListeners();
@@ -233,33 +291,78 @@ class ChatProvider extends ChangeNotifier {
     final rawContent = message?['content'] as List<dynamic>?;
     if (rawContent == null) return;
 
-    _streamingBlocks.clear();
-    for (final block in rawContent) {
-      _streamingBlocks.add(
-        ContentBlock.fromJson(block as Map<String, dynamic>),
-      );
+    _isStreaming = true;
+
+    for (final raw in rawContent) {
+      final incoming = ContentBlock.fromJson(raw as Map<String, dynamic>);
+      switch (incoming.type) {
+        case 'text':
+          if (_streamingBlocks.isNotEmpty &&
+              _streamingBlocks.last.type == 'text') {
+            final lastText = _streamingBlocks.last.text ?? '';
+            final newText = incoming.text ?? '';
+            _streamingBlocks[_streamingBlocks.length - 1] = ContentBlock(
+              type: 'text',
+              text: lastText + newText,
+            );
+          } else if (incoming.text != null && incoming.text!.isNotEmpty) {
+            _streamingBlocks.add(incoming);
+          }
+          break;
+
+        case 'thinking':
+          if (_streamingBlocks.isNotEmpty &&
+              _streamingBlocks.last.type == 'thinking') {
+            _streamingBlocks[_streamingBlocks.length - 1] = incoming;
+          } else {
+            _streamingBlocks.add(incoming);
+          }
+          break;
+
+        case 'tool_use':
+          final existingIndex = _streamingBlocks.indexWhere(
+            (b) => b.type == 'tool_use' && b.id == incoming.id,
+          );
+          if (existingIndex >= 0) {
+            _streamingBlocks[existingIndex] = incoming;
+          } else {
+            _streamingBlocks.add(incoming);
+          }
+          break;
+
+        default:
+          _streamingBlocks.add(incoming);
+      }
     }
     notifyListeners();
   }
 
-  void _handleResult(Map<String, dynamic> msg) {
-    final resultText = msg['result'] as String?;
-    if (resultText == null && _streamingBlocks.isEmpty) return;
-
-    // Prefer streaming blocks (richer content) over the plain-text result fallback.
-    List<ContentBlock> blocks;
+  void _commitStreamingMessage() {
     if (_streamingBlocks.isNotEmpty) {
-      blocks = List.from(_streamingBlocks);
-    } else if (resultText != null) {
-      blocks = [ContentBlock(type: 'text', text: resultText)];
-    } else {
-      return;
+      _messages.add(
+        ChatMessage(role: 'assistant', content: List.from(_streamingBlocks)),
+      );
+      _streamingBlocks.clear();
     }
-
-    _messages.add(ChatMessage(role: 'assistant', content: blocks));
-    _streamingBlocks.clear();
     _isStreaming = false;
-    notifyListeners();
+  }
+
+  void _handleResult(Map<String, dynamic> msg) {
+    // The server typically does not emit "result" in stream-json mode,
+    // but keep this handler for backward compatibility.
+    final resultText = msg['result'] as String?;
+    if (_streamingBlocks.isNotEmpty) {
+      _commitStreamingMessage();
+    } else if (resultText != null) {
+      _messages.add(
+        ChatMessage(
+          role: 'assistant',
+          content: [ContentBlock(type: 'text', text: resultText)],
+        ),
+      );
+      _isStreaming = false;
+      notifyListeners();
+    }
   }
 
   void _onError(dynamic error) {
@@ -352,12 +455,7 @@ class ChatProvider extends ChangeNotifier {
     _channel = null;
     _isConnected = false;
     // Commit whatever partial content we have as a final assistant message.
-    if (_streamingBlocks.isNotEmpty) {
-      _messages.add(
-        ChatMessage(role: 'assistant', content: List.from(_streamingBlocks)),
-      );
-      _streamingBlocks.clear();
-    }
+    _commitStreamingMessage();
     notifyListeners();
   }
 

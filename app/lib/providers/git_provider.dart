@@ -24,8 +24,16 @@ class GitProvider extends ChangeNotifier {
   String get workDir => _workDir;
 
   void setWorkDir(String dir) {
+    if (_workDir == dir) return;
     _workDir = dir;
-    notifyListeners();
+    // Clear stale data from previous workspace so UI never shows mixed results.
+    _statusEntries = [];
+    _logEntries = [];
+    _branchInfo = null;
+    _currentDiff = null;
+    _error = null;
+    // Do not notifyListeners here — callers typically follow with refreshAll(),
+    // which notifies on its own lifecycle. Avoids build-phase violations.
   }
 
   /// Load git status for the current work directory.
@@ -136,6 +144,22 @@ class GitProvider extends ChangeNotifier {
 
     try {
       await apiClient.commit(_workDir, message);
+      await refreshAll();
+    } catch (e) {
+      _error = e.toString();
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  /// Checkout a branch and refresh all git data.
+  Future<void> checkoutBranch(String branch) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      await apiClient.checkoutBranch(_workDir, branch);
       await refreshAll();
     } catch (e) {
       _error = e.toString();

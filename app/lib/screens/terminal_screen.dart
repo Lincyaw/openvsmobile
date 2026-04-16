@@ -6,6 +6,9 @@ import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../widgets/ansi_text.dart';
+import '../widgets/app_bar_menu.dart';
+import '../providers/workspace_provider.dart';
+import 'package:provider/provider.dart';
 
 /// Terminal screen that connects to the Go server's /ws/terminal
 /// WebSocket endpoint. Sends/receives base64-encoded PTY I/O.
@@ -274,9 +277,24 @@ class _TerminalScreenState extends State<TerminalScreen> {
     final colorScheme = theme.colorScheme;
     final isDark = theme.brightness == Brightness.dark;
 
+    final wsName = context.select<WorkspaceProvider, String>(
+      (ws) => ws.displayName,
+    );
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Terminal'),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Terminal'),
+            Text(
+              wsName,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+            ),
+          ],
+        ),
         actions: [
           if (_connected)
             IconButton(
@@ -284,6 +302,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
               tooltip: 'Reconnect',
               onPressed: _reconnect,
             ),
+          const AppBarMenu(),
         ],
       ),
       body: Column(

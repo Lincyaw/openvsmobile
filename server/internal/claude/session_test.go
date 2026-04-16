@@ -9,7 +9,7 @@ import (
 )
 
 func TestParseUserMessageString(t *testing.T) {
-	line := `{"type":"user","content":"hello world"}`
+	line := `{"type":"user","message":{"role":"user","content":"hello world"}}`
 	msg, err := parseMessage([]byte(line))
 	if err != nil {
 		t.Fatal(err)
@@ -26,7 +26,7 @@ func TestParseUserMessageString(t *testing.T) {
 }
 
 func TestParseAssistantMessageWithBlocks(t *testing.T) {
-	line := `{"type":"assistant","content":[{"type":"text","text":"response here"},{"type":"thinking","thinking":"internal thoughts","signature":"sig123"}]}`
+	line := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"response here"},{"type":"thinking","thinking":"internal thoughts","signature":"sig123"}]}}`
 	msg, err := parseMessage([]byte(line))
 	if err != nil {
 		t.Fatal(err)
@@ -46,7 +46,7 @@ func TestParseAssistantMessageWithBlocks(t *testing.T) {
 }
 
 func TestParseToolUseWithFileAnnotation(t *testing.T) {
-	line := `{"type":"assistant","content":[{"type":"tool_use","id":"toolu_123","name":"Edit","input":{"file_path":"/src/main.go","old_string":"foo","new_string":"bar"}}]}`
+	line := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_123","name":"Edit","input":{"file_path":"/src/main.go","old_string":"foo","new_string":"bar"}}]}}`
 	msg, err := parseMessage([]byte(line))
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +79,7 @@ func TestParseToolUseWithFileAnnotation(t *testing.T) {
 }
 
 func TestParseToolUseWrite(t *testing.T) {
-	line := `{"type":"assistant","content":[{"type":"tool_use","id":"toolu_456","name":"Write","input":{"file_path":"/tmp/test.txt","content":"hello"}}]}`
+	line := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_456","name":"Write","input":{"file_path":"/tmp/test.txt","content":"hello"}}]}}`
 	msg, err := parseMessage([]byte(line))
 	if err != nil {
 		t.Fatal(err)
@@ -94,7 +94,7 @@ func TestParseToolUseWrite(t *testing.T) {
 }
 
 func TestParseToolUseRead(t *testing.T) {
-	line := `{"type":"assistant","content":[{"type":"tool_use","id":"toolu_789","name":"Read","input":{"file_path":"/tmp/test.txt","offset":10,"limit":20}}]}`
+	line := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_789","name":"Read","input":{"file_path":"/tmp/test.txt","offset":10,"limit":20}}]}}`
 	msg, err := parseMessage([]byte(line))
 	if err != nil {
 		t.Fatal(err)
@@ -109,7 +109,7 @@ func TestParseToolUseRead(t *testing.T) {
 }
 
 func TestParseToolUseBash(t *testing.T) {
-	line := `{"type":"assistant","content":[{"type":"tool_use","id":"toolu_abc","name":"Bash","input":{"command":"ls -la","description":"list files"}}]}`
+	line := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_abc","name":"Bash","input":{"command":"ls -la","description":"list files"}}]}}`
 	msg, err := parseMessage([]byte(line))
 	if err != nil {
 		t.Fatal(err)
@@ -121,7 +121,7 @@ func TestParseToolUseBash(t *testing.T) {
 }
 
 func TestParseToolResult(t *testing.T) {
-	line := `{"type":"user","content":[{"type":"tool_result","tool_use_id":"toolu_123","content":"output text","is_error":false}]}`
+	line := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_123","content":"output text","is_error":false}]}}`
 	msg, err := parseMessage([]byte(line))
 	if err != nil {
 		t.Fatal(err)
@@ -229,8 +229,8 @@ func TestExtractSummaryStringContent(t *testing.T) {
 
 	// Write a JSONL with a user message as string content.
 	jsonlContent := `{"type":"system","subtype":"init"}
-{"type":"user","content":"Help me refactor the login module"}
-{"type":"assistant","content":[{"type":"text","text":"Sure, I can help."}]}
+{"type":"user","message":{"role":"user","content":"Help me refactor the login module"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Sure, I can help."}]}}
 `
 	os.WriteFile(filepath.Join(projectDir, "sess-summary1.jsonl"), []byte(jsonlContent), 0644)
 
@@ -262,7 +262,7 @@ func TestExtractSummaryArrayContent(t *testing.T) {
 
 	// User message with array content blocks.
 	jsonlContent := `{"type":"system","subtype":"init"}
-{"type":"user","content":[{"type":"text","text":"Explain this error in my code"}]}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Explain this error in my code"}]}}
 `
 	os.WriteFile(filepath.Join(projectDir, "sess-summary2.jsonl"), []byte(jsonlContent), 0644)
 
@@ -290,7 +290,7 @@ func TestExtractSummaryTruncation(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		longText += "a"
 	}
-	jsonlContent := fmt.Sprintf(`{"type":"user","content":"%s"}`, longText)
+	jsonlContent := fmt.Sprintf(`{"type":"user","message":{"role":"user","content":"%s"}}`, longText)
 	os.WriteFile(filepath.Join(projectDir, "sess-summary3.jsonl"), []byte(jsonlContent), 0644)
 
 	meta := SessionMeta{PID: 300, SessionID: "sess-summary3", Cwd: "/test", StartedAt: 1700000000000}
@@ -379,8 +379,8 @@ func TestGetMessages(t *testing.T) {
 
 	// Create JSONL file.
 	lines := []string{
-		`{"type":"user","content":"hello"}`,
-		`{"type":"assistant","content":[{"type":"text","text":"hi there"}]}`,
+		`{"type":"user","message":{"role":"user","content":"hello"}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi there"}]}}`,
 		`{"type":"system","subtype":"turn_end","stopReason":"end_turn","durationMs":500}`,
 	}
 	content := ""
@@ -416,8 +416,8 @@ func TestGetSubagentMessages(t *testing.T) {
 	}
 
 	// Create subagent JSONL.
-	agentContent := `{"type":"user","content":"do something"}
-{"type":"assistant","content":[{"type":"text","text":"done"}]}
+	agentContent := `{"type":"user","message":{"role":"user","content":"do something"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}
 `
 	os.WriteFile(filepath.Join(sessionDir, "agent-42.jsonl"), []byte(agentContent), 0644)
 
@@ -499,8 +499,8 @@ func TestSubagentLinking(t *testing.T) {
 	// 3. Extract agentId
 
 	parentLines := []string{
-		`{"type":"assistant","content":[{"type":"tool_use","id":"toolu_agent1","name":"Agent","input":{"description":"research task","prompt":"find info"}}]}`,
-		`{"type":"user","content":[{"type":"tool_result","tool_use_id":"toolu_agent1","content":"Result from agent. agentId: agent-77","is_error":false}]}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_agent1","name":"Agent","input":{"description":"research task","prompt":"find info"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_agent1","content":"Result from agent. agentId: agent-77","is_error":false}]}}`,
 	}
 
 	var agentToolUseID string

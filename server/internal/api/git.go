@@ -141,6 +141,12 @@ type gitCommitRequest struct {
 	Message string `json:"message"`
 }
 
+// gitCheckoutRequest is the JSON body for checkout requests.
+type gitCheckoutRequest struct {
+	Path   string `json:"path"`
+	Branch string `json:"branch"`
+}
+
 // handleGitStage handles POST /api/git/stage.
 func (s *Server) handleGitStage(w http.ResponseWriter, r *http.Request) {
 	var req gitPathFileRequest
@@ -227,5 +233,60 @@ func (s *Server) handleGitCommit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[Git] committed in %s: %s", path, req.Message)
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleGitShowCommit handles GET /api/git/show?path=<dir>&hash=<hash>.
+func (s *Server) handleGitShowCommit(w http.ResponseWriter, r *http.Request) {
+	rawPath := r.URL.Query().Get("path")
+	if rawPath == "" {
+		http.Error(w, "missing 'path' parameter", http.StatusBadRequest)
+		return
+	}
+	path, err := sanitizePath(rawPath, true)
+	if err != nil {
+		http.Error(w, "invalid path: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	hash := r.URL.Query().Get("hash")
+	if hash == "" {
+		http.Error(w, "missing 'hash' parameter", http.StatusBadRequest)
+		return
+	}
+	log.Printf("[Git] show commit path=%s hash=%s", path, hash)
+
+	out, err := s.git.ShowCommit(path, hash)
+	if err != nil {
+		log.Printf("[Git] show commit error for %s/%s: %v", path, hash, err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain")
+	w.Write([]byte(out))
+}
+
+// handleGitCheckout handles POST /api/git/checkout.
+func (s *Server) handleGitCheckout(w http.ResponseWriter, r *http.Request) {
+	var req gitCheckoutRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Path == "" || req.Branch == "" {
+		http.Error(w, "missing 'path' or 'branch' field", http.StatusBadRequest)
+		return
+	}
+	path, err := sanitizePath(req.Path, true)
+	if err != nil {
+		http.Error(w, "invalid path: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.git.Checkout(path, req.Branch); err != nil {
+		log.Printf("[Git] checkout error in %s to %s: %v", path, req.Branch, err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	log.Printf("[Git] checked out %s in %s", req.Branch, path)
 	w.WriteHeader(http.StatusOK)
 }

@@ -83,7 +83,7 @@ func (idx *SessionIndex) SearchSessions(query, project string) []SessionMeta {
 	query = strings.ToLower(query)
 	project = strings.ToLower(project)
 
-	var result []SessionMeta
+	result := make([]SessionMeta, 0)
 	for _, s := range idx.sessions {
 		cwdLower := strings.ToLower(s.Cwd)
 		entryLower := strings.ToLower(s.Entrypoint)
@@ -201,39 +201,73 @@ func (idx *SessionIndex) extractSummary(sessionID string) string {
 	return ""
 }
 
+// parseMessageContent unmarshals message content that is either a plain string
+// or an array of content blocks. It returns the string form and block list.
+func parseMessageContent(content json.RawMessage) (string, []ContentBlock, error) {
+	if len(content) > 0 && content[0] == '"' {
+		var s string
+		if err := json.Unmarshal(content, &s); err != nil {
+			return "", nil, err
+		}
+		return s, []ContentBlock{{Type: "text", Text: s}}, nil
+	}
+
+	var blocks []json.RawMessage
+	if err := json.Unmarshal(content, &blocks); err != nil {
+		return "", nil, err
+	}
+
+	var result []ContentBlock
+	for _, blockData := range blocks {
+		block, err := parseContentBlock(blockData)
+		if err != nil {
+			continue
+		}
+		result = append(result, block)
+	}
+
+	return "", result, nil
+}
+
 // extractFirstTextFromContent extracts the first text content from a user/human message line.
 func extractFirstTextFromContent(data []byte) string {
 	var raw struct {
-		Content json.RawMessage `json:"content"`
+		Message struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"message"`
 	}
-	if json.Unmarshal(data, &raw) != nil || raw.Content == nil {
+	if json.Unmarshal(data, &raw) != nil || raw.Message.Content == nil {
 		return ""
 	}
 
-	// Content can be a plain string.
-	if len(raw.Content) > 0 && raw.Content[0] == '"' {
-		var s string
-		if json.Unmarshal(raw.Content, &s) == nil {
-			return strings.TrimSpace(s)
+	_, blocks, err := parseMessageContent(raw.Message.Content)
+	if err == nil {
+		for _, b := range blocks {
+			if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
+				return strings.TrimSpace(b.Text)
+			}
 		}
-		return ""
 	}
 
-	// Content can be an array of blocks.
-	var blocks []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if json.Unmarshal(raw.Content, &blocks) != nil {
-		return ""
-	}
-	for _, b := range blocks {
-		if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
-			return strings.TrimSpace(b.Text)
-		}
+	// Fallback: try plain string extraction directly.
+	var s string
+	if json.Unmarshal(raw.Message.Content, &s) == nil {
+		return strings.TrimSpace(s)
 	}
 
 	return ""
+}
+
+// GetSessionCwd returns the working directory for a given session ID.
+func (idx *SessionIndex) GetSessionCwd(sessionID string) (string, error) {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	for _, s := range idx.sessions {
+		if s.SessionID == sessionID {
+			return s.Cwd, nil
+		}
+	}
+	return "", fmt.Errorf("session not found: %w", fs.ErrNotExist)
 }
 
 // findSessionJSONL searches for the session JSONL file across project directories.
@@ -287,7 +321,7 @@ func parseJSONLFile(path string) ([]Message, error) {
 	}
 	defer f.Close()
 
-	var messages []Message
+	messages := make([]Message, 0)
 	scanner := bufio.NewScanner(f)
 	// Increase buffer size for large lines.
 	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
@@ -358,42 +392,29 @@ func parseMessage(data []byte) (Message, error) {
 // parseContentMessage parses user/assistant messages with content blocks.
 func parseContentMessage(data []byte, msg *Message) error {
 	var raw struct {
-		Content json.RawMessage `json:"content"`
+		Message struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"message"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 
-	if raw.Content == nil {
+	content := raw.Message.Content
+	if content == nil {
 		return nil
 	}
 
-	// Content can be a string or an array of blocks.
-	if len(raw.Content) > 0 && raw.Content[0] == '"' {
-		var s string
-		if err := json.Unmarshal(raw.Content, &s); err != nil {
-			return err
-		}
-		msg.ContentBlocks = []ContentBlock{{Type: "text", Text: s}}
-		msg.Content = raw.Content
-		return nil
-	}
-
-	msg.Content = raw.Content
-
-	var blocks []json.RawMessage
-	if err := json.Unmarshal(raw.Content, &blocks); err != nil {
+	s, blocks, err := parseMessageContent(content)
+	if err != nil {
 		return err
 	}
-
-	for _, blockData := range blocks {
-		block, err := parseContentBlock(blockData)
-		if err != nil {
-			continue
-		}
-		msg.ContentBlocks = append(msg.ContentBlocks, block)
+	if s != "" {
+		msg.ContentBlocks = blocks
+	} else {
+		msg.ContentBlocks = blocks
 	}
-
+	msg.Content = content
 	return nil
 }
 

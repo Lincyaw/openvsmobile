@@ -96,6 +96,7 @@ func newTestServer(t *testing.T, token string) (*httptest.Server, *mockFS, strin
 	diagRunner := diagnostics.NewRunner(10 * time.Second)
 
 	srv := NewServer(fs, sessionIndex, pm, token, gitClient, termMgr, diagRunner)
+	t.Cleanup(func() { srv.Close() })
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
@@ -445,8 +446,8 @@ func TestSessionMessages_E2E(t *testing.T) {
 
 	writeSessionFile(t, claudeDir, 100, "sess-msg-test", "/home/user/myproject", "cli")
 	writeSessionJSONL(t, claudeDir, "myproject-slug", "sess-msg-test", []string{
-		`{"type":"user","content":"hello claude"}`,
-		`{"type":"assistant","content":[{"type":"text","text":"Hello! How can I help?"}]}`,
+		`{"type":"user","message":{"role":"user","content":"hello claude"}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hello! How can I help?"}]}}`,
 		`{"type":"system","subtype":"turn_end","stopReason":"end_turn","durationMs":1200}`,
 	})
 
@@ -456,6 +457,7 @@ func TestSessionMessages_E2E(t *testing.T) {
 	pm := claude.NewProcessManager("/nonexistent", ".")
 	diagRunner := diagnostics.NewRunner(10 * time.Second)
 	srv := NewServer(nil, sessIndex, pm, "", git.NewGit("."), terminal.NewManager(), diagRunner)
+	t.Cleanup(func() { srv.Close() })
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 

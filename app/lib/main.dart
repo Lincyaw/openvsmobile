@@ -41,7 +41,8 @@ void main() async {
         ),
         ChangeNotifierProvider(
           create: (_) => ChatProvider(apiClient: chatApiClient)
-            ..setWorkspace(workspaceProvider.currentPath),
+            ..setWorkspace(workspaceProvider.currentPath)
+            ..loadPersistedSession(),
         ),
         ChangeNotifierProvider(
           create: (_) => GitProvider(apiClient: gitApiClient),
