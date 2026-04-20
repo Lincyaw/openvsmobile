@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -69,17 +70,38 @@ void main() {
     tester,
   ) async {
     final apiClient = await _buildApiClient();
-    apiClient.diffFuture = Future<GitDiffDocument>.error(
-      Exception('failed to load diff'),
-    );
+    final firstDiff = Completer<GitDiffDocument>();
+    final retryDiff = Completer<GitDiffDocument>();
+    apiClient.enqueueDiff(firstDiff.future);
+    apiClient.enqueueDiff(retryDiff.future);
 
     await tester.pumpWidget(_buildApp(apiClient));
     await tester.pump();
-    await tester.pumpAndSettle();
+
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+
+    firstDiff.completeError(Exception('failed to load diff'));
+    await tester.pump();
+    await tester.pump();
 
     expect(find.text('Failed to load diff'), findsOneWidget);
     expect(find.textContaining('failed to load diff'), findsOneWidget);
     expect(find.widgetWithText(FilledButton, 'Try again'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Try again'));
+    await tester.pump();
+
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+
+    retryDiff.complete(const GitDiffDocument(
+      path: 'lib/feature.dart',
+      diff: 'diff --git a/lib/feature.dart b/lib/feature.dart\n+retried',
+      staged: false,
+    ));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('diff --git a/lib/feature.dart b/lib/feature.dart'), findsOneWidget);
+    expect(find.text('+retried'), findsOneWidget);
   });
 }
 
@@ -101,9 +123,14 @@ Widget _buildApp(_FakeDiffApiClient apiClient) {
 class _FakeDiffApiClient extends GitApiClient {
   _FakeDiffApiClient(SettingsService settings) : super(settings: settings);
 
+  final Queue<Future<GitDiffDocument>> _diffResponses = Queue<Future<GitDiffDocument>>();
   Future<GitDiffDocument> diffFuture = Future<GitDiffDocument>.value(
     const GitDiffDocument(path: 'lib/feature.dart', diff: '', staged: false),
   );
+
+  void enqueueDiff(Future<GitDiffDocument> response) {
+    _diffResponses.add(response);
+  }
 
   @override
   Future<GitDiffDocument> getDiff(
@@ -111,6 +138,9 @@ class _FakeDiffApiClient extends GitApiClient {
     String file, {
     bool staged = false,
   }) {
+    if (_diffResponses.isNotEmpty) {
+      return _diffResponses.removeFirst();
+    }
     return diffFuture;
   }
 }

@@ -58,18 +58,23 @@ void main() {
     final provider = await _buildProvider(repository: _repositoryDocument);
     await tester.pumpWidget(_buildApp(provider));
     await tester.pumpAndSettle();
+    final changesList = find.byType(Scrollable).last;
 
     expect(find.text('Ahead 2'), findsOneWidget);
     expect(find.text('Behind 1'), findsOneWidget);
     expect(find.text('Staged 1'), findsOneWidget);
-    expect(find.text('Changes 1'), findsNWidgets(2));
+    expect(find.text('Changes 1'), findsOneWidget);
     expect(find.text('Untracked 1'), findsOneWidget);
     expect(find.text('Conflicts 1'), findsOneWidget);
 
     expect(find.text('Conflicts (1)'), findsOneWidget);
-    expect(find.text('Staged Changes (1)'), findsOneWidget);
-    expect(find.text('Changes (1)'), findsOneWidget);
-    expect(find.text('Untracked (1)'), findsOneWidget);
+    expect(find.text('Staged Changes (1)', skipOffstage: false), findsOneWidget);
+    final changesSection = find.text('Changes (1)', skipOffstage: false);
+    await _scrollIntoViewport(tester, changesList, changesSection);
+    expect(changesSection, findsOneWidget);
+    final untrackedSection = find.text('Untracked (1)', skipOffstage: false);
+    await _scrollIntoViewport(tester, changesList, untrackedSection);
+    expect(untrackedSection, findsOneWidget);
   });
 
   testWidgets('disables commit when the message is empty', (tester) async {
@@ -79,7 +84,13 @@ void main() {
 
     final button = tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Commit'));
     expect(button.onPressed, isNull);
-    expect(find.text('Enter a commit message before committing'), findsOneWidget);
+    expect(
+      find.text(
+        'Enter a commit message before committing.',
+        skipOffstage: false,
+      ),
+      findsOneWidget,
+    );
     expect(provider.commitMessages, isEmpty);
   });
 
@@ -98,8 +109,15 @@ void main() {
     final provider = await _buildProvider(repository: _repositoryDocument);
     await tester.pumpWidget(_buildApp(provider));
     await tester.pumpAndSettle();
+    final changesList = find.byType(Scrollable).last;
 
-    await tester.tap(find.text('feature.dart'));
+    final featureFinder = find.text('feature.dart', skipOffstage: false);
+    await _scrollIntoViewport(tester, changesList, featureFinder);
+    final featureTile = find.ancestor(
+      of: featureFinder,
+      matching: find.byType(ListTile),
+    );
+    tester.widget<ListTile>(featureTile).onTap!();
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 10));
     await tester.pumpAndSettle();
@@ -129,20 +147,15 @@ void main() {
 }
 
 Widget _buildApp(_FakeGitApiClient apiClient) {
-  final workspaceProvider = WorkspaceProvider();
+  final workspaceProvider = WorkspaceProvider()..setWorkspace('/workspace/repo');
   final gitProvider = GitProvider(apiClient: apiClient);
 
   return MultiProvider(
-    providers: <SingleChildWidget>[
+    providers: [
       ChangeNotifierProvider<WorkspaceProvider>.value(value: workspaceProvider),
       ChangeNotifierProvider<GitProvider>.value(value: gitProvider),
     ],
-    child: Builder(
-      builder: (context) {
-        context.read<WorkspaceProvider>().setWorkspace('/workspace/repo');
-        return const MaterialApp(home: GitScreen());
-      },
-    ),
+    child: const MaterialApp(home: GitScreen()),
   );
 }
 
@@ -226,5 +239,22 @@ class _FakeGitApiClient extends GitApiClient {
     bool staged = false,
   }) async {
     return diffDocument;
+  }
+}
+
+Future<void> _scrollIntoViewport(
+  WidgetTester tester,
+  Finder scrollable,
+  Finder target,
+) async {
+  for (var attempt = 0; attempt < 8; attempt++) {
+    if (target.evaluate().isNotEmpty) {
+      final rect = tester.getRect(target);
+      if (rect.top >= 0 && rect.bottom <= 600) {
+        return;
+      }
+    }
+    await tester.drag(scrollable, const Offset(0, -200));
+    await tester.pumpAndSettle();
   }
 }

@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:stream_channel/stream_channel.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:vscode_mobile/models/git_models.dart';
 import 'package:vscode_mobile/providers/git_provider.dart';
@@ -249,11 +250,20 @@ class _RecordingGitApiClient extends GitApiClient {
   }
 }
 
-class _FakeWebSocketChannel implements WebSocketChannel {
-  _FakeWebSocketChannel();
+class _FakeWebSocketChannel with StreamChannelMixin<dynamic>
+    implements WebSocketChannel {
+  _FakeWebSocketChannel()
+      : controller = StreamController<dynamic>.broadcast(sync: true),
+        _sinkController = StreamController<dynamic>(sync: true),
+        _ready = Completer<void>() {
+    _ready.complete();
+    _sink = _FakeWebSocketSink(_sinkController.sink);
+  }
 
-  final StreamController<dynamic> controller = StreamController<dynamic>.broadcast();
-  final _FakeWebSocketSink _sink = _FakeWebSocketSink();
+  final StreamController<dynamic> controller;
+  final StreamController<dynamic> _sinkController;
+  final Completer<void> _ready;
+  late final _FakeWebSocketSink _sink;
 
   @override
   int? get closeCode => null;
@@ -265,32 +275,38 @@ class _FakeWebSocketChannel implements WebSocketChannel {
   String? get protocol => null;
 
   @override
-  Future<void> get ready => Future<void>.value();
+  Future<void> get ready => _ready.future;
 
   @override
-  Stream get stream => controller.stream;
+  Stream<dynamic> get stream => controller.stream;
 
   @override
   WebSocketSink get sink => _sink;
 }
 
 class _FakeWebSocketSink implements WebSocketSink {
+  _FakeWebSocketSink(this._sink);
+
   bool closed = false;
+  final StreamSink<dynamic> _sink;
 
   @override
-  void add(event) {}
+  void add(dynamic event) => _sink.add(event);
 
   @override
-  void addError(Object error, [StackTrace? stackTrace]) {}
-
-  @override
-  Future addStream(Stream stream) async {}
-
-  @override
-  Future close([int? closeCode, String? closeReason]) async {
-    closed = true;
+  void addError(Object error, [StackTrace? stackTrace]) {
+    _sink.addError(error, stackTrace);
   }
 
   @override
-  Future get done => Future<void>.value();
+  Future<void> addStream(Stream<dynamic> stream) => _sink.addStream(stream);
+
+  @override
+  Future<void> close([int? closeCode, String? closeReason]) async {
+    closed = true;
+    await _sink.close();
+  }
+
+  @override
+  Future<void> get done => _sink.done;
 }
