@@ -213,14 +213,16 @@ class GitRepositoryState {
   }
 
   int get totalChanges =>
-      staged.length +
-      unstaged.length +
-      untracked.length +
-      conflicts.length +
-      mergeChanges.length;
+      stagedCount + unstagedCount + untrackedCount + conflictCount;
 
   int get changeCount => totalChanges;
   bool get isClean => totalChanges == 0;
+  int get stagedCount => staged.length;
+  int get unstagedCount => unstaged.length + mergeChanges.length;
+  int get untrackedCount => untracked.length;
+  int get conflictCount => conflicts.length;
+
+  List<GitChange> get changes => [...unstaged, ...mergeChanges];
 
   List<GitChangeGroup> get groups => [
         GitChangeGroup(
@@ -229,19 +231,11 @@ class GitRepositoryState {
           description: 'Resolve merge conflicts before committing.',
           changes: conflicts,
           accent: GitGroupAccent.danger,
-          primaryAction: GitChangeAction.discard,
-        ),
-        GitChangeGroup(
-          key: 'mergeChanges',
-          title: 'Merge Changes',
-          description: 'Files produced by an active merge flow.',
-          changes: mergeChanges,
-          accent: GitGroupAccent.warning,
-          primaryAction: GitChangeAction.stage,
+          primaryAction: GitChangeAction.resolve,
         ),
         GitChangeGroup(
           key: 'staged',
-          title: 'Staged',
+          title: 'Staged Changes',
           description: 'Ready to include in the next commit.',
           changes: staged,
           accent: GitGroupAccent.success,
@@ -249,9 +243,9 @@ class GitRepositoryState {
         ),
         GitChangeGroup(
           key: 'unstaged',
-          title: 'Unstaged',
+          title: 'Changes',
           description: 'Tracked files with local modifications.',
-          changes: unstaged,
+          changes: changes,
           accent: GitGroupAccent.info,
           primaryAction: GitChangeAction.stage,
         ),
@@ -266,7 +260,7 @@ class GitRepositoryState {
       ].where((group) => group.changes.isNotEmpty).toList();
 }
 
-enum GitChangeAction { stage, unstage, discard }
+enum GitChangeAction { stage, unstage, resolve }
 
 enum GitGroupAccent { success, info, warning, danger, neutral }
 
@@ -298,6 +292,28 @@ class BridgeEventEnvelope {
     return BridgeEventEnvelope(
       type: json['type'] as String? ?? '',
       payload: json['payload'],
+    );
+  }
+}
+
+class GitDiffDocument {
+  final String path;
+  final String diff;
+  final bool staged;
+
+  const GitDiffDocument({
+    required this.path,
+    required this.diff,
+    required this.staged,
+  });
+
+  bool get isEmpty => diff.trim().isEmpty;
+
+  factory GitDiffDocument.fromJson(Map<String, dynamic> json) {
+    return GitDiffDocument(
+      path: json['path'] as String? ?? '',
+      diff: json['diff'] as String? ?? '',
+      staged: json['staged'] as bool? ?? false,
     );
   }
 }

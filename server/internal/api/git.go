@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/Lincyaw/vscode-mobile/server/internal/vscode"
 )
@@ -13,6 +14,12 @@ type gitPathFilesRequest struct {
 	Path  string   `json:"path"`
 	File  string   `json:"file"`
 	Files []string `json:"files"`
+}
+
+type gitDiffResponse struct {
+	Path   string `json:"path"`
+	Diff   string `json:"diff"`
+	Staged bool   `json:"staged"`
 }
 
 type gitCommitRequest struct {
@@ -62,6 +69,64 @@ func (s *Server) handleGitRepository(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, repo)
+}
+
+func (s *Server) handleGitDiff(w http.ResponseWriter, r *http.Request) {
+	repoPath, err := sanitizeRequiredRepoPath(r.URL.Query().Get("path"))
+	if err != nil {
+		writeBridgeError(w, http.StatusBadRequest, "invalid_path", err.Error())
+		return
+	}
+	file, err := sanitizeRelativePath(r.URL.Query().Get("file"), repoPath)
+	if err != nil {
+		writeBridgeError(w, http.StatusBadRequest, "invalid_file", err.Error())
+		return
+	}
+	staged := strings.EqualFold(r.URL.Query().Get("staged"), "true")
+
+	if s.gitService == nil && s.git == nil {
+		writeBridgeError(w, http.StatusServiceUnavailable, "bridge_not_ready", "bridge git service is not configured")
+		return
+	}
+
+	if s.gitService == nil {
+		fallback, err := s.git.Diff(repoPath, file, staged)
+		if err != nil {
+			writeBridgeError(w, http.StatusBadGateway, "git_repository_unavailable", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, gitDiffResponse{
+			Path:   file,
+			Diff:   fallback,
+			Staged: staged,
+		})
+		return
+	}
+
+	diff, err := s.gitService.Diff(repoPath, file, staged)
+	if err != nil {
+		if s.git == nil {
+			s.writeGitBridgeError(w, err)
+			return
+		}
+		fallback, fallbackErr := s.git.Diff(repoPath, file, staged)
+		if fallbackErr != nil {
+			s.writeGitBridgeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, gitDiffResponse{
+			Path:   file,
+			Diff:   fallback,
+			Staged: staged,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, gitDiffResponse{
+		Path:   chooseGitPath(diff.Path, file),
+		Diff:   diff.Diff,
+		Staged: diff.Staged,
+	})
 }
 
 func (s *Server) handleGitStage(w http.ResponseWriter, r *http.Request) {
@@ -351,4 +416,13 @@ func (s *Server) writeGitBridgeError(w http.ResponseWriter, err error) {
 		return
 	}
 	writeBridgeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+}
+
+func chooseGitPath(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }

@@ -27,6 +27,13 @@ type GitRepositoryDocument struct {
 	MergeChanges []GitChange `json:"mergeChanges"`
 }
 
+// GitDiffDocument represents the diff payload for a single file.
+type GitDiffDocument struct {
+	Path   string `json:"path"`
+	Diff   string `json:"diff"`
+	Staged bool   `json:"staged"`
+}
+
 // GitRemote describes a Git remote exposed through the bridge.
 type GitRemote struct {
 	Name       string   `json:"name"`
@@ -176,6 +183,33 @@ func (s *GitService) Push(path, remote, branch string, setUpstream bool) (GitRep
 
 func (s *GitService) Discard(path string, files []string) (GitRepositoryDocument, error) {
 	return s.runCommandAndRefresh(path, "discard", map[string]any{"path": path, "files": files})
+}
+
+func (s *GitService) Diff(path, file string, staged bool) (GitDiffDocument, error) {
+	if err := s.ensureRepositoryWatch(context.Background(), path); err != nil {
+		return GitDiffDocument{}, err
+	}
+	channel, err := s.ipcChannel()
+	if err != nil {
+		return GitDiffDocument{}, err
+	}
+	response, err := channel.Call("diff", map[string]any{
+		"path":   path,
+		"file":   file,
+		"staged": staged,
+	})
+	if err != nil {
+		return GitDiffDocument{}, newBridgeError("git_command_failed", "git diff failed", err)
+	}
+	diff, err := decodeDiffDocument(response)
+	if err != nil {
+		return GitDiffDocument{}, newBridgeError("git_command_failed", "failed to decode bridge git diff", err)
+	}
+	if diff.Path == "" {
+		diff.Path = file
+	}
+	diff.Staged = staged
+	return diff, nil
 }
 
 func (s *GitService) Stash(path, message string, includeUntracked bool) (GitRepositoryDocument, error) {
@@ -589,4 +623,27 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func decodeDiffDocument(raw interface{}) (GitDiffDocument, error) {
+	switch value := raw.(type) {
+	case string:
+		return GitDiffDocument{Diff: value}, nil
+	case map[string]any:
+		if diff, ok := value["diff"].(string); ok {
+			path, _ := value["path"].(string)
+			staged, _ := value["staged"].(bool)
+			return GitDiffDocument{
+				Path:   path,
+				Diff:   diff,
+				Staged: staged,
+			}, nil
+		}
+	}
+
+	var doc GitDiffDocument
+	if err := decodeJSON(raw, &doc); err != nil {
+		return GitDiffDocument{}, err
+	}
+	return doc, nil
 }

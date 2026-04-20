@@ -1,10 +1,12 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:vscode_mobile/models/git_models.dart';
 import 'package:vscode_mobile/providers/git_provider.dart';
+import 'package:vscode_mobile/services/api_client.dart';
 import 'package:vscode_mobile/services/git_api_client.dart';
 import 'package:vscode_mobile/services/settings_service.dart';
 
@@ -64,116 +66,231 @@ Future<SettingsService> _createSettings() async {
   return settings;
 }
 
-Future<dynamic> _invokeAsync(List<Future<dynamic> Function()> candidates) async {
-  Object? lastError;
-  for (final candidate in candidates) {
-    try {
-      return await candidate();
-    } on NoSuchMethodError catch (error) {
-      lastError = error;
-    }
-  }
-  throw lastError ?? StateError('No supported invocation matched');
-}
-
-Future<void> _invokeRefresh(dynamic provider) async {
-  await _invokeAsync(<Future<dynamic> Function()>[
-    () => (provider as dynamic).refreshRepository(),
-    () => (provider as dynamic).loadRepository(),
-    () => (provider as dynamic).refreshAll(),
-  ]);
-}
-
-Future<void> _invokeBridgeEvent(dynamic provider, Map<String, dynamic> event) async {
-  await _invokeAsync(<Future<dynamic> Function()>[
-    () async => (provider as dynamic).handleBridgeEvent(event),
-    () async => (provider as dynamic).onBridgeEvent(event),
-    () async => (provider as dynamic).processBridgeEvent(event),
-    () async => (provider as dynamic).applyBridgeEvent(event),
-  ]);
-}
-
-Map<String, dynamic> _repositoryFromProvider(dynamic provider) {
-  final getters = <dynamic Function()>[
-    () => (provider as dynamic).repository,
-    () => (provider as dynamic).repositoryState,
-    () => (provider as dynamic).repositoryDocument,
-  ];
-  for (final getter in getters) {
-    try {
-      final dynamic value = getter();
-      if (value != null) {
-        return jsonDecode(jsonEncode(value)) as Map<String, dynamic>;
-      }
-    } on NoSuchMethodError {
-      continue;
-    }
-  }
-  throw StateError('Provider does not expose a repository document');
-}
-
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test('GitProvider refreshes a bridge-backed repository document', () async {
     final settings = await _createSettings();
-    var repositoryFetches = 0;
-    final client = GitApiClient(
-      settings: settings,
-      client: MockClient((http.Request request) async {
-        if (request.method == 'GET' &&
-            request.url.path == '/bridge/git/repository') {
-          repositoryFetches += 1;
-          return http.Response(jsonEncode(_initialRepositoryDocument), 200);
-        }
-        fail('Unexpected request: ${request.method} ${request.url}');
-      }),
-    );
+    final client = _RecordingGitApiClient(settings)
+      ..repositoryResponses.add(_repo(_initialRepositoryDocument));
 
-    final dynamic provider = GitProvider(apiClient: client);
-    (provider as dynamic).setWorkDir('/workspace/repo');
+    final provider = GitProvider(apiClient: client)..setWorkDir('/workspace/repo');
+    await provider.refreshRepository();
 
-    await _invokeRefresh(provider);
-
-    final repository = _repositoryFromProvider(provider);
-    expect(repositoryFetches, 1);
-    expect(repository['branch'], 'main');
-    expect((repository['unstaged'] as List<dynamic>).single['path'], 'lib/feature.dart');
+    expect(client.repositoryFetches, 1);
+    expect(provider.repository?.branch, 'main');
+    expect(provider.repository?.unstaged.single.path, 'lib/feature.dart');
   });
 
-  test('GitProvider refreshes after bridge git repositoryChanged events', () async {
+  test('GitProvider refreshes after stage and unstage actions update repository state', () async {
     final settings = await _createSettings();
-    var repositoryFetches = 0;
-    final client = GitApiClient(
-      settings: settings,
-      client: MockClient((http.Request request) async {
-        if (request.method == 'GET' &&
-            request.url.path == '/bridge/git/repository') {
-          repositoryFetches += 1;
-          final body = repositoryFetches == 1
-              ? _initialRepositoryDocument
-              : _updatedRepositoryDocument;
-          return http.Response(jsonEncode(body), 200);
-        }
-        fail('Unexpected request: ${request.method} ${request.url}');
-      }),
-    );
+    final client = _RecordingGitApiClient(settings)
+      ..repositoryResponses.add(_repo(_initialRepositoryDocument))
+      ..stageResponses.add(_repo(_updatedRepositoryDocument))
+      ..unstageResponses.add(_repo(_initialRepositoryDocument));
 
-    final dynamic provider = GitProvider(apiClient: client);
-    (provider as dynamic).setWorkDir('/workspace/repo');
+    final provider = GitProvider(apiClient: client)..setWorkDir('/workspace/repo');
+    await provider.refreshRepository();
 
-    await _invokeRefresh(provider);
-    await _invokeBridgeEvent(provider, <String, dynamic>{
+    await provider.stageFile('lib/feature.dart');
+    expect(provider.repository?.staged.single.path, 'lib/feature.dart');
+    expect(provider.repository?.unstaged, isEmpty);
+    expect(provider.feedback?.kind, GitFeedbackKind.success);
+
+    await provider.unstageFile('lib/feature.dart');
+    expect(provider.repository?.unstaged.single.path, 'lib/feature.dart');
+    expect(provider.repository?.staged, isEmpty);
+    expect(provider.feedback?.kind, GitFeedbackKind.success);
+  });
+
+  test('GitProvider decodes repositoryChanged websocket payloads without forcing a refresh', () async {
+    final settings = await _createSettings();
+    final client = _RecordingGitApiClient(settings)
+      ..repositoryResponses.add(_repo(_initialRepositoryDocument));
+
+    final provider = GitProvider(apiClient: client)..setWorkDir('/workspace/repo');
+    await provider.refreshRepository();
+
+    client.emitEvent(<String, dynamic>{
       'type': 'bridge/git/repositoryChanged',
-      'payload': <String, dynamic>{'path': '/workspace/repo'},
+      'payload': _updatedRepositoryDocument,
     });
     await Future<void>.delayed(Duration.zero);
 
-    final repository = _repositoryFromProvider(provider);
-    expect(repositoryFetches, greaterThanOrEqualTo(2));
-    expect(repository['ahead'], 1);
-    expect((repository['staged'] as List<dynamic>).single['path'], 'lib/feature.dart');
-    expect((repository['conflicts'] as List<dynamic>).single['path'], 'lib/conflicted.dart');
-    expect((repository['mergeChanges'] as List<dynamic>).single['path'], 'lib/merge_only.dart');
+    expect(provider.repository?.ahead, 1);
+    expect(provider.repository?.staged.single.path, 'lib/feature.dart');
+    expect(provider.repository?.conflicts.single.path, 'lib/conflicted.dart');
+    expect(provider.repository?.mergeChanges.single.path, 'lib/merge_only.dart');
+    expect(client.repositoryFetches, 1);
   });
+
+  test('GitProvider exposes running state and success feedback for repository operations', () async {
+    final settings = await _createSettings();
+    final client = _RecordingGitApiClient(settings)
+      ..repositoryResponses.add(_repo(_initialRepositoryDocument));
+
+    final fetchCompleter = Completer<GitRepositoryState>();
+    client.fetchFuture = fetchCompleter.future;
+
+    final provider = GitProvider(apiClient: client)..setWorkDir('/workspace/repo');
+    await provider.refreshRepository();
+
+    final future = provider.fetch();
+    await Future<void>.delayed(Duration.zero);
+    expect(provider.isRunning(GitOperationType.fetch), isTrue);
+    expect(provider.activeOperationLabel, contains('Fetching'));
+
+    fetchCompleter.complete(_repo(_updatedRepositoryDocument));
+    await future;
+
+    expect(provider.isRunning(GitOperationType.fetch), isFalse);
+    expect(provider.feedback?.kind, GitFeedbackKind.success);
+    expect(provider.feedback?.message, contains('Fetch completed'));
+  });
+
+  test('GitProvider exposes error feedback when an operation fails', () async {
+    final settings = await _createSettings();
+    final client = _RecordingGitApiClient(settings)
+      ..repositoryResponses.add(_repo(_initialRepositoryDocument))
+      ..pushError = const ApiException('Push rejected by remote', 502);
+
+    final provider = GitProvider(apiClient: client)..setWorkDir('/workspace/repo');
+    await provider.refreshRepository();
+    await provider.push();
+
+    expect(provider.isRunning(GitOperationType.push), isFalse);
+    expect(provider.error, contains('Push rejected by remote'));
+    expect(provider.feedback?.kind, GitFeedbackKind.error);
+  });
+
+  test('GitProvider blocks empty commit messages before hitting the API', () async {
+    final settings = await _createSettings();
+    final client = _RecordingGitApiClient(settings)
+      ..repositoryResponses.add(_repo(_updatedRepositoryDocument));
+
+    final provider = GitProvider(apiClient: client)..setWorkDir('/workspace/repo');
+    await provider.refreshRepository();
+    await provider.commit('   ');
+
+    expect(client.commitMessages, isEmpty);
+    expect(provider.error, 'Commit message cannot be empty');
+    expect(provider.feedback?.kind, GitFeedbackKind.error);
+  });
+}
+
+GitRepositoryState _repo(Map<String, dynamic> json) {
+  return GitRepositoryState.fromJson(
+    jsonDecode(jsonEncode(json)) as Map<String, dynamic>,
+  );
+}
+
+class _RecordingGitApiClient extends GitApiClient {
+  _RecordingGitApiClient(SettingsService settings)
+      : channel = _FakeWebSocketChannel(),
+        super(settings: settings);
+
+  final _FakeWebSocketChannel channel;
+  final List<GitRepositoryState> repositoryResponses = <GitRepositoryState>[];
+  final List<GitRepositoryState> stageResponses = <GitRepositoryState>[];
+  final List<GitRepositoryState> unstageResponses = <GitRepositoryState>[];
+  int repositoryFetches = 0;
+  Future<GitRepositoryState>? fetchFuture;
+  Object? pushError;
+  final List<String> commitMessages = <String>[];
+
+  void emitEvent(Map<String, dynamic> event) {
+    channel.controller.add(jsonEncode(event));
+  }
+
+  @override
+  WebSocketChannel connectEventsWebSocket() => channel;
+
+  @override
+  Future<GitRepositoryState> getRepository(String path) async {
+    repositoryFetches += 1;
+    return repositoryResponses.removeAt(0);
+  }
+
+  @override
+  Future<GitRepositoryState> stageFile(String repoPath, String file) async {
+    return stageResponses.removeAt(0);
+  }
+
+  @override
+  Future<GitRepositoryState> unstageFile(String repoPath, String file) async {
+    return unstageResponses.removeAt(0);
+  }
+
+  @override
+  Future<GitRepositoryState> fetch(String repoPath, {String? remote}) async {
+    if (fetchFuture != null) {
+      return fetchFuture!;
+    }
+    return _repo(_updatedRepositoryDocument);
+  }
+
+  @override
+  Future<GitRepositoryState> push(
+    String repoPath, {
+    String? remote,
+    String? branch,
+    bool setUpstream = false,
+  }) async {
+    if (pushError != null) {
+      throw pushError!;
+    }
+    return _repo(_updatedRepositoryDocument);
+  }
+
+  @override
+  Future<GitRepositoryState> commit(String repoPath, String message) async {
+    commitMessages.add(message);
+    return _repo(_updatedRepositoryDocument);
+  }
+}
+
+class _FakeWebSocketChannel implements WebSocketChannel {
+  _FakeWebSocketChannel();
+
+  final StreamController<dynamic> controller = StreamController<dynamic>.broadcast();
+  final _FakeWebSocketSink _sink = _FakeWebSocketSink();
+
+  @override
+  int? get closeCode => null;
+
+  @override
+  String? get closeReason => null;
+
+  @override
+  String? get protocol => null;
+
+  @override
+  Future<void> get ready => Future<void>.value();
+
+  @override
+  Stream get stream => controller.stream;
+
+  @override
+  WebSocketSink get sink => _sink;
+}
+
+class _FakeWebSocketSink implements WebSocketSink {
+  bool closed = false;
+
+  @override
+  void add(event) {}
+
+  @override
+  void addError(Object error, [StackTrace? stackTrace]) {}
+
+  @override
+  Future addStream(Stream stream) async {}
+
+  @override
+  Future close([int? closeCode, String? closeReason]) async {
+    closed = true;
+  }
+
+  @override
+  Future get done => Future<void>.value();
 }

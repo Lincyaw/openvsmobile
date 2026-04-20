@@ -2,6 +2,7 @@ package git
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -125,7 +126,39 @@ func (g *Git) Diff(path string, filePath string, staged bool) (string, error) {
 	if filePath != "" {
 		args = append(args, "--", filePath)
 	}
-	return g.run(args...)
+	out, err := g.run(args...)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(out) != "" || filePath == "" || staged {
+		return out, nil
+	}
+	return g.untrackedDiff(dir, filePath)
+}
+
+func (g *Git) untrackedDiff(dir, filePath string) (string, error) {
+	status, err := g.run("-C", dir, "status", "--porcelain=v1", "--", filePath)
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(strings.TrimSpace(status), "?? ") {
+		return "", nil
+	}
+
+	absolutePath := filePath
+	if !strings.HasPrefix(filePath, dir) {
+		absolutePath = dir + string(os.PathSeparator) + filePath
+	}
+
+	cmd := exec.Command("git", "-C", dir, "diff", "--no-index", "--", "/dev/null", absolutePath)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return string(out), nil
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+		return string(out), nil
+	}
+	return "", fmt.Errorf("git diff --no-index: %w: %s", err, strings.TrimSpace(string(out)))
 }
 
 // Log runs `git log` and parses the output into LogEntry slices.

@@ -38,6 +38,33 @@ class GitApiClient {
     return _decodeRepository(response, 'Failed to fetch repository');
   }
 
+  Future<GitDiffDocument> getDiff(
+    String repoPath,
+    String file, {
+    bool staged = false,
+  }) async {
+    final response = await _client.get(
+      _buildUri(
+        '/bridge/git/diff',
+        queryParams: {
+          'path': repoPath,
+          'file': file,
+          'staged': staged.toString(),
+        },
+      ),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) {
+      throw ApiException(
+        'Failed to fetch diff: ${_extractErrorMessage(response.body)}',
+        response.statusCode,
+      );
+    }
+    return GitDiffDocument.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
   Future<GitRepositoryState> stageFile(String repoPath, String file) {
     return _postRepository('/bridge/git/stage', {
       'path': repoPath,

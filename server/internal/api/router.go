@@ -95,6 +95,7 @@ func (s *Server) Handler() http.Handler {
 
 	// Bridge-backed Git endpoints.
 	mux.HandleFunc("GET /bridge/git/repository", s.handleGitRepository)
+	mux.HandleFunc("GET /bridge/git/diff", s.handleGitDiff)
 	mux.HandleFunc("POST /bridge/git/stage", s.handleGitStage)
 	mux.HandleFunc("POST /bridge/git/unstage", s.handleGitUnstage)
 	mux.HandleFunc("POST /bridge/git/commit", s.handleGitCommit)

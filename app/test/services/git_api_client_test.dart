@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:vscode_mobile/models/git_models.dart';
 import 'package:vscode_mobile/services/git_api_client.dart';
 import 'package:vscode_mobile/services/settings_service.dart';
 
@@ -72,22 +73,6 @@ Future<SettingsService> _createSettings() async {
   return settings;
 }
 
-Future<dynamic> _invokeAsync(List<Future<dynamic> Function()> candidates) async {
-  Object? lastError;
-  for (final candidate in candidates) {
-    try {
-      return await candidate();
-    } on NoSuchMethodError catch (error) {
-      lastError = error;
-    }
-  }
-  throw lastError ?? StateError('No supported invocation matched');
-}
-
-Map<String, dynamic> _toJsonObject(dynamic value) {
-  return jsonDecode(jsonEncode(value)) as Map<String, dynamic>;
-}
-
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -103,22 +88,28 @@ void main() {
       }),
     );
 
-    final dynamic repository = await _invokeAsync(<Future<dynamic> Function()>[
-      () => (client as dynamic).getRepository('/workspace/repo'),
-      () => (client as dynamic).getRepositoryState('/workspace/repo'),
-    ]);
+    final GitRepositoryState repository = await client.getRepository('/workspace/repo');
 
-    final decoded = _toJsonObject(repository);
-    expect(decoded['branch'], 'main');
-    expect(decoded['upstream'], 'origin/main');
-    expect(decoded['ahead'], 2);
-    expect(decoded['behind'], 1);
-    expect((decoded['remotes'] as List<dynamic>).length, 2);
-    expect((decoded['staged'] as List<dynamic>).single['path'], 'lib/staged.dart');
-    expect((decoded['unstaged'] as List<dynamic>).single['path'], 'lib/unstaged.dart');
-    expect((decoded['untracked'] as List<dynamic>).single['path'], 'lib/new.dart');
-    expect((decoded['conflicts'] as List<dynamic>).single['path'], 'lib/conflicted.dart');
-    expect((decoded['mergeChanges'] as List<dynamic>).single['path'], 'lib/merge_only.dart');
+    expect(repository.branch, 'main');
+    expect(repository.upstream, 'origin/main');
+    expect(repository.ahead, 2);
+    expect(repository.behind, 1);
+    expect(repository.remotes, hasLength(2));
+    expect(repository.staged.single.path, 'lib/staged.dart');
+    expect(repository.unstaged.single.path, 'lib/unstaged.dart');
+    expect(repository.untracked.single.path, 'lib/new.dart');
+    expect(repository.conflicts.single.path, 'lib/conflicted.dart');
+    expect(repository.mergeChanges.single.path, 'lib/merge_only.dart');
+    expect(repository.stagedCount, 1);
+    expect(repository.unstagedCount, 2);
+    expect(repository.untrackedCount, 1);
+    expect(repository.conflictCount, 1);
+    expect(repository.groups.map((group) => group.title).toList(), <String>[
+      'Conflicts',
+      'Staged Changes',
+      'Changes',
+      'Untracked',
+    ]);
   });
 
   test('GitApiClient command calls use bridge endpoints and return refreshed repository state', () async {
@@ -130,20 +121,51 @@ void main() {
         expect(request.url.path, '/bridge/git/stage');
         final body = jsonDecode(request.body) as Map<String, dynamic>;
         expect(body['path'], '/workspace/repo');
-        expect(body['file'] ?? body['paths'], isNotNull);
+        expect(body['file'], 'lib/new.dart');
         return http.Response(jsonEncode(_stagedRepositoryDocument), 200);
       }),
     );
 
-    final dynamic repository = await _invokeAsync(<Future<dynamic> Function()>[
-      () => (client as dynamic).stage('/workspace/repo', 'lib/new.dart'),
-      () => (client as dynamic).stageFile('/workspace/repo', 'lib/new.dart'),
-    ]);
+    final GitRepositoryState repository = await client.stageFile(
+      '/workspace/repo',
+      'lib/new.dart',
+    );
 
-    final decoded = _toJsonObject(repository);
-    expect((decoded['staged'] as List<dynamic>).single['path'], 'lib/new.dart');
-    expect(decoded['conflicts'], isEmpty);
-    expect(decoded['mergeChanges'], isEmpty);
+    expect(repository.staged.single.path, 'lib/new.dart');
+    expect(repository.conflicts, isEmpty);
+    expect(repository.mergeChanges, isEmpty);
+  });
+
+  test('GitApiClient routes diff requests through /bridge/git/diff', () async {
+    final settings = await _createSettings();
+    final client = GitApiClient(
+      settings: settings,
+      client: MockClient((http.Request request) async {
+        expect(request.method, 'GET');
+        expect(request.url.path, '/bridge/git/diff');
+        expect(request.url.queryParameters['path'], '/workspace/repo');
+        expect(request.url.queryParameters['file'], 'lib/feature.dart');
+        expect(request.url.queryParameters['staged'], 'true');
+        return http.Response(
+          jsonEncode(<String, dynamic>{
+            'path': 'lib/feature.dart',
+            'diff': 'diff --git a/lib/feature.dart b/lib/feature.dart\n+hello',
+            'staged': true,
+          }),
+          200,
+        );
+      }),
+    );
+
+    final GitDiffDocument diff = await client.getDiff(
+      '/workspace/repo',
+      'lib/feature.dart',
+      staged: true,
+    );
+
+    expect(diff.path, 'lib/feature.dart');
+    expect(diff.staged, isTrue);
+    expect(diff.diff, contains('diff --git a/lib/feature.dart b/lib/feature.dart'));
   });
 
   test('GitApiClient surfaces structured bridge errors from command endpoints', () async {
@@ -163,14 +185,49 @@ void main() {
       }),
     );
 
-    try {
-      await _invokeAsync(<Future<dynamic> Function()>[
-        () => (client as dynamic).commit('/workspace/repo', 'ship bridge git'),
-      ]);
-      fail('Expected a structured bridge error');
-    } catch (error) {
-      expect(error.toString(), contains('merge_conflict'));
-      expect(error.toString(), contains('Resolve conflicts before committing.'));
-    }
+    expect(
+      () => client.commit('/workspace/repo', 'ship bridge git'),
+      throwsA(
+        isA<Object>().having(
+          (error) => error.toString(),
+          'message',
+          allOf(
+            contains('merge_conflict'),
+            contains('Resolve conflicts before committing.'),
+          ),
+        ),
+      ),
+    );
+  });
+
+  test('GitApiClient surfaces structured bridge errors from diff requests', () async {
+    final settings = await _createSettings();
+    final client = GitApiClient(
+      settings: settings,
+      client: MockClient((http.Request request) async {
+        expect(request.url.path, '/bridge/git/diff');
+        return http.Response(
+          jsonEncode(<String, dynamic>{
+            'code': 'git_repository_unavailable',
+            'message': 'failed to load diff for lib/feature.dart',
+          }),
+          502,
+        );
+      }),
+    );
+
+    expect(
+      () => client.getDiff('/workspace/repo', 'lib/feature.dart'),
+      throwsA(
+        isA<Object>().having(
+          (error) => error.toString(),
+          'message',
+          allOf(
+            contains('git_repository_unavailable'),
+            contains('failed to load diff for lib/feature.dart'),
+          ),
+        ),
+      ),
+    );
   });
 }

@@ -4,14 +4,22 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 	"unsafe"
 
+	"github.com/Lincyaw/vscode-mobile/server/internal/claude"
+	"github.com/Lincyaw/vscode-mobile/server/internal/diagnostics"
+	"github.com/Lincyaw/vscode-mobile/server/internal/git"
+	"github.com/Lincyaw/vscode-mobile/server/internal/terminal"
 	"github.com/Lincyaw/vscode-mobile/server/internal/vscode"
 )
 
@@ -104,6 +112,112 @@ func TestGitBridgeRepository_InvalidPathRejectedBeforeBridgeCall(t *testing.T) {
 	if body.Code != "invalid_path" {
 		t.Fatalf("error code = %q, want %q", body.Code, "invalid_path")
 	}
+}
+
+func TestGitBridgeDiff_NotReadyReturnsStructuredError(t *testing.T) {
+	ts, _, _ := newTestServer(t, "")
+
+	resp, err := http.Get(ts.URL + "/bridge/git/diff?path=" + url.QueryEscape(t.TempDir()) + "&file=" + url.QueryEscape("hello.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+
+	body := decodeBridgeErrorResponse(t, resp)
+	if body.Code != "bridge_not_ready" {
+		t.Fatalf("error code = %q, want %q", body.Code, "bridge_not_ready")
+	}
+}
+
+func TestGitBridgeDiff_InvalidPathRejectedBeforeGitCall(t *testing.T) {
+	ts, _, _ := newTestServer(t, "")
+	missingPath := filepath.Join(t.TempDir(), "missing-repo")
+
+	resp, err := http.Get(ts.URL + "/bridge/git/diff?path=" + url.QueryEscape(missingPath) + "&file=" + url.QueryEscape("hello.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+
+	body := decodeBridgeErrorResponse(t, resp)
+	if body.Code != "invalid_path" {
+		t.Fatalf("error code = %q, want %q", body.Code, "invalid_path")
+	}
+}
+
+func TestGitBridgeDiff_SuccessReturnsUnifiedDiff(t *testing.T) {
+	repoPath, cleanup := createGitDiffTestRepo(t)
+	defer cleanup()
+
+	if err := os.WriteFile(filepath.Join(repoPath, "hello.txt"), []byte("hello bridge\n"), 0o644); err != nil {
+		t.Fatalf("write modified file: %v", err)
+	}
+
+	ts := newGitBackedServer(t, repoPath)
+	resp, err := http.Get(ts.URL + "/bridge/git/diff?path=" + url.QueryEscape(repoPath) + "&file=" + url.QueryEscape("hello.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read diff response: %v", err)
+	}
+	if !bytes.Contains(body, []byte("diff --git a/hello.txt b/hello.txt")) {
+		t.Fatalf("diff body = %q, want unified diff header", string(body))
+	}
+}
+
+func createGitDiffTestRepo(t *testing.T) (string, func()) {
+	t.Helper()
+
+	dir := t.TempDir()
+	commands := [][]string{
+		{"git", "-C", dir, "init"},
+		{"git", "-C", dir, "config", "user.email", "test@test.com"},
+		{"git", "-C", dir, "config", "user.name", "Test User"},
+	}
+	for _, args := range commands {
+		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
+			t.Fatalf("setup command %v failed: %v: %s", args, err, out)
+		}
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("hello world\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	for _, args := range [][]string{
+		{"git", "-C", dir, "add", "hello.txt"},
+		{"git", "-C", dir, "commit", "-m", "initial commit"},
+	} {
+		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
+			t.Fatalf("setup command %v failed: %v: %s", args, err, out)
+		}
+	}
+
+	return dir, func() {}
+}
+
+func newGitBackedServer(t *testing.T, repoPath string) *httptest.Server {
+	t.Helper()
+
+	sessionIndex := claude.NewSessionIndex(t.TempDir())
+	pm := claude.NewProcessManager("/nonexistent/claude", ".")
+	srv := NewServer(newMockFS(), sessionIndex, pm, "", git.NewGit(repoPath), terminal.NewManager(), diagnostics.NewRunner(10*time.Second))
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	return ts
 }
 
 func TestGitBridgeCommandEndpoints_NotReadyReturnStructuredErrors(t *testing.T) {
