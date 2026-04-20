@@ -1,169 +1,160 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
+
 import '../models/git_models.dart';
 import '../services/git_api_client.dart';
 
 class GitProvider extends ChangeNotifier {
   final GitApiClient apiClient;
 
-  List<GitStatusEntry> _statusEntries = [];
-  List<GitLogEntry> _logEntries = [];
-  GitBranchInfo? _branchInfo;
-  String? _currentDiff;
+  GitRepositoryState? _repository;
   bool _isLoading = false;
   String? _error;
   String _workDir = '/';
+  WebSocketChannel? _eventsChannel;
+  StreamSubscription<dynamic>? _eventsSubscription;
 
   GitProvider({required this.apiClient});
 
-  List<GitStatusEntry> get statusEntries => _statusEntries;
-  List<GitLogEntry> get logEntries => _logEntries;
-  GitBranchInfo? get branchInfo => _branchInfo;
-  String? get currentDiff => _currentDiff;
+  GitRepositoryState? get repository => _repository;
   bool get isLoading => _isLoading;
   String? get error => _error;
   String get workDir => _workDir;
 
   void setWorkDir(String dir) {
+    if (_workDir == dir) {
+      return;
+    }
     _workDir = dir;
+    _repository = GitRepositoryState.empty(dir);
+    _error = null;
+    _connectEvents();
     notifyListeners();
   }
 
-  /// Load git status for the current work directory.
-  Future<void> loadStatus() async {
-    _isLoading = true;
-    _error = null;
-    notifyListeners();
-
+  Future<void> refreshRepository() async {
+    _setLoading(true);
     try {
-      _statusEntries = await apiClient.getStatus(_workDir);
+      _repository = await apiClient.getRepository(_workDir);
+      _error = null;
+      _connectEvents();
     } catch (e) {
       _error = e.toString();
     } finally {
-      _isLoading = false;
-      notifyListeners();
+      _setLoading(false);
     }
   }
 
-  /// Load git log for the current work directory.
-  Future<void> loadLog({int count = 20}) async {
-    _isLoading = true;
-    _error = null;
-    notifyListeners();
+  Future<void> stageFile(String file) => _runAction(() {
+        return apiClient.stageFile(_workDir, file);
+      });
 
+  Future<void> unstageFile(String file) => _runAction(() {
+        return apiClient.unstageFile(_workDir, file);
+      });
+
+  Future<void> discardFile(String file) => _runAction(() {
+        return apiClient.discardFile(_workDir, file);
+      });
+
+  Future<void> commit(String message) => _runAction(() {
+        return apiClient.commit(_workDir, message);
+      });
+
+  Future<void> fetch() => _runAction(() => apiClient.fetch(_workDir));
+  Future<void> pull() => _runAction(() => apiClient.pull(_workDir));
+  Future<void> push() => _runAction(() => apiClient.push(_workDir));
+
+  Future<void> _runAction(Future<GitRepositoryState> Function() action) async {
+    _setLoading(true);
     try {
-      _logEntries = await apiClient.getLog(_workDir, count: count);
+      _repository = await action();
+      _error = null;
+      _connectEvents();
     } catch (e) {
       _error = e.toString();
     } finally {
-      _isLoading = false;
-      notifyListeners();
+      _setLoading(false);
     }
   }
 
-  /// Load branch info for the current work directory.
-  Future<void> loadBranches() async {
-    _isLoading = true;
-    _error = null;
-    notifyListeners();
-
-    try {
-      _branchInfo = await apiClient.getBranches(_workDir);
-    } catch (e) {
-      _error = e.toString();
-    } finally {
-      _isLoading = false;
-      notifyListeners();
+  void _setLoading(bool value) {
+    _isLoading = value;
+    if (value) {
+      _error = null;
     }
+    notifyListeners();
   }
 
-  /// Load diff for the current work directory, optionally for a specific file.
-  Future<void> loadDiff({String? file, bool staged = false}) async {
-    _isLoading = true;
-    _error = null;
-    notifyListeners();
+  void _connectEvents() {
+    if (_workDir.isEmpty) {
+      return;
+    }
+
+    _eventsSubscription?.cancel();
+    _eventsChannel?.sink.close();
+
+    _eventsChannel = apiClient.connectEventsWebSocket();
+    _eventsSubscription = _eventsChannel!.stream.listen(
+      _onEvent,
+      onError: (_) {},
+      onDone: () {},
+    );
+  }
+
+  void _onEvent(dynamic raw) {
+    if (raw is! String) {
+      return;
+    }
 
     try {
-      _currentDiff = await apiClient.getDiff(
-        _workDir,
-        file: file,
-        staged: staged,
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic>) {
+        return;
+      }
+      final event = BridgeEventEnvelope.fromJson(decoded);
+      if (event.type != 'bridge/git/repositoryChanged') {
+        return;
+      }
+      if (event.payload is! Map) {
+        return;
+      }
+      final repository = GitRepositoryState.fromJson(
+        Map<String, dynamic>.from(event.payload as Map),
       );
-    } catch (e) {
-      _error = e.toString();
-    } finally {
-      _isLoading = false;
+      if (repository.path != _workDir) {
+        return;
+      }
+      _repository = repository;
+      _error = null;
       notifyListeners();
+    } catch (_) {
+      // Ignore malformed bridge events; the next refresh or event will recover.
     }
   }
 
-  /// Stage a file and refresh status.
-  Future<void> stageFile(String file) async {
-    _isLoading = true;
-    _error = null;
-    notifyListeners();
-
-    try {
-      await apiClient.stageFile(_workDir, file);
-      await refreshAll();
-    } catch (e) {
-      _error = e.toString();
-      _isLoading = false;
-      notifyListeners();
+  Future<void> applyBridgeEvent(Map<String, dynamic> event) async {
+    _onEvent(jsonEncode(event));
+    if (event['type'] != 'bridge/git/repositoryChanged') {
+      return;
+    }
+    final payload = event['payload'];
+    if (payload is! Map) {
+      return;
+    }
+    final changedPath = payload['path'];
+    if (changedPath is String && changedPath == _workDir) {
+      await refreshRepository();
     }
   }
 
-  /// Unstage a file and refresh status.
-  Future<void> unstageFile(String file) async {
-    _isLoading = true;
-    _error = null;
-    notifyListeners();
-
-    try {
-      await apiClient.unstageFile(_workDir, file);
-      await refreshAll();
-    } catch (e) {
-      _error = e.toString();
-      _isLoading = false;
-      notifyListeners();
-    }
-  }
-
-  /// Commit staged changes with a message and refresh.
-  Future<void> commit(String message) async {
-    _isLoading = true;
-    _error = null;
-    notifyListeners();
-
-    try {
-      await apiClient.commit(_workDir, message);
-      await refreshAll();
-    } catch (e) {
-      _error = e.toString();
-      _isLoading = false;
-      notifyListeners();
-    }
-  }
-
-  /// Refresh all git data: status, branches, and log.
-  Future<void> refreshAll() async {
-    _isLoading = true;
-    _error = null;
-    notifyListeners();
-
-    try {
-      final results = await Future.wait([
-        apiClient.getStatus(_workDir),
-        apiClient.getBranches(_workDir),
-        apiClient.getLog(_workDir),
-      ]);
-      _statusEntries = results[0] as List<GitStatusEntry>;
-      _branchInfo = results[1] as GitBranchInfo;
-      _logEntries = results[2] as List<GitLogEntry>;
-    } catch (e) {
-      _error = e.toString();
-    } finally {
-      _isLoading = false;
-      notifyListeners();
-    }
+  @override
+  void dispose() {
+    _eventsSubscription?.cancel();
+    _eventsChannel?.sink.close();
+    super.dispose();
   }
 }

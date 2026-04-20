@@ -1,11 +1,13 @@
 package vscode
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -285,4 +287,103 @@ func TestIntegration_BridgeLifecycle_EndToEnd(t *testing.T) {
 		t.Fatal("expected protocolVersion in recovered bridge capabilities response")
 	}
 	waitForFileRead(t, baseURL, testFile, testContent, 20*time.Second)
+}
+
+func runGitInDir(t *testing.T, dir string, args ...string) {
+	t.Helper()
+
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, output)
+	}
+}
+
+func createBridgeGitIntegrationRepo(t *testing.T) string {
+	t.Helper()
+
+	repoDir := t.TempDir()
+	runGitInDir(t, repoDir, "init")
+	runGitInDir(t, repoDir, "config", "user.email", "bridge@test.local")
+	runGitInDir(t, repoDir, "config", "user.name", "Bridge Test")
+
+	tracked := filepath.Join(repoDir, "tracked.txt")
+	if err := os.WriteFile(tracked, []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write tracked file: %v", err)
+	}
+	runGitInDir(t, repoDir, "add", "tracked.txt")
+	runGitInDir(t, repoDir, "commit", "-m", "initial")
+
+	if err := os.WriteFile(filepath.Join(repoDir, "tracked.txt"), []byte("base\nlocal change\n"), 0o644); err != nil {
+		t.Fatalf("modify tracked file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "new.txt"), []byte("new file\n"), 0o644); err != nil {
+		t.Fatalf("write untracked file: %v", err)
+	}
+
+	return repoDir
+}
+
+func TestIntegration_GitBridgeRepository_EndToEnd(t *testing.T) {
+	skipIfBridgeIntegrationPrereqsMissing(t)
+
+	metadataPath := filepath.Join(t.TempDir(), "bridge-metadata.json")
+	t.Setenv("OPENVSCODE_MOBILE_BRIDGE_METADATA_PATH", metadataPath)
+
+	openVSCodeCmd, vscodePort := startTestServer(t)
+	defer stopProcess(openVSCodeCmd)
+
+	_, baseURL := startBridgeAPIServer(t, fmt.Sprintf("http://127.0.0.1:%d", vscodePort))
+	_, _ = waitForBridgeCapabilities(t, baseURL, 20*time.Second)
+
+	repoDir := createBridgeGitIntegrationRepo(t)
+
+	repositoryURL := baseURL + "/bridge/git/repository?path=" + url.QueryEscape(repoDir)
+	resp, err := http.Get(repositoryURL)
+	if err != nil {
+		t.Fatalf("get bridge git repository: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("repository status = %d, want %d: %s", resp.StatusCode, http.StatusOK, body)
+	}
+
+	var repository map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&repository); err != nil {
+		t.Fatalf("decode repository response: %v", err)
+	}
+	for _, key := range []string{"branch", "ahead", "behind", "remotes", "staged", "unstaged", "untracked", "conflicts", "mergeChanges"} {
+		if _, ok := repository[key]; !ok {
+			t.Fatalf("repository missing %q: %#v", key, repository)
+		}
+	}
+
+	payload, err := json.Marshal(map[string]interface{}{
+		"path": repoDir,
+		"file": "new.txt",
+	})
+	if err != nil {
+		t.Fatalf("marshal stage payload: %v", err)
+	}
+
+	stageResp, err := http.Post(baseURL+"/bridge/git/stage", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("stage via bridge git API: %v", err)
+	}
+	defer stageResp.Body.Close()
+	if stageResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(stageResp.Body)
+		t.Fatalf("stage status = %d, want %d: %s", stageResp.StatusCode, http.StatusOK, body)
+	}
+
+	var refreshed map[string]interface{}
+	if err := json.NewDecoder(stageResp.Body).Decode(&refreshed); err != nil {
+		t.Fatalf("decode staged repository response: %v", err)
+	}
+	staged, ok := refreshed["staged"].([]interface{})
+	if !ok || len(staged) == 0 {
+		t.Fatalf("staged = %#v, want staged file after bridge stage", refreshed["staged"])
+	}
 }

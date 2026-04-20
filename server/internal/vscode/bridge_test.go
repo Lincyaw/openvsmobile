@@ -86,6 +86,15 @@ func newFakeVSCodeServer(t *testing.T, failHandshakeAttempts int) (*httptest.Ser
 		}
 
 		mustWriteControlJSON(t, conn, map[string]any{"type": "ok"})
+		// IPC channels wait for the initialize frame before allowing calls/listeners.
+		initMsg := EncodeProtocolMessage(&ProtocolMessage{
+			Type: ProtocolMessageRegular,
+			Data: EncodeIPCMessage([]interface{}{int(ResponseTypeInitialize)}, nil),
+		})
+		if err := conn.WriteMessage(websocket.BinaryMessage, initMsg); err != nil {
+			t.Errorf("write initialize payload: %v", err)
+			return
+		}
 
 		for {
 			msg, err := readProtocolMessage(conn)
@@ -272,6 +281,77 @@ func TestBridgeManager_RestartDetectionBroadcastsRestartedThenReady(t *testing.T
 	ready = mustReceiveBridgeEvent(t, events, 2*time.Second)
 	if ready.Type != "bridge/ready" {
 		t.Fatalf("post-restart event type = %q, want bridge/ready", ready.Type)
+	}
+}
+
+func TestBridgeManager_BroadcastsGitRepositoryChangedStableEnvelope(t *testing.T) {
+	manager := NewBridgeManager(BridgeManagerOptions{})
+	events, unsubscribe := manager.Subscribe(false)
+	defer unsubscribe()
+
+	manager.broadcast(BridgeEvent{
+		Type: "bridge/git/repositoryChanged",
+		Payload: map[string]interface{}{
+			"path": "/workspace/repo",
+			"repository": map[string]interface{}{
+				"branch":   "main",
+				"upstream": "origin/main",
+				"ahead":    3,
+				"behind":   1,
+				"remotes": []interface{}{
+					map[string]interface{}{
+						"name":     "origin",
+						"fetchUrl": "git@github.com:Lincyaw/openvsmobile.git",
+						"pushUrl":  "git@github.com:Lincyaw/openvsmobile.git",
+					},
+				},
+				"staged": []interface{}{
+					map[string]interface{}{"path": "lib/staged.dart", "status": "modified"},
+				},
+				"unstaged": []interface{}{
+					map[string]interface{}{"path": "lib/unstaged.dart", "status": "deleted"},
+				},
+				"untracked": []interface{}{
+					map[string]interface{}{"path": "lib/new.dart", "status": "untracked"},
+				},
+				"conflicts": []interface{}{
+					map[string]interface{}{"path": "lib/conflicted.dart", "status": "both_modified"},
+				},
+				"mergeChanges": []interface{}{
+					map[string]interface{}{"path": "lib/merge_only.dart", "status": "added_by_them"},
+				},
+			},
+		},
+	})
+
+	event := mustReceiveBridgeEvent(t, events, 2*time.Second)
+	if event.Type != "bridge/git/repositoryChanged" {
+		t.Fatalf("event type = %q, want bridge/git/repositoryChanged", event.Type)
+	}
+
+	payload, ok := event.Payload.(map[string]interface{})
+	if !ok {
+		t.Fatalf("payload = %#v, want map[string]interface{}", event.Payload)
+	}
+	if payload["path"] != "/workspace/repo" {
+		t.Fatalf("payload path = %#v, want %q", payload["path"], "/workspace/repo")
+	}
+
+	repository, ok := payload["repository"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("repository = %#v, want map[string]interface{}", payload["repository"])
+	}
+	if repository["ahead"] != 3 {
+		t.Fatalf("ahead = %#v, want 3", repository["ahead"])
+	}
+	if len(repository["remotes"].([]interface{})) != 1 {
+		t.Fatalf("remotes = %#v, want 1 entry", repository["remotes"])
+	}
+	if len(repository["conflicts"].([]interface{})) != 1 {
+		t.Fatalf("conflicts = %#v, want 1 entry", repository["conflicts"])
+	}
+	if len(repository["mergeChanges"].([]interface{})) != 1 {
+		t.Fatalf("mergeChanges = %#v, want 1 entry", repository["mergeChanges"])
 	}
 }
 

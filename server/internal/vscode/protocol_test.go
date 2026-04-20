@@ -207,6 +207,78 @@ func TestEncodeDecodeIPCMessage(t *testing.T) {
 	}
 }
 
+func TestEncodeDecodeIPCMessage_GitRepositoryPayloadPreservesGroups(t *testing.T) {
+	header := []interface{}{201, 41}
+	body := map[string]interface{}{
+		"path":     "/workspace/repo",
+		"branch":   "main",
+		"upstream": "origin/main",
+		"ahead":    2,
+		"behind":   1,
+		"remotes": []interface{}{
+			map[string]interface{}{
+				"name":     "origin",
+				"fetchUrl": "git@github.com:Lincyaw/openvsmobile.git",
+				"pushUrl":  "git@github.com:Lincyaw/openvsmobile.git",
+			},
+			map[string]interface{}{
+				"name":     "upstream",
+				"fetchUrl": "https://github.com/gitpod-io/openvscode-server.git",
+				"pushUrl":  "no_push",
+			},
+		},
+		"staged": []interface{}{
+			map[string]interface{}{"path": "lib/staged.dart", "status": "modified"},
+		},
+		"unstaged": []interface{}{
+			map[string]interface{}{"path": "lib/unstaged.dart", "status": "deleted"},
+		},
+		"untracked": []interface{}{
+			map[string]interface{}{"path": "lib/new.dart", "status": "untracked"},
+		},
+		"conflicts": []interface{}{
+			map[string]interface{}{"path": "lib/conflicted.dart", "status": "both_modified"},
+		},
+		"mergeChanges": []interface{}{
+			map[string]interface{}{"path": "lib/merge_only.dart", "status": "added_by_them"},
+		},
+	}
+
+	encoded := EncodeIPCMessage(header, body)
+	gotHeader, gotBody, err := DecodeIPCMessage(encoded)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+
+	gotHdr, ok := gotHeader.([]interface{})
+	if !ok || len(gotHdr) != 2 {
+		t.Fatalf("header = %#v, want 2-element array", gotHeader)
+	}
+	if gotHdr[0] != 201 {
+		t.Fatalf("response type = %#v, want 201", gotHdr[0])
+	}
+
+	repository, ok := gotBody.(map[string]interface{})
+	if !ok {
+		t.Fatalf("body = %#v, want map[string]interface{}", gotBody)
+	}
+	if repository["upstream"] != "origin/main" {
+		t.Fatalf("upstream = %#v, want %q", repository["upstream"], "origin/main")
+	}
+	remotes, ok := repository["remotes"].([]interface{})
+	if !ok || len(remotes) != 2 {
+		t.Fatalf("remotes = %#v, want 2 remote entries", repository["remotes"])
+	}
+	conflicts, ok := repository["conflicts"].([]interface{})
+	if !ok || len(conflicts) != 1 {
+		t.Fatalf("conflicts = %#v, want 1 conflict entry", repository["conflicts"])
+	}
+	mergeChanges, ok := repository["mergeChanges"].([]interface{})
+	if !ok || len(mergeChanges) != 1 {
+		t.Fatalf("mergeChanges = %#v, want 1 merge change entry", repository["mergeChanges"])
+	}
+}
+
 func TestVQLEncoding(t *testing.T) {
 	values := []int{0, 1, 127, 128, 255, 256, 16383, 16384, 1000000}
 	for _, v := range values {

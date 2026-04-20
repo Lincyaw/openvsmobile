@@ -15,7 +15,6 @@ import (
 	"github.com/Lincyaw/vscode-mobile/server/internal/api"
 	"github.com/Lincyaw/vscode-mobile/server/internal/claude"
 	"github.com/Lincyaw/vscode-mobile/server/internal/diagnostics"
-	"github.com/Lincyaw/vscode-mobile/server/internal/git"
 	gitauth "github.com/Lincyaw/vscode-mobile/server/internal/github"
 	"github.com/Lincyaw/vscode-mobile/server/internal/terminal"
 	"github.com/Lincyaw/vscode-mobile/server/internal/vscode"
@@ -70,6 +69,7 @@ func main() {
 	var fs api.FileSystem
 	var vsClient *vscode.Client
 	var bridgeManager *vscode.BridgeManager
+	var gitService *vscode.GitService
 	bridgeCtx, cancelBridge := context.WithCancel(context.Background())
 	defer cancelBridge()
 	if vsCodeURL != "" {
@@ -85,10 +85,11 @@ func main() {
 			ConnectionToken: vsCodeTok,
 		})
 		bridgeManager.Start(bridgeCtx)
+		gitService = vscode.NewGitService(vsClient, bridgeManager)
+		gitService.Start(bridgeCtx)
 		log.Printf("mobile runtime bridge discovery watching %s", bridgeManager.MetadataPath())
 	}
 
-	gitClient := git.NewGit(workDir)
 	termMgr := terminal.NewManager()
 	diagRunner := diagnostics.NewRunner(30 * time.Second)
 
@@ -119,8 +120,9 @@ func main() {
 		}
 	}()
 
-	srv := api.NewServer(fs, sessionIndex, pm, token, gitClient, termMgr, diagRunner, githubAuth)
+	srv := api.NewServer(fs, sessionIndex, pm, token, termMgr, diagRunner, githubAuth)
 	srv.SetBridgeManager(bridgeManager)
+	srv.SetGitService(gitService)
 
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
@@ -152,6 +154,9 @@ func main() {
 
 	// Close VS Code connection.
 	cancelBridge()
+	if gitService != nil {
+		gitService.Close()
+	}
 	if bridgeManager != nil {
 		bridgeManager.Close()
 	}
