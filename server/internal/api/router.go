@@ -39,6 +39,7 @@ type Server struct {
 	githubAuth       *gitauth.Service
 	fileWatchHub     *FileWatchHub
 	bridgeManager    *vscode.BridgeManager
+	documentSync     *vscode.DocumentSyncService
 }
 
 // NewServer creates a new API server.
@@ -57,12 +58,18 @@ func NewServer(fs FileSystem, sessionIndex *claude.SessionIndex, pm *claude.Proc
 		diagnosticRunner: diagRunner,
 		githubAuth:       authService,
 		fileWatchHub:     NewFileWatchHub(),
+		documentSync:     newDocumentSyncService(fs),
 	}
 }
 
 // SetBridgeManager injects the bridge lifecycle manager after server construction.
 func (s *Server) SetBridgeManager(manager *vscode.BridgeManager) {
 	s.bridgeManager = manager
+}
+
+// SetDocumentSync injects the bridge-backed document sync service.
+func (s *Server) SetDocumentSync(service *vscode.DocumentSyncService) {
+	s.documentSync = service
 }
 
 // Handler returns the top-level HTTP handler with all routes.
@@ -95,6 +102,10 @@ func (s *Server) Handler() http.Handler {
 	// Diagnostics endpoint.
 	mux.HandleFunc("GET /api/diagnostics", s.handleDiagnostics)
 	mux.HandleFunc("GET /bridge/capabilities", s.handleBridgeCapabilities)
+	mux.HandleFunc("POST /bridge/doc/open", s.handleBridgeDocumentOpen)
+	mux.HandleFunc("POST /bridge/doc/change", s.handleBridgeDocumentChange)
+	mux.HandleFunc("POST /bridge/doc/save", s.handleBridgeDocumentSave)
+	mux.HandleFunc("POST /bridge/doc/close", s.handleBridgeDocumentClose)
 	mux.HandleFunc("GET /bridge/terminal/sessions", s.handleTerminalSessions)
 	mux.HandleFunc("POST /bridge/terminal/create", s.handleTerminalCreate)
 	mux.HandleFunc("POST /bridge/terminal/attach", s.handleTerminalAttach)
@@ -182,4 +193,23 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 func (s *Server) githubAuthService() *gitauth.Service {
 	return s.githubAuth
+}
+
+func newDocumentSyncService(fs FileSystem) *vscode.DocumentSyncService {
+	if fs == nil {
+		return vscode.NewDocumentSyncService(nil)
+	}
+	return vscode.NewDocumentSyncService(fileSystemDocumentStore{fs: fs})
+}
+
+type fileSystemDocumentStore struct {
+	fs FileSystem
+}
+
+func (s fileSystemDocumentStore) ReadFile(path string) ([]byte, error) {
+	return s.fs.ReadFile(path)
+}
+
+func (s fileSystemDocumentStore) WriteFile(path string, content []byte) error {
+	return s.fs.WriteFile(path, content)
 }
