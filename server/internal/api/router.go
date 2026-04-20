@@ -10,6 +10,7 @@ import (
 
 	"github.com/Lincyaw/vscode-mobile/server/internal/claude"
 	"github.com/Lincyaw/vscode-mobile/server/internal/diagnostics"
+	"github.com/Lincyaw/vscode-mobile/server/internal/git"
 	gitauth "github.com/Lincyaw/vscode-mobile/server/internal/github"
 	"github.com/Lincyaw/vscode-mobile/server/internal/terminal"
 	"github.com/Lincyaw/vscode-mobile/server/internal/vscode"
@@ -32,16 +33,18 @@ type Server struct {
 	sessionIndex     *claude.SessionIndex
 	processManager   *claude.ProcessManager
 	token            string
+	git              *git.Git
 	gitService       *vscode.GitService
 	termManager      *terminal.Manager
 	diagnosticRunner *diagnostics.Runner
 	githubAuth       *gitauth.Service
 	fileWatchHub     *FileWatchHub
 	bridgeManager    *vscode.BridgeManager
+	documentSync     *vscode.DocumentSyncService
 }
 
 // NewServer creates a new API server.
-func NewServer(fs FileSystem, sessionIndex *claude.SessionIndex, pm *claude.ProcessManager, token string, termMgr *terminal.Manager, diagRunner *diagnostics.Runner, githubAuth ...*gitauth.Service) *Server {
+func NewServer(fs FileSystem, sessionIndex *claude.SessionIndex, pm *claude.ProcessManager, token string, gitClient *git.Git, termMgr *terminal.Manager, diagRunner *diagnostics.Runner, githubAuth ...*gitauth.Service) *Server {
 	var authService *gitauth.Service
 	if len(githubAuth) > 0 {
 		authService = githubAuth[0]
@@ -51,11 +54,13 @@ func NewServer(fs FileSystem, sessionIndex *claude.SessionIndex, pm *claude.Proc
 		sessionIndex:     sessionIndex,
 		processManager:   pm,
 		token:            token,
+		git:              gitClient,
 		gitService:       nil,
 		termManager:      termMgr,
 		diagnosticRunner: diagRunner,
 		githubAuth:       authService,
 		fileWatchHub:     NewFileWatchHub(),
+		documentSync:     newDocumentSyncService(fs),
 	}
 }
 
@@ -67,6 +72,11 @@ func (s *Server) SetBridgeManager(manager *vscode.BridgeManager) {
 // SetGitService injects the bridge-backed Git service after server construction.
 func (s *Server) SetGitService(service *vscode.GitService) {
 	s.gitService = service
+}
+
+// SetDocumentSync injects the bridge-backed document sync service.
+func (s *Server) SetDocumentSync(service *vscode.DocumentSyncService) {
+	s.documentSync = service
 }
 
 // Handler returns the top-level HTTP handler with all routes.
@@ -103,6 +113,20 @@ func (s *Server) Handler() http.Handler {
 	// Diagnostics endpoint.
 	mux.HandleFunc("GET /api/diagnostics", s.handleDiagnostics)
 	mux.HandleFunc("GET /bridge/capabilities", s.handleBridgeCapabilities)
+	mux.HandleFunc("POST /bridge/doc/open", s.handleBridgeDocumentOpen)
+	mux.HandleFunc("POST /bridge/doc/change", s.handleBridgeDocumentChange)
+	mux.HandleFunc("POST /bridge/doc/save", s.handleBridgeDocumentSave)
+	mux.HandleFunc("POST /bridge/doc/close", s.handleBridgeDocumentClose)
+	mux.HandleFunc("GET /bridge/terminal/sessions", s.handleTerminalSessions)
+	mux.HandleFunc("POST /bridge/terminal/create", s.handleTerminalCreate)
+	mux.HandleFunc("POST /bridge/terminal/attach", s.handleTerminalAttach)
+	mux.HandleFunc("POST /bridge/terminal/resize", s.handleTerminalResize)
+	mux.HandleFunc("POST /bridge/terminal/close", s.handleTerminalClose)
+	mux.HandleFunc("POST /bridge/terminal/rename", s.handleTerminalRename)
+	mux.HandleFunc("POST /bridge/terminal/split", s.handleTerminalSplit)
+
+	// GitHub repo context endpoints.
+	s.registerGitHubRepoContextRoutes(mux)
 
 	// GitHub auth endpoints.
 	s.registerGitHubAuthRoutes(mux)
@@ -110,7 +134,7 @@ func (s *Server) Handler() http.Handler {
 	// WebSocket endpoints.
 	mux.HandleFunc("/ws/chat", s.handleWSChat)
 	mux.HandleFunc("/ws/files", s.handleWSFiles)
-	mux.HandleFunc("/ws/terminal", s.handleWSTerminal)
+	mux.HandleFunc("GET /bridge/ws/terminal/{id}", s.handleWSBridgeTerminal)
 	mux.HandleFunc("/bridge/ws/events", s.handleWSBridgeEvents)
 
 	// Health-check endpoint (unauthenticated for connectivity tests).
@@ -183,4 +207,23 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 func (s *Server) githubAuthService() *gitauth.Service {
 	return s.githubAuth
+}
+
+func newDocumentSyncService(fs FileSystem) *vscode.DocumentSyncService {
+	if fs == nil {
+		return vscode.NewDocumentSyncService(nil)
+	}
+	return vscode.NewDocumentSyncService(fileSystemDocumentStore{fs: fs})
+}
+
+type fileSystemDocumentStore struct {
+	fs FileSystem
+}
+
+func (s fileSystemDocumentStore) ReadFile(path string) ([]byte, error) {
+	return s.fs.ReadFile(path)
+}
+
+func (s fileSystemDocumentStore) WriteFile(path string, content []byte) error {
+	return s.fs.WriteFile(path, content)
 }

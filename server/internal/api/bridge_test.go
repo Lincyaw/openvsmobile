@@ -44,7 +44,7 @@ func newBridgeEnabledServer(t *testing.T, manager *vscode.BridgeManager) *httpte
 	t.Helper()
 	sessionIndex := claude.NewSessionIndex(t.TempDir())
 	pm := claude.NewProcessManager("/nonexistent/claude", ".")
-	srv := NewServer(newMockFS(), sessionIndex, pm, "", terminal.NewManager(), diagnostics.NewRunner(10*time.Second))
+	srv := NewServer(newMockFS(), sessionIndex, pm, "", nil, terminal.NewManager(), diagnostics.NewRunner(10*time.Second))
 	srv.SetBridgeManager(manager)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)

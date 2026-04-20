@@ -61,7 +61,8 @@ requirements:
       REST endpoints: GET /api/files/* (list/read), PUT /api/files/* (write),
       GET /api/sessions (list Claude sessions), GET /api/sessions/:id/messages.
       WebSocket endpoints: /ws/files (file watch events), /ws/chat (AI
-      conversation stream), /ws/terminal (terminal I/O).
+      conversation stream), /bridge/ws/events (bridge lifecycle stream),
+      /bridge/ws/terminal/:id (session-oriented terminal I/O).
       Auth: connection token passed as query parameter or header.
     priority: P0
     status: implemented
@@ -288,19 +289,28 @@ requirements:
     depends_on: [REQ-001, REQ-003, REQ-007]
 
   - id: REQ-014
-    title: Terminal channel proxy
+    title: Bridge terminal session backend
     description: >
-      Go server provides PTY-based terminal I/O via WebSocket to the
-      Flutter client. Supports creating/resizing/destroying terminal
-      sessions. Uses creack/pty for direct PTY management.
+      Go server exposes bridge terminal endpoints around a unified session
+      model instead of the legacy /ws/terminal byte stream. REST endpoints:
+      GET /bridge/terminal/sessions plus POST /bridge/terminal/create,
+      /attach, /resize, /rename, /close, and /split. WebSocket endpoint:
+      /bridge/ws/terminal/:id for attach/re-attach streaming with ready,
+      output, error, and exit messages. Session lifecycle updates are also
+      rebroadcast on /bridge/ws/events so the mobile client can refresh
+      terminal state without a dedicated VS Code terminal adapter.
     priority: P1
     status: implemented
     code:
       - server/internal/terminal/terminal.go
       - server/internal/api/terminal.go
+      - server/internal/api/router.go
+      - server/internal/api/bridge.go
+      - server/cmd/server/main.go
     tests:
       - server/internal/terminal/terminal_test.go
-    depends_on: [REQ-001, REQ-003]
+      - server/internal/api/handler_test.go
+    depends_on: [REQ-003, REQ-025]
 
   # ============================================================
   # Iteration 3: Nice-to-have
@@ -523,6 +533,30 @@ requirements:
       - server/internal/vscode/bridge_integration_test.go
     depends_on: [REQ-023, REQ-024]
 
+  - id: REQ-026
+    title: Bridge document sync protocol
+    description: >
+      Ticket ASE-42 / GitHub issue #3 adds a VS Code TextDocument-shaped
+      document sync contract for the mobile runtime bridge. The Go server
+      exposes POST /bridge/doc/open, /bridge/doc/change, /bridge/doc/save,
+      and /bridge/doc/close; tracks per-file in-memory buffers with monotonic
+      versions; validates range/position edits with VS Code-compatible
+      character semantics; returns structured document_not_open,
+      version_conflict, and invalid_position errors; and keeps the latest
+      unsaved buffer available to future workspace edit, diagnostics, and
+      completion features without falling back to legacy git/terminal paths.
+    priority: P0
+    status: implemented
+    code:
+      - server/internal/vscode/bridge.go
+      - server/internal/api/bridge.go
+      - server/internal/api/router.go
+      - server/cmd/server/main.go
+    tests:
+      - server/internal/vscode/document_sync_test.go
+      - server/internal/api/bridge_documents_test.go
+    depends_on: [REQ-003, REQ-023]
+
   # ============================================================
   # Iteration 5: Bug fixes from code review audit
   # ============================================================
@@ -552,6 +586,33 @@ requirements:
       - server/internal/github/store_test.go
       - server/internal/api/github_auth_test.go
     depends_on: [REQ-003]
+
+  - id: REQ-024
+    title: GitHub repo-context binding endpoints
+    description: >
+      Go server derives the current workspace GitHub repository from the
+      workspace git remote, reports whether the authenticated GitHub account
+      can access that repository and whether the GitHub App is installed for
+      it, and resolves PR/review relative file paths back to local workspace
+      files without allowing path traversal outside the repo root.
+    priority: P1
+    status: implemented
+    code:
+      - server/internal/git/repo_context.go
+      - server/internal/github/client.go
+      - server/internal/github/repo_context.go
+      - server/internal/github/service.go
+      - server/internal/github/types.go
+      - server/internal/api/router.go
+      - server/internal/api/github_repo_context.go
+      - server/cmd/server/main.go
+      - docs/github-auth-backend.md
+    tests:
+      - server/internal/git/git_test.go
+      - server/internal/github/service_test.go
+      - server/internal/api/github_repo_context_test.go
+      - server/internal/api/handler_test.go
+    depends_on: [REQ-003, REQ-023]
 
   - id: FIX-001
     title: Search API path sanitization
@@ -688,3 +749,31 @@ requirements:
       - app/lib/screens/more_screen.dart
     tests: []
     depends_on: [REQ-014, REQ-020]
+
+  - id: REQ-027
+    title: GitHub current repository context backend
+    description: >
+      Ticket ASE-51 adds workspace-derived GitHub repository context APIs.
+      The Go server resolves the active repository owner/name from the current
+      git remote for SSH and HTTPS remotes, probes GitHub auth/install access
+      with explicit `not_authenticated`, `reauth_required`,
+      `repo_access_unavailable`, and `app_not_installed_for_repo` states, and
+      exposes `/github/repos/current` plus `/github/resolve-local-file` with
+      `/api` aliases. Local file resolution is constrained to the repo root,
+      rejects traversal, and returns `exists: false` for missing files.
+    priority: P1
+    status: implemented
+    code:
+      - project-index.yaml
+      - server/internal/git/repo_context.go
+      - server/internal/github/repo_context.go
+      - server/internal/github/types.go
+      - server/internal/github/client.go
+      - server/internal/github/service.go
+      - server/internal/api/router.go
+      - server/internal/api/github_repo_context.go
+      - docs/github-auth-backend.md
+    tests:
+      - server/internal/github/service_test.go
+      - server/internal/api/github_repo_context_test.go
+    depends_on: [REQ-023]

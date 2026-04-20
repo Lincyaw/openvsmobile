@@ -12,8 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"github.com/Lincyaw/vscode-mobile/server/internal/claude"
 	"github.com/Lincyaw/vscode-mobile/server/internal/diagnostics"
+	"github.com/Lincyaw/vscode-mobile/server/internal/git"
 	"github.com/Lincyaw/vscode-mobile/server/internal/terminal"
 )
 
@@ -92,7 +95,7 @@ func newTestServer(t *testing.T, token string) (*httptest.Server, *mockFS, strin
 	termMgr := terminal.NewManager()
 	diagRunner := diagnostics.NewRunner(10 * time.Second)
 
-	srv := NewServer(fs, sessionIndex, pm, token, termMgr, diagRunner)
+	srv := NewServer(fs, sessionIndex, pm, token, nil, termMgr, diagRunner)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
@@ -354,7 +357,7 @@ func TestSessionsList_WithSessions(t *testing.T) {
 
 	pm := claude.NewProcessManager("/nonexistent", ".")
 	diagRunner := diagnostics.NewRunner(10 * time.Second)
-	srv := NewServer(nil, sessIndex, pm, "", terminal.NewManager(), diagRunner)
+	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), diagRunner)
 	ts2 := httptest.NewServer(srv.Handler())
 	defer ts2.Close()
 
@@ -391,7 +394,7 @@ func TestSessionsSearch_ByQuery(t *testing.T) {
 
 	pm := claude.NewProcessManager("/nonexistent", ".")
 	diagRunner := diagnostics.NewRunner(10 * time.Second)
-	srv := NewServer(nil, sessIndex, pm, "", terminal.NewManager(), diagRunner)
+	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), diagRunner)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -435,6 +438,48 @@ func TestSessionsSearch_ByQuery(t *testing.T) {
 	}
 }
 
+func TestSessionsSearch_ProjectUsesExactWorkspaceRoot(t *testing.T) {
+	claudeDir := t.TempDir()
+	sessionsDir := filepath.Join(claudeDir, "sessions")
+	os.MkdirAll(sessionsDir, 0o755)
+
+	writeSessionFile(t, claudeDir, 1, "s1", "/tmp/workspaces/app", "cli")
+	writeSessionFile(t, claudeDir, 2, "s2", "/var/tmp/app", "cli")
+	writeSessionFile(t, claudeDir, 3, "s3", "/tmp/workspaces/app-nested", "cli")
+
+	sessIndex := claude.NewSessionIndex(claudeDir)
+	if err := sessIndex.ScanSessions(); err != nil {
+		t.Fatal(err)
+	}
+
+	pm := claude.NewProcessManager("/nonexistent", ".")
+	diagRunner := diagnostics.NewRunner(10 * time.Second)
+	srv := NewServer(nil, sessIndex, pm, "", git.NewGit("."), terminal.NewManager(), diagRunner)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/sessions?project=/tmp/workspaces/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var sessions []claude.SessionMeta
+	if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 exact-root session, got %d", len(sessions))
+	}
+	if sessions[0].SessionID != "s1" {
+		t.Fatalf("expected session s1, got %#v", sessions)
+	}
+}
+
 func TestSessionMessages_E2E(t *testing.T) {
 	claudeDir := t.TempDir()
 	sessionsDir := filepath.Join(claudeDir, "sessions")
@@ -452,7 +497,7 @@ func TestSessionMessages_E2E(t *testing.T) {
 
 	pm := claude.NewProcessManager("/nonexistent", ".")
 	diagRunner := diagnostics.NewRunner(10 * time.Second)
-	srv := NewServer(nil, sessIndex, pm, "", terminal.NewManager(), diagRunner)
+	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), diagRunner)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -508,7 +553,7 @@ func TestDiagnostics_NoRunner(t *testing.T) {
 	// Server with nil diagnostics runner.
 	sessIndex := claude.NewSessionIndex(t.TempDir())
 	pm := claude.NewProcessManager("/nonexistent", ".")
-	srv := NewServer(nil, sessIndex, pm, "", terminal.NewManager(), nil)
+	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), nil)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -560,5 +605,49 @@ func TestGitLegacyAPIEndpointsAreNotRegistered(t *testing.T) {
 				t.Fatalf("expected 404 for %s, got %d: %s", path, resp.StatusCode, body)
 			}
 		})
+	}
+}
+
+func TestHandler_LegacyTerminalWebSocketRouteRemoved(t *testing.T) {
+	ts, _, _ := newTestServer(t, "")
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/terminal"
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if err == nil {
+		t.Fatal("expected legacy /ws/terminal route to be removed")
+	}
+	if resp != nil && resp.StatusCode == http.StatusSwitchingProtocols {
+		t.Fatalf("legacy /ws/terminal unexpectedly upgraded with status %d", resp.StatusCode)
+	}
+}
+
+func TestGitHubResolveLocalFile_EndToEndFromNestedWorkspace(t *testing.T) {
+	rcs := newRepoContextServer(t, "git@github.com:acme/rocket.git", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v3/repos/acme/rocket":
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": "rocket", "full_name": "acme/rocket", "owner": map[string]any{"login": "acme"}})
+		case "/api/v3/repos/acme/rocket/installation":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 321})
+		default:
+			t.Fatalf("unexpected backend path %s", r.URL.Path)
+		}
+	})
+
+	resp, payload := repoContextResolveLocalFile(t, rcs.server.URL, "/api", rcs.nestedDir, "pkg/repo_context_test.txt")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d payload=%#v", resp.StatusCode, payload)
+	}
+	resolved := asString(payload["local_path"])
+	if resolved == "<nil>" || resolved == "" {
+		resolved = asString(payload["path"])
+	}
+	if resolved != rcs.filePath {
+		t.Fatalf("resolved path = %q, want %q payload=%#v", resolved, rcs.filePath, payload)
+	}
+	if payload["exists"] != true {
+		t.Fatalf("exists = %#v payload=%#v", payload["exists"], payload)
 	}
 }

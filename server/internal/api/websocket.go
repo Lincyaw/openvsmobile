@@ -20,10 +20,15 @@ var upgrader = websocket.Upgrader{
 
 // ChatMessage is the message format for the /ws/chat WebSocket.
 type ChatMessage struct {
-	Type      string `json:"type"`                // "send", "resume", "start"
-	Message   string `json:"message,omitempty"`   // For "send" type.
-	SessionID string `json:"sessionId,omitempty"` // For "resume" type.
-	WorkDir   string `json:"workDir,omitempty"`   // For "start" type.
+	Type          string                  `json:"type"`                    // "send", "resume", "start"
+	Message       string                  `json:"message,omitempty"`       // For "send" type.
+	SessionID     string                  `json:"sessionId,omitempty"`     // For "resume" type.
+	WorkspaceRoot string                  `json:"workspaceRoot,omitempty"` // For workspace-bound chat.
+	WorkDir       string                  `json:"workDir,omitempty"`       // Legacy alias for workspaceRoot.
+	ActiveFile    string                  `json:"activeFile,omitempty"`
+	Cursor        *claude.CursorPosition  `json:"cursor,omitempty"`
+	Selection     *claude.SelectionRange  `json:"selection,omitempty"`
+	Context       *claude.ConversationContext `json:"context,omitempty"`
 }
 
 // handleWSChat handles the /ws/chat WebSocket endpoint for AI conversation streaming.
@@ -85,13 +90,14 @@ func (s *Server) handleWSChat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleChatStart(conn *websocket.Conn, msg ChatMessage, setActiveConv func(*claude.Conversation)) {
-	conv, err := s.processManager.StartConversation(msg.WorkDir)
+	workspaceRoot := msg.workspaceRoot()
+	conv, err := s.processManager.StartConversation(workspaceRoot)
 	if err != nil {
 		log.Printf("[WS/Chat] failed to start conversation: %v", err)
 		writeWSError(conn, "failed to start conversation: "+err.Error())
 		return
 	}
-	log.Printf("[WS/Chat] started conversation %s (workDir=%s)", conv.ID, msg.WorkDir)
+	log.Printf("[WS/Chat] started conversation %s (workspaceRoot=%s)", conv.ID, workspaceRoot)
 	setActiveConv(conv)
 
 	// Send the conversation ID back.
@@ -105,7 +111,7 @@ func (s *Server) handleChatStart(conn *websocket.Conn, msg ChatMessage, setActiv
 }
 
 func (s *Server) handleChatResume(conn *websocket.Conn, msg ChatMessage, setActiveConv func(*claude.Conversation)) {
-	conv, err := s.processManager.ResumeConversation(msg.SessionID)
+	conv, err := s.processManager.ResumeConversationInDir(msg.SessionID, msg.workspaceRoot())
 	if err != nil {
 		log.Printf("[WS/Chat] failed to resume conversation %s: %v", msg.SessionID, err)
 		writeWSError(conn, "failed to resume conversation: "+err.Error())
@@ -134,12 +140,49 @@ func (s *Server) handleChatSend(conn *websocket.Conn, msg ChatMessage) {
 		return
 	}
 
-	if err := conv.Send(msg.Message); err != nil {
+	chatContext := msg.contextEnvelope()
+	if err := conv.SendWithContext(msg.Message, chatContext); err != nil {
 		log.Printf("[WS/Chat] failed to send message to %s: %v", conv.ID, err)
 		writeWSError(conn, "failed to send message: "+err.Error())
 		return
 	}
 	log.Printf("[WS/Chat] sent message to conversation %s", conv.ID)
+}
+
+func (m ChatMessage) workspaceRoot() string {
+	if m.WorkspaceRoot != "" {
+		return m.WorkspaceRoot
+	}
+	if m.Context != nil && m.Context.WorkspaceRoot != "" {
+		return m.Context.WorkspaceRoot
+	}
+	return m.WorkDir
+}
+
+func (m ChatMessage) contextEnvelope() *claude.ConversationContext {
+	if m.Context != nil {
+		ctxCopy := *m.Context
+		if ctxCopy.WorkspaceRoot == "" {
+			ctxCopy.WorkspaceRoot = m.workspaceRoot()
+		}
+		if ctxCopy.ActiveFile == "" {
+			ctxCopy.ActiveFile = m.ActiveFile
+		}
+		if ctxCopy.Cursor == nil {
+			ctxCopy.Cursor = m.Cursor
+		}
+		if ctxCopy.Selection == nil {
+			ctxCopy.Selection = m.Selection
+		}
+		return &ctxCopy
+	}
+
+	return &claude.ConversationContext{
+		WorkspaceRoot: m.workspaceRoot(),
+		ActiveFile:    m.ActiveFile,
+		Cursor:        m.Cursor,
+		Selection:     m.Selection,
+	}
 }
 
 func (s *Server) streamOutput(conn *websocket.Conn, conv *claude.Conversation) {

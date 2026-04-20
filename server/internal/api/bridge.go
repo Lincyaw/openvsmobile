@@ -1,7 +1,9 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"sync"
@@ -12,6 +14,22 @@ import (
 type bridgeErrorDetail struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+}
+
+type bridgeDocumentOpenRequest struct {
+	Path    string  `json:"path"`
+	Version int     `json:"version"`
+	Content *string `json:"content,omitempty"`
+}
+
+type bridgeDocumentChangeRequest struct {
+	Path    string                  `json:"path"`
+	Version int                     `json:"version"`
+	Changes []vscode.DocumentChange `json:"changes"`
+}
+
+type bridgeDocumentPathRequest struct {
+	Path string `json:"path"`
 }
 
 func (s *Server) handleBridgeCapabilities(w http.ResponseWriter, r *http.Request) {
@@ -39,11 +57,6 @@ func (s *Server) handleBridgeCapabilities(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleWSBridgeEvents(w http.ResponseWriter, r *http.Request) {
-	if s.bridgeManager == nil {
-		http.Error(w, "mobile runtime bridge is not configured", http.StatusServiceUnavailable)
-		return
-	}
-
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("bridge websocket upgrade error: %v", err)
@@ -52,22 +65,42 @@ func (s *Server) handleWSBridgeEvents(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close()
 	log.Printf("[WS/Bridge] connection established")
 
-	events, unsubscribe := s.bridgeManager.Subscribe(true)
-	defer unsubscribe()
+	terminalEvents, unsubscribeTerminal := s.termManager.SubscribeEvents()
+	defer unsubscribeTerminal()
+
+	var bridgeEvents <-chan vscode.BridgeEvent
+	var unsubscribeBridge func()
+	if s.bridgeManager != nil {
+		bridgeEvents, unsubscribeBridge = s.bridgeManager.Subscribe(true)
+		defer unsubscribeBridge()
+	}
 
 	var writeMu sync.Mutex
+	writeEvent := func(event interface{}) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return conn.WriteJSON(event)
+	}
 
 	go func() {
-		for event := range events {
-			writeMu.Lock()
-			err := conn.WriteJSON(event)
-			writeMu.Unlock()
-			if err != nil {
-				log.Printf("[WS/Bridge] write error: %v", err)
+		for event := range terminalEvents {
+			if err := writeEvent(vscode.BridgeEvent{Type: event.Type, Payload: event.Session}); err != nil {
+				log.Printf("[WS/Bridge] terminal event write error: %v", err)
 				return
 			}
 		}
 	}()
+
+	if bridgeEvents != nil {
+		go func() {
+			for event := range bridgeEvents {
+				if err := writeEvent(event); err != nil {
+					log.Printf("[WS/Bridge] bridge event write error: %v", err)
+					return
+				}
+			}
+		}()
+	}
 
 	for {
 		if _, _, err := conn.ReadMessage(); err != nil {
@@ -79,4 +112,113 @@ func (s *Server) handleWSBridgeEvents(w http.ResponseWriter, r *http.Request) {
 
 func writeBridgeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, bridgeErrorDetail{Code: code, Message: message})
+}
+
+func (s *Server) handleBridgeDocumentOpen(w http.ResponseWriter, r *http.Request) {
+	if s.documentSync == nil {
+		writeBridgeError(w, http.StatusServiceUnavailable, "bridge_not_ready", "document sync is not configured")
+		return
+	}
+
+	var req bridgeDocumentOpenRequest
+	if !decodeBridgeDocumentRequest(w, r, &req) {
+		return
+	}
+
+	snapshot, err := s.documentSync.OpenDocument(req.Path, req.Version, req.Content)
+	if err != nil {
+		writeDocumentSyncError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshot)
+}
+
+func (s *Server) handleBridgeDocumentChange(w http.ResponseWriter, r *http.Request) {
+	if s.documentSync == nil {
+		writeBridgeError(w, http.StatusServiceUnavailable, "bridge_not_ready", "document sync is not configured")
+		return
+	}
+
+	var req bridgeDocumentChangeRequest
+	if !decodeBridgeDocumentRequest(w, r, &req) {
+		return
+	}
+
+	snapshot, err := s.documentSync.ApplyDocumentChanges(req.Path, req.Version, req.Changes)
+	if err != nil {
+		writeDocumentSyncError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshot)
+}
+
+func (s *Server) handleBridgeDocumentSave(w http.ResponseWriter, r *http.Request) {
+	if s.documentSync == nil {
+		writeBridgeError(w, http.StatusServiceUnavailable, "bridge_not_ready", "document sync is not configured")
+		return
+	}
+
+	var req bridgeDocumentPathRequest
+	if !decodeBridgeDocumentRequest(w, r, &req) {
+		return
+	}
+
+	snapshot, err := s.documentSync.SaveDocument(req.Path)
+	if err != nil {
+		writeDocumentSyncError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshot)
+}
+
+func (s *Server) handleBridgeDocumentClose(w http.ResponseWriter, r *http.Request) {
+	if s.documentSync == nil {
+		writeBridgeError(w, http.StatusServiceUnavailable, "bridge_not_ready", "document sync is not configured")
+		return
+	}
+
+	var req bridgeDocumentPathRequest
+	if !decodeBridgeDocumentRequest(w, r, &req) {
+		return
+	}
+
+	if err := s.documentSync.CloseDocument(req.Path); err != nil {
+		writeDocumentSyncError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"path": req.Path, "closed": true})
+}
+
+func decodeBridgeDocumentRequest(w http.ResponseWriter, r *http.Request, dst any) bool {
+	defer r.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeBridgeError(w, http.StatusBadRequest, "invalid_request", "failed to read request body")
+		return false
+	}
+	if err := json.Unmarshal(body, dst); err != nil {
+		writeBridgeError(w, http.StatusBadRequest, "invalid_request", "failed to decode JSON request body")
+		return false
+	}
+	return true
+}
+
+func writeDocumentSyncError(w http.ResponseWriter, err error) {
+	var bridgeErr *vscode.BridgeError
+	if errors.As(err, &bridgeErr) {
+		status := http.StatusInternalServerError
+		switch bridgeErr.Code {
+		case "invalid_request", "invalid_position":
+			status = http.StatusBadRequest
+		case "document_not_open":
+			status = http.StatusNotFound
+		case "version_conflict":
+			status = http.StatusConflict
+		case "bridge_not_ready":
+			status = http.StatusServiceUnavailable
+		}
+		writeBridgeError(w, status, bridgeErr.Code, bridgeErr.Message)
+		return
+	}
+	writeBridgeError(w, http.StatusInternalServerError, "bridge_error", "bridge document request failed")
 }

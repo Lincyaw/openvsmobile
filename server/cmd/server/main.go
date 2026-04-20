@@ -15,6 +15,7 @@ import (
 	"github.com/Lincyaw/vscode-mobile/server/internal/api"
 	"github.com/Lincyaw/vscode-mobile/server/internal/claude"
 	"github.com/Lincyaw/vscode-mobile/server/internal/diagnostics"
+	"github.com/Lincyaw/vscode-mobile/server/internal/git"
 	gitauth "github.com/Lincyaw/vscode-mobile/server/internal/github"
 	"github.com/Lincyaw/vscode-mobile/server/internal/terminal"
 	"github.com/Lincyaw/vscode-mobile/server/internal/vscode"
@@ -120,9 +121,10 @@ func main() {
 		}
 	}()
 
-	srv := api.NewServer(fs, sessionIndex, pm, token, termMgr, diagRunner, githubAuth)
+	srv := api.NewServer(fs, sessionIndex, pm, token, git.NewGit(workDir), termMgr, diagRunner, githubAuth)
 	srv.SetBridgeManager(bridgeManager)
 	srv.SetGitService(gitService)
+	srv.SetDocumentSync(vscode.NewDocumentSyncService(fs))
 
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),

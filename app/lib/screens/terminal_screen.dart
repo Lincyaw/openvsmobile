@@ -5,10 +5,11 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import '../models/terminal_session.dart';
+import '../services/terminal_api_client.dart';
 import '../widgets/ansi_text.dart';
 
-/// Terminal screen that connects to the Go server's /ws/terminal
-/// WebSocket endpoint. Sends/receives base64-encoded PTY I/O.
+/// Terminal screen backed by the bridge terminal session API.
 class TerminalScreen extends StatefulWidget {
   final String baseUrl;
   final String token;
@@ -40,11 +41,13 @@ class _TerminalScreenState extends State<TerminalScreen> {
   final _outputController = ScrollController();
   final _inputController = TextEditingController();
   final _focusNode = FocusNode();
+  late TerminalApiClient _apiClient;
 
   // Line-based buffer for terminal output.
   final List<String> _lines = [''];
   final _currentLine = StringBuffer();
   String? _cachedOutput;
+  TerminalSession? _session;
   String _terminalId = '';
   bool _connected = false;
   bool _hasConnected = false;
@@ -56,15 +59,19 @@ class _TerminalScreenState extends State<TerminalScreen> {
   @override
   void initState() {
     super.initState();
+    _apiClient = TerminalApiClient(baseUrl: widget.baseUrl, token: widget.token);
     // Defer connection until first build to avoid connecting when tab is hidden.
   }
 
   @override
   void didUpdateWidget(TerminalScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.baseUrl != oldWidget.baseUrl || widget.token != oldWidget.token) {
+      _apiClient = TerminalApiClient(baseUrl: widget.baseUrl, token: widget.token);
+    }
     if (widget.workDir != oldWidget.workDir && _hasConnected) {
       // Workspace changed — reconnect terminal in new directory.
-      _reconnect();
+      _reconnect(clearOutput: true);
     }
     if (widget.isActive && !oldWidget.isActive && !_hasConnected) {
       _ensureConnected();
@@ -80,13 +87,16 @@ class _TerminalScreenState extends State<TerminalScreen> {
     super.dispose();
   }
 
-  /// Clean up the current WebSocket connection and subscription.
   void _disconnect() {
-    _sendClose();
     _subscription?.cancel();
     _subscription = null;
     _channel?.sink.close();
     _channel = null;
+    if (mounted) {
+      setState(() => _connected = false);
+    } else {
+      _connected = false;
+    }
   }
 
   void _ensureConnected() {
@@ -119,44 +129,39 @@ class _TerminalScreenState extends State<TerminalScreen> {
     if (cols == _cols && rows == _rows) return;
     _cols = cols;
     _rows = rows;
-    _channel!.sink.add(
-      jsonEncode({
-        'type': 'resize',
-        'id': _terminalId,
-        'rows': rows,
-        'cols': cols,
-      }),
-    );
+    unawaited(_resizeSession(cols, rows));
   }
 
-  void _connect() {
-    _disconnect(); // Clean up any existing connection before creating a new one.
-    final wsBase = widget.baseUrl
-        .replaceFirst('https://', 'wss://')
-        .replaceFirst('http://', 'ws://');
-    final base = wsBase.endsWith('/')
-        ? wsBase.substring(0, wsBase.length - 1)
-        : wsBase;
-    final uri = Uri.parse('$base/ws/terminal?token=${widget.token}');
+  Future<void> _connect() async {
+    _disconnect();
+    if (mounted) {
+      setState(() => _error = null);
+    }
+    try {
+      final session = await _ensureSession();
+      if (!mounted) return;
+      _session = session;
+      _terminalId = session.id;
 
-    _channel = WebSocketChannel.connect(uri);
-    _subscription = _channel!.stream.listen(
-      _onMessage,
-      onError: (e) => setState(() => _error = e.toString()),
-      onDone: () => setState(() => _connected = false),
-    );
-
-    _terminalId = 'term-${DateTime.now().millisecondsSinceEpoch}';
-    _channel!.sink.add(
-      jsonEncode({
-        'type': 'create',
-        'id': _terminalId,
-        'shell': '',
-        'workDir': widget.workDir,
-        'rows': _rows,
-        'cols': _cols,
-      }),
-    );
+      _channel = _apiClient.connectTerminalWebSocket(_terminalId);
+      _subscription = _channel!.stream.listen(
+        _onMessage,
+        onError: (Object error) {
+          if (!mounted) return;
+          setState(() {
+            _connected = false;
+            _error = error.toString();
+          });
+        },
+        onDone: () {
+          if (!mounted) return;
+          setState(() => _connected = false);
+        },
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _error = error.toString());
+    }
   }
 
   void _onMessage(dynamic data) {
@@ -164,7 +169,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
     final type = msg['type'] as String?;
 
     switch (type) {
-      case 'created':
+      case 'ready':
         setState(() => _connected = true);
         _focusNode.requestFocus();
         break;
@@ -180,8 +185,15 @@ class _TerminalScreenState extends State<TerminalScreen> {
           _scrollToBottom();
         }
         break;
+      case 'exit':
       case 'closed':
-        setState(() => _connected = false);
+        setState(() {
+          _connected = false;
+          final session = msg['session'];
+          if (session is Map<String, dynamic>) {
+            _session = TerminalSession.fromJson(session);
+          }
+        });
         break;
       case 'error':
         setState(() => _error = msg['error'] as String?);
@@ -227,13 +239,17 @@ class _TerminalScreenState extends State<TerminalScreen> {
     if (!_connected || _channel == null) return;
     final encoded = base64Encode(utf8.encode(text));
     _channel!.sink.add(
-      jsonEncode({'type': 'input', 'id': _terminalId, 'data': encoded}),
+      jsonEncode({'type': 'input', 'data': encoded}),
     );
   }
 
-  void _sendClose() {
-    if (_channel == null || _terminalId.isEmpty) return;
-    _channel!.sink.add(jsonEncode({'type': 'close', 'id': _terminalId}));
+  Future<void> _resizeSession(int cols, int rows) async {
+    try {
+      _session = await _apiClient.resizeSession(_terminalId, rows, cols);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _error = error.toString());
+    }
   }
 
   void _scrollToBottom() {
@@ -253,17 +269,49 @@ class _TerminalScreenState extends State<TerminalScreen> {
     _inputController.clear();
   }
 
-  void _reconnect() {
+  Future<TerminalSession> _ensureSession() async {
+    if (_terminalId.isNotEmpty) {
+      try {
+        return await _apiClient.attachSession(_terminalId);
+      } catch (_) {
+        // Fall through to list/create when the previous session is gone.
+      }
+    }
+
+    final sessions = await _apiClient.listSessions();
+    final existing = sessions.where((session) {
+      return session.cwd == widget.workDir && session.isRunning;
+    });
+    if (existing.isNotEmpty) {
+      final session = await _apiClient.attachSession(existing.first.id);
+      _terminalId = session.id;
+      return session;
+    }
+
+    final session = await _apiClient.createSession(
+      workDir: widget.workDir,
+      rows: _rows,
+      cols: _cols,
+    );
+    _terminalId = session.id;
+    return session;
+  }
+
+  void _reconnect({bool clearOutput = false}) {
     _disconnect();
     setState(() {
-      _lines.clear();
-      _lines.add('');
-      _currentLine.clear();
-      _cachedOutput = null;
-      _connected = false;
       _error = null;
+      if (clearOutput) {
+        _lines
+          ..clear()
+          ..add('');
+        _currentLine.clear();
+        _cachedOutput = null;
+        _session = null;
+        _terminalId = '';
+      }
     });
-    _connect();
+    unawaited(_connect());
   }
 
   @override
@@ -282,7 +330,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
             IconButton(
               icon: const Icon(Icons.refresh),
               tooltip: 'Reconnect',
-              onPressed: _reconnect,
+              onPressed: () => _reconnect(),
             ),
         ],
       ),

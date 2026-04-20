@@ -1,9 +1,14 @@
 import 'package:flutter/material.dart';
 
+import '../models/editor_context.dart';
+
 class CodeEditor extends StatefulWidget {
   final String content;
   final String fileName;
   final void Function(String content) onContentChanged;
+  final void Function(EditorCursor cursor)? onCursorChanged;
+  final void Function(EditorSelection? selection, EditorCursor cursor)?
+  onSelectionChanged;
   final VoidCallback? onSave;
 
   const CodeEditor({
@@ -11,6 +16,8 @@ class CodeEditor extends StatefulWidget {
     required this.content,
     required this.fileName,
     required this.onContentChanged,
+    this.onCursorChanged,
+    this.onSelectionChanged,
     this.onSave,
   });
 
@@ -35,6 +42,7 @@ class _CodeEditorState extends State<CodeEditor> {
     _editorScrollController = ScrollController();
     _focusNode = FocusNode();
     _controller.addListener(_onTextChanged);
+    _controller.addListener(_onSelectionChanged);
     _editorScrollController.addListener(_syncLineNumbersFromEditor);
     _lineNumberScrollController.addListener(_syncEditorFromLineNumbers);
   }
@@ -45,8 +53,10 @@ class _CodeEditorState extends State<CodeEditor> {
     if (oldWidget.content != widget.content &&
         widget.content != _controller.text) {
       _controller.removeListener(_onTextChanged);
+      _controller.removeListener(_onSelectionChanged);
       _controller.text = widget.content;
       _controller.addListener(_onTextChanged);
+      _controller.addListener(_onSelectionChanged);
     }
   }
 
@@ -72,11 +82,57 @@ class _CodeEditorState extends State<CodeEditor> {
     widget.onContentChanged(_controller.text);
   }
 
+  void _onSelectionChanged() {
+    final selection = _controller.selection;
+    if (!selection.isValid) return;
+
+    final cursor = _offsetToCursor(selection.extentOffset);
+    widget.onCursorChanged?.call(cursor);
+
+    if (selection.isCollapsed) {
+      widget.onSelectionChanged?.call(null, cursor);
+      return;
+    }
+
+    final startOffset = selection.start < selection.end
+        ? selection.start
+        : selection.end;
+    final endOffset = selection.start < selection.end
+        ? selection.end
+        : selection.start;
+    widget.onSelectionChanged?.call(
+      EditorSelection(
+        start: _offsetToCursor(startOffset),
+        end: _offsetToCursor(endOffset),
+      ),
+      cursor,
+    );
+  }
+
+  EditorCursor _offsetToCursor(int rawOffset) {
+    final text = _controller.text;
+    final clampedOffset = rawOffset.clamp(0, text.length);
+    var line = 1;
+    var column = 1;
+
+    for (var i = 0; i < clampedOffset; i++) {
+      if (text.codeUnitAt(i) == 10) {
+        line++;
+        column = 1;
+      } else {
+        column++;
+      }
+    }
+
+    return EditorCursor(line: line, column: column);
+  }
+
   @override
   void dispose() {
     _editorScrollController.removeListener(_syncLineNumbersFromEditor);
     _lineNumberScrollController.removeListener(_syncEditorFromLineNumbers);
     _controller.removeListener(_onTextChanged);
+    _controller.removeListener(_onSelectionChanged);
     _controller.dispose();
     _lineNumberScrollController.dispose();
     _editorScrollController.dispose();

@@ -8,8 +8,11 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
+	"unicode/utf8"
 )
 
 const (
@@ -449,4 +452,363 @@ func cloneMap(src map[string]interface{}) map[string]interface{} {
 		dst[k] = v
 	}
 	return dst
+}
+
+// DocumentPosition identifies a zero-based line/character location in a text buffer.
+type DocumentPosition struct {
+	Line      int `json:"line"`
+	Character int `json:"character"`
+}
+
+// DocumentRange identifies the half-open span to replace.
+type DocumentRange struct {
+	Start DocumentPosition `json:"start"`
+	End   DocumentPosition `json:"end"`
+}
+
+// DocumentChange describes either a full-buffer replacement or a ranged edit.
+type DocumentChange struct {
+	Range *DocumentRange `json:"range,omitempty"`
+	Text  string         `json:"text"`
+}
+
+// DocumentSnapshot exposes the current in-memory document state.
+type DocumentSnapshot struct {
+	Path    string `json:"path"`
+	Version int    `json:"version"`
+	Content string `json:"content,omitempty"`
+}
+
+// DocumentManagerOptions configures runtime-backed load/save hooks.
+type DocumentManagerOptions struct {
+	Load func(path string) ([]byte, error)
+	Save func(path string, content []byte) error
+}
+
+// DocumentStore is the runtime-backed persistence contract for document sync.
+type DocumentStore interface {
+	ReadFile(path string) ([]byte, error)
+	WriteFile(path string, content []byte) error
+}
+
+type documentSession struct {
+	path    string
+	version int
+	content string
+}
+
+// DocumentManager tracks unsaved document buffers independently from on-disk content.
+type DocumentManager struct {
+	mu     sync.RWMutex
+	loadFn func(path string) ([]byte, error)
+	saveFn func(path string, content []byte) error
+
+	sessions map[string]*documentSession
+}
+
+// DocumentSyncService exposes the bridge document lifecycle used by the API layer.
+type DocumentSyncService struct {
+	manager *DocumentManager
+}
+
+// NewDocumentSyncService creates a document sync service backed by the provided store.
+func NewDocumentSyncService(store DocumentStore) *DocumentSyncService {
+	opts := DocumentManagerOptions{}
+	if store != nil {
+		opts.Load = store.ReadFile
+		opts.Save = store.WriteFile
+	}
+	return &DocumentSyncService{
+		manager: NewDocumentManager(opts),
+	}
+}
+
+// NewDocumentManager creates a document session manager.
+func NewDocumentManager(opts DocumentManagerOptions) *DocumentManager {
+	return &DocumentManager{
+		loadFn:   opts.Load,
+		saveFn:   opts.Save,
+		sessions: make(map[string]*documentSession),
+	}
+}
+
+// OpenDocument starts or replaces the tracked session for path.
+func (s *DocumentSyncService) OpenDocument(path string, version int, content *string) (DocumentSnapshot, error) {
+	if s == nil || s.manager == nil {
+		return DocumentSnapshot{}, newBridgeError("bridge_not_ready", "mobile runtime bridge is not ready", nil)
+	}
+	return s.manager.OpenDocument(path, version, content)
+}
+
+// ApplyDocumentChanges applies a versioned batch of incremental edits.
+func (s *DocumentSyncService) ApplyDocumentChanges(path string, version int, changes []DocumentChange) (DocumentSnapshot, error) {
+	if s == nil || s.manager == nil {
+		return DocumentSnapshot{}, newBridgeError("bridge_not_ready", "mobile runtime bridge is not ready", nil)
+	}
+	return s.manager.ApplyDocumentChanges(path, version, changes)
+}
+
+// SaveDocument persists the latest accepted in-memory buffer.
+func (s *DocumentSyncService) SaveDocument(path string) (DocumentSnapshot, error) {
+	if s == nil || s.manager == nil {
+		return DocumentSnapshot{}, newBridgeError("bridge_not_ready", "mobile runtime bridge is not ready", nil)
+	}
+	return s.manager.SaveDocument(path)
+}
+
+// CloseDocument releases the tracked session for path.
+func (s *DocumentSyncService) CloseDocument(path string) error {
+	if s == nil || s.manager == nil {
+		return newBridgeError("bridge_not_ready", "mobile runtime bridge is not ready", nil)
+	}
+	return s.manager.CloseDocument(path)
+}
+
+// DocumentBuffer returns the latest unsaved buffer for an open document.
+func (s *DocumentSyncService) DocumentBuffer(path string) (DocumentSnapshot, error) {
+	if s == nil || s.manager == nil {
+		return DocumentSnapshot{}, newBridgeError("bridge_not_ready", "mobile runtime bridge is not ready", nil)
+	}
+	return s.manager.DocumentBuffer(path)
+}
+
+func (m *DocumentManager) OpenDocument(path string, version int, content *string) (DocumentSnapshot, error) {
+	if m == nil {
+		return DocumentSnapshot{}, newBridgeError("bridge_not_ready", "mobile runtime bridge is not ready", nil)
+	}
+	if strings.TrimSpace(path) == "" {
+		return DocumentSnapshot{}, newBridgeError("invalid_request", "document path is required", nil)
+	}
+	if version < 0 {
+		return DocumentSnapshot{}, newBridgeError("invalid_request", "document version must be zero or greater", nil)
+	}
+
+	m.mu.Lock()
+	if session, ok := m.sessions[path]; ok {
+		snapshot, err := reconcileOpenDocument(session, version, content)
+		m.mu.Unlock()
+		return snapshot, err
+	}
+	m.mu.Unlock()
+
+	var initial string
+	if content != nil {
+		initial = *content
+	} else if m.loadFn != nil {
+		data, err := m.loadFn(path)
+		if err != nil {
+			return DocumentSnapshot{}, newBridgeError("document_load_failed", "failed to load document content", err)
+		}
+		initial = string(data)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if session, ok := m.sessions[path]; ok {
+		return reconcileOpenDocument(session, version, content)
+	}
+	m.sessions[path] = &documentSession{
+		path:    path,
+		version: version,
+		content: initial,
+	}
+	return DocumentSnapshot{Path: path, Version: version, Content: initial}, nil
+}
+
+// ApplyDocumentChanges applies a versioned batch of incremental edits.
+func (m *DocumentManager) ApplyDocumentChanges(path string, version int, changes []DocumentChange) (DocumentSnapshot, error) {
+	if m == nil {
+		return DocumentSnapshot{}, newBridgeError("bridge_not_ready", "mobile runtime bridge is not ready", nil)
+	}
+	if strings.TrimSpace(path) == "" {
+		return DocumentSnapshot{}, newBridgeError("invalid_request", "document path is required", nil)
+	}
+	if len(changes) == 0 {
+		return DocumentSnapshot{}, newBridgeError("invalid_request", "at least one document change is required", nil)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	session, ok := m.sessions[path]
+	if !ok {
+		return DocumentSnapshot{}, newBridgeError("document_not_open", "document is not open", nil)
+	}
+	if version <= session.version {
+		return DocumentSnapshot{}, newBridgeError("version_conflict", "document version is stale", nil)
+	}
+
+	content := session.content
+	for _, change := range changes {
+		next, err := applyDocumentChange(content, change)
+		if err != nil {
+			return DocumentSnapshot{}, err
+		}
+		content = next
+	}
+
+	session.version = version
+	session.content = content
+	return DocumentSnapshot{Path: path, Version: session.version, Content: session.content}, nil
+}
+
+// SaveDocument persists the latest accepted in-memory buffer.
+func (m *DocumentManager) SaveDocument(path string) (DocumentSnapshot, error) {
+	if m == nil {
+		return DocumentSnapshot{}, newBridgeError("bridge_not_ready", "mobile runtime bridge is not ready", nil)
+	}
+	if strings.TrimSpace(path) == "" {
+		return DocumentSnapshot{}, newBridgeError("invalid_request", "document path is required", nil)
+	}
+
+	m.mu.RLock()
+	session, ok := m.sessions[path]
+	if !ok {
+		m.mu.RUnlock()
+		return DocumentSnapshot{}, newBridgeError("document_not_open", "document is not open", nil)
+	}
+	snapshot := DocumentSnapshot{Path: session.path, Version: session.version, Content: session.content}
+	saveFn := m.saveFn
+	m.mu.RUnlock()
+
+	if saveFn == nil {
+		return DocumentSnapshot{}, newBridgeError("save_unavailable", "document save is not configured", nil)
+	}
+	if err := saveFn(path, []byte(snapshot.Content)); err != nil {
+		return DocumentSnapshot{}, newBridgeError("document_save_failed", "failed to save document", err)
+	}
+	return snapshot, nil
+}
+
+// CloseDocument releases the tracked session for path.
+func (m *DocumentManager) CloseDocument(path string) error {
+	if m == nil {
+		return newBridgeError("bridge_not_ready", "mobile runtime bridge is not ready", nil)
+	}
+	if strings.TrimSpace(path) == "" {
+		return newBridgeError("invalid_request", "document path is required", nil)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.sessions[path]; !ok {
+		return newBridgeError("document_not_open", "document is not open", nil)
+	}
+	delete(m.sessions, path)
+	return nil
+}
+
+// DocumentBuffer returns the latest unsaved buffer for an open document.
+func (m *DocumentManager) DocumentBuffer(path string) (DocumentSnapshot, error) {
+	if m == nil {
+		return DocumentSnapshot{}, newBridgeError("bridge_not_ready", "mobile runtime bridge is not ready", nil)
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	session, ok := m.sessions[path]
+	if !ok {
+		return DocumentSnapshot{}, newBridgeError("document_not_open", "document is not open", nil)
+	}
+	return DocumentSnapshot{Path: session.path, Version: session.version, Content: session.content}, nil
+}
+
+func applyDocumentChange(content string, change DocumentChange) (string, error) {
+	if change.Range == nil {
+		return change.Text, nil
+	}
+
+	start, end, err := resolveDocumentRange(content, *change.Range)
+	if err != nil {
+		return "", err
+	}
+	return content[:start] + change.Text + content[end:], nil
+}
+
+func resolveDocumentRange(content string, changeRange DocumentRange) (int, int, error) {
+	start, err := documentOffset(content, changeRange.Start)
+	if err != nil {
+		return 0, 0, err
+	}
+	end, err := documentOffset(content, changeRange.End)
+	if err != nil {
+		return 0, 0, err
+	}
+	if end < start {
+		return 0, 0, newBridgeError("invalid_position", "document range end precedes start", nil)
+	}
+	return start, end, nil
+}
+
+func documentOffset(content string, pos DocumentPosition) (int, error) {
+	if pos.Line < 0 || pos.Character < 0 {
+		return 0, newBridgeError("invalid_position", "document position must be zero or greater", nil)
+	}
+
+	offset := 0
+	line := 0
+	for {
+		if line == pos.Line {
+			break
+		}
+		idx := strings.IndexByte(content[offset:], '\n')
+		if idx < 0 {
+			return 0, newBridgeError("invalid_position", "document position line is out of range", nil)
+		}
+		offset += idx + 1
+		line++
+	}
+
+	lineEnd := len(content)
+	if idx := strings.IndexByte(content[offset:], '\n'); idx >= 0 {
+		lineEnd = offset + idx
+	}
+	characterOffset, err := documentCharacterOffset(content[offset:lineEnd], pos.Character)
+	if err != nil {
+		return 0, err
+	}
+	return offset + characterOffset, nil
+}
+
+func reconcileOpenDocument(session *documentSession, version int, content *string) (DocumentSnapshot, error) {
+	snapshot := DocumentSnapshot{Path: session.path, Version: session.version, Content: session.content}
+	switch {
+	case version < session.version:
+		return DocumentSnapshot{}, newBridgeError("version_conflict", "document version is stale", nil)
+	case version == session.version:
+		if content == nil || *content == session.content {
+			return snapshot, nil
+		}
+		return DocumentSnapshot{}, newBridgeError("version_conflict", "document reopen conflicts with tracked buffer", nil)
+	case content == nil:
+		return DocumentSnapshot{}, newBridgeError("version_conflict", "document reopen requires content for a newer version", nil)
+	default:
+		session.version = version
+		session.content = *content
+		return DocumentSnapshot{Path: session.path, Version: session.version, Content: session.content}, nil
+	}
+}
+
+func documentCharacterOffset(line string, character int) (int, error) {
+	offset := 0
+	remaining := character
+	for offset < len(line) {
+		if remaining == 0 {
+			return offset, nil
+		}
+		r, size := utf8.DecodeRuneInString(line[offset:])
+		width := utf16.RuneLen(r)
+		if width < 0 {
+			width = 1
+		}
+		if remaining < width {
+			return 0, newBridgeError("invalid_position", "document position character is out of range", nil)
+		}
+		offset += size
+		remaining -= width
+	}
+	if remaining != 0 {
+		return 0, newBridgeError("invalid_position", "document position character is out of range", nil)
+	}
+	return offset, nil
 }
