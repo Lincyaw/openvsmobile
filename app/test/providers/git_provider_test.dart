@@ -75,7 +75,8 @@ void main() {
     final client = _RecordingGitApiClient(settings)
       ..repositoryResponses.add(_repo(_initialRepositoryDocument));
 
-    final provider = GitProvider(apiClient: client)..setWorkDir('/workspace/repo');
+    final provider = GitProvider(apiClient: client)
+      ..setWorkDir('/workspace/repo');
     await provider.refreshRepository();
 
     expect(client.repositoryFetches, 1);
@@ -83,71 +84,86 @@ void main() {
     expect(provider.repository?.unstaged.single.path, 'lib/feature.dart');
   });
 
-  test('GitProvider refreshes after stage and unstage actions update repository state', () async {
-    final settings = await _createSettings();
-    final client = _RecordingGitApiClient(settings)
-      ..repositoryResponses.add(_repo(_initialRepositoryDocument))
-      ..stageResponses.add(_repo(_updatedRepositoryDocument))
-      ..unstageResponses.add(_repo(_initialRepositoryDocument));
+  test(
+    'GitProvider refreshes after stage and unstage actions update repository state',
+    () async {
+      final settings = await _createSettings();
+      final client = _RecordingGitApiClient(settings)
+        ..repositoryResponses.add(_repo(_initialRepositoryDocument))
+        ..stageResponses.add(_repo(_updatedRepositoryDocument))
+        ..unstageResponses.add(_repo(_initialRepositoryDocument));
 
-    final provider = GitProvider(apiClient: client)..setWorkDir('/workspace/repo');
-    await provider.refreshRepository();
+      final provider = GitProvider(apiClient: client)
+        ..setWorkDir('/workspace/repo');
+      await provider.refreshRepository();
 
-    await provider.stageFile('lib/feature.dart');
-    expect(provider.repository?.staged.single.path, 'lib/feature.dart');
-    expect(provider.repository?.unstaged, isEmpty);
-    expect(provider.feedback?.kind, GitFeedbackKind.success);
+      await provider.stageFile('lib/feature.dart');
+      expect(provider.repository?.staged.single.path, 'lib/feature.dart');
+      expect(provider.repository?.unstaged, isEmpty);
+      expect(provider.feedback?.kind, GitFeedbackKind.success);
 
-    await provider.unstageFile('lib/feature.dart');
-    expect(provider.repository?.unstaged.single.path, 'lib/feature.dart');
-    expect(provider.repository?.staged, isEmpty);
-    expect(provider.feedback?.kind, GitFeedbackKind.success);
-  });
+      await provider.unstageFile('lib/feature.dart');
+      expect(provider.repository?.unstaged.single.path, 'lib/feature.dart');
+      expect(provider.repository?.staged, isEmpty);
+      expect(provider.feedback?.kind, GitFeedbackKind.success);
+    },
+  );
 
-  test('GitProvider decodes repositoryChanged websocket payloads without forcing a refresh', () async {
-    final settings = await _createSettings();
-    final client = _RecordingGitApiClient(settings)
-      ..repositoryResponses.add(_repo(_initialRepositoryDocument));
+  test(
+    'GitProvider decodes repositoryChanged websocket payloads without forcing a refresh',
+    () async {
+      final settings = await _createSettings();
+      final client = _RecordingGitApiClient(settings)
+        ..repositoryResponses.add(_repo(_initialRepositoryDocument));
 
-    final provider = GitProvider(apiClient: client)..setWorkDir('/workspace/repo');
-    await provider.refreshRepository();
+      final provider = GitProvider(apiClient: client)
+        ..setWorkDir('/workspace/repo');
+      await provider.refreshRepository();
 
-    client.emitEvent(<String, dynamic>{
-      'type': 'bridge/git/repositoryChanged',
-      'payload': _updatedRepositoryDocument,
-    });
-    await Future<void>.delayed(Duration.zero);
+      client.emitEvent(<String, dynamic>{
+        'type': 'bridge/git/repositoryChanged',
+        'payload': _updatedRepositoryDocument,
+      });
+      await Future<void>.delayed(Duration.zero);
 
-    expect(provider.repository?.ahead, 1);
-    expect(provider.repository?.staged.single.path, 'lib/feature.dart');
-    expect(provider.repository?.conflicts.single.path, 'lib/conflicted.dart');
-    expect(provider.repository?.mergeChanges.single.path, 'lib/merge_only.dart');
-    expect(client.repositoryFetches, 1);
-  });
+      expect(provider.repository?.ahead, 1);
+      expect(provider.repository?.staged.single.path, 'lib/feature.dart');
+      expect(provider.repository?.conflicts.single.path, 'lib/conflicted.dart');
+      expect(
+        provider.repository?.mergeChanges.single.path,
+        'lib/merge_only.dart',
+      );
+      expect(client.repositoryFetches, 1);
+    },
+  );
 
-  test('GitProvider exposes running state and success feedback for repository operations', () async {
-    final settings = await _createSettings();
-    final client = _RecordingGitApiClient(settings)
-      ..repositoryResponses.add(_repo(_initialRepositoryDocument));
+  test(
+    'GitProvider exposes running state and success feedback for repository operations',
+    () async {
+      final settings = await _createSettings();
+      final client = _RecordingGitApiClient(settings)
+        ..repositoryResponses.add(_repo(_initialRepositoryDocument));
 
-    final fetchCompleter = Completer<GitRepositoryState>();
-    client.fetchFuture = fetchCompleter.future;
+      final fetchCompleter = Completer<GitRepositoryState>();
+      client.fetchFuture = fetchCompleter.future;
 
-    final provider = GitProvider(apiClient: client)..setWorkDir('/workspace/repo');
-    await provider.refreshRepository();
+      final provider = GitProvider(apiClient: client)
+        ..setWorkDir('/workspace/repo');
+      await provider.refreshRepository();
 
-    final future = provider.fetch();
-    await Future<void>.delayed(Duration.zero);
-    expect(provider.isRunning(GitOperationType.fetch), isTrue);
-    expect(provider.activeOperationLabel, contains('Fetching'));
+      final future = provider.fetch();
+      await Future<void>.delayed(Duration.zero);
+      expect(provider.isRunning(GitOperationType.fetch), isTrue);
+      expect(provider.activeOperationLabel, contains('Fetching'));
 
-    fetchCompleter.complete(_repo(_updatedRepositoryDocument));
-    await future;
+      fetchCompleter.complete(_repo(_updatedRepositoryDocument));
+      await future;
 
-    expect(provider.isRunning(GitOperationType.fetch), isFalse);
-    expect(provider.feedback?.kind, GitFeedbackKind.success);
-    expect(provider.feedback?.message, contains('Fetch completed'));
-  });
+      expect(provider.isRunning(GitOperationType.fetch), isFalse);
+      expect(provider.feedback?.kind, GitFeedbackKind.success);
+      expect(provider.feedback?.message, contains('Fetch completed'));
+    },
+  );
 
   test('GitProvider exposes error feedback when an operation fails', () async {
     final settings = await _createSettings();
@@ -155,7 +171,8 @@ void main() {
       ..repositoryResponses.add(_repo(_initialRepositoryDocument))
       ..pushError = const ApiException('Push rejected by remote', 502);
 
-    final provider = GitProvider(apiClient: client)..setWorkDir('/workspace/repo');
+    final provider = GitProvider(apiClient: client)
+      ..setWorkDir('/workspace/repo');
     await provider.refreshRepository();
     await provider.push();
 
@@ -164,19 +181,23 @@ void main() {
     expect(provider.feedback?.kind, GitFeedbackKind.error);
   });
 
-  test('GitProvider blocks empty commit messages before hitting the API', () async {
-    final settings = await _createSettings();
-    final client = _RecordingGitApiClient(settings)
-      ..repositoryResponses.add(_repo(_updatedRepositoryDocument));
+  test(
+    'GitProvider blocks empty commit messages before hitting the API',
+    () async {
+      final settings = await _createSettings();
+      final client = _RecordingGitApiClient(settings)
+        ..repositoryResponses.add(_repo(_updatedRepositoryDocument));
 
-    final provider = GitProvider(apiClient: client)..setWorkDir('/workspace/repo');
-    await provider.refreshRepository();
-    await provider.commit('   ');
+      final provider = GitProvider(apiClient: client)
+        ..setWorkDir('/workspace/repo');
+      await provider.refreshRepository();
+      await provider.commit('   ');
 
-    expect(client.commitMessages, isEmpty);
-    expect(provider.error, 'Commit message cannot be empty');
-    expect(provider.feedback?.kind, GitFeedbackKind.error);
-  });
+      expect(client.commitMessages, isEmpty);
+      expect(provider.error, 'Commit message cannot be empty');
+      expect(provider.feedback?.kind, GitFeedbackKind.error);
+    },
+  );
 }
 
 GitRepositoryState _repo(Map<String, dynamic> json) {
@@ -187,8 +208,8 @@ GitRepositoryState _repo(Map<String, dynamic> json) {
 
 class _RecordingGitApiClient extends GitApiClient {
   _RecordingGitApiClient(SettingsService settings)
-      : channel = _FakeWebSocketChannel(),
-        super(settings: settings);
+    : channel = _FakeWebSocketChannel(),
+      super(settings: settings);
 
   final _FakeWebSocketChannel channel;
   final List<GitRepositoryState> repositoryResponses = <GitRepositoryState>[];
@@ -250,6 +271,7 @@ class _RecordingGitApiClient extends GitApiClient {
   }
 }
 
+
 class _FakeWebSocketChannel with StreamChannelMixin<dynamic>
     implements WebSocketChannel {
   _FakeWebSocketChannel()
@@ -264,6 +286,7 @@ class _FakeWebSocketChannel with StreamChannelMixin<dynamic>
   final StreamController<dynamic> _sinkController;
   final Completer<void> _ready;
   late final _FakeWebSocketSink _sink;
+
 
   @override
   int? get closeCode => null;

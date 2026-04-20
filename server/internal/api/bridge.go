@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/Lincyaw/vscode-mobile/server/internal/vscode"
@@ -35,6 +36,28 @@ type bridgeDocumentPathRequest struct {
 func (s *Server) handleBridgeCapabilities(w http.ResponseWriter, r *http.Request) {
 	if s.bridgeManager == nil {
 		writeBridgeError(w, http.StatusServiceUnavailable, "bridge_not_ready", "mobile runtime bridge is not ready")
+		return
+	}
+
+	if name := strings.TrimSpace(r.URL.Query().Get("name")); name != "" {
+		capability, err := s.bridgeManager.Capability(name)
+		if err != nil {
+			var bridgeErr *vscode.BridgeError
+			if errors.As(err, &bridgeErr) {
+				status := http.StatusServiceUnavailable
+				if bridgeErr.Code == "capability_unavailable" {
+					status = http.StatusNotFound
+				}
+				writeBridgeError(w, status, bridgeErr.Code, bridgeErr.Message)
+				return
+			}
+			writeBridgeError(w, http.StatusInternalServerError, "capability_unavailable", "failed to load mobile runtime bridge capability")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"name":       name,
+			"capability": capability,
+		})
 		return
 	}
 

@@ -36,6 +36,13 @@ class GitRemote {
   }
 }
 
+class GitBranchInfo {
+  final String current;
+  final List<String> branches;
+
+  const GitBranchInfo({required this.current, required this.branches});
+}
+
 class GitMergeStatus {
   final String kind;
   final String current;
@@ -104,8 +111,8 @@ class GitChange {
     final mergeStatus = mergeJson is Map<String, dynamic>
         ? GitMergeStatus.fromJson(mergeJson)
         : mergeJson is Map
-            ? GitMergeStatus.fromJson(Map<String, dynamic>.from(mergeJson))
-            : null;
+        ? GitMergeStatus.fromJson(Map<String, dynamic>.from(mergeJson))
+        : null;
 
     return GitChange(
       path: json['path'] as String? ?? '',
@@ -183,9 +190,8 @@ class GitRepositoryState {
       behind: json['behind'] as int? ?? 0,
       remotes: (json['remotes'] as List<dynamic>? ?? const [])
           .map(
-            (entry) => GitRemote.fromJson(
-              Map<String, dynamic>.from(entry as Map),
-            ),
+            (entry) =>
+                GitRemote.fromJson(Map<String, dynamic>.from(entry as Map)),
           )
           .toList(),
       staged: _changesFromJson(json['staged']),
@@ -225,39 +231,39 @@ class GitRepositoryState {
   List<GitChange> get changes => [...unstaged, ...mergeChanges];
 
   List<GitChangeGroup> get groups => [
-        GitChangeGroup(
-          key: 'conflicts',
-          title: 'Conflicts',
-          description: 'Resolve merge conflicts before committing.',
-          changes: conflicts,
-          accent: GitGroupAccent.danger,
-          primaryAction: GitChangeAction.resolve,
-        ),
-        GitChangeGroup(
-          key: 'staged',
-          title: 'Staged Changes',
-          description: 'Ready to include in the next commit.',
-          changes: staged,
-          accent: GitGroupAccent.success,
-          primaryAction: GitChangeAction.unstage,
-        ),
-        GitChangeGroup(
-          key: 'unstaged',
-          title: 'Changes',
-          description: 'Tracked files with local modifications.',
-          changes: changes,
-          accent: GitGroupAccent.info,
-          primaryAction: GitChangeAction.stage,
-        ),
-        GitChangeGroup(
-          key: 'untracked',
-          title: 'Untracked',
-          description: 'New files not yet tracked by Git.',
-          changes: untracked,
-          accent: GitGroupAccent.neutral,
-          primaryAction: GitChangeAction.stage,
-        ),
-      ].where((group) => group.changes.isNotEmpty).toList();
+    GitChangeGroup(
+      key: 'conflicts',
+      title: 'Conflicts',
+      description: 'Resolve merge conflicts before committing.',
+      changes: conflicts,
+      accent: GitGroupAccent.danger,
+      primaryAction: GitChangeAction.resolve,
+    ),
+    GitChangeGroup(
+      key: 'staged',
+      title: 'Staged Changes',
+      description: 'Ready to include in the next commit.',
+      changes: staged,
+      accent: GitGroupAccent.success,
+      primaryAction: GitChangeAction.unstage,
+    ),
+    GitChangeGroup(
+      key: 'unstaged',
+      title: 'Changes',
+      description: 'Tracked files with local modifications.',
+      changes: changes,
+      accent: GitGroupAccent.info,
+      primaryAction: GitChangeAction.stage,
+    ),
+    GitChangeGroup(
+      key: 'untracked',
+      title: 'Untracked',
+      description: 'New files not yet tracked by Git.',
+      changes: untracked,
+      accent: GitGroupAccent.neutral,
+      primaryAction: GitChangeAction.stage,
+    ),
+  ].where((group) => group.changes.isNotEmpty).toList();
 }
 
 enum GitChangeAction { stage, unstage, resolve }

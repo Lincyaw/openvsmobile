@@ -209,6 +209,48 @@ func TestBridgeCapabilities_ReadyReturnsRFCDocument(t *testing.T) {
 	}
 }
 
+func TestBridgeCapabilities_PreservesEditorFeatureMatrix(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "bridge.json")
+	manager := vscode.NewBridgeManager(vscode.BridgeManagerOptions{MetadataPath: metadataPath, PollInterval: 20 * time.Millisecond})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.Start(ctx)
+	defer manager.Close()
+
+	writeBridgeMetadata(t, metadataPath, vscode.BridgeMetadata{
+		Generation:      "gen-editor",
+		State:           "ready",
+		ProtocolVersion: "2026-04-20",
+		BridgeVersion:   "0.3.0",
+		Capabilities: map[string]any{
+			"diagnostics": map[string]any{"enabled": true, "push": true},
+			"completion":  map[string]any{"enabled": true, "insertTextFormat": true, "textEdit": true},
+			"hover":       map[string]any{"enabled": true},
+			"definition":  map[string]any{"enabled": true},
+			"references":  map[string]any{"enabled": true},
+			"signatureHelp": map[string]any{
+				"enabled": true,
+			},
+			"formatting":      map[string]any{"enabled": false},
+			"codeActions":     map[string]any{"enabled": true},
+			"rename":          map[string]any{"enabled": false},
+			"documentSymbols": map[string]any{"enabled": true},
+		},
+	})
+
+	ts := newBridgeEnabledServer(t, manager)
+	doc := waitForReadyCapabilities(t, ts.URL)
+
+	if doc.BridgeVersion != "0.3.0" {
+		t.Fatalf("bridgeVersion = %q, want %q", doc.BridgeVersion, "0.3.0")
+	}
+	requireBoolCapability(t, map[string]any{"capabilities": doc.Capabilities}, "diagnostics", true)
+	requireBoolCapability(t, map[string]any{"capabilities": doc.Capabilities}, "completion", true)
+	requireBoolCapability(t, map[string]any{"capabilities": doc.Capabilities}, "formatting", false)
+	requireBoolCapability(t, map[string]any{"capabilities": doc.Capabilities}, "rename", false)
+	requireBoolCapability(t, map[string]any{"capabilities": doc.Capabilities}, "documentSymbols", true)
+}
+
 func TestBridgeCapabilities_NotReadyWindowRecoversToUpdatedCapabilities(t *testing.T) {
 	metadataPath := filepath.Join(t.TempDir(), "bridge.json")
 	manager := vscode.NewBridgeManager(vscode.BridgeManagerOptions{MetadataPath: metadataPath, PollInterval: 20 * time.Millisecond})
@@ -364,6 +406,69 @@ func TestBridgeEventsWebSocket_StableEnvelopeCarriesLifecyclePayloads(t *testing
 		t.Fatalf("recovered ready bridgeVersion = %#v, want %q", got, "0.2.0")
 	}
 	requireBoolCapability(t, readyPayload, "workspace", true)
+}
+
+func TestBridgeEventsWebSocket_ForwardsDiagnosticsChangedEvents(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "bridge.json")
+	manager := vscode.NewBridgeManager(vscode.BridgeManagerOptions{MetadataPath: metadataPath, PollInterval: 20 * time.Millisecond})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.Start(ctx)
+	defer manager.Close()
+
+	writeBridgeMetadata(t, metadataPath, vscode.BridgeMetadata{
+		Generation:      "gen-1",
+		State:           "ready",
+		ProtocolVersion: "2026-04-20",
+		Capabilities: map[string]any{
+			"diagnostics": map[string]any{"enabled": true},
+		},
+	})
+
+	ts := newBridgeEnabledServer(t, manager)
+	conn := dialBridgeEvents(t, ts.URL)
+	ready := readBridgeEvent(t, conn)
+	if ready.Type != "bridge/ready" {
+		t.Fatalf("first event type = %q, want bridge/ready", ready.Type)
+	}
+
+	manager.Publish(vscode.BridgeEvent{
+		Type: "bridge/diagnosticsChanged",
+		Payload: map[string]any{
+			"path":    "/workspace/lib/main.dart",
+			"version": 9,
+			"diagnostics": []any{
+				map[string]any{
+					"severity": "warning",
+					"message":  "Unused import",
+					"source":   "dart-analyzer",
+				},
+			},
+		},
+	})
+
+	event := readBridgeEvent(t, conn)
+	if event.Type != "bridge/diagnosticsChanged" {
+		t.Fatalf("event type = %q, want bridge/diagnosticsChanged", event.Type)
+	}
+	payload := requireEventPayload(t, event)
+	if got := requirePayloadValue(t, payload, "path"); got != "/workspace/lib/main.dart" {
+		t.Fatalf("path = %#v, want %q", got, "/workspace/lib/main.dart")
+	}
+	if got := requirePayloadValue(t, payload, "version"); got != float64(9) {
+		t.Fatalf("version = %#v, want 9", got)
+	}
+	diagnostics, ok := requirePayloadValue(t, payload, "diagnostics").([]any)
+	if !ok || len(diagnostics) != 1 {
+		t.Fatalf("diagnostics = %#v, want 1 entry", payload["diagnostics"])
+	}
+	first, ok := diagnostics[0].(map[string]any)
+	if !ok {
+		t.Fatalf("diagnostic[0] = %#v, want map[string]any", diagnostics[0])
+	}
+	if first["message"] != "Unused import" {
+		t.Fatalf("diagnostic message = %#v, want %q", first["message"], "Unused import")
+	}
 }
 
 func TestBridgeEventsWebSocket_DropsDisconnectedClientsWithoutBlockingLiveOnes(t *testing.T) {

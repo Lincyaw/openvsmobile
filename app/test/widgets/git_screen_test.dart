@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:stream_channel/stream_channel.dart';
 import 'package:vscode_mobile/models/git_models.dart';
 import 'package:vscode_mobile/providers/git_provider.dart';
 import 'package:vscode_mobile/providers/workspace_provider.dart';
@@ -11,6 +13,7 @@ import 'package:vscode_mobile/screens/git_screen.dart';
 import 'package:vscode_mobile/services/api_client.dart';
 import 'package:vscode_mobile/services/git_api_client.dart';
 import 'package:vscode_mobile/services/settings_service.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 const Map<String, dynamic> _repositoryDocument = <String, dynamic>{
   'path': '/workspace/repo',
@@ -56,7 +59,7 @@ void main() {
     tester,
   ) async {
     final provider = await _buildProvider(repository: _repositoryDocument);
-    await tester.pumpWidget(_buildApp(provider));
+    await tester.pumpWidget(await _buildApp(provider));
     await tester.pumpAndSettle();
     final changesList = find.byType(Scrollable).last;
 
@@ -68,86 +71,115 @@ void main() {
     expect(find.text('Conflicts 1'), findsOneWidget);
 
     expect(find.text('Conflicts (1)'), findsOneWidget);
-    expect(find.text('Staged Changes (1)', skipOffstage: false), findsOneWidget);
-    final changesSection = find.text('Changes (1)', skipOffstage: false);
-    await _scrollIntoViewport(tester, changesList, changesSection);
-    expect(changesSection, findsOneWidget);
-    final untrackedSection = find.text('Untracked (1)', skipOffstage: false);
-    await _scrollIntoViewport(tester, changesList, untrackedSection);
-    expect(untrackedSection, findsOneWidget);
+
+    final repositoryList = find.byType(Scrollable).last;
+    await tester.scrollUntilVisible(
+      find.text('Staged Changes (1)'),
+      300,
+      scrollable: repositoryList,
+    );
+    expect(find.text('Staged Changes (1)'), findsOneWidget);
+
+    await tester.scrollUntilVisible(
+      find.text('Changes (1)'),
+      300,
+      scrollable: repositoryList,
+    );
+    expect(find.text('Changes (1)'), findsOneWidget);
+
+    await tester.scrollUntilVisible(
+      find.text('Untracked (1)'),
+      300,
+      scrollable: repositoryList,
+    );
+    expect(find.text('Untracked (1)'), findsOneWidget);
   });
 
   testWidgets('disables commit when the message is empty', (tester) async {
     final provider = await _buildProvider(repository: _repositoryDocument);
-    await tester.pumpWidget(_buildApp(provider));
+    await tester.pumpWidget(await _buildApp(provider));
     await tester.pumpAndSettle();
 
-    final button = tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Commit'));
+    final button = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, 'Commit'),
+    );
     expect(button.onPressed, isNull);
     expect(
-      find.text(
-        'Enter a commit message before committing.',
-        skipOffstage: false,
-      ),
+      find.text('Enter a commit message before committing.'),
       findsOneWidget,
     );
     expect(provider.commitMessages, isEmpty);
   });
 
-  testWidgets('renders conflict rows with distinct affordances', (tester) async {
+  testWidgets('renders conflict rows with distinct affordances', (
+    tester,
+  ) async {
     final provider = await _buildProvider(repository: _repositoryDocument);
-    await tester.pumpWidget(_buildApp(provider));
+    await tester.pumpWidget(await _buildApp(provider));
     await tester.pumpAndSettle();
 
-    expect(find.text('Resolve merge conflicts before committing.'), findsOneWidget);
+    expect(
+      find.text('Resolve merge conflicts before committing.'),
+      findsOneWidget,
+    );
     expect(find.widgetWithText(TextButton, 'Resolve'), findsOneWidget);
-    expect(find.text('Resolve in diff view before staging a final version.'), findsOneWidget);
+    expect(
+      find.text('Resolve in diff view before staging a final version.'),
+      findsOneWidget,
+    );
     expect(find.byIcon(Icons.warning_amber_rounded), findsWidgets);
   });
 
   testWidgets('tapping a file opens a diff preview route', (tester) async {
     final provider = await _buildProvider(repository: _repositoryDocument);
-    await tester.pumpWidget(_buildApp(provider));
+    await tester.pumpWidget(await _buildApp(provider));
     await tester.pumpAndSettle();
-    final changesList = find.byType(Scrollable).last;
+    final repositoryList = find.byType(Scrollable).last;
+    await tester.scrollUntilVisible(
+      find.text('feature.dart'),
+      300,
+      scrollable: repositoryList,
+    );
 
-    final featureFinder = find.text('feature.dart', skipOffstage: false);
-    await _scrollIntoViewport(tester, changesList, featureFinder);
-    final featureTile = find.ancestor(
-      of: featureFinder,
+    final fileTile = find.ancestor(
+      of: find.text('feature.dart'),
       matching: find.byType(ListTile),
     );
-    tester.widget<ListTile>(featureTile).onTap!();
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 10));
+    final tile = tester.widget<ListTile>(fileTile);
+    tile.onTap!.call();
     await tester.pumpAndSettle();
 
     expect(find.text('lib/feature.dart'), findsWidgets);
-    expect(find.textContaining('diff --git a/lib/feature.dart b/lib/feature.dart'), findsOneWidget);
+    expect(
+      find.textContaining('diff --git a/lib/feature.dart b/lib/feature.dart'),
+      findsOneWidget,
+    );
   });
 
-  testWidgets('repository operations show explicit feedback for success and failure', (
-    tester,
-  ) async {
-    final provider = await _buildProvider(repository: _repositoryDocument)
-      ..pushError = const ApiException('Push rejected by remote', 502);
-    await tester.pumpWidget(_buildApp(provider));
-    await tester.pumpAndSettle();
+  testWidgets(
+    'repository operations show explicit feedback for success and failure',
+    (tester) async {
+      final provider = await _buildProvider(repository: _repositoryDocument)
+        ..pushError = const ApiException('Push rejected by remote', 502);
+      await tester.pumpWidget(await _buildApp(provider));
+      await tester.pumpAndSettle();
 
-    await tester.tap(find.byTooltip('Fetch'));
-    await tester.pump();
-    await tester.pumpAndSettle();
-    expect(find.text('Fetch completed'), findsOneWidget);
+      await tester.tap(find.byTooltip('Fetch'));
+      await tester.pump();
+      await tester.pumpAndSettle();
+      expect(find.text('Fetch completed'), findsOneWidget);
 
-    await tester.tap(find.byTooltip('Push'));
-    await tester.pump();
-    await tester.pumpAndSettle();
-    expect(find.textContaining('Push rejected by remote'), findsWidgets);
-  });
+      await tester.tap(find.byTooltip('Push'));
+      await tester.pump();
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Push rejected by remote'), findsWidgets);
+    },
+  );
 }
 
-Widget _buildApp(_FakeGitApiClient apiClient) {
-  final workspaceProvider = WorkspaceProvider()..setWorkspace('/workspace/repo');
+Future<Widget> _buildApp(_FakeGitApiClient apiClient) async {
+  final workspaceProvider = WorkspaceProvider();
+  await workspaceProvider.setWorkspace('/workspace/repo');
   final gitProvider = GitProvider(apiClient: apiClient);
 
   return MultiProvider(
@@ -168,7 +200,8 @@ Future<_FakeGitApiClient> _buildProvider({
     ..repository = _repo(repository)
     ..diffDocument = const GitDiffDocument(
       path: 'lib/feature.dart',
-      diff: 'diff --git a/lib/feature.dart b/lib/feature.dart\n@@ -1 +1 @@\n-old\n+new',
+      diff:
+          'diff --git a/lib/feature.dart b/lib/feature.dart\n@@ -1 +1 @@\n-old\n+new',
       staged: false,
     );
 }
@@ -180,8 +213,11 @@ GitRepositoryState _repo(Map<String, dynamic> json) {
 }
 
 class _FakeGitApiClient extends GitApiClient {
-  _FakeGitApiClient(SettingsService settings) : super(settings: settings);
+  _FakeGitApiClient(SettingsService settings)
+    : channel = _FakeWebSocketChannel(),
+      super(settings: settings);
 
+  final _FakeWebSocketChannel channel;
   late GitRepositoryState repository;
   GitDiffDocument diffDocument = const GitDiffDocument(
     path: 'lib/feature.dart',
@@ -192,19 +228,26 @@ class _FakeGitApiClient extends GitApiClient {
   Object? pushError;
 
   @override
+  WebSocketChannel connectEventsWebSocket() => channel;
+
+  @override
   Future<GitRepositoryState> getRepository(String path) async => repository;
 
   @override
-  Future<GitRepositoryState> stageFile(String repoPath, String file) async => repository;
+  Future<GitRepositoryState> stageFile(String repoPath, String file) async =>
+      repository;
 
   @override
-  Future<GitRepositoryState> unstageFile(String repoPath, String file) async => repository;
+  Future<GitRepositoryState> unstageFile(String repoPath, String file) async =>
+      repository;
 
   @override
-  Future<GitRepositoryState> discardFile(String repoPath, String file) async => repository;
+  Future<GitRepositoryState> discardFile(String repoPath, String file) async =>
+      repository;
 
   @override
-  Future<GitRepositoryState> fetch(String repoPath, {String? remote}) async => repository;
+  Future<GitRepositoryState> fetch(String repoPath, {String? remote}) async =>
+      repository;
 
   @override
   Future<GitRepositoryState> pull(
@@ -242,19 +285,52 @@ class _FakeGitApiClient extends GitApiClient {
   }
 }
 
-Future<void> _scrollIntoViewport(
-  WidgetTester tester,
-  Finder scrollable,
-  Finder target,
-) async {
-  for (var attempt = 0; attempt < 8; attempt++) {
-    if (target.evaluate().isNotEmpty) {
-      final rect = tester.getRect(target);
-      if (rect.top >= 0 && rect.bottom <= 600) {
-        return;
-      }
-    }
-    await tester.drag(scrollable, const Offset(0, -200));
-    await tester.pumpAndSettle();
+
+class _FakeWebSocketChannel extends StreamChannelMixin<dynamic>
+    implements WebSocketChannel {
+  _FakeWebSocketChannel();
+
+  final StreamController<dynamic> controller =
+      StreamController<dynamic>.broadcast();
+  final _FakeWebSocketSink _sink = _FakeWebSocketSink();
+
+  @override
+  int? get closeCode => null;
+
+  @override
+  String? get closeReason => null;
+
+  @override
+  String? get protocol => null;
+
+  @override
+  Future<void> get ready => Future<void>.value();
+
+  @override
+  Stream<dynamic> get stream => controller.stream;
+
+  @override
+  WebSocketSink get sink => _sink;
+}
+
+class _FakeWebSocketSink implements WebSocketSink {
+  bool closed = false;
+
+  @override
+  void add(dynamic event) {}
+
+  @override
+  void addError(Object error, [StackTrace? stackTrace]) {}
+
+  @override
+  Future<void> addStream(Stream<dynamic> stream) async {}
+
+  @override
+  Future<void> close([int? closeCode, String? closeReason]) async {
+    closed = true;
   }
+
+  @override
+  Future<void> get done => Future<void>.value();
+
 }

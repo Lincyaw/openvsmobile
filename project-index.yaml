@@ -750,6 +750,33 @@ requirements:
     tests: []
     depends_on: [REQ-014, REQ-020]
 
+  - id: REQ-028
+    title: Mobile terminal session manager UX
+    description: >
+      Upgrade the Flutter terminal tab from a single PTY stream into a
+      session-centered terminal manager. The UI lists current bridge terminal
+      sessions, supports create/switch/rename/close actions, preserves per-
+      session output history and input focus state, re-attaches to existing
+      sessions after refresh via `/bridge/terminal/sessions`, `/bridge/terminal/attach`,
+      and `/bridge/ws/events`, keeps exited sessions visible until explicitly
+      closed, and shows responsive split panes on wide layouts with a clear
+      single-pane fallback on narrow screens.
+    priority: P1
+    status: implemented
+    code:
+      - app/lib/models/terminal_session.dart
+      - app/lib/services/terminal_api_client.dart
+      - app/lib/providers/terminal_provider.dart
+      - app/lib/screens/terminal_screen.dart
+      - app/lib/widgets/terminal_pane.dart
+      - app/lib/widgets/terminal_session_list.dart
+      - project-index.yaml
+    tests:
+      - app/test/terminal_api_client_test.dart
+      - app/test/providers/terminal_provider_test.dart
+      - app/test/widgets/terminal_screen_test.dart
+    depends_on: [REQ-014, REQ-020, FIX-009]
+
   - id: REQ-027
     title: GitHub current repository context backend
     description: >
@@ -777,3 +804,29 @@ requirements:
       - server/internal/github/service_test.go
       - server/internal/api/github_repo_context_test.go
     depends_on: [REQ-023]
+
+  - id: REQ-028
+    title: GitHub collaboration backend endpoints
+    description: >
+      Ticket ASE-52 adds repo-scoped GitHub collaboration APIs on the Go
+      server for account lookup, issue listing/detail/commenting, and pull
+      request listing/detail/files/comments/reviews using the current
+      workspace repository context. The backend refreshes user tokens before
+      repo calls, translates GitHub auth/access/request failures into stable
+      JSON error codes, keeps response contracts snake_case, and aggregates
+      PR checks/status summaries onto the pull request detail response.
+    priority: P1
+    status: implemented
+    code:
+      - project-index.yaml
+      - server/internal/github/types.go
+      - server/internal/github/client.go
+      - server/internal/github/service.go
+      - server/internal/github/collaboration.go
+      - server/internal/api/router.go
+      - server/internal/api/github_collaboration.go
+      - docs/github-auth-backend.md
+    tests:
+      - server/internal/github/service_test.go
+      - server/internal/api/github_collaboration_test.go
+    depends_on: [REQ-023, REQ-027]

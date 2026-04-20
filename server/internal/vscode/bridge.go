@@ -209,6 +209,29 @@ func (m *BridgeManager) Capabilities() (BridgeCapabilitiesDocument, error) {
 	return cloneCapabilities(m.capabilities), nil
 }
 
+// RequireCapability verifies the bridge is ready and that the named capability is enabled.
+func (m *BridgeManager) RequireCapability(name string) error {
+	_, err := m.Capability(name)
+	return err
+}
+
+// Capability returns the named capability entry when the bridge is ready and the
+// capability is present+enabled in the metadata document.
+func (m *BridgeManager) Capability(name string) (map[string]any, error) {
+	caps, err := m.Capabilities()
+	if err != nil {
+		return nil, err
+	}
+	entry, ok := lookupCapability(caps.Capabilities, name)
+	if !ok {
+		return nil, newBridgeError("capability_unavailable", fmt.Sprintf("bridge capability %q is unavailable", name), nil)
+	}
+	if !capabilityEnabled(entry) {
+		return nil, newBridgeError("capability_unavailable", fmt.Sprintf("bridge capability %q is disabled", name), nil)
+	}
+	return entry, nil
+}
+
 // Publish broadcasts an event on the unified bridge event stream.
 func (m *BridgeManager) Publish(event BridgeEvent) {
 	if m == nil {
@@ -449,9 +472,70 @@ func cloneMap(src map[string]interface{}) map[string]interface{} {
 	}
 	dst := make(map[string]interface{}, len(src))
 	for k, v := range src {
-		dst[k] = v
+		dst[k] = cloneBridgeValue(v)
 	}
 	return dst
+}
+
+func cloneBridgeValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneMap(typed)
+	case []any:
+		cloned := make([]any, len(typed))
+		for i, item := range typed {
+			cloned[i] = cloneBridgeValue(item)
+		}
+		return cloned
+	default:
+		return typed
+	}
+}
+
+func lookupCapability(capabilities map[string]interface{}, name string) (map[string]any, bool) {
+	if capabilities == nil {
+		return nil, false
+	}
+	if exact, ok := capabilityEntry(capabilities[name]); ok {
+		return exact, true
+	}
+	current := capabilities
+	parts := strings.Split(name, ".")
+	for _, part := range parts {
+		next, ok := current[part]
+		if !ok {
+			return nil, false
+		}
+		entry, ok := capabilityEntry(next)
+		if !ok {
+			return nil, false
+		}
+		current = entry
+	}
+	return current, true
+}
+
+func capabilityEntry(value any) (map[string]any, bool) {
+	switch typed := value.(type) {
+	case map[string]any:
+		return typed, true
+	case bool:
+		return map[string]any{"enabled": typed}, true
+	default:
+		return nil, false
+	}
+}
+
+func capabilityEnabled(entry map[string]any) bool {
+	if entry == nil {
+		return false
+	}
+	enabled, ok := entry["enabled"]
+	if !ok {
+		return true
+	}
+	flag, ok := enabled.(bool)
+	return ok && flag
 }
 
 // DocumentPosition identifies a zero-based line/character location in a text buffer.

@@ -79,6 +79,67 @@ void main() {
     expect(session.name, 'Repo');
   });
 
+  test('renameSession posts to the bridge rename endpoint', () async {
+    final client = MockClient((http.Request request) async {
+      expect(request.method, 'POST');
+      expect(request.url.path, '/bridge/terminal/rename');
+      expect(jsonDecode(request.body), {'id': 'term-1', 'name': 'Renamed'});
+      return http.Response(
+        jsonEncode({
+          'id': 'term-1',
+          'name': 'Renamed',
+          'cwd': '/workspace',
+          'profile': 'bash',
+          'state': 'running',
+          'rows': 30,
+          'cols': 90,
+        }),
+        200,
+      );
+    });
+    final api = TerminalApiClient(
+      baseUrl: 'http://localhost:8080',
+      token: 'secret',
+      client: client,
+    );
+
+    final session = await api.renameSession('term-1', 'Renamed');
+
+    expect(session.name, 'Renamed');
+    expect(session.rows, 30);
+    expect(session.cols, 90);
+  });
+
+  test('splitSession accepts wrapped envelopes', () async {
+    final client = MockClient((http.Request request) async {
+      expect(request.method, 'POST');
+      expect(request.url.path, '/bridge/terminal/split');
+      expect(jsonDecode(request.body), {'parentId': 'term-1', 'name': 'Split'});
+      return http.Response(
+        jsonEncode({
+          'session': {
+            'id': 'term-2',
+            'name': 'Split',
+            'cwd': '/workspace',
+            'profile': 'bash',
+            'state': 'running',
+          },
+        }),
+        200,
+      );
+    });
+    final api = TerminalApiClient(
+      baseUrl: 'http://localhost:8080',
+      token: 'secret',
+      client: client,
+    );
+
+    final session = await api.splitSession('term-1', name: 'Split');
+
+    expect(session.id, 'term-2');
+    expect(session.name, 'Split');
+  });
+
   test('connectTerminalWebSocket uses bridge session path and token query', () {
     Uri? captured;
     final api = TerminalApiClient(
@@ -97,6 +158,24 @@ void main() {
     expect(
       captured.toString(),
       'wss://example.com/api/bridge/ws/terminal/term-9?token=secret',
+    );
+  });
+
+  test('connectEventsWebSocket uses the unified bridge events stream', () {
+    Uri? captured;
+    final api = TerminalApiClient(
+      baseUrl: 'https://example.com/api',
+      token: 'secret',
+      channelFactory: (uri) {
+        captured = uri;
+        throw _StopDial();
+      },
+    );
+
+    expect(() => api.connectEventsWebSocket(), throwsA(isA<_StopDial>()));
+    expect(
+      captured.toString(),
+      'wss://example.com/api/bridge/ws/events?token=secret',
     );
   });
 }
