@@ -124,6 +124,39 @@ func readBridgeEvent(t *testing.T, conn *websocket.Conn) vscode.BridgeEvent {
 	return event
 }
 
+func requirePayloadValue(t *testing.T, payload map[string]any, key string) any {
+	t.Helper()
+	value, ok := payload[key]
+	if !ok {
+		t.Fatalf("payload missing %q: %#v", key, payload)
+	}
+	return value
+}
+
+func requireBoolCapability(t *testing.T, payload map[string]any, capability string, want bool) {
+	t.Helper()
+	capabilities, ok := requirePayloadValue(t, payload, "capabilities").(map[string]any)
+	if !ok {
+		t.Fatalf("payload capabilities = %#v, want map[string]any", payload["capabilities"])
+	}
+	entry, ok := capabilities[capability].(map[string]any)
+	if !ok {
+		t.Fatalf("capability %q = %#v, want map[string]any", capability, capabilities[capability])
+	}
+	if entry["enabled"] != want {
+		t.Fatalf("capability %q enabled = %#v, want %v", capability, entry["enabled"], want)
+	}
+}
+
+func requireEventPayload(t *testing.T, event vscode.BridgeEvent) map[string]any {
+	t.Helper()
+	payload, ok := event.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("event payload = %#v, want map[string]any", event.Payload)
+	}
+	return payload
+}
+
 func TestBridgeCapabilities_NotReadyReturnsStructuredError(t *testing.T) {
 	ts, _, _ := newTestServer(t, "")
 
@@ -260,6 +293,78 @@ func TestBridgeEventsWebSocket_ReplaysReadyThenBroadcastsRestartSequence(t *test
 	if ready.Type != "bridge/ready" {
 		t.Fatalf("third event type = %q, want bridge/ready", ready.Type)
 	}
+}
+
+func TestBridgeEventsWebSocket_StableEnvelopeCarriesLifecyclePayloads(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "bridge.json")
+	manager := vscode.NewBridgeManager(vscode.BridgeManagerOptions{MetadataPath: metadataPath, PollInterval: 20 * time.Millisecond})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.Start(ctx)
+	defer manager.Close()
+
+	writeBridgeMetadata(t, metadataPath, vscode.BridgeMetadata{
+		Generation:      "gen-1",
+		State:           "ready",
+		ProtocolVersion: "2026-04-20",
+		BridgeVersion:   "0.1.0",
+		Capabilities: map[string]any{
+			"workspace": map[string]any{"enabled": false},
+		},
+	})
+
+	ts := newBridgeEnabledServer(t, manager)
+	conn := dialBridgeEvents(t, ts.URL)
+
+	ready := readBridgeEvent(t, conn)
+	if ready.Type != "bridge/ready" {
+		t.Fatalf("first event type = %q, want bridge/ready", ready.Type)
+	}
+	readyPayload := requireEventPayload(t, ready)
+	if got := requirePayloadValue(t, readyPayload, "generation"); got != "gen-1" {
+		t.Fatalf("ready generation = %#v, want %q", got, "gen-1")
+	}
+	if capabilities, ok := readyPayload["capabilities"]; ok {
+		if got := requirePayloadValue(t, readyPayload, "bridgeVersion"); got != "0.1.0" {
+			t.Fatalf("initial ready bridgeVersion = %#v, want %q", got, "0.1.0")
+		}
+		requireBoolCapability(t, map[string]any{"capabilities": capabilities}, "workspace", false)
+	}
+
+	writeBridgeMetadata(t, metadataPath, vscode.BridgeMetadata{
+		Generation:      "gen-2",
+		State:           "ready",
+		ProtocolVersion: "2026-04-20",
+		BridgeVersion:   "0.2.0",
+		Capabilities: map[string]any{
+			"workspace": map[string]any{"enabled": true},
+		},
+	})
+
+	restarted := readBridgeEvent(t, conn)
+	if restarted.Type != "bridge/restarted" {
+		t.Fatalf("second event type = %q, want bridge/restarted", restarted.Type)
+	}
+	restartedPayload := requireEventPayload(t, restarted)
+	if got := requirePayloadValue(t, restartedPayload, "generation"); got != "gen-2" {
+		t.Fatalf("restarted generation = %#v, want %q", got, "gen-2")
+	}
+	if got := requirePayloadValue(t, restartedPayload, "previousGeneration"); got != "gen-1" {
+		t.Fatalf("restarted previousGeneration = %#v, want %q", got, "gen-1")
+	}
+
+	ready = readBridgeEvent(t, conn)
+	if ready.Type != "bridge/ready" {
+		t.Fatalf("third event type = %q, want bridge/ready", ready.Type)
+	}
+	readyPayload = requireEventPayload(t, ready)
+	if got := requirePayloadValue(t, readyPayload, "generation"); got != "gen-2" {
+		t.Fatalf("recovered ready generation = %#v, want %q", got, "gen-2")
+	}
+	if got := requirePayloadValue(t, readyPayload, "bridgeVersion"); got != "0.2.0" {
+		t.Fatalf("recovered ready bridgeVersion = %#v, want %q", got, "0.2.0")
+	}
+	requireBoolCapability(t, readyPayload, "workspace", true)
 }
 
 func TestBridgeEventsWebSocket_DropsDisconnectedClientsWithoutBlockingLiveOnes(t *testing.T) {

@@ -22,6 +22,13 @@ type bridgeLifecycleEvent struct {
 	Payload map[string]interface{} `json:"payload"`
 }
 
+func skipIfBridgeIntegrationPrereqsMissing(t *testing.T) {
+	t.Helper()
+	if os.Getenv("VSCODE_INTEGRATION_TEST") == "" {
+		t.Skip("skipping bridge integration test: set VSCODE_INTEGRATION_TEST=1, bootstrap openvscode-server from repo root, and start the OpenVSCode test server before rerunning")
+	}
+}
+
 func findGoBinary(t *testing.T) string {
 	t.Helper()
 	candidates := []string{
@@ -227,7 +234,7 @@ func waitForBridgeEventSequence(t *testing.T, conn *websocket.Conn, timeout time
 }
 
 func TestIntegration_BridgeLifecycle_EndToEnd(t *testing.T) {
-	skipIfNoServer(t)
+	skipIfBridgeIntegrationPrereqsMissing(t)
 
 	metadataPath := filepath.Join(t.TempDir(), "bridge-metadata.json")
 	t.Setenv("OPENVSCODE_MOBILE_BRIDGE_METADATA_PATH", metadataPath)
