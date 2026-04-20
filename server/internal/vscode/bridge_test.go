@@ -240,6 +240,63 @@ func TestBridgeManager_ReadyTransitionPublishesCapabilities(t *testing.T) {
 	}
 }
 
+func TestBridgeManager_CapabilitiesDeepClonePreservesEditorFeatureFlags(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "bridge.json")
+	manager := NewBridgeManager(BridgeManagerOptions{MetadataPath: metadataPath})
+
+	writeBridgeMetadataFile(t, metadataPath, BridgeMetadata{
+		ProtocolVersion: defaultBridgeProtocolVersion,
+		Generation:      "gen-editor",
+		State:           bridgeStateReady,
+		Capabilities: map[string]interface{}{
+			"diagnostics": map[string]interface{}{
+				"enabled": true,
+				"kinds":   []interface{}{"push"},
+			},
+			"completion": map[string]interface{}{
+				"enabled":            true,
+				"insertTextFormat":   true,
+				"additionalTextEdit": true,
+			},
+			"rename": map[string]interface{}{
+				"enabled": true,
+			},
+			"documentSymbols": map[string]interface{}{
+				"enabled": true,
+			},
+		},
+	})
+
+	manager.poll()
+
+	first, err := manager.Capabilities()
+	if err != nil {
+		t.Fatalf("Capabilities failed: %v", err)
+	}
+	diagnostics, ok := first.Capabilities["diagnostics"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("diagnostics capability = %#v, want map[string]interface{}", first.Capabilities["diagnostics"])
+	}
+	diagnostics["enabled"] = false
+	diagnostics["kinds"] = []interface{}{"mutated"}
+
+	second, err := manager.Capabilities()
+	if err != nil {
+		t.Fatalf("Capabilities second read failed: %v", err)
+	}
+	diagnostics, ok = second.Capabilities["diagnostics"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("diagnostics capability second read = %#v, want map[string]interface{}", second.Capabilities["diagnostics"])
+	}
+	if diagnostics["enabled"] != true {
+		t.Fatalf("diagnostics enabled = %#v, want true after caller mutation", diagnostics["enabled"])
+	}
+	kinds, ok := diagnostics["kinds"].([]interface{})
+	if !ok || len(kinds) != 1 || kinds[0] != "push" {
+		t.Fatalf("diagnostics kinds = %#v, want [push]", diagnostics["kinds"])
+	}
+}
+
 func TestBridgeManager_RestartDetectionBroadcastsRestartedThenReady(t *testing.T) {
 	metadataPath := filepath.Join(t.TempDir(), "bridge.json")
 	manager := NewBridgeManager(BridgeManagerOptions{MetadataPath: metadataPath})
@@ -352,6 +409,57 @@ func TestBridgeManager_BroadcastsGitRepositoryChangedStableEnvelope(t *testing.T
 	}
 	if len(repository["mergeChanges"].([]interface{})) != 1 {
 		t.Fatalf("mergeChanges = %#v, want 1 entry", repository["mergeChanges"])
+	}
+}
+
+func TestBridgeManager_PublishDiagnosticsChangedStableEnvelope(t *testing.T) {
+	manager := NewBridgeManager(BridgeManagerOptions{})
+	events, unsubscribe := manager.Subscribe(false)
+	defer unsubscribe()
+
+	manager.Publish(BridgeEvent{
+		Type: "bridge/diagnosticsChanged",
+		Payload: map[string]interface{}{
+			"path":    "/workspace/lib/main.dart",
+			"version": 7,
+			"diagnostics": []interface{}{
+				map[string]interface{}{
+					"severity": "error",
+					"message":  "Missing semicolon",
+					"range": map[string]interface{}{
+						"start": map[string]interface{}{"line": 3, "character": 12},
+						"end":   map[string]interface{}{"line": 3, "character": 13},
+					},
+				},
+			},
+		},
+	})
+
+	event := mustReceiveBridgeEvent(t, events, 2*time.Second)
+	if event.Type != "bridge/diagnosticsChanged" {
+		t.Fatalf("event type = %q, want bridge/diagnosticsChanged", event.Type)
+	}
+
+	payload, ok := event.Payload.(map[string]interface{})
+	if !ok {
+		t.Fatalf("payload = %#v, want map[string]interface{}", event.Payload)
+	}
+	if payload["path"] != "/workspace/lib/main.dart" {
+		t.Fatalf("payload path = %#v, want %q", payload["path"], "/workspace/lib/main.dart")
+	}
+	if payload["version"] != 7 {
+		t.Fatalf("payload version = %#v, want 7", payload["version"])
+	}
+	diagnostics, ok := payload["diagnostics"].([]interface{})
+	if !ok || len(diagnostics) != 1 {
+		t.Fatalf("diagnostics = %#v, want 1 entry", payload["diagnostics"])
+	}
+	first, ok := diagnostics[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("diagnostic[0] = %#v, want map[string]interface{}", diagnostics[0])
+	}
+	if first["message"] != "Missing semicolon" {
+		t.Fatalf("diagnostic message = %#v, want %q", first["message"], "Missing semicolon")
 	}
 }
 

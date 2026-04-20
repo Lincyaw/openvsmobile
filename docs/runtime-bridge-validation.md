@@ -43,6 +43,15 @@ The helper lives at `scripts/verify_bridge_foundation.sh` and runs these checks 
 5. runs `make test` and `make lint` when Flutter is available through the repo's normal discovery rules
 6. optionally runs `TestIntegration_BridgeLifecycle_EndToEnd` when `VSCODE_INTEGRATION_TEST=1`
 
+For ASE-43's editor-intelligence bridge work, targeted server checks should also cover:
+
+- `cd server && go test ./internal/vscode ./internal/api`
+- versioned document-sync flows (`/bridge/doc/open` -> `/bridge/doc/change`) before requesting bridge editor diagnostics
+- `/bridge/ws/events` rebroadcast of diagnostics updates with the stable `{type, payload}` envelope
+- capability matrices for diagnostics, completion, hover, definition, references, signature help, formatting, code actions, rename, and document symbols
+
+The OpenVSCode-side provider adapter still depends on a populated `openvscode-server/` checkout. In a workspace where the submodule is empty, server-side validation can still exercise the API contracts and bridge metadata handling, but extension compilation and end-to-end language-provider behavior remain blocked until the submodule is restored.
+
 ## Gated checks
 
 The helper intentionally separates always-on checks from heavier environment-gated validation:

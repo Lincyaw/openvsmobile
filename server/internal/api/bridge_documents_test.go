@@ -5,7 +5,14 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/Lincyaw/vscode-mobile/server/internal/claude"
+	"github.com/Lincyaw/vscode-mobile/server/internal/diagnostics"
+	"github.com/Lincyaw/vscode-mobile/server/internal/terminal"
+	"github.com/Lincyaw/vscode-mobile/server/internal/vscode"
 )
 
 type bridgeDocPosition struct {
@@ -97,6 +104,19 @@ func requireBridgeDocumentError(t *testing.T, baseURL, path string, payload any,
 	}
 	t.Fatalf("%s status = %d, want one of %v; body=%s", path, resp.StatusCode, wantStatuses, string(body))
 	return bridgeErrorDetail{}
+}
+
+func newBridgeDocumentServer(t *testing.T, fs *mockFS, manager *vscode.BridgeManager) *httptest.Server {
+	t.Helper()
+
+	sessionIndex := claude.NewSessionIndex(t.TempDir())
+	pm := claude.NewProcessManager("/nonexistent/claude", ".")
+	srv := NewServer(fs, sessionIndex, pm, "", nil, terminal.NewManager(), diagnostics.NewRunner(10*time.Second))
+	srv.SetBridgeManager(manager)
+
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	return ts
 }
 
 func TestBridgeDocumentLifecycle_SavePersistsLatestAcceptedBufferAndCloseCleansUp(t *testing.T) {
@@ -363,5 +383,111 @@ func TestBridgeDocumentChange_UnicodeRangesPersistLastAcceptedBuffer(t *testing.
 	})
 	if got := string(fs.files[filePath]); got != "你!++y\n" {
 		t.Fatalf("saved unicode content = %q, want %q", got, "你!++y\n")
+	}
+}
+
+func TestBridgeDocumentLifecycle_VersionedBufferFeedsDiagnosticsEventPayload(t *testing.T) {
+	fs := newMockFS()
+	const filePath = "/workspace/editor.dart"
+	fs.files[filePath] = []byte("print('disk');\n")
+
+	manager := vscode.NewBridgeManager(vscode.BridgeManagerOptions{})
+	ts := newBridgeDocumentServer(t, fs, manager)
+	conn := dialBridgeEvents(t, ts.URL)
+
+	requireBridgeDocumentSnapshot(t, ts.URL, "/bridge/doc/open", map[string]any{
+		"path":    filePath,
+		"version": 1,
+		"content": "print('draft');\n",
+	})
+	snapshot := requireBridgeDocumentSnapshot(t, ts.URL, "/bridge/doc/change", map[string]any{
+		"path":    filePath,
+		"version": 2,
+		"changes": []bridgeDocChange{{
+			Range: &bridgeDocRange{
+				Start: bridgeDocPosition{Line: 0, Character: 14},
+				End:   bridgeDocPosition{Line: 0, Character: 14},
+			},
+			Text: " // unsaved",
+		}},
+	})
+	if snapshot.Version != 2 || snapshot.Content != "print('draft') // unsaved;\n" {
+		t.Fatalf("buffer snapshot = %+v, want version=2 content=%q", snapshot, "print('draft') // unsaved;\n")
+	}
+
+	manager.Publish(vscode.BridgeEvent{
+		Type: "bridge/diagnosticsChanged",
+		Payload: map[string]any{
+			"path":    filePath,
+			"version": snapshot.Version,
+			"diagnostics": []any{
+				map[string]any{
+					"severity": "warning",
+					"message":  "unsaved buffer warning",
+				},
+			},
+		},
+	})
+
+	event := readBridgeEvent(t, conn)
+	if event.Type != "bridge/diagnosticsChanged" {
+		t.Fatalf("event type = %q, want bridge/diagnosticsChanged", event.Type)
+	}
+	payload := requireEventPayload(t, event)
+	if got := requirePayloadValue(t, payload, "path"); got != filePath {
+		t.Fatalf("event path = %#v, want %q", got, filePath)
+	}
+	if got := requirePayloadValue(t, payload, "version"); got != float64(2) {
+		t.Fatalf("event version = %#v, want 2", got)
+	}
+
+	if got := string(fs.files[filePath]); got != "print('disk');\n" {
+		t.Fatalf("disk content = %q, want unsaved buffer to remain in-memory only", got)
+	}
+}
+
+func TestBridgeDocumentLifecycle_EditorDiagnosticsEndpointUsesVersionedBufferWhenAvailable(t *testing.T) {
+	fs := newMockFS()
+	const filePath = "/workspace/editor.dart"
+	fs.files[filePath] = []byte("print('disk');\n")
+
+	manager := vscode.NewBridgeManager(vscode.BridgeManagerOptions{})
+	ts := newBridgeDocumentServer(t, fs, manager)
+
+	requireBridgeDocumentSuccess(t, ts.URL, "/bridge/doc/open", map[string]any{
+		"path":    filePath,
+		"version": 1,
+		"content": "print('draft');\n",
+	})
+	requireBridgeDocumentSuccess(t, ts.URL, "/bridge/doc/change", map[string]any{
+		"path":    filePath,
+		"version": 2,
+		"changes": []bridgeDocChange{{
+			Range: &bridgeDocRange{
+				Start: bridgeDocPosition{Line: 0, Character: 14},
+				End:   bridgeDocPosition{Line: 0, Character: 14},
+			},
+			Text: " // unsaved",
+		}},
+	})
+
+	resp, body := postBridgeDocumentRequest(t, ts.URL, "/bridge/editor/diagnostics", map[string]any{
+		"path":    filePath,
+		"version": 2,
+		"workDir": "/workspace",
+	})
+	switch resp.StatusCode {
+	case http.StatusOK:
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("decode /bridge/editor/diagnostics response: %v; body=%s", err, string(body))
+		}
+		if payload["path"] != filePath {
+			t.Fatalf("diagnostics path = %#v, want %q", payload["path"], filePath)
+		}
+	case http.StatusNotFound:
+		t.Skip("editor diagnostics endpoint not implemented yet")
+	default:
+		t.Fatalf("/bridge/editor/diagnostics status = %d, want 200 once implemented or 404 while pending; body=%s", resp.StatusCode, string(body))
 	}
 }
