@@ -77,20 +77,33 @@ void main() {
     await tester.pumpWidget(_buildApp(provider));
     await tester.pumpAndSettle();
 
-    final button = tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Commit'));
+    final button = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, 'Commit'),
+    );
     expect(button.onPressed, isNull);
-    expect(find.text('Enter a commit message before committing'), findsOneWidget);
+    expect(
+      find.text('Enter a commit message before committing'),
+      findsOneWidget,
+    );
     expect(provider.commitMessages, isEmpty);
   });
 
-  testWidgets('renders conflict rows with distinct affordances', (tester) async {
+  testWidgets('renders conflict rows with distinct affordances', (
+    tester,
+  ) async {
     final provider = await _buildProvider(repository: _repositoryDocument);
     await tester.pumpWidget(_buildApp(provider));
     await tester.pumpAndSettle();
 
-    expect(find.text('Resolve merge conflicts before committing.'), findsOneWidget);
+    expect(
+      find.text('Resolve merge conflicts before committing.'),
+      findsOneWidget,
+    );
     expect(find.widgetWithText(TextButton, 'Resolve'), findsOneWidget);
-    expect(find.text('Resolve in diff view before staging a final version.'), findsOneWidget);
+    expect(
+      find.text('Resolve in diff view before staging a final version.'),
+      findsOneWidget,
+    );
     expect(find.byIcon(Icons.warning_amber_rounded), findsWidgets);
   });
 
@@ -105,27 +118,31 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('lib/feature.dart'), findsWidgets);
-    expect(find.textContaining('diff --git a/lib/feature.dart b/lib/feature.dart'), findsOneWidget);
+    expect(
+      find.textContaining('diff --git a/lib/feature.dart b/lib/feature.dart'),
+      findsOneWidget,
+    );
   });
 
-  testWidgets('repository operations show explicit feedback for success and failure', (
-    tester,
-  ) async {
-    final provider = await _buildProvider(repository: _repositoryDocument)
-      ..pushError = const ApiException('Push rejected by remote', 502);
-    await tester.pumpWidget(_buildApp(provider));
-    await tester.pumpAndSettle();
+  testWidgets(
+    'repository operations show explicit feedback for success and failure',
+    (tester) async {
+      final provider = await _buildProvider(repository: _repositoryDocument)
+        ..pushError = const ApiException('Push rejected by remote', 502);
+      await tester.pumpWidget(_buildApp(provider));
+      await tester.pumpAndSettle();
 
-    await tester.tap(find.byTooltip('Fetch'));
-    await tester.pump();
-    await tester.pumpAndSettle();
-    expect(find.text('Fetch completed'), findsOneWidget);
+      await tester.tap(find.byTooltip('Fetch'));
+      await tester.pump();
+      await tester.pumpAndSettle();
+      expect(find.text('Fetch completed'), findsOneWidget);
 
-    await tester.tap(find.byTooltip('Push'));
-    await tester.pump();
-    await tester.pumpAndSettle();
-    expect(find.textContaining('Push rejected by remote'), findsWidgets);
-  });
+      await tester.tap(find.byTooltip('Push'));
+      await tester.pump();
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Push rejected by remote'), findsWidgets);
+    },
+  );
 }
 
 Widget _buildApp(_FakeGitApiClient apiClient) {
@@ -133,7 +150,7 @@ Widget _buildApp(_FakeGitApiClient apiClient) {
   final gitProvider = GitProvider(apiClient: apiClient);
 
   return MultiProvider(
-    providers: <SingleChildWidget>[
+    providers: [
       ChangeNotifierProvider<WorkspaceProvider>.value(value: workspaceProvider),
       ChangeNotifierProvider<GitProvider>.value(value: gitProvider),
     ],
@@ -155,7 +172,8 @@ Future<_FakeGitApiClient> _buildProvider({
     ..repository = _repo(repository)
     ..diffDocument = const GitDiffDocument(
       path: 'lib/feature.dart',
-      diff: 'diff --git a/lib/feature.dart b/lib/feature.dart\n@@ -1 +1 @@\n-old\n+new',
+      diff:
+          'diff --git a/lib/feature.dart b/lib/feature.dart\n@@ -1 +1 @@\n-old\n+new',
       staged: false,
     );
 }
@@ -182,16 +200,20 @@ class _FakeGitApiClient extends GitApiClient {
   Future<GitRepositoryState> getRepository(String path) async => repository;
 
   @override
-  Future<GitRepositoryState> stageFile(String repoPath, String file) async => repository;
+  Future<GitRepositoryState> stageFile(String repoPath, String file) async =>
+      repository;
 
   @override
-  Future<GitRepositoryState> unstageFile(String repoPath, String file) async => repository;
+  Future<GitRepositoryState> unstageFile(String repoPath, String file) async =>
+      repository;
 
   @override
-  Future<GitRepositoryState> discardFile(String repoPath, String file) async => repository;
+  Future<GitRepositoryState> discardFile(String repoPath, String file) async =>
+      repository;
 
   @override
-  Future<GitRepositoryState> fetch(String repoPath, {String? remote}) async => repository;
+  Future<GitRepositoryState> fetch(String repoPath, {String? remote}) async =>
+      repository;
 
   @override
   Future<GitRepositoryState> pull(
