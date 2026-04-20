@@ -95,6 +95,13 @@ func (s *Server) Handler() http.Handler {
 	// Diagnostics endpoint.
 	mux.HandleFunc("GET /api/diagnostics", s.handleDiagnostics)
 	mux.HandleFunc("GET /bridge/capabilities", s.handleBridgeCapabilities)
+	mux.HandleFunc("GET /bridge/terminal/sessions", s.handleTerminalSessions)
+	mux.HandleFunc("POST /bridge/terminal/create", s.handleTerminalCreate)
+	mux.HandleFunc("POST /bridge/terminal/attach", s.handleTerminalAttach)
+	mux.HandleFunc("POST /bridge/terminal/resize", s.handleTerminalResize)
+	mux.HandleFunc("POST /bridge/terminal/close", s.handleTerminalClose)
+	mux.HandleFunc("POST /bridge/terminal/rename", s.handleTerminalRename)
+	mux.HandleFunc("POST /bridge/terminal/split", s.handleTerminalSplit)
 
 	// GitHub auth endpoints.
 	s.registerGitHubAuthRoutes(mux)
@@ -102,7 +109,7 @@ func (s *Server) Handler() http.Handler {
 	// WebSocket endpoints.
 	mux.HandleFunc("/ws/chat", s.handleWSChat)
 	mux.HandleFunc("/ws/files", s.handleWSFiles)
-	mux.HandleFunc("/ws/terminal", s.handleWSTerminal)
+	mux.HandleFunc("GET /bridge/ws/terminal/{id}", s.handleWSBridgeTerminal)
 	mux.HandleFunc("/bridge/ws/events", s.handleWSBridgeEvents)
 
 	// Health-check endpoint (unauthenticated for connectivity tests).
