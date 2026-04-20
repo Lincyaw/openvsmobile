@@ -245,13 +245,20 @@ func (t *Terminal) attach() *Attachment {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	output := make(chan []byte, 32)
-	t.subscribers[output] = struct{}{}
 	backlog := append([]byte(nil), t.backlog...)
 
 	if t.state == StateExited {
+		output := make(chan []byte)
 		close(output)
+		return &Attachment{
+			backlog: backlog,
+			output:  output,
+			closeFn: func() {},
+		}
 	}
+
+	output := make(chan []byte, 32)
+	t.subscribers[output] = struct{}{}
 
 	return &Attachment{
 		backlog: backlog,

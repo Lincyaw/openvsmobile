@@ -161,6 +161,26 @@ func TestExitStatePersistsForReattachUntilClose(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for exited attachment stream to close")
 	}
+
+	// Closing an exited attachment should be safe even after the output channel is drained.
+	replay.Close()
+	replay.Close()
+
+	closeAllDone := make(chan struct{})
+	go func() {
+		m.CloseAll()
+		close(closeAllDone)
+	}()
+
+	select {
+	case <-closeAllDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for CloseAll after exited attachment cleanup")
+	}
+
+	if _, ok := m.Get(term.ID); ok {
+		t.Fatal("expected CloseAll to remove exited session from manager")
+	}
 }
 
 func TestCloseBroadcastsClosedEventAndRemovesSession(t *testing.T) {
@@ -189,6 +209,62 @@ func TestCloseBroadcastsClosedEventAndRemovesSession(t *testing.T) {
 
 	if _, ok := m.Get(term.ID); ok {
 		t.Fatal("expected closed session to be removed from manager")
+	}
+}
+
+func TestCloseExitedSessionBroadcastsClosedEventAndRemovesSession(t *testing.T) {
+	m := NewManager()
+	events, unsubscribe := m.SubscribeEvents()
+	defer unsubscribe()
+
+	term, err := m.CreateSession(CreateOptions{Name: "close-after-exit", Shell: "/bin/bash", WorkDir: "/tmp"})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	_ = waitForManagerEvent(t, events, 3*time.Second, "terminal/session.created")
+
+	if _, err := term.Write([]byte("exit 9\n")); err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+
+	select {
+	case <-term.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for terminal to exit")
+	}
+
+	exited := term.Snapshot()
+	if exited.State != StateExited {
+		t.Fatalf("session state after exit = %q, want %q", exited.State, StateExited)
+	}
+	if exited.ExitCode == nil || *exited.ExitCode != 9 {
+		t.Fatalf("stored exit code after exit = %+v, want 9", exited.ExitCode)
+	}
+
+	closed, err := m.CloseSession(term.ID)
+	if err != nil {
+		t.Fatalf("CloseSession failed after exit: %v", err)
+	}
+	if closed.State != StateExited {
+		t.Fatalf("closed session state = %q, want %q", closed.State, StateExited)
+	}
+	if closed.ExitCode == nil || *closed.ExitCode != 9 {
+		t.Fatalf("closed exit code = %+v, want 9", closed.ExitCode)
+	}
+
+	event := waitForManagerEvent(t, events, 3*time.Second, "terminal/session.closed")
+	if event.Session.ID != term.ID {
+		t.Fatalf("closed event id = %q, want %q", event.Session.ID, term.ID)
+	}
+	if event.Session.State != StateExited {
+		t.Fatalf("closed event state = %q, want %q", event.Session.State, StateExited)
+	}
+	if event.Session.ExitCode == nil || *event.Session.ExitCode != 9 {
+		t.Fatalf("closed event exit code = %+v, want 9", event.Session.ExitCode)
+	}
+
+	if _, ok := m.Get(term.ID); ok {
+		t.Fatal("expected explicitly closed exited session to be removed from manager")
 	}
 }
 
