@@ -1,59 +1,60 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:vscode_mobile/providers/github_auth_provider.dart';
-import 'package:vscode_mobile/models/github_auth_models.dart';
-import 'package:vscode_mobile/screens/more_screen.dart';
+import 'package:vscode_mobile/app.dart';
+import 'package:vscode_mobile/services/api_client.dart';
+import 'package:vscode_mobile/services/chat_api_client.dart';
 import 'package:vscode_mobile/services/git_api_client.dart';
-import 'package:vscode_mobile/services/github_auth_api_client.dart';
 import 'package:vscode_mobile/services/settings_service.dart';
+import 'package:vscode_mobile/providers/file_provider.dart';
+import 'package:vscode_mobile/providers/editor_provider.dart';
+import 'package:vscode_mobile/providers/chat_provider.dart';
+import 'package:vscode_mobile/providers/git_provider.dart';
+import 'package:vscode_mobile/providers/search_provider.dart';
+import 'package:vscode_mobile/providers/workspace_provider.dart';
 
-Future<Widget> buildTestApp() async {
-  SharedPreferences.setMockInitialValues(<String, Object>{});
-
+Widget buildTestApp() {
   final settings = SettingsService();
-  await settings.save('http://localhost:8080', 'server-token');
+
+  final apiClient = ApiClient(settings: settings);
+  final chatApiClient = ChatApiClient(settings: settings);
+  final gitApiClient = GitApiClient(settings: settings);
 
   return MultiProvider(
     providers: [
       ChangeNotifierProvider.value(value: settings),
+      ChangeNotifierProvider(create: (_) => WorkspaceProvider()),
       ChangeNotifierProvider(
-        create: (_) => GitHubAuthProvider(
-          apiClient: _FakeGitHubAuthApiClient(settings),
-          gitApiClient: _FakeGitApiClient(settings),
-        )..setWorkspacePath('/workspaces/openvsmobile'),
+        create: (_) => FileProvider(apiClient: apiClient)..setProject('/'),
+      ),
+      ChangeNotifierProvider(
+        create: (_) => EditorProvider(apiClient: apiClient),
+      ),
+      ChangeNotifierProvider(
+        create: (_) => ChatProvider(apiClient: chatApiClient),
+      ),
+      ChangeNotifierProvider(
+        create: (_) => GitProvider(apiClient: gitApiClient),
+      ),
+      ChangeNotifierProvider(
+        create: (_) => SearchProvider(apiClient: apiClient),
       ),
     ],
-    child: const MaterialApp(home: MoreScreen()),
+    child: const VSCodeMobileApp(),
   );
 }
 
 void main() {
-  testWidgets('More screen renders the GitHub entry', (tester) async {
-    await tester.pumpWidget(await buildTestApp());
-    await tester.pump();
+  testWidgets('App renders navigation bar with all tabs', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(buildTestApp());
 
-    expect(find.text('GitHub'), findsOneWidget);
-    expect(find.text('Connect GitHub and inspect auth status'), findsOneWidget);
-    expect(find.text('Settings'), findsOneWidget);
+    // The bottom navigation bar should show all 5 tabs.
+    expect(find.text('Files'), findsWidgets);
+    expect(find.text('Search'), findsWidgets);
+    expect(find.text('Terminal'), findsWidgets);
+    expect(find.text('Chat'), findsWidgets);
+    expect(find.text('More'), findsWidgets);
   });
-}
-
-class _FakeGitHubAuthApiClient extends GitHubAuthApiClient {
-  _FakeGitHubAuthApiClient(SettingsService settings)
-    : super(settings: settings);
-
-  @override
-  Future<GitHubAuthStatus> getStatus({String githubHost = 'github.com'}) async {
-    throw const GitHubAuthApiException(
-      statusCode: 401,
-      errorCode: 'not_authenticated',
-      message: 'github not authenticated',
-    );
-  }
-}
-
-class _FakeGitApiClient extends GitApiClient {
-  _FakeGitApiClient(SettingsService settings) : super(settings: settings);
 }
