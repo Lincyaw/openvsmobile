@@ -750,6 +750,33 @@ requirements:
     tests: []
     depends_on: [REQ-014, REQ-020]
 
+  - id: REQ-028
+    title: Mobile terminal session manager UX
+    description: >
+      Upgrade the Flutter terminal tab from a single PTY stream into a
+      session-centered terminal manager. The UI lists current bridge terminal
+      sessions, supports create/switch/rename/close actions, preserves per-
+      session output history and input focus state, re-attaches to existing
+      sessions after refresh via `/bridge/terminal/sessions`, `/bridge/terminal/attach`,
+      and `/bridge/ws/events`, keeps exited sessions visible until explicitly
+      closed, and shows responsive split panes on wide layouts with a clear
+      single-pane fallback on narrow screens.
+    priority: P1
+    status: implemented
+    code:
+      - app/lib/models/terminal_session.dart
+      - app/lib/services/terminal_api_client.dart
+      - app/lib/providers/terminal_provider.dart
+      - app/lib/screens/terminal_screen.dart
+      - app/lib/widgets/terminal_pane.dart
+      - app/lib/widgets/terminal_session_list.dart
+      - project-index.yaml
+    tests:
+      - app/test/terminal_api_client_test.dart
+      - app/test/providers/terminal_provider_test.dart
+      - app/test/widgets/terminal_screen_test.dart
+    depends_on: [REQ-014, REQ-020, FIX-009]
+
   - id: REQ-027
     title: GitHub current repository context backend
     description: >

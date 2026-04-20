@@ -12,8 +12,8 @@ class GitApiClient {
   final http.Client _client;
 
   GitApiClient({required SettingsService settings, http.Client? client})
-      : _settings = settings,
-        _client = client ?? http.Client();
+    : _settings = settings,
+      _client = client ?? http.Client();
 
   String get baseUrl => _settings.serverUrl;
   String get token => _settings.authToken;
@@ -62,6 +62,18 @@ class GitApiClient {
     }
     return GitDiffDocument.fromJson(
       jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<GitBranchInfo> getBranches(String path) async {
+    final repository = await getRepository(path);
+    final branchSet = <String>{
+      if (repository.branch.isNotEmpty) repository.branch,
+      for (final remote in repository.remotes) ...remote.branches,
+    };
+    return GitBranchInfo(
+      current: repository.branch,
+      branches: branchSet.toList(growable: false),
     );
   }
 
@@ -186,7 +198,10 @@ class GitApiClient {
     return _decodeRepository(response, errorPrefix);
   }
 
-  GitRepositoryState _decodeRepository(http.Response response, String errorPrefix) {
+  GitRepositoryState _decodeRepository(
+    http.Response response,
+    String errorPrefix,
+  ) {
     if (response.statusCode != 200) {
       throw ApiException(
         '$errorPrefix: ${_extractErrorMessage(response.body)}',
@@ -207,7 +222,10 @@ class GitApiClient {
       if (decoded is Map<String, dynamic>) {
         final code = decoded['code'] as String?;
         final message = decoded['message'] as String?;
-        if (code != null && code.isNotEmpty && message != null && message.isNotEmpty) {
+        if (code != null &&
+            code.isNotEmpty &&
+            message != null &&
+            message.isNotEmpty) {
           return '$code: $message';
         }
         if (message != null && message.isNotEmpty) {

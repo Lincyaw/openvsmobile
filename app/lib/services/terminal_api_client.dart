@@ -77,8 +77,8 @@ class TerminalApiClient {
       'cwd': workDir,
       'profile': profile,
       if (name != null && name.isNotEmpty) 'name': name,
-      if (rows != null) 'rows': rows,
-      if (cols != null) 'cols': cols,
+      'rows': ?rows,
+      'cols': ?cols,
     };
     return _postForSession('/bridge/terminal/create', payload);
   }
@@ -99,8 +99,23 @@ class TerminalApiClient {
     return _postForSession('/bridge/terminal/close', {'id': id});
   }
 
+  Future<TerminalSession> renameSession(String id, String name) {
+    return _postForSession('/bridge/terminal/rename', {'id': id, 'name': name});
+  }
+
+  Future<TerminalSession> splitSession(String parentId, {String? name}) {
+    return _postForSession('/bridge/terminal/split', {
+      'parentId': parentId,
+      if (name != null && name.isNotEmpty) 'name': name,
+    });
+  }
+
   WebSocketChannel connectTerminalWebSocket(String id) {
     return _channelFactory(_wsUri('/bridge/ws/terminal/$id'));
+  }
+
+  WebSocketChannel connectEventsWebSocket() {
+    return _channelFactory(_wsUri('/bridge/ws/events'));
   }
 
   Future<TerminalSession> _postForSession(
