@@ -233,20 +233,26 @@ requirements:
   - id: REQ-011
     title: Git status view
     description: >
-      Flutter view showing git status: modified/staged/untracked files,
-      current branch, recent commits. Data sourced via terminal channel
-      or dedicated git commands through Go server.
+      Flutter view showing bridge-backed repository state sourced from the
+      VS Code Source Control model as the single truth source. The repository
+      document exposes current branch, upstream, ahead/behind counts, remotes,
+      and grouped file collections for staged, unstaged, untracked,
+      conflicts, and mergeChanges via GET /bridge/git/repository.
     priority: P1
     status: implemented
     code:
-      - server/internal/git/git.go
+      - server/internal/vscode/git.go
       - server/internal/api/git.go
+      - server/internal/api/router.go
       - app/lib/screens/git_screen.dart
       - app/lib/providers/git_provider.dart
       - app/lib/services/git_api_client.dart
       - app/lib/models/git_models.dart
     tests:
-      - server/internal/git/git_test.go
+      - server/internal/api/git_bridge_test.go
+      - server/internal/vscode/ipc_git_test.go
+      - app/test/services/git_api_client_test.dart
+      - app/test/providers/git_provider_test.dart
     depends_on: [REQ-003]
 
   - id: REQ-012
@@ -439,24 +445,27 @@ requirements:
   - id: REQ-022
     title: Git stage, unstage, and commit operations
     description: >
-      Add server methods and API endpoints for git add (stage), git
-      reset HEAD (unstage), and git commit. Endpoints:
-      POST /api/git/stage?path=<dir>&file=<file>,
-      POST /api/git/unstage?path=<dir>&file=<file>,
-      POST /api/git/commit?path=<dir> with JSON body {message: string}.
-      Flutter GitScreen changes view: add stage/unstage toggle buttons
-      per file, commit button with message input dialog.
+      Add bridge-backed git command endpoints for stage, unstage, commit,
+      checkout, fetch, pull, push, discard, stash, and stash/apply through
+      /bridge/git/*. Command responses return the refreshed repository state
+      and repositoryChanged events flow over the unified bridge websocket so
+      the Flutter Git screen updates without manual polling.
     priority: P1
     status: implemented
     code:
-      - server/internal/git/git.go
+      - server/internal/vscode/git.go
       - server/internal/api/git.go
       - server/internal/api/router.go
+      - server/internal/vscode/bridge.go
       - app/lib/screens/git_screen.dart
       - app/lib/providers/git_provider.dart
       - app/lib/services/git_api_client.dart
     tests:
-      - server/internal/git/git_test.go
+      - server/internal/api/git_bridge_test.go
+      - server/internal/api/bridge_test.go
+      - server/internal/vscode/bridge_integration_test.go
+      - app/test/services/git_api_client_test.dart
+      - app/test/providers/git_provider_test.dart
     depends_on: [REQ-011]
 
   - id: REQ-023

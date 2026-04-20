@@ -16,7 +16,6 @@ import (
 
 	"github.com/Lincyaw/vscode-mobile/server/internal/claude"
 	"github.com/Lincyaw/vscode-mobile/server/internal/diagnostics"
-	"github.com/Lincyaw/vscode-mobile/server/internal/git"
 	"github.com/Lincyaw/vscode-mobile/server/internal/terminal"
 	"github.com/Lincyaw/vscode-mobile/server/internal/vscode"
 )
@@ -45,7 +44,7 @@ func newBridgeEnabledServer(t *testing.T, manager *vscode.BridgeManager) *httpte
 	t.Helper()
 	sessionIndex := claude.NewSessionIndex(t.TempDir())
 	pm := claude.NewProcessManager("/nonexistent/claude", ".")
-	srv := NewServer(newMockFS(), sessionIndex, pm, "", git.NewGit(t.TempDir()), terminal.NewManager(), diagnostics.NewRunner(10*time.Second))
+	srv := NewServer(newMockFS(), sessionIndex, pm, "", nil, terminal.NewManager(), diagnostics.NewRunner(10*time.Second))
 	srv.SetBridgeManager(manager)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)

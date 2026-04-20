@@ -34,6 +34,7 @@ type Server struct {
 	processManager   *claude.ProcessManager
 	token            string
 	git              *git.Git
+	gitService       *vscode.GitService
 	termManager      *terminal.Manager
 	diagnosticRunner *diagnostics.Runner
 	githubAuth       *gitauth.Service
@@ -54,6 +55,7 @@ func NewServer(fs FileSystem, sessionIndex *claude.SessionIndex, pm *claude.Proc
 		processManager:   pm,
 		token:            token,
 		git:              gitClient,
+		gitService:       nil,
 		termManager:      termMgr,
 		diagnosticRunner: diagRunner,
 		githubAuth:       authService,
@@ -65,6 +67,11 @@ func NewServer(fs FileSystem, sessionIndex *claude.SessionIndex, pm *claude.Proc
 // SetBridgeManager injects the bridge lifecycle manager after server construction.
 func (s *Server) SetBridgeManager(manager *vscode.BridgeManager) {
 	s.bridgeManager = manager
+}
+
+// SetGitService injects the bridge-backed Git service after server construction.
+func (s *Server) SetGitService(service *vscode.GitService) {
+	s.gitService = service
 }
 
 // SetDocumentSync injects the bridge-backed document sync service.
@@ -86,14 +93,18 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sessions/{id}/subagents/{agentId}/messages", s.handleSubagentMessages)
 	mux.HandleFunc("GET /api/sessions/{id}/subagents/{agentId}/meta", s.handleSubagentMeta)
 
-	// Git endpoints.
-	mux.HandleFunc("GET /api/git/status", s.handleGitStatus)
-	mux.HandleFunc("GET /api/git/diff", s.handleGitDiff)
-	mux.HandleFunc("GET /api/git/log", s.handleGitLog)
-	mux.HandleFunc("GET /api/git/branches", s.handleGitBranches)
-	mux.HandleFunc("POST /api/git/stage", s.handleGitStage)
-	mux.HandleFunc("POST /api/git/unstage", s.handleGitUnstage)
-	mux.HandleFunc("POST /api/git/commit", s.handleGitCommit)
+	// Bridge-backed Git endpoints.
+	mux.HandleFunc("GET /bridge/git/repository", s.handleGitRepository)
+	mux.HandleFunc("POST /bridge/git/stage", s.handleGitStage)
+	mux.HandleFunc("POST /bridge/git/unstage", s.handleGitUnstage)
+	mux.HandleFunc("POST /bridge/git/commit", s.handleGitCommit)
+	mux.HandleFunc("POST /bridge/git/checkout", s.handleGitCheckout)
+	mux.HandleFunc("POST /bridge/git/fetch", s.handleGitFetch)
+	mux.HandleFunc("POST /bridge/git/pull", s.handleGitPull)
+	mux.HandleFunc("POST /bridge/git/push", s.handleGitPush)
+	mux.HandleFunc("POST /bridge/git/discard", s.handleGitDiscard)
+	mux.HandleFunc("POST /bridge/git/stash", s.handleGitStash)
+	mux.HandleFunc("POST /bridge/git/stash/apply", s.handleGitStashApply)
 
 	// Search endpoints.
 	mux.HandleFunc("GET /api/search", s.handleSearch)

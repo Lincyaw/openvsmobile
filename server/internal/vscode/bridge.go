@@ -209,6 +209,14 @@ func (m *BridgeManager) Capabilities() (BridgeCapabilitiesDocument, error) {
 	return cloneCapabilities(m.capabilities), nil
 }
 
+// Publish broadcasts an event on the unified bridge event stream.
+func (m *BridgeManager) Publish(event BridgeEvent) {
+	if m == nil {
+		return
+	}
+	m.broadcast(event)
+}
+
 // Subscribe registers for lifecycle events. If replayCurrent is true, the current ready state is replayed immediately.
 func (m *BridgeManager) Subscribe(replayCurrent bool) (<-chan BridgeEvent, func()) {
 	ch := make(chan BridgeEvent, 8)

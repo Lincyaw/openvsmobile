@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
+import '../models/git_models.dart';
 import '../providers/git_provider.dart';
 import '../providers/workspace_provider.dart';
-import '../models/git_models.dart';
-import 'diff_screen.dart';
 
 class GitScreen extends StatefulWidget {
   const GitScreen({super.key});
@@ -12,10 +12,8 @@ class GitScreen extends StatefulWidget {
   State<GitScreen> createState() => _GitScreenState();
 }
 
-enum _GitTab { changes, log, branches }
-
 class _GitScreenState extends State<GitScreen> {
-  _GitTab _currentTab = _GitTab.changes;
+  final TextEditingController _commitMessageController = TextEditingController();
 
   @override
   void initState() {
@@ -24,158 +22,9 @@ class _GitScreenState extends State<GitScreen> {
       final workDir = context.read<WorkspaceProvider>().currentPath;
       final gitProvider = context.read<GitProvider>();
       gitProvider.setWorkDir(workDir);
-      gitProvider.refreshAll();
+      gitProvider.refreshRepository();
     });
   }
-
-  @override
-  Widget build(BuildContext context) {
-    return Consumer<GitProvider>(
-      builder: (context, gitProvider, child) {
-        final branchName = gitProvider.branchInfo?.current ?? '...';
-
-        return Scaffold(
-          appBar: AppBar(
-            title: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.commit, size: 20),
-                const SizedBox(width: 8),
-                Flexible(
-                  child: Text(branchName, overflow: TextOverflow.ellipsis),
-                ),
-              ],
-            ),
-            actions: [
-              IconButton(
-                icon: const Icon(Icons.refresh),
-                tooltip: 'Refresh',
-                onPressed: () => gitProvider.refreshAll(),
-              ),
-            ],
-          ),
-          body: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 8,
-                ),
-                child: Row(
-                  children: [
-                    _TabChip(
-                      label: 'Changes',
-                      selected: _currentTab == _GitTab.changes,
-                      onTap: () =>
-                          setState(() => _currentTab = _GitTab.changes),
-                    ),
-                    const SizedBox(width: 8),
-                    _TabChip(
-                      label: 'Log',
-                      selected: _currentTab == _GitTab.log,
-                      onTap: () => setState(() => _currentTab = _GitTab.log),
-                    ),
-                    const SizedBox(width: 8),
-                    _TabChip(
-                      label: 'Branches',
-                      selected: _currentTab == _GitTab.branches,
-                      onTap: () =>
-                          setState(() => _currentTab = _GitTab.branches),
-                    ),
-                  ],
-                ),
-              ),
-              if (gitProvider.error != null)
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: Card(
-                    color: Theme.of(context).colorScheme.errorContainer,
-                    child: Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Row(
-                        children: [
-                          Icon(
-                            Icons.error_outline,
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.onErrorContainer,
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              gitProvider.error!,
-                              style: TextStyle(
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.onErrorContainer,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              Expanded(
-                child: gitProvider.isLoading
-                    ? const Center(child: CircularProgressIndicator())
-                    : RefreshIndicator(
-                        onRefresh: () => gitProvider.refreshAll(),
-                        child: _buildTabContent(gitProvider),
-                      ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildTabContent(GitProvider provider) {
-    switch (_currentTab) {
-      case _GitTab.changes:
-        return _ChangesView(entries: provider.statusEntries);
-      case _GitTab.log:
-        return _LogView(entries: provider.logEntries);
-      case _GitTab.branches:
-        return _BranchesView(branchInfo: provider.branchInfo);
-    }
-  }
-}
-
-class _TabChip extends StatelessWidget {
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-
-  const _TabChip({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return FilterChip(
-      label: Text(label),
-      selected: selected,
-      onSelected: (_) => onTap(),
-    );
-  }
-}
-
-class _ChangesView extends StatefulWidget {
-  final List<GitStatusEntry> entries;
-
-  const _ChangesView({required this.entries});
-
-  @override
-  State<_ChangesView> createState() => _ChangesViewState();
-}
-
-class _ChangesViewState extends State<_ChangesView> {
-  final TextEditingController _commitMessageController =
-      TextEditingController();
 
   @override
   void dispose() {
@@ -185,110 +34,214 @@ class _ChangesViewState extends State<_ChangesView> {
 
   @override
   Widget build(BuildContext context) {
-    if (widget.entries.isEmpty) {
-      return ListView(
-        children: [
-          const SizedBox(height: 120),
-          Center(
-            child: Column(
+    return Consumer<GitProvider>(
+      builder: (context, gitProvider, _) {
+        final repository =
+            gitProvider.repository ?? GitRepositoryState.empty(gitProvider.workDir);
+        final branchLabel = repository.branch.isEmpty ? 'Git' : repository.branch;
+
+        return Scaffold(
+          appBar: AppBar(
+            title: Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(
-                  Icons.check_circle_outline,
-                  size: 64,
-                  color: Theme.of(context).colorScheme.outline,
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  'Working tree clean',
-                  style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                    color: Theme.of(context).colorScheme.outline,
-                  ),
+                const Icon(Icons.commit, size: 20),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(branchLabel, overflow: TextOverflow.ellipsis),
                 ),
               ],
             ),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.download),
+                tooltip: 'Fetch',
+                onPressed: gitProvider.isLoading ? null : gitProvider.fetch,
+              ),
+              IconButton(
+                icon: const Icon(Icons.sync),
+                tooltip: 'Pull',
+                onPressed: gitProvider.isLoading ? null : gitProvider.pull,
+              ),
+              IconButton(
+                icon: const Icon(Icons.publish),
+                tooltip: 'Push',
+                onPressed: gitProvider.isLoading ? null : gitProvider.push,
+              ),
+              IconButton(
+                icon: const Icon(Icons.refresh),
+                tooltip: 'Refresh',
+                onPressed: gitProvider.isLoading
+                    ? null
+                    : gitProvider.refreshRepository,
+              ),
+            ],
           ),
-        ],
-      );
-    }
-
-    final stagedCount = widget.entries.where((e) => e.staged).length;
-
-    return ListView.builder(
-      itemCount: widget.entries.length + (stagedCount > 0 ? 1 : 0),
-      itemBuilder: (context, index) {
-        // Show commit section at the top when there are staged files.
-        if (stagedCount > 0 && index == 0) {
-          return _buildCommitSection(context, stagedCount);
-        }
-
-        final entryIndex = stagedCount > 0 ? index - 1 : index;
-        final entry = widget.entries[entryIndex];
-        return ListTile(
-          leading: _StatusIcon(status: entry.status),
-          title: Text(
-            entry.path.split('/').last,
-            overflow: TextOverflow.ellipsis,
-          ),
-          subtitle: Text(
-            entry.path,
-            style: Theme.of(context).textTheme.bodySmall,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          trailing: IconButton(
-            icon: Icon(
-              entry.staged
-                  ? Icons.remove_circle_outline
-                  : Icons.add_circle_outline,
-              color: entry.staged ? Colors.orange : Colors.green,
-            ),
-            tooltip: entry.staged ? 'Unstage' : 'Stage',
-            onPressed: () {
-              final gitProvider = context.read<GitProvider>();
-              if (entry.staged) {
-                gitProvider.unstageFile(entry.path).then((_) {
-                  if (context.mounted && gitProvider.error != null) {
-                    ScaffoldMessenger.of(
-                      context,
-                    ).showSnackBar(SnackBar(content: Text(gitProvider.error!)));
-                  }
-                });
-              } else {
-                gitProvider.stageFile(entry.path).then((_) {
-                  if (context.mounted && gitProvider.error != null) {
-                    ScaffoldMessenger.of(
-                      context,
-                    ).showSnackBar(SnackBar(content: Text(gitProvider.error!)));
-                  }
-                });
-              }
-            },
-          ),
-          onTap: () {
-            final gitProvider = context.read<GitProvider>();
-            gitProvider.loadDiff(file: entry.path, staged: entry.staged).then((
-              _,
-            ) {
-              if (context.mounted) {
-                Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => DiffScreen(
-                      fileName: entry.path.split('/').last,
-                      diffContent: gitProvider.currentDiff ?? '',
+          body: Column(
+            children: [
+              _RepositorySummary(repository: repository),
+              if (gitProvider.error != null)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                  child: Card(
+                    color: Theme.of(context).colorScheme.errorContainer,
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.error_outline),
+                          const SizedBox(width: 8),
+                          Expanded(child: Text(gitProvider.error!)),
+                        ],
+                      ),
                     ),
                   ),
-                );
-              }
-            });
-          },
+                ),
+              if (repository.staged.isNotEmpty)
+                _CommitCard(
+                  controller: _commitMessageController,
+                  stagedCount: repository.staged.length,
+                  enabled: !gitProvider.isLoading,
+                  onCommit: () async {
+                    final message = _commitMessageController.text.trim();
+                    if (message.isEmpty) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Commit message cannot be empty'),
+                        ),
+                      );
+                      return;
+                    }
+                    await gitProvider.commit(message);
+                    if (!mounted) {
+                      return;
+                    }
+                    if (gitProvider.error == null) {
+                      _commitMessageController.clear();
+                    }
+                  },
+                ),
+              Expanded(
+                child: gitProvider.isLoading && repository.changeCount == 0
+                    ? const Center(child: CircularProgressIndicator())
+                    : RefreshIndicator(
+                        onRefresh: gitProvider.refreshRepository,
+                        child: _RepositoryChangesList(repository: repository),
+                      ),
+              ),
+            ],
+          ),
         );
       },
     );
   }
+}
 
-  Widget _buildCommitSection(BuildContext context, int stagedCount) {
+class _RepositorySummary extends StatelessWidget {
+  final GitRepositoryState repository;
+
+  const _RepositorySummary({required this.repository});
+
+  @override
+  Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.all(12),
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                repository.branch.isEmpty ? 'Repository' : repository.branch,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              if (repository.upstream.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  'Upstream: ${repository.upstream}',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _CountChip(label: 'Ahead', value: repository.ahead),
+                  _CountChip(label: 'Behind', value: repository.behind),
+                  _CountChip(label: 'Staged', value: repository.staged.length),
+                  _CountChip(
+                    label: 'Unstaged',
+                    value: repository.unstaged.length,
+                  ),
+                  _CountChip(
+                    label: 'Untracked',
+                    value: repository.untracked.length,
+                  ),
+                  _CountChip(
+                    label: 'Conflicts',
+                    value: repository.conflicts.length,
+                  ),
+                  _CountChip(
+                    label: 'Merge',
+                    value: repository.mergeChanges.length,
+                  ),
+                ],
+              ),
+              if (repository.remotes.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Text(
+                  'Remotes',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                const SizedBox(height: 6),
+                for (final remote in repository.remotes)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Text(
+                      '${remote.name}: ${remote.fetchUrl.isNotEmpty ? remote.fetchUrl : remote.pushUrl}',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CountChip extends StatelessWidget {
+  final String label;
+  final int value;
+
+  const _CountChip({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Chip(label: Text('$label $value'));
+  }
+}
+
+class _CommitCard extends StatelessWidget {
+  final TextEditingController controller;
+  final int stagedCount;
+  final bool enabled;
+  final VoidCallback onCommit;
+
+  const _CommitCard({
+    required this.controller,
+    required this.stagedCount,
+    required this.enabled,
+    required this.onCommit,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
       child: Card(
         child: Padding(
           padding: const EdgeInsets.all(12),
@@ -301,45 +254,20 @@ class _ChangesViewState extends State<_ChangesView> {
               ),
               const SizedBox(height: 8),
               TextField(
-                controller: _commitMessageController,
+                controller: controller,
+                enabled: enabled,
                 decoration: const InputDecoration(
                   hintText: 'Commit message',
                   border: OutlineInputBorder(),
-                  isDense: true,
                 ),
-                maxLines: 3,
                 minLines: 1,
+                maxLines: 3,
               ),
               const SizedBox(height: 8),
               FilledButton.icon(
+                onPressed: enabled ? onCommit : null,
                 icon: const Icon(Icons.check),
                 label: const Text('Commit'),
-                onPressed: () {
-                  final message = _commitMessageController.text.trim();
-                  if (message.isEmpty) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Commit message cannot be empty'),
-                      ),
-                    );
-                    return;
-                  }
-                  final gitProvider = context.read<GitProvider>();
-                  gitProvider.commit(message).then((_) {
-                    if (context.mounted) {
-                      if (gitProvider.error != null) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text(gitProvider.error!)),
-                        );
-                      } else {
-                        _commitMessageController.clear();
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Commit successful')),
-                        );
-                      }
-                    }
-                  });
-                },
               ),
             ],
           ),
@@ -349,179 +277,161 @@ class _ChangesViewState extends State<_ChangesView> {
   }
 }
 
-class _StatusIcon extends StatelessWidget {
-  final String status;
+class _RepositoryChangesList extends StatelessWidget {
+  final GitRepositoryState repository;
 
-  const _StatusIcon({required this.status});
-
-  @override
-  Widget build(BuildContext context) {
-    IconData icon;
-    Color color;
-
-    switch (status) {
-      case 'modified':
-        icon = Icons.edit;
-        color = Colors.orange;
-        break;
-      case 'added':
-        icon = Icons.add_circle;
-        color = Colors.green;
-        break;
-      case 'deleted':
-        icon = Icons.remove_circle;
-        color = Colors.red;
-        break;
-      case 'renamed':
-        icon = Icons.drive_file_rename_outline;
-        color = Colors.blue;
-        break;
-      case 'untracked':
-        icon = Icons.help_outline;
-        color = Colors.grey;
-        break;
-      default:
-        icon = Icons.circle;
-        color = Colors.grey;
-    }
-
-    return Icon(icon, color: color, size: 24);
-  }
-}
-
-class _LogView extends StatelessWidget {
-  final List<GitLogEntry> entries;
-
-  const _LogView({required this.entries});
+  const _RepositoryChangesList({required this.repository});
 
   @override
   Widget build(BuildContext context) {
-    if (entries.isEmpty) {
+    if (repository.isClean) {
       return ListView(
-        children: [
-          const SizedBox(height: 120),
-          Center(
-            child: Column(
-              children: [
-                Icon(
-                  Icons.history,
-                  size: 64,
-                  color: Theme.of(context).colorScheme.outline,
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  'No commits yet',
-                  style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                    color: Theme.of(context).colorScheme.outline,
-                  ),
-                ),
-              ],
-            ),
-          ),
+        children: const [
+          SizedBox(height: 140),
+          Center(child: Text('Working tree clean')),
         ],
       );
     }
 
-    return ListView.builder(
-      itemCount: entries.length,
-      itemBuilder: (context, index) {
-        final entry = entries[index];
-        final shortHash = entry.hash.length > 7
-            ? entry.hash.substring(0, 7)
-            : entry.hash;
+    return ListView(
+      children: repository.groups
+          .map((group) => _ChangeSection(group: group))
+          .toList(),
+    );
+  }
+}
 
-        return ListTile(
-          leading: CircleAvatar(
-            radius: 16,
-            backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-            child: Text(
-              shortHash.substring(0, 2),
-              style: TextStyle(
-                fontSize: 11,
-                color: Theme.of(context).colorScheme.onPrimaryContainer,
+class _ChangeSection extends StatelessWidget {
+  final GitChangeGroup group;
+
+  const _ChangeSection({required this.group});
+
+  @override
+  Widget build(BuildContext context) {
+    if (group.changes.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '${group.title} (${group.changes.length})',
+                style: Theme.of(context).textTheme.titleSmall,
               ),
-            ),
+              const SizedBox(height: 4),
+              Text(
+                group.description,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 8),
+              for (final entry in group.changes)
+                _ChangeTile(group: group, entry: entry),
+            ],
           ),
-          title: Text(
-            entry.message,
+        ),
+      ),
+    );
+  }
+}
+
+class _ChangeTile extends StatelessWidget {
+  final GitChangeGroup group;
+  final GitChange entry;
+
+  const _ChangeTile({required this.group, required this.entry});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(
+        Icons.circle,
+        size: 12,
+        color: _accentColor(group.accent),
+      ),
+      title: Text(entry.displayName, overflow: TextOverflow.ellipsis),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            entry.isRename ? '${entry.originalPath} -> ${entry.path}' : entry.path,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
           ),
-          subtitle: Text(
-            '$shortHash - ${entry.author} - ${entry.date}',
+          const SizedBox(height: 2),
+          Text(
+            _statusText(entry),
             style: Theme.of(context).textTheme.bodySmall,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
           ),
-        );
-      },
+        ],
+      ),
+      trailing: _ActionButton(group: group, entry: entry),
     );
+  }
+
+  String _statusText(GitChange change) {
+    final pieces = <String>[change.statusLabel];
+    if (change.indexStatus.isNotEmpty) {
+      pieces.add('index ${change.indexStatus}');
+    }
+    if (change.workingTreeStatus.isNotEmpty) {
+      pieces.add('worktree ${change.workingTreeStatus}');
+    }
+    return pieces.join(' • ');
+  }
+
+  Color _accentColor(GitGroupAccent accent) {
+    switch (accent) {
+      case GitGroupAccent.success:
+        return Colors.green;
+      case GitGroupAccent.info:
+        return Colors.orange;
+      case GitGroupAccent.warning:
+        return Colors.deepOrange;
+      case GitGroupAccent.danger:
+        return Colors.red;
+      case GitGroupAccent.neutral:
+        return Colors.blue;
+    }
   }
 }
 
-class _BranchesView extends StatelessWidget {
-  final GitBranchInfo? branchInfo;
+class _ActionButton extends StatelessWidget {
+  final GitChangeGroup group;
+  final GitChange entry;
 
-  const _BranchesView({required this.branchInfo});
+  const _ActionButton({required this.group, required this.entry});
 
   @override
   Widget build(BuildContext context) {
-    if (branchInfo == null || branchInfo!.branches.isEmpty) {
-      return ListView(
-        children: [
-          const SizedBox(height: 120),
-          Center(
-            child: Column(
-              children: [
-                Icon(
-                  Icons.account_tree,
-                  size: 64,
-                  color: Theme.of(context).colorScheme.outline,
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  'No branches found',
-                  style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                    color: Theme.of(context).colorScheme.outline,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      );
-    }
+    final gitProvider = context.read<GitProvider>();
 
-    return ListView.builder(
-      itemCount: branchInfo!.branches.length,
-      itemBuilder: (context, index) {
-        final branch = branchInfo!.branches[index];
-        final isCurrent = branch == branchInfo!.current;
-
-        return ListTile(
-          leading: Icon(
-            isCurrent ? Icons.radio_button_checked : Icons.radio_button_off,
-            color: isCurrent
-                ? Theme.of(context).colorScheme.primary
-                : Theme.of(context).colorScheme.outline,
-          ),
-          title: Text(
-            branch,
-            style: TextStyle(
-              fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
-              color: isCurrent ? Theme.of(context).colorScheme.primary : null,
-            ),
-          ),
-          trailing: isCurrent
-              ? Chip(
-                  label: const Text('Current'),
-                  labelStyle: const TextStyle(fontSize: 11),
-                  padding: EdgeInsets.zero,
-                  visualDensity: VisualDensity.compact,
-                )
-              : null,
+    switch (group.primaryAction) {
+      case GitChangeAction.stage:
+        return IconButton(
+          icon: const Icon(Icons.add_circle_outline, color: Colors.green),
+          tooltip: 'Stage',
+          onPressed: () => gitProvider.stageFile(entry.path),
         );
-      },
-    );
+      case GitChangeAction.unstage:
+        return IconButton(
+          icon: const Icon(Icons.remove_circle_outline, color: Colors.orange),
+          tooltip: 'Unstage',
+          onPressed: () => gitProvider.unstageFile(entry.path),
+        );
+      case GitChangeAction.discard:
+        return IconButton(
+          icon: const Icon(Icons.restore, color: Colors.red),
+          tooltip: 'Discard',
+          onPressed: () => gitProvider.discardFile(entry.path),
+        );
+    }
   }
 }
