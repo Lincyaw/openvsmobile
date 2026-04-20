@@ -84,6 +84,8 @@ Response body:
 
 The response never includes `access_token` or `refresh_token`.
 
+Current contract note: the status payload does not yet expose avatar URLs, GitHub App installation state, or per-workspace repository accessibility metadata. Flutter clients must present those as unavailable/unsupported instead of guessing.
+
 ### `POST /github/auth/disconnect`
 
 Request body:
