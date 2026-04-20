@@ -105,11 +105,19 @@ func (pm *ProcessManager) StartConversation(workingDir string) (*Conversation, e
 
 // ResumeConversation resumes an existing Claude session.
 func (pm *ProcessManager) ResumeConversation(sessionID string) (*Conversation, error) {
+	return pm.ResumeConversationInDir(sessionID, "")
+}
+
+// ResumeConversationInDir resumes an existing Claude session in a specific workspace.
+func (pm *ProcessManager) ResumeConversationInDir(sessionID, workingDir string) (*Conversation, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	args := []string{"-p", "--verbose", "-r", sessionID, "--output-format", "stream-json", "--input-format", "stream-json"}
 
 	cmd := exec.CommandContext(ctx, pm.claudeBin, args...)
-	cmd.Dir = pm.workingDir
+	if workingDir == "" {
+		workingDir = pm.workingDir
+	}
+	cmd.Dir = workingDir
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -144,12 +152,17 @@ func (pm *ProcessManager) ResumeConversation(sessionID string) (*Conversation, e
 	pm.active[conv.ID] = conv
 	pm.mu.Unlock()
 
-	log.Printf("[Claude] resumed conversation %s", conv.ID)
+	log.Printf("[Claude] resumed conversation %s in %s", conv.ID, workingDir)
 	return conv, nil
 }
 
 // Send sends a user message to the Claude CLI process.
 func (c *Conversation) Send(message string) error {
+	return c.SendWithContext(message, nil)
+}
+
+// SendWithContext sends a user message plus lightweight editor context.
+func (c *Conversation) SendWithContext(message string, chatContext *ConversationContext) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -161,7 +174,7 @@ func (c *Conversation) Send(message string) error {
 		Type: "user",
 		Message: StreamInputMessage{
 			Role:    "user",
-			Content: message,
+			Content: formatMessageWithContext(message, chatContext),
 		},
 	}
 	data, err := json.Marshal(input)
@@ -174,6 +187,23 @@ func (c *Conversation) Send(message string) error {
 		return fmt.Errorf("writing to stdin: %w", err)
 	}
 	return nil
+}
+
+func formatMessageWithContext(message string, chatContext *ConversationContext) string {
+	if chatContext == nil {
+		return message
+	}
+
+	contextJSON, err := json.Marshal(chatContext)
+	if err != nil {
+		return message
+	}
+
+	return fmt.Sprintf(
+		"[mobile_editor_context]\n%s\n[/mobile_editor_context]\n\n%s",
+		contextJSON,
+		message,
+	)
 }
 
 // Close gracefully shuts down the conversation.

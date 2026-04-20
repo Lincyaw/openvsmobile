@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -93,11 +92,10 @@ func newTestServer(t *testing.T, token string) (*httptest.Server, *mockFS, strin
 	sessionIndex := claude.NewSessionIndex(tmpDir)
 	pm := claude.NewProcessManager("/nonexistent/claude", ".")
 	fs := newMockFS()
-	gitClient := git.NewGit(t.TempDir()) // dummy, tests needing git will override
 	termMgr := terminal.NewManager()
 	diagRunner := diagnostics.NewRunner(10 * time.Second)
 
-	srv := NewServer(fs, sessionIndex, pm, token, gitClient, termMgr, diagRunner)
+	srv := NewServer(fs, sessionIndex, pm, token, nil, termMgr, diagRunner)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
@@ -359,7 +357,7 @@ func TestSessionsList_WithSessions(t *testing.T) {
 
 	pm := claude.NewProcessManager("/nonexistent", ".")
 	diagRunner := diagnostics.NewRunner(10 * time.Second)
-	srv := NewServer(nil, sessIndex, pm, "", git.NewGit("."), terminal.NewManager(), diagRunner)
+	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), diagRunner)
 	ts2 := httptest.NewServer(srv.Handler())
 	defer ts2.Close()
 
@@ -396,7 +394,7 @@ func TestSessionsSearch_ByQuery(t *testing.T) {
 
 	pm := claude.NewProcessManager("/nonexistent", ".")
 	diagRunner := diagnostics.NewRunner(10 * time.Second)
-	srv := NewServer(nil, sessIndex, pm, "", git.NewGit("."), terminal.NewManager(), diagRunner)
+	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), diagRunner)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -440,6 +438,48 @@ func TestSessionsSearch_ByQuery(t *testing.T) {
 	}
 }
 
+func TestSessionsSearch_ProjectUsesExactWorkspaceRoot(t *testing.T) {
+	claudeDir := t.TempDir()
+	sessionsDir := filepath.Join(claudeDir, "sessions")
+	os.MkdirAll(sessionsDir, 0o755)
+
+	writeSessionFile(t, claudeDir, 1, "s1", "/tmp/workspaces/app", "cli")
+	writeSessionFile(t, claudeDir, 2, "s2", "/var/tmp/app", "cli")
+	writeSessionFile(t, claudeDir, 3, "s3", "/tmp/workspaces/app-nested", "cli")
+
+	sessIndex := claude.NewSessionIndex(claudeDir)
+	if err := sessIndex.ScanSessions(); err != nil {
+		t.Fatal(err)
+	}
+
+	pm := claude.NewProcessManager("/nonexistent", ".")
+	diagRunner := diagnostics.NewRunner(10 * time.Second)
+	srv := NewServer(nil, sessIndex, pm, "", git.NewGit("."), terminal.NewManager(), diagRunner)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/sessions?project=/tmp/workspaces/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var sessions []claude.SessionMeta
+	if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 exact-root session, got %d", len(sessions))
+	}
+	if sessions[0].SessionID != "s1" {
+		t.Fatalf("expected session s1, got %#v", sessions)
+	}
+}
+
 func TestSessionMessages_E2E(t *testing.T) {
 	claudeDir := t.TempDir()
 	sessionsDir := filepath.Join(claudeDir, "sessions")
@@ -457,7 +497,7 @@ func TestSessionMessages_E2E(t *testing.T) {
 
 	pm := claude.NewProcessManager("/nonexistent", ".")
 	diagRunner := diagnostics.NewRunner(10 * time.Second)
-	srv := NewServer(nil, sessIndex, pm, "", git.NewGit("."), terminal.NewManager(), diagRunner)
+	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), diagRunner)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -513,7 +553,7 @@ func TestDiagnostics_NoRunner(t *testing.T) {
 	// Server with nil diagnostics runner.
 	sessIndex := claude.NewSessionIndex(t.TempDir())
 	pm := claude.NewProcessManager("/nonexistent", ".")
-	srv := NewServer(nil, sessIndex, pm, "", git.NewGit("."), terminal.NewManager(), nil)
+	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), nil)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -543,157 +583,28 @@ func TestDiagnostics_UnknownExtension(t *testing.T) {
 	}
 }
 
-// --- Git handler test ---
+func TestGitLegacyAPIEndpointsAreNotRegistered(t *testing.T) {
+	ts, _, _ := newTestServer(t, "")
 
-func TestGitStatus_E2E(t *testing.T) {
-	// Create a real git repo.
-	tmpDir := t.TempDir()
-
-	runGitIn(t, tmpDir, "init")
-	runGitIn(t, tmpDir, "config", "user.email", "test@test.com")
-	runGitIn(t, tmpDir, "config", "user.name", "Test")
-	os.WriteFile(filepath.Join(tmpDir, "file.txt"), []byte("hello"), 0644)
-	runGitIn(t, tmpDir, "add", "file.txt")
-	runGitIn(t, tmpDir, "commit", "-m", "init")
-
-	// Create a modification.
-	os.WriteFile(filepath.Join(tmpDir, "file.txt"), []byte("modified"), 0644)
-	os.WriteFile(filepath.Join(tmpDir, "new.txt"), []byte("new"), 0644)
-
-	// Build server with this real git.
-	sessIndex := claude.NewSessionIndex(t.TempDir())
-	pm := claude.NewProcessManager("/nonexistent", ".")
-	diagRunner := diagnostics.NewRunner(10 * time.Second)
-	gitClient := git.NewGit(tmpDir)
-	srv := NewServer(nil, sessIndex, pm, "", gitClient, terminal.NewManager(), diagRunner)
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-
-	resp, err := http.Get(ts.URL + "/api/git/status?path=" + tmpDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
+	tests := []string{
+		"/api/git/status?path=" + t.TempDir(),
+		"/api/git/log?path=" + t.TempDir() + "&count=10",
+		"/api/git/diff?path=" + t.TempDir() + "&file=file.txt",
 	}
 
-	var entries []git.StatusEntry
-	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
-		t.Fatal(err)
-	}
+	for _, path := range tests {
+		t.Run(path, func(t *testing.T) {
+			resp, err := http.Get(ts.URL + path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
 
-	// Should have at least the modified file and the untracked file.
-	if len(entries) < 1 {
-		t.Fatalf("expected at least 1 status entry, got %d", len(entries))
-	}
-
-	// Look for the modified file.
-	found := false
-	for _, e := range entries {
-		if e.Path == "file.txt" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("expected file.txt in status, got: %+v", entries)
-	}
-}
-
-func TestGitLog_E2E(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	runGitIn(t, tmpDir, "init")
-	runGitIn(t, tmpDir, "config", "user.email", "test@test.com")
-	runGitIn(t, tmpDir, "config", "user.name", "Test")
-	os.WriteFile(filepath.Join(tmpDir, "a.txt"), []byte("a"), 0644)
-	runGitIn(t, tmpDir, "add", "a.txt")
-	runGitIn(t, tmpDir, "commit", "-m", "first commit")
-	os.WriteFile(filepath.Join(tmpDir, "b.txt"), []byte("b"), 0644)
-	runGitIn(t, tmpDir, "add", "b.txt")
-	runGitIn(t, tmpDir, "commit", "-m", "second commit")
-
-	sessIndex := claude.NewSessionIndex(t.TempDir())
-	pm := claude.NewProcessManager("/nonexistent", ".")
-	diagRunner := diagnostics.NewRunner(10 * time.Second)
-	gitClient := git.NewGit(tmpDir)
-	srv := NewServer(nil, sessIndex, pm, "", gitClient, terminal.NewManager(), diagRunner)
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-
-	resp, err := http.Get(ts.URL + "/api/git/log?path=" + tmpDir + "&count=10")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
-	}
-
-	var logEntries []git.LogEntry
-	if err := json.NewDecoder(resp.Body).Decode(&logEntries); err != nil {
-		t.Fatal(err)
-	}
-	if len(logEntries) != 2 {
-		t.Fatalf("expected 2 log entries, got %d", len(logEntries))
-	}
-	if logEntries[0].Message != "second commit" {
-		t.Fatalf("expected 'second commit', got %q", logEntries[0].Message)
-	}
-}
-
-func TestGitDiff_E2E(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	runGitIn(t, tmpDir, "init")
-	runGitIn(t, tmpDir, "config", "user.email", "test@test.com")
-	runGitIn(t, tmpDir, "config", "user.name", "Test")
-	os.WriteFile(filepath.Join(tmpDir, "file.txt"), []byte("old content\n"), 0644)
-	runGitIn(t, tmpDir, "add", "file.txt")
-	runGitIn(t, tmpDir, "commit", "-m", "init")
-	os.WriteFile(filepath.Join(tmpDir, "file.txt"), []byte("new content\n"), 0644)
-
-	sessIndex := claude.NewSessionIndex(t.TempDir())
-	pm := claude.NewProcessManager("/nonexistent", ".")
-	diagRunner := diagnostics.NewRunner(10 * time.Second)
-	gitClient := git.NewGit(tmpDir)
-	srv := NewServer(nil, sessIndex, pm, "", gitClient, terminal.NewManager(), diagRunner)
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-
-	resp, err := http.Get(ts.URL + "/api/git/diff?path=" + tmpDir + "&file=file.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
-	}
-
-	body, _ := io.ReadAll(resp.Body)
-	diff := string(body)
-	if !strings.Contains(diff, "-old content") || !strings.Contains(diff, "+new content") {
-		t.Fatalf("expected diff with old/new content, got:\n%s", diff)
-	}
-}
-
-// --- Helper to run shell commands for git setup ---
-
-// runGitIn runs a git command in the given directory.
-func runGitIn(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v failed: %v\n%s", args, err, out)
+			if resp.StatusCode != http.StatusNotFound {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("expected 404 for %s, got %d: %s", path, resp.StatusCode, body)
+			}
+		})
 	}
 }
 
@@ -710,5 +621,33 @@ func TestHandler_LegacyTerminalWebSocketRouteRemoved(t *testing.T) {
 	}
 	if resp != nil && resp.StatusCode == http.StatusSwitchingProtocols {
 		t.Fatalf("legacy /ws/terminal unexpectedly upgraded with status %d", resp.StatusCode)
+	}
+}
+
+func TestGitHubResolveLocalFile_EndToEndFromNestedWorkspace(t *testing.T) {
+	rcs := newRepoContextServer(t, "git@github.com:acme/rocket.git", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v3/repos/acme/rocket":
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": "rocket", "full_name": "acme/rocket", "owner": map[string]any{"login": "acme"}})
+		case "/api/v3/repos/acme/rocket/installation":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 321})
+		default:
+			t.Fatalf("unexpected backend path %s", r.URL.Path)
+		}
+	})
+
+	resp, payload := repoContextResolveLocalFile(t, rcs.server.URL, "/api", rcs.nestedDir, "pkg/repo_context_test.txt")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d payload=%#v", resp.StatusCode, payload)
+	}
+	resolved := asString(payload["local_path"])
+	if resolved == "<nil>" || resolved == "" {
+		resolved = asString(payload["path"])
+	}
+	if resolved != rcs.filePath {
+		t.Fatalf("resolved path = %q, want %q payload=%#v", resolved, rcs.filePath, payload)
+	}
+	if payload["exists"] != true {
+		t.Fatalf("exists = %#v payload=%#v", payload["exists"], payload)
 	}
 }

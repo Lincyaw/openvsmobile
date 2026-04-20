@@ -10,18 +10,21 @@ import (
 )
 
 // handleSessionsList handles GET /api/sessions.
-// Supports query params: ?q=keyword&project=name for filtering.
+// Supports query params: ?q=keyword&workspaceRoot=/abs/path for filtering.
 func (s *Server) handleSessionsList(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("q")
-	project := r.URL.Query().Get("project")
+	workspaceRoot := r.URL.Query().Get("workspaceRoot")
+	if workspaceRoot == "" {
+		workspaceRoot = r.URL.Query().Get("project")
+	}
 
 	var sessions []claude.SessionMeta
-	if query != "" || project != "" {
-		sessions = s.sessionIndex.SearchSessions(query, project)
+	if query != "" || workspaceRoot != "" {
+		sessions = s.sessionIndex.SearchSessions(query, workspaceRoot)
 	} else {
 		sessions = s.sessionIndex.ListSessions()
 	}
-	log.Printf("[Sessions] listed sessions (query=%q, project=%q, count=%d)", query, project, len(sessions))
+	log.Printf("[Sessions] listed sessions (query=%q, workspaceRoot=%q, count=%d)", query, workspaceRoot, len(sessions))
 	writeJSON(w, http.StatusOK, sessions)
 }
 

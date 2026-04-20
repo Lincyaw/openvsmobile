@@ -63,29 +63,48 @@ func (c *Client) RefreshToken(ctx context.Context, host, clientID, refreshToken 
 }
 
 func (c *Client) GetUser(ctx context.Context, host, accessToken string) (*User, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.apiBaseURL(host)+"/user", nil)
-	if err != nil {
+	var user User
+	if err := c.getJSON(ctx, c.apiBaseURL(host)+"/user", accessToken, &user); err != nil {
+		if apiErr, ok := err.(*APIError); ok {
+			return nil, &HostError{Host: NormalizeHost(host), Err: apiErr}
+		}
 		return nil, err
 	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, &HostError{Host: NormalizeHost(host), Err: err}
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, &HostError{Host: NormalizeHost(host), Err: fmt.Errorf("github user lookup failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))}
-	}
-
-	var user User
-	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
-		return nil, &HostError{Host: NormalizeHost(host), Err: fmt.Errorf("decode github user: %w", err)}
-	}
 	return &user, nil
+}
+
+func (c *Client) GetRepo(ctx context.Context, host, owner, repo, accessToken string) (*Repository, error) {
+	var repository Repository
+	endpoint := c.apiBaseURL(host) + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo)
+	if err := c.getJSON(ctx, endpoint, accessToken, &repository); err != nil {
+		return nil, err
+	}
+	repository.GitHubHost = NormalizeHost(host)
+	if repository.Owner == "" {
+		repository.Owner = owner
+	}
+	if repository.Name == "" {
+		repository.Name = repo
+	}
+	if repository.FullName == "" && repository.Owner != "" && repository.Name != "" {
+		repository.FullName = repository.Owner + "/" + repository.Name
+	}
+	return &repository, nil
+}
+
+func (c *Client) GetRepoInstallation(ctx context.Context, host, owner, repo, accessToken string) (*AppInstallation, error) {
+	var installation AppInstallation
+	endpoint := c.apiBaseURL(host) + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/installation"
+	if err := c.getJSON(ctx, endpoint, accessToken, &installation); err != nil {
+		if IsAPIStatus(err, http.StatusNotFound) {
+			return nil, &HostError{Host: NormalizeHost(host), Err: ErrAppNotInstalledForRepo}
+		}
+		if IsAPIStatus(err, http.StatusForbidden) {
+			return nil, &HostError{Host: NormalizeHost(host), Err: ErrRepoAccessUnavailable}
+		}
+		return nil, err
+	}
+	return &installation, nil
 }
 
 func (c *Client) exchangeToken(ctx context.Context, host string, values url.Values) (*TokenResponse, error) {
@@ -97,6 +116,33 @@ func (c *Client) exchangeToken(ctx context.Context, host string, values url.Valu
 		return nil, &HostError{Host: NormalizeHost(host), Err: mapOAuthError(resp.Error)}
 	}
 	return &resp, nil
+}
+
+func (c *Client) getJSON(ctx context.Context, endpoint, accessToken string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	if strings.TrimSpace(accessToken) != "" {
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return &HostError{Host: NormalizeHost(hostFromURL(endpoint)), Err: err}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return &APIError{Host: NormalizeHost(hostFromURL(endpoint)), StatusCode: resp.StatusCode, Message: strings.TrimSpace(string(body))}
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return &HostError{Host: NormalizeHost(hostFromURL(endpoint)), Err: fmt.Errorf("decode github response: %w", err)}
+	}
+	return nil
 }
 
 func (c *Client) postForm(ctx context.Context, endpoint string, values url.Values, out any) error {

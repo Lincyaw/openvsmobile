@@ -154,23 +154,3 @@ class ChatMessage {
         .join('\n');
   }
 }
-
-/// Represents a code context attached to a chat message.
-class CodeContext {
-  final String filePath;
-  final int startLine;
-  final int endLine;
-  final String selectedText;
-
-  const CodeContext({
-    required this.filePath,
-    required this.startLine,
-    required this.endLine,
-    required this.selectedText,
-  });
-
-  String get label {
-    final fileName = filePath.split('/').last;
-    return '$fileName:$startLine-$endLine';
-  }
-}

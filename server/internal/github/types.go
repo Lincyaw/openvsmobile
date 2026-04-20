@@ -1,6 +1,7 @@
 package github
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -8,15 +9,26 @@ import (
 
 const DefaultHost = "github.com"
 
+const (
+	RepoStatusOK                    = "ok"
+	RepoStatusRepoNotGitHub         = "repo_not_github"
+	RepoStatusNotAuthenticated      = "not_authenticated"
+	RepoStatusReauthRequired        = "reauth_required"
+	RepoStatusRepoAccessUnavailable = "repo_access_unavailable"
+	RepoStatusAppNotInstalled       = "app_not_installed_for_repo"
+)
+
 var (
-	ErrAuthorizationPending = errors.New("github authorization pending")
-	ErrSlowDown             = errors.New("github authorization slow down")
-	ErrAccessDenied         = errors.New("github access denied")
-	ErrExpiredToken         = errors.New("github device code expired")
-	ErrBadRefreshToken      = errors.New("github bad refresh token")
-	ErrRefreshNotSupported  = errors.New("github refresh token support is required")
-	ErrReauthRequired       = errors.New("github reauthorization required")
-	ErrNotAuthenticated     = errors.New("github not authenticated")
+	ErrAuthorizationPending   = errors.New("github authorization pending")
+	ErrSlowDown               = errors.New("github authorization slow down")
+	ErrAccessDenied           = errors.New("github access denied")
+	ErrExpiredToken           = errors.New("github device code expired")
+	ErrBadRefreshToken        = errors.New("github bad refresh token")
+	ErrRefreshNotSupported    = errors.New("github refresh token support is required")
+	ErrReauthRequired         = errors.New("github reauthorization required")
+	ErrNotAuthenticated       = errors.New("github not authenticated")
+	ErrRepoAccessUnavailable  = errors.New("github repo access unavailable")
+	ErrAppNotInstalledForRepo = errors.New("github app not installed for repo")
 )
 
 type DeviceCodeResponse struct {
@@ -42,6 +54,55 @@ type TokenResponse struct {
 type User struct {
 	Login string `json:"login"`
 	ID    int64  `json:"id"`
+}
+
+type Repository struct {
+	ID         int64  `json:"id,omitempty"`
+	GitHubHost string `json:"github_host,omitempty"`
+	Owner      string `json:"owner,omitempty"`
+	Name       string `json:"name,omitempty"`
+	FullName   string `json:"full_name,omitempty"`
+	RemoteName string `json:"remote_name,omitempty"`
+	RemoteURL  string `json:"remote_url,omitempty"`
+	RepoRoot   string `json:"repo_root,omitempty"`
+	Private    bool   `json:"private,omitempty"`
+}
+
+func (r *Repository) UnmarshalJSON(data []byte) error {
+	type repositoryAlias Repository
+	type repositoryOwner struct {
+		Login string `json:"login"`
+	}
+	type repositoryWire struct {
+		repositoryAlias
+		Owner json.RawMessage `json:"owner"`
+	}
+
+	var payload repositoryWire
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return err
+	}
+
+	*r = Repository(payload.repositoryAlias)
+	if len(payload.Owner) == 0 || string(payload.Owner) == "null" {
+		return nil
+	}
+
+	var owner string
+	if err := json.Unmarshal(payload.Owner, &owner); err == nil {
+		r.Owner = strings.TrimSpace(owner)
+		return nil
+	}
+
+	var nestedOwner repositoryOwner
+	if err := json.Unmarshal(payload.Owner, &nestedOwner); err == nil {
+		r.Owner = strings.TrimSpace(nestedOwner.Login)
+	}
+	return nil
+}
+
+type AppInstallation struct {
+	ID int64 `json:"id"`
 }
 
 type AuthRecord struct {
@@ -70,6 +131,14 @@ type PollResult struct {
 	ErrorCode string      `json:"error_code,omitempty"`
 	Message   string      `json:"message,omitempty"`
 	Auth      *AuthStatus `json:"auth,omitempty"`
+}
+
+type CurrentRepoContext struct {
+	Status     string      `json:"status"`
+	ErrorCode  string      `json:"error_code,omitempty"`
+	Repository *Repository `json:"repository,omitempty"`
+	Auth       *AuthStatus `json:"auth,omitempty"`
+	Message    string      `json:"message,omitempty"`
 }
 
 type HostError struct {
@@ -153,7 +222,23 @@ func ErrorCode(err error) string {
 		return "reauth_required"
 	case errors.Is(err, ErrNotAuthenticated):
 		return "not_authenticated"
+	case errors.Is(err, ErrRepoAccessUnavailable):
+		return "repo_access_unavailable"
+	case errors.Is(err, ErrAppNotInstalledForRepo):
+		return "app_not_installed_for_repo"
 	default:
 		return "github_auth_error"
 	}
+}
+
+func IsAPIStatus(err error, statusCode int) bool {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode == statusCode
+	}
+	var hostErr *HostError
+	if errors.As(err, &hostErr) {
+		return IsAPIStatus(hostErr.Err, statusCode)
+	}
+	return false
 }

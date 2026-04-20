@@ -70,6 +70,7 @@ func main() {
 	var fs api.FileSystem
 	var vsClient *vscode.Client
 	var bridgeManager *vscode.BridgeManager
+	var gitService *vscode.GitService
 	bridgeCtx, cancelBridge := context.WithCancel(context.Background())
 	defer cancelBridge()
 	if vsCodeURL != "" {
@@ -85,10 +86,11 @@ func main() {
 			ConnectionToken: vsCodeTok,
 		})
 		bridgeManager.Start(bridgeCtx)
+		gitService = vscode.NewGitService(vsClient, bridgeManager)
+		gitService.Start(bridgeCtx)
 		log.Printf("mobile runtime bridge discovery watching %s", bridgeManager.MetadataPath())
 	}
 
-	gitClient := git.NewGit(workDir)
 	termMgr := terminal.NewManager()
 	diagRunner := diagnostics.NewRunner(30 * time.Second)
 
@@ -119,8 +121,10 @@ func main() {
 		}
 	}()
 
-	srv := api.NewServer(fs, sessionIndex, pm, token, gitClient, termMgr, diagRunner, githubAuth)
+	srv := api.NewServer(fs, sessionIndex, pm, token, git.NewGit(workDir), termMgr, diagRunner, githubAuth)
 	srv.SetBridgeManager(bridgeManager)
+	srv.SetGitService(gitService)
+	srv.SetDocumentSync(vscode.NewDocumentSyncService(fs))
 
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
@@ -152,6 +156,9 @@ func main() {
 
 	// Close VS Code connection.
 	cancelBridge()
+	if gitService != nil {
+		gitService.Close()
+	}
 	if bridgeManager != nil {
 		bridgeManager.Close()
 	}

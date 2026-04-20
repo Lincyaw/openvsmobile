@@ -233,20 +233,26 @@ requirements:
   - id: REQ-011
     title: Git status view
     description: >
-      Flutter view showing git status: modified/staged/untracked files,
-      current branch, recent commits. Data sourced via terminal channel
-      or dedicated git commands through Go server.
+      Flutter view showing bridge-backed repository state sourced from the
+      VS Code Source Control model as the single truth source. The repository
+      document exposes current branch, upstream, ahead/behind counts, remotes,
+      and grouped file collections for staged, unstaged, untracked,
+      conflicts, and mergeChanges via GET /bridge/git/repository.
     priority: P1
     status: implemented
     code:
-      - server/internal/git/git.go
+      - server/internal/vscode/git.go
       - server/internal/api/git.go
+      - server/internal/api/router.go
       - app/lib/screens/git_screen.dart
       - app/lib/providers/git_provider.dart
       - app/lib/services/git_api_client.dart
       - app/lib/models/git_models.dart
     tests:
-      - server/internal/git/git_test.go
+      - server/internal/api/git_bridge_test.go
+      - server/internal/vscode/ipc_git_test.go
+      - app/test/services/git_api_client_test.dart
+      - app/test/providers/git_provider_test.dart
     depends_on: [REQ-003]
 
   - id: REQ-012
@@ -439,24 +445,27 @@ requirements:
   - id: REQ-022
     title: Git stage, unstage, and commit operations
     description: >
-      Add server methods and API endpoints for git add (stage), git
-      reset HEAD (unstage), and git commit. Endpoints:
-      POST /api/git/stage?path=<dir>&file=<file>,
-      POST /api/git/unstage?path=<dir>&file=<file>,
-      POST /api/git/commit?path=<dir> with JSON body {message: string}.
-      Flutter GitScreen changes view: add stage/unstage toggle buttons
-      per file, commit button with message input dialog.
+      Add bridge-backed git command endpoints for stage, unstage, commit,
+      checkout, fetch, pull, push, discard, stash, and stash/apply through
+      /bridge/git/*. Command responses return the refreshed repository state
+      and repositoryChanged events flow over the unified bridge websocket so
+      the Flutter Git screen updates without manual polling.
     priority: P1
     status: implemented
     code:
-      - server/internal/git/git.go
+      - server/internal/vscode/git.go
       - server/internal/api/git.go
       - server/internal/api/router.go
+      - server/internal/vscode/bridge.go
       - app/lib/screens/git_screen.dart
       - app/lib/providers/git_provider.dart
       - app/lib/services/git_api_client.dart
     tests:
-      - server/internal/git/git_test.go
+      - server/internal/api/git_bridge_test.go
+      - server/internal/api/bridge_test.go
+      - server/internal/vscode/bridge_integration_test.go
+      - app/test/services/git_api_client_test.dart
+      - app/test/providers/git_provider_test.dart
     depends_on: [REQ-011]
 
   - id: REQ-023
@@ -524,6 +533,30 @@ requirements:
       - server/internal/vscode/bridge_integration_test.go
     depends_on: [REQ-023, REQ-024]
 
+  - id: REQ-026
+    title: Bridge document sync protocol
+    description: >
+      Ticket ASE-42 / GitHub issue #3 adds a VS Code TextDocument-shaped
+      document sync contract for the mobile runtime bridge. The Go server
+      exposes POST /bridge/doc/open, /bridge/doc/change, /bridge/doc/save,
+      and /bridge/doc/close; tracks per-file in-memory buffers with monotonic
+      versions; validates range/position edits with VS Code-compatible
+      character semantics; returns structured document_not_open,
+      version_conflict, and invalid_position errors; and keeps the latest
+      unsaved buffer available to future workspace edit, diagnostics, and
+      completion features without falling back to legacy git/terminal paths.
+    priority: P0
+    status: implemented
+    code:
+      - server/internal/vscode/bridge.go
+      - server/internal/api/bridge.go
+      - server/internal/api/router.go
+      - server/cmd/server/main.go
+    tests:
+      - server/internal/vscode/document_sync_test.go
+      - server/internal/api/bridge_documents_test.go
+    depends_on: [REQ-003, REQ-023]
+
   # ============================================================
   # Iteration 5: Bug fixes from code review audit
   # ============================================================
@@ -553,6 +586,33 @@ requirements:
       - server/internal/github/store_test.go
       - server/internal/api/github_auth_test.go
     depends_on: [REQ-003]
+
+  - id: REQ-024
+    title: GitHub repo-context binding endpoints
+    description: >
+      Go server derives the current workspace GitHub repository from the
+      workspace git remote, reports whether the authenticated GitHub account
+      can access that repository and whether the GitHub App is installed for
+      it, and resolves PR/review relative file paths back to local workspace
+      files without allowing path traversal outside the repo root.
+    priority: P1
+    status: implemented
+    code:
+      - server/internal/git/repo_context.go
+      - server/internal/github/client.go
+      - server/internal/github/repo_context.go
+      - server/internal/github/service.go
+      - server/internal/github/types.go
+      - server/internal/api/router.go
+      - server/internal/api/github_repo_context.go
+      - server/cmd/server/main.go
+      - docs/github-auth-backend.md
+    tests:
+      - server/internal/git/git_test.go
+      - server/internal/github/service_test.go
+      - server/internal/api/github_repo_context_test.go
+      - server/internal/api/handler_test.go
+    depends_on: [REQ-003, REQ-023]
 
   - id: FIX-001
     title: Search API path sanitization
@@ -689,3 +749,31 @@ requirements:
       - app/lib/screens/more_screen.dart
     tests: []
     depends_on: [REQ-014, REQ-020]
+
+  - id: REQ-027
+    title: GitHub current repository context backend
+    description: >
+      Ticket ASE-51 adds workspace-derived GitHub repository context APIs.
+      The Go server resolves the active repository owner/name from the current
+      git remote for SSH and HTTPS remotes, probes GitHub auth/install access
+      with explicit `not_authenticated`, `reauth_required`,
+      `repo_access_unavailable`, and `app_not_installed_for_repo` states, and
+      exposes `/github/repos/current` plus `/github/resolve-local-file` with
+      `/api` aliases. Local file resolution is constrained to the repo root,
+      rejects traversal, and returns `exists: false` for missing files.
+    priority: P1
+    status: implemented
+    code:
+      - project-index.yaml
+      - server/internal/git/repo_context.go
+      - server/internal/github/repo_context.go
+      - server/internal/github/types.go
+      - server/internal/github/client.go
+      - server/internal/github/service.go
+      - server/internal/api/router.go
+      - server/internal/api/github_repo_context.go
+      - docs/github-auth-backend.md
+    tests:
+      - server/internal/github/service_test.go
+      - server/internal/api/github_repo_context_test.go
+    depends_on: [REQ-023]

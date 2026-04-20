@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import '../models/diagnostic.dart';
+import '../models/editor_context.dart';
 import '../services/api_client.dart';
 
 /// Represents an open file with its content and edit state.
@@ -26,7 +27,8 @@ class EditorProvider extends ChangeNotifier {
 
   final List<OpenFile> _openFiles = [];
   int _currentFileIndex = -1;
-  String? _selectedText;
+  EditorCursor? _cursor;
+  EditorSelection? _selection;
   bool _isLoading = false;
   String? _error;
 
@@ -44,15 +46,22 @@ class EditorProvider extends ChangeNotifier {
       ? _openFiles[_currentFileIndex]
       : null;
   int get currentFileIndex => _currentFileIndex;
-  String? get selectedText => _selectedText;
+  EditorCursor? get cursor => _cursor;
+  EditorSelection? get selection => _selection;
   bool get isLoading => _isLoading;
   String? get error => _error;
+  EditorChatContext get chatContext => EditorChatContext(
+    activeFile: currentFile?.path,
+    cursor: _cursor,
+    selection: _selection,
+  );
 
   /// Open a file by path. If already open, switch to it.
   Future<void> openFile(String path) async {
     final existingIndex = _openFiles.indexWhere((f) => f.path == path);
     if (existingIndex >= 0) {
       _currentFileIndex = existingIndex;
+      _resetContextForCurrentFile();
       notifyListeners();
       return;
     }
@@ -67,6 +76,7 @@ class EditorProvider extends ChangeNotifier {
       final file = OpenFile(path: path, name: name, originalContent: content);
       _openFiles.add(file);
       _currentFileIndex = _openFiles.length - 1;
+      _resetContextForCurrentFile();
       loadDiagnostics();
     } catch (e) {
       _error = e.toString();
@@ -82,12 +92,14 @@ class EditorProvider extends ChangeNotifier {
     if (_currentFileIndex >= _openFiles.length) {
       _currentFileIndex = _openFiles.length - 1;
     }
+    _resetContextForCurrentFile();
     notifyListeners();
   }
 
   void switchToFile(int index) {
     if (index >= 0 && index < _openFiles.length) {
       _currentFileIndex = index;
+      _resetContextForCurrentFile();
       notifyListeners();
     }
   }
@@ -120,8 +132,24 @@ class EditorProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  void setSelectedText(String? text) {
-    _selectedText = text;
+  void updateCursor(EditorCursor? cursor) {
+    _cursor = cursor;
+    if (cursor == null) {
+      _selection = null;
+    }
+    notifyListeners();
+  }
+
+  void updateSelection(EditorSelection? selection, {EditorCursor? cursor}) {
+    _selection = selection;
+    if (cursor != null) {
+      _cursor = cursor;
+    }
+    notifyListeners();
+  }
+
+  void clearSelection() {
+    _selection = null;
     notifyListeners();
   }
 
@@ -190,5 +218,15 @@ class EditorProvider extends ChangeNotifier {
       return parts.sublist(0, parts.length - 1).join('/');
     }
     return '/';
+  }
+
+  void _resetContextForCurrentFile() {
+    if (currentFile == null) {
+      _cursor = null;
+      _selection = null;
+      return;
+    }
+    _cursor = const EditorCursor(line: 1, column: 1);
+    _selection = null;
   }
 }
