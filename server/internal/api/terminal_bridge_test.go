@@ -19,13 +19,14 @@ import (
 type terminalSessionEnvelope map[string]any
 
 type terminalStreamEnvelope struct {
-	Type  string                 `json:"type"`
-	Data  string                 `json:"data,omitempty"`
-	Error string                 `json:"error,omitempty"`
-	Exit  any                    `json:"exit,omitempty"`
-	Meta  map[string]any         `json:"meta,omitempty"`
-	Ready map[string]any         `json:"ready,omitempty"`
-	Extra map[string]interface{} `json:"-"`
+	Type    string                 `json:"type"`
+	Data    string                 `json:"data,omitempty"`
+	Error   string                 `json:"error,omitempty"`
+	Exit    any                    `json:"exit,omitempty"`
+	Meta    map[string]any         `json:"meta,omitempty"`
+	Ready   map[string]any         `json:"ready,omitempty"`
+	Session map[string]any         `json:"session,omitempty"`
+	Extra   map[string]interface{} `json:"-"`
 }
 
 type terminalLifecycleEvent struct {
@@ -171,6 +172,22 @@ func waitForTerminalEventType(t *testing.T, conn *websocket.Conn, want string) t
 	return terminalLifecycleEvent{}
 }
 
+func waitForTerminalExitEnvelope(t *testing.T, conn *websocket.Conn) terminalStreamEnvelope {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		msg := readTerminalEnvelope(t, conn)
+		switch msg.Type {
+		case "exit":
+			return msg
+		case "error":
+			t.Fatalf("received terminal error before exit: %s", msg.Error)
+		}
+	}
+	t.Fatal("timed out waiting for terminal exit envelope")
+	return terminalStreamEnvelope{}
+}
+
 func TestTerminalBridgeSessionLifecycleRESTContract(t *testing.T) {
 	ts := newReadyTerminalBridgeServer(t)
 
@@ -295,6 +312,93 @@ func TestTerminalBridgeWebSocketReadyInputOutputExitAndReconnect(t *testing.T) {
 		}
 	}
 	t.Fatal("timed out waiting for terminal exit envelope")
+}
+
+func TestTerminalBridgeExitedSessionReattachReplaysBacklogAndExplicitCloseEmitsClosedEvent(t *testing.T) {
+	ts, _, _ := newTestServer(t, "")
+	events := dialBridgeEvents(t, ts.URL)
+
+	createdResp, created := postTerminalJSON(t, ts.URL, "/bridge/terminal/create", map[string]any{
+		"name":    "exit-bridge",
+		"cwd":     t.TempDir(),
+		"profile": "bash",
+		"rows":    24,
+		"cols":    80,
+	})
+	defer createdResp.Body.Close()
+	if createdResp.StatusCode != http.StatusOK {
+		t.Fatalf("create status = %d, want %d body=%#v", createdResp.StatusCode, http.StatusOK, created)
+	}
+	sessionID, _ := created["id"].(string)
+	_ = waitForTerminalEventType(t, events, "terminal/session.created")
+
+	conn := dialTerminalStream(t, ts.URL, sessionID)
+	ready := readTerminalEnvelope(t, conn)
+	if ready.Type != "ready" {
+		t.Fatalf("initial stream envelope type = %q, want ready", ready.Type)
+	}
+
+	encodedExit := base64.StdEncoding.EncodeToString([]byte("echo exited-backlog\nexit 9\n"))
+	if err := conn.WriteJSON(map[string]any{"type": "input", "data": encodedExit}); err != nil {
+		t.Fatalf("write exit frame: %v", err)
+	}
+	waitForTerminalOutput(t, conn, "exited-backlog")
+	_ = waitForTerminalExitEnvelope(t, conn)
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close exited websocket: %v", err)
+	}
+
+	attachResp, attached := postTerminalJSON(t, ts.URL, "/bridge/terminal/attach", map[string]any{"id": sessionID})
+	defer attachResp.Body.Close()
+	if attachResp.StatusCode != http.StatusOK {
+		t.Fatalf("attach exited status = %d, want %d body=%#v", attachResp.StatusCode, http.StatusOK, attached)
+	}
+	if attached["state"] != "exited" {
+		t.Fatalf("attached exited state = %#v, want exited", attached["state"])
+	}
+	if got, ok := attached["exitCode"].(float64); !ok || got != 9 {
+		t.Fatalf("attached exitCode = %#v, want 9", attached["exitCode"])
+	}
+
+	reconnected := dialTerminalStream(t, ts.URL, sessionID)
+	ready = readTerminalEnvelope(t, reconnected)
+	if ready.Type != "ready" {
+		t.Fatalf("reattached stream envelope type = %q, want ready", ready.Type)
+	}
+	if ready.Session["state"] != "exited" {
+		t.Fatalf("ready session state = %#v, want exited", ready.Session["state"])
+	}
+	waitForTerminalOutput(t, reconnected, "exited-backlog")
+	_ = waitForTerminalExitEnvelope(t, reconnected)
+
+	closeResp, closeBody := postTerminalJSON(t, ts.URL, "/bridge/terminal/close", map[string]any{"id": sessionID})
+	defer closeResp.Body.Close()
+	if closeResp.StatusCode != http.StatusOK {
+		t.Fatalf("close exited status = %d, want %d body=%#v", closeResp.StatusCode, http.StatusOK, closeBody)
+	}
+	if closeBody["state"] != "exited" {
+		t.Fatalf("closed session state = %#v, want exited", closeBody["state"])
+	}
+	if got, ok := closeBody["exitCode"].(float64); !ok || got != 9 {
+		t.Fatalf("closed exitCode = %#v, want 9", closeBody["exitCode"])
+	}
+
+	closedEvent := waitForTerminalEventType(t, events, "terminal/session.closed")
+	if closedEvent.Payload["id"] != sessionID {
+		t.Fatalf("closed event id = %#v, want %q", closedEvent.Payload["id"], sessionID)
+	}
+	if closedEvent.Payload["state"] != "exited" {
+		t.Fatalf("closed event state = %#v, want exited", closedEvent.Payload["state"])
+	}
+	if got, ok := closedEvent.Payload["exitCode"].(float64); !ok || got != 9 {
+		t.Fatalf("closed event exitCode = %#v, want 9", closedEvent.Payload["exitCode"])
+	}
+
+	missingResp, missingBody := postTerminalJSON(t, ts.URL, "/bridge/terminal/attach", map[string]any{"id": sessionID})
+	defer missingResp.Body.Close()
+	if missingResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("attach after close status = %d, want %d body=%#v", missingResp.StatusCode, http.StatusNotFound, missingBody)
+	}
 }
 
 func TestTerminalBridgeLifecycleEventsFlowThroughUnifiedEventStreamWithoutBridgeManagerDependency(t *testing.T) {
