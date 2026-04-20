@@ -51,7 +51,8 @@ void main() {
     apiClient.diffFuture = Future<GitDiffDocument>.value(
       const GitDiffDocument(
         path: 'lib/feature.dart',
-        diff: 'diff --git a/lib/feature.dart b/lib/feature.dart\n@@ -1 +1 @@\n-old\n+new',
+        diff:
+            'diff --git a/lib/feature.dart b/lib/feature.dart\n@@ -1 +1 @@\n-old\n+new',
         staged: false,
       ),
     );
@@ -60,27 +61,55 @@ void main() {
     await tester.pump();
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('diff --git a/lib/feature.dart b/lib/feature.dart'), findsOneWidget);
+    expect(
+      find.textContaining('diff --git a/lib/feature.dart b/lib/feature.dart'),
+      findsOneWidget,
+    );
     expect(find.text('+new'), findsOneWidget);
     expect(find.text('-old'), findsOneWidget);
   });
 
-  testWidgets('renders an explicit error state when diff loading fails', (
-    tester,
-  ) async {
-    final apiClient = await _buildApiClient();
-    apiClient.diffFuture = Future<GitDiffDocument>.error(
-      Exception('failed to load diff'),
-    );
+  testWidgets(
+    'renders an explicit error state when diff loading fails and exposes retry',
+    (tester) async {
+      final apiClient = await _buildApiClient();
+      final firstAttempt = Completer<GitDiffDocument>();
+      final retryAttempt = Completer<GitDiffDocument>();
+      apiClient.diffResponses = <Future<GitDiffDocument>>[
+        firstAttempt.future,
+        retryAttempt.future,
+      ];
 
-    await tester.pumpWidget(_buildApp(apiClient));
-    await tester.pump();
-    await tester.pumpAndSettle();
+      await tester.pumpWidget(_buildApp(apiClient));
+      await tester.pump();
 
-    expect(find.text('Failed to load diff'), findsOneWidget);
-    expect(find.textContaining('failed to load diff'), findsOneWidget);
-    expect(find.widgetWithText(FilledButton, 'Try again'), findsOneWidget);
-  });
+      firstAttempt.completeError(Exception('failed to load diff'));
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      expect(find.text('Failed to load diff'), findsOneWidget);
+      expect(find.textContaining('failed to load diff'), findsOneWidget);
+      expect(find.widgetWithText(FilledButton, 'Try again'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Try again'));
+      await tester.pump();
+
+      expect(apiClient.diffRequests, 2);
+      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+
+      retryAttempt.complete(
+        const GitDiffDocument(
+          path: 'lib/feature.dart',
+          diff: '',
+          staged: false,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('No diff available for this file'), findsOneWidget);
+    },
+  );
 }
 
 Future<_FakeDiffApiClient> _buildApiClient() async {
@@ -104,6 +133,8 @@ class _FakeDiffApiClient extends GitApiClient {
   Future<GitDiffDocument> diffFuture = Future<GitDiffDocument>.value(
     const GitDiffDocument(path: 'lib/feature.dart', diff: '', staged: false),
   );
+  List<Future<GitDiffDocument>> diffResponses = <Future<GitDiffDocument>>[];
+  int diffRequests = 0;
 
   @override
   Future<GitDiffDocument> getDiff(
@@ -111,6 +142,10 @@ class _FakeDiffApiClient extends GitApiClient {
     String file, {
     bool staged = false,
   }) {
+    diffRequests += 1;
+    if (diffResponses.isNotEmpty) {
+      return diffResponses.removeAt(0);
+    }
     return diffFuture;
   }
 }
