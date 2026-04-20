@@ -1,18 +1,95 @@
 # GitHub Auth Backend
 
-This project ships a Go-server auth foundation for GitHub App device flow.
-The server owns the GitHub user tokens; the Flutter client only receives
-non-secret status metadata plus the short-lived device flow values needed to
-complete authorization.
+This project ships a Go-server auth foundation for GitHub App device flow plus
+workspace-aware repository context endpoints. The server owns the GitHub user
+tokens; the Flutter client only receives non-secret status metadata plus the
+short-lived device flow values needed to complete authorization.
 
 ## Endpoints
 
 All routes are available with or without the `/api` prefix:
 
+- `GET /github/repos/current`
+- `POST /github/resolve-local-file`
 - `POST /github/auth/device/start`
 - `POST /github/auth/device/poll`
 - `GET /github/auth/status`
 - `POST /github/auth/disconnect`
+
+### `GET /github/repos/current`
+
+Derives the current repository identity from the server workspace git remote.
+The backend prefers `origin` when multiple remotes exist and supports both
+HTTPS and SSH remote formats.
+
+Example response for an authenticated, accessible repo:
+
+```json
+{
+  "status": "ok",
+  "repository": {
+    "github_host": "github.com",
+    "owner": "octo-org",
+    "name": "mobile-app",
+    "full_name": "octo-org/mobile-app",
+    "remote_name": "origin",
+    "remote_url": "git@github.com:octo-org/mobile-app.git",
+    "repo_root": "/workspace/mobile-app",
+    "private": true
+  },
+  "auth": {
+    "authenticated": true,
+    "github_host": "github.com",
+    "account_login": "octocat",
+    "account_id": 9,
+    "access_token_expires_at": "2026-04-20T12:05:00Z",
+    "refresh_token_expires_at": "2026-04-20T13:00:00Z",
+    "needs_refresh": false,
+    "needs_reauth": false
+  }
+}
+```
+
+Possible `status` values:
+
+- `ok`: repo identity was derived and the authenticated account can probe it
+- `repo_not_github`: the workspace is not a git repo, has no remote, or the preferred remote is not GitHub
+- `not_authenticated`: repo identity was derived but no GitHub auth session is available
+- `reauth_required`: a stored session exists but refresh is required before repo probing
+- `repo_access_unavailable`: the repo identity was derived but GitHub rejected repo access
+- `app_not_installed_for_repo`: the current repo resolved locally but the GitHub App is not installed for it
+
+`repository` is still returned for all of the statuses above when local git
+resolution succeeds, so the client can continue showing owner/name metadata.
+
+### `POST /github/resolve-local-file`
+
+Request body:
+
+```json
+{
+  "workspace_path": "/workspace/mobile-app",
+  "path": "docs/notes.md"
+}
+```
+
+`workspace_path` is optional and defaults to the server work dir. `path` may
+also be sent as `relative_path`.
+
+This endpoint resolves a local workspace path against the current repository
+root. It rejects traversal attempts, never escapes the repo root, and returns
+`exists: false` instead of an error when the target path is missing.
+
+Example response:
+
+```json
+{
+  "repo_root": "/workspace/mobile-app",
+  "relative_path": "docs/notes.md",
+  "local_path": "/workspace/mobile-app/docs/notes.md",
+  "exists": false
+}
+```
 
 ### `POST /github/auth/device/start`
 

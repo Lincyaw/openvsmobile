@@ -754,3 +754,31 @@ func TestHandler_LegacyTerminalWebSocketRouteRemoved(t *testing.T) {
 		t.Fatalf("legacy /ws/terminal unexpectedly upgraded with status %d", resp.StatusCode)
 	}
 }
+
+func TestGitHubResolveLocalFile_EndToEndFromNestedWorkspace(t *testing.T) {
+	rcs := newRepoContextServer(t, "git@github.com:acme/rocket.git", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v3/repos/acme/rocket":
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": "rocket", "full_name": "acme/rocket", "owner": map[string]any{"login": "acme"}})
+		case "/api/v3/repos/acme/rocket/installation":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 321})
+		default:
+			t.Fatalf("unexpected backend path %s", r.URL.Path)
+		}
+	})
+
+	resp, payload := repoContextResolveLocalFile(t, rcs.server.URL, "/api", rcs.nestedDir, "pkg/repo_context_test.txt")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d payload=%#v", resp.StatusCode, payload)
+	}
+	resolved := asString(payload["local_path"])
+	if resolved == "<nil>" || resolved == "" {
+		resolved = asString(payload["path"])
+	}
+	if resolved != rcs.filePath {
+		t.Fatalf("resolved path = %q, want %q payload=%#v", resolved, rcs.filePath, payload)
+	}
+	if payload["exists"] != true {
+		t.Fatalf("exists = %#v payload=%#v", payload["exists"], payload)
+	}
+}

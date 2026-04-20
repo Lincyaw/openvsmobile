@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -223,5 +224,183 @@ func TestShow(t *testing.T) {
 	}
 	if content != "hello world\n" {
 		t.Errorf("expected 'hello world\\n', got %q", content)
+	}
+}
+
+
+
+
+func gitRun(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v: %s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func setupRepoWithRemote(t *testing.T, remoteURL string) (string, string, func()) {
+	t.Helper()
+	dir, cleanup := setupTestRepo(t)
+	if remoteURL != "" {
+		gitRun(t, dir, "remote", "add", "origin", remoteURL)
+	}
+	nested := filepath.Join(dir, "nested", "workspace")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		cleanup()
+		t.Fatalf("failed to create nested workspace: %v", err)
+	}
+	return dir, nested, cleanup
+}
+
+func TestRepoRootFromNestedWorkspace(t *testing.T) {
+	repoDir, nestedDir, cleanup := setupRepoWithRemote(t, "https://github.com/acme/rocket.git")
+	defer cleanup()
+
+	repoRoot, err := NewGit(repoDir).RepoRoot(nestedDir)
+	if err != nil {
+		t.Fatalf("RepoRoot() error = %v", err)
+	}
+	if repoRoot != repoDir {
+		t.Fatalf("RepoRoot() = %q, want %q", repoRoot, repoDir)
+	}
+}
+
+func TestCurrentRemotePreservesHTTPSRemote(t *testing.T) {
+	repoDir, nestedDir, cleanup := setupRepoWithRemote(t, "https://github.com/acme/rocket.git")
+	defer cleanup()
+
+	remote, err := NewGit(repoDir).CurrentRemote(nestedDir)
+	if err != nil {
+		t.Fatalf("CurrentRemote() error = %v", err)
+	}
+	if remote.Name != "origin" || remote.URL != "https://github.com/acme/rocket.git" {
+		t.Fatalf("remote = %#v", remote)
+	}
+}
+
+func TestCurrentRemotePreservesSSHRemote(t *testing.T) {
+	repoDir, nestedDir, cleanup := setupRepoWithRemote(t, "git@github.com:octocat/hello-world.git")
+	defer cleanup()
+
+	remote, err := NewGit(repoDir).CurrentRemote(nestedDir)
+	if err != nil {
+		t.Fatalf("CurrentRemote() error = %v", err)
+	}
+	if remote.Name != "origin" || remote.URL != "git@github.com:octocat/hello-world.git" {
+		t.Fatalf("remote = %#v", remote)
+	}
+}
+
+func TestCurrentRemoteReportsNoRemote(t *testing.T) {
+	repoDir, nestedDir, cleanup := setupRepoWithRemote(t, "")
+	defer cleanup()
+
+	_, err := NewGit(repoDir).CurrentRemote(nestedDir)
+	if err == nil {
+		t.Fatal("CurrentRemote() error = nil, want no remotes configured error")
+	}
+	if err != ErrNoRemote {
+		t.Fatalf("CurrentRemote() error = %v", err)
+	}
+}
+
+func TestRepoRootReportsNotARepo(t *testing.T) {
+	notRepo := t.TempDir()
+	_, err := NewGit(notRepo).RepoRoot(notRepo)
+	if err == nil {
+		t.Fatal("RepoRoot() error = nil, want git repository error")
+	}
+	if err != ErrNotRepository {
+		t.Fatalf("RepoRoot() error = %v", err)
+	}
+}
+
+func TestRepoContextParsesGitHubHTTPSRemoteAndFindsRepoRoot(t *testing.T) {
+	repoDir, nestedDir, cleanup := setupRepoWithRemote(t, "https://github.com/acme/rocket.git")
+	defer cleanup()
+
+	context, err := NewGit(repoDir).RepoContext(nestedDir)
+	if err != nil {
+		t.Fatalf("RepoContext() error = %v", err)
+	}
+	if context.GitHubHost != "github.com" || context.Owner != "acme" || context.Name != "rocket" {
+		t.Fatalf("context = %#v", context)
+	}
+	if context.RepoRoot != repoDir {
+		t.Fatalf("RepoRoot = %q, want %q", context.RepoRoot, repoDir)
+	}
+}
+
+func TestRepoContextParsesGitHubSSHRemoteAndFindsRepoRoot(t *testing.T) {
+	repoDir, nestedDir, cleanup := setupRepoWithRemote(t, "git@github.com:octocat/hello-world.git")
+	defer cleanup()
+
+	context, err := NewGit(repoDir).RepoContext(nestedDir)
+	if err != nil {
+		t.Fatalf("RepoContext() error = %v", err)
+	}
+	if context.GitHubHost != "github.com" || context.Owner != "octocat" || context.Name != "hello-world" {
+		t.Fatalf("context = %#v", context)
+	}
+}
+
+func TestRepoContextReportsRepoNotGitHub(t *testing.T) {
+	repoDir, nestedDir, cleanup := setupRepoWithRemote(t, "https://gitlab.com/acme/rocket.git")
+	defer cleanup()
+
+	context, err := NewGit(repoDir).RepoContext(nestedDir)
+	if err == nil {
+		t.Fatal("RepoContext() error = nil, want repo_not_github")
+	}
+	if err != ErrRepoNotGitHub {
+		t.Fatalf("RepoContext() error = %v", err)
+	}
+	if context == nil || context.Status != RepoContextStatusRepoNotGitHub {
+		t.Fatalf("context = %#v", context)
+	}
+}
+
+
+func TestParseGitHubRemoteURLSupportsHTTPSAndSSH(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		remoteURL string
+		host      string
+		owner     string
+		repo      string
+	}{
+		{name: "https", remoteURL: "https://github.com/acme/rocket.git", host: "github.com", owner: "acme", repo: "rocket"},
+		{name: "ssh", remoteURL: "git@github.com:octocat/hello-world.git", host: "github.com", owner: "octocat", repo: "hello-world"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host, owner, repo, err := ParseGitHubRemoteURL(tc.remoteURL)
+			if err != nil {
+				t.Fatalf("ParseGitHubRemoteURL() error = %v", err)
+			}
+			if host != tc.host || owner != tc.owner || repo != tc.repo {
+				t.Fatalf("ParseGitHubRemoteURL() = (%q, %q, %q), want (%q, %q, %q)", host, owner, repo, tc.host, tc.owner, tc.repo)
+			}
+		})
+	}
+}
+
+func TestRepoContextReportsNonGitHubRemote(t *testing.T) {
+	repoDir, nestedDir, cleanup := setupRepoWithRemote(t, "https://gitlab.com/acme/rocket.git")
+	defer cleanup()
+
+	context, err := NewGit(repoDir).RepoContext(nestedDir)
+	if err == nil {
+		t.Fatal("RepoContext() error = nil, want non-GitHub error")
+	}
+	if context == nil || context.RepoRoot != repoDir {
+		t.Fatalf("RepoContext() context = %#v", context)
+	}
+	if context.Status != RepoContextStatusRepoNotGitHub {
+		t.Fatalf("RepoContext() status = %q, want %q", context.Status, RepoContextStatusRepoNotGitHub)
+	}
+	if context.RemoteURL != "https://gitlab.com/acme/rocket.git" {
+		t.Fatalf("RepoContext() remote URL = %q", context.RemoteURL)
 	}
 }

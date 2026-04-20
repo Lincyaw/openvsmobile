@@ -8,6 +8,15 @@ import (
 
 const DefaultHost = "github.com"
 
+const (
+	RepoStatusOK                   = "ok"
+	RepoStatusRepoNotGitHub        = "repo_not_github"
+	RepoStatusNotAuthenticated     = "not_authenticated"
+	RepoStatusReauthRequired       = "reauth_required"
+	RepoStatusRepoAccessUnavailable = "repo_access_unavailable"
+	RepoStatusAppNotInstalled      = "app_not_installed_for_repo"
+)
+
 var (
 	ErrAuthorizationPending = errors.New("github authorization pending")
 	ErrSlowDown             = errors.New("github authorization slow down")
@@ -17,6 +26,8 @@ var (
 	ErrRefreshNotSupported  = errors.New("github refresh token support is required")
 	ErrReauthRequired       = errors.New("github reauthorization required")
 	ErrNotAuthenticated     = errors.New("github not authenticated")
+	ErrRepoAccessUnavailable = errors.New("github repo access unavailable")
+	ErrAppNotInstalledForRepo = errors.New("github app not installed for repo")
 )
 
 type DeviceCodeResponse struct {
@@ -42,6 +53,22 @@ type TokenResponse struct {
 type User struct {
 	Login string `json:"login"`
 	ID    int64  `json:"id"`
+}
+
+type Repository struct {
+	ID         int64  `json:"id,omitempty"`
+	GitHubHost string `json:"github_host,omitempty"`
+	Owner      string `json:"owner,omitempty"`
+	Name       string `json:"name,omitempty"`
+	FullName   string `json:"full_name,omitempty"`
+	RemoteName string `json:"remote_name,omitempty"`
+	RemoteURL  string `json:"remote_url,omitempty"`
+	RepoRoot   string `json:"repo_root,omitempty"`
+	Private    bool   `json:"private,omitempty"`
+}
+
+type AppInstallation struct {
+	ID int64 `json:"id"`
 }
 
 type AuthRecord struct {
@@ -70,6 +97,14 @@ type PollResult struct {
 	ErrorCode string      `json:"error_code,omitempty"`
 	Message   string      `json:"message,omitempty"`
 	Auth      *AuthStatus `json:"auth,omitempty"`
+}
+
+type CurrentRepoContext struct {
+	Status     string      `json:"status"`
+	ErrorCode  string      `json:"error_code,omitempty"`
+	Repository *Repository `json:"repository,omitempty"`
+	Auth       *AuthStatus `json:"auth,omitempty"`
+	Message    string      `json:"message,omitempty"`
 }
 
 type HostError struct {
@@ -153,7 +188,23 @@ func ErrorCode(err error) string {
 		return "reauth_required"
 	case errors.Is(err, ErrNotAuthenticated):
 		return "not_authenticated"
+	case errors.Is(err, ErrRepoAccessUnavailable):
+		return "repo_access_unavailable"
+	case errors.Is(err, ErrAppNotInstalledForRepo):
+		return "app_not_installed_for_repo"
 	default:
 		return "github_auth_error"
 	}
+}
+
+func IsAPIStatus(err error, statusCode int) bool {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode == statusCode
+	}
+	var hostErr *HostError
+	if errors.As(err, &hostErr) {
+		return IsAPIStatus(hostErr.Err, statusCode)
+	}
+	return false
 }

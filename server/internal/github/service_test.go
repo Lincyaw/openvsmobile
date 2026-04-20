@@ -2,15 +2,231 @@ package github
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+func newRepoProbeService(t *testing.T, handler http.HandlerFunc) *Service {
+	t.Helper()
+	server := httptest.NewTLSServer(handler)
+	t.Cleanup(server.Close)
+	client := NewClient(server.Client())
+	client.SetBaseURLFuncs(func(string) string { return server.URL }, func(string) string { return server.URL + "/api/v3" })
+	store := NewStore(filepath.Join(t.TempDir(), "github-auth.json"))
+	service := NewService(client, store, "client-id", DefaultHost, time.Minute)
+	now := time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)
+	service.SetNow(func() time.Time { return now })
+	if err := store.Save(AuthRecord{
+		GitHubHost:            DefaultHost,
+		AccessToken:           "access-token",
+		AccessTokenExpiresAt:  now.Add(30 * time.Minute),
+		RefreshToken:          "refresh-token",
+		RefreshTokenExpiresAt: now.Add(24 * time.Hour),
+		AccountLogin:          "octocat",
+		AccountID:             7,
+	}); err != nil {
+		t.Fatalf("store.Save() error = %v", err)
+	}
+	return service
+}
+
+func TestServiceRepositoryProbeSuccess(t *testing.T) {
+	var authHeaders []string
+	var paths []string
+	service := newRepoProbeService(t, func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		authHeaders = append(authHeaders, r.Header.Get("Authorization"))
+		switch r.URL.Path {
+		case "/api/v3/repos/acme/rocket":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"name":      "rocket",
+				"full_name": "acme/rocket",
+				"private":   true,
+				"owner": map[string]any{
+					"login": "acme",
+				},
+			})
+		case "/api/v3/repos/acme/rocket/installation":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 42})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	})
+
+	result, err := service.ProbeRepository(context.Background(), &Repository{GitHubHost: DefaultHost, Owner: "acme", Name: "rocket", FullName: "acme/rocket"})
+	if err != nil {
+		t.Fatalf("ProbeRepository() error = %v", err)
+	}
+	if result.Status != RepoStatusOK {
+		t.Fatalf("ProbeRepository() status = %q result=%#v", result.Status, result)
+	}
+	if result.Repository == nil || result.Repository.Owner != "acme" || result.Repository.Name != "rocket" {
+		t.Fatalf("ProbeRepository() result = %#v", result)
+	}
+	if len(paths) == 0 || authHeaders[0] != "Bearer access-token" {
+		t.Fatalf("auth headers = %v paths = %v", authHeaders, paths)
+	}
+	if !containsString(paths, "/api/v3/repos/acme/rocket") || !containsString(paths, "/api/v3/repos/acme/rocket/installation") {
+		t.Fatalf("expected repo + installation probes, got %v", paths)
+	}
+}
+
+func TestServiceRepositoryProbeMapsRepoAccessUnavailable(t *testing.T) {
+	service := newRepoProbeService(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v3/repos/acme/private-repo" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		http.Error(w, "missing", http.StatusNotFound)
+	})
+
+	result, err := service.ProbeRepository(context.Background(), &Repository{GitHubHost: DefaultHost, Owner: "acme", Name: "private-repo", FullName: "acme/private-repo"})
+	if err != nil {
+		t.Fatalf("ProbeRepository() error = %v", err)
+	}
+	if result.Status != RepoStatusRepoAccessUnavailable || result.ErrorCode != RepoStatusRepoAccessUnavailable {
+		t.Fatalf("ProbeRepository() result = %#v", result)
+	}
+}
+
+func TestServiceRepositoryProbeMapsAppNotInstalled(t *testing.T) {
+	service := newRepoProbeService(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v3/repos/acme/rocket":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"name":      "rocket",
+				"full_name": "acme/rocket",
+				"owner": map[string]any{"login": "acme"},
+			})
+		case "/api/v3/repos/acme/rocket/installation":
+			http.Error(w, "missing installation", http.StatusNotFound)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	})
+
+	result, err := service.ProbeRepository(context.Background(), &Repository{GitHubHost: DefaultHost, Owner: "acme", Name: "rocket", FullName: "acme/rocket"})
+	if err != nil {
+		t.Fatalf("ProbeRepository() error = %v", err)
+	}
+	if result.Status != RepoStatusAppNotInstalled || result.ErrorCode != RepoStatusAppNotInstalled {
+		t.Fatalf("ProbeRepository() result = %#v", result)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestParseRepositoryRemoteSupportsHTTPSAndSSH(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		remoteURL string
+		host      string
+		owner     string
+		repo      string
+	}{
+		{name: "https", remoteURL: "https://github.com/acme/rocket.git", host: "github.com", owner: "acme", repo: "rocket"},
+		{name: "ssh", remoteURL: "git@github.com:acme/rocket.git", host: "github.com", owner: "acme", repo: "rocket"},
+		{name: "enterprise https", remoteURL: "https://github.enterprise.local/acme/rocket.git", host: "github.enterprise.local", owner: "acme", repo: "rocket"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, err := ParseRepositoryRemote("origin", tc.remoteURL, "/tmp/work")
+			if err != nil {
+				t.Fatalf("ParseRepositoryRemote() error = %v", err)
+			}
+			if repo.GitHubHost != tc.host || repo.Owner != tc.owner || repo.Name != tc.repo {
+				t.Fatalf("parsed repo = %#v", repo)
+			}
+		})
+	}
+}
+
+func TestGetRepoEscapesOwnerAndRepoSegments(t *testing.T) {
+	var gotPath string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.EscapedPath()
+		_ = json.NewEncoder(w).Encode(map[string]any{"name": "rocket/core", "owner": map[string]any{"login": "acme/tools"}})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	client.SetBaseURLFuncs(func(string) string { return server.URL }, func(string) string { return server.URL + "/api/v3" })
+	repo, err := client.GetRepo(context.Background(), DefaultHost, "acme/tools", "rocket/core", "token")
+	if err != nil {
+		t.Fatalf("GetRepo() error = %v", err)
+	}
+	if !strings.Contains(gotPath, "/api/v3/repos/acme%2Ftools/rocket%2Fcore") {
+		t.Fatalf("escaped path = %q", gotPath)
+	}
+	if repo.Owner != "acme/tools" || repo.Name != "rocket/core" {
+		t.Fatalf("parsed repo = %#v", repo)
+	}
+}
+
+func TestServiceRepositoryProbeRefreshesExpiredTokenBeforeAccessChecks(t *testing.T) {
+	var tokenRequests []url.Values
+	var authHeaders []string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/login/oauth/access_token":
+			_ = r.ParseForm()
+			clone := url.Values{}
+			for key, values := range r.PostForm {
+				clone[key] = append([]string(nil), values...)
+			}
+			tokenRequests = append(tokenRequests, clone)
+			_ = json.NewEncoder(w).Encode(TokenResponse{AccessToken: "fresh-access", RefreshToken: "fresh-refresh", ExpiresIn: 300, RefreshTokenExpiresIn: 3600})
+		case "/api/v3/repos/acme/rocket":
+			authHeaders = append(authHeaders, r.Header.Get("Authorization"))
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": "rocket", "full_name": "acme/rocket", "owner": map[string]any{"login": "acme"}})
+		case "/api/v3/repos/acme/rocket/installation":
+			authHeaders = append(authHeaders, r.Header.Get("Authorization"))
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 88})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	client.SetBaseURLFuncs(func(string) string { return server.URL }, func(string) string { return server.URL + "/api/v3" })
+	store := NewStore(filepath.Join(t.TempDir(), "github-auth.json"))
+	service := NewService(client, store, "client-id", DefaultHost, time.Minute)
+	now := time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)
+	service.SetNow(func() time.Time { return now })
+	if err := store.Save(AuthRecord{GitHubHost: DefaultHost, AccessToken: "stale-access", AccessTokenExpiresAt: now.Add(-time.Minute), RefreshToken: "stale-refresh", RefreshTokenExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatalf("store.Save() error = %v", err)
+	}
+
+	result, err := service.ProbeRepository(context.Background(), &Repository{GitHubHost: DefaultHost, Owner: "acme", Name: "rocket", FullName: "acme/rocket"})
+	if err != nil {
+		t.Fatalf("ProbeRepository() error = %v", err)
+	}
+	if result.Status != RepoStatusOK {
+		t.Fatalf("ProbeRepository() result = %#v", result)
+	}
+	if len(tokenRequests) == 0 {
+		t.Fatalf("expected refresh token request before repo probe")
+	}
+	for _, header := range authHeaders {
+		if header != "Bearer fresh-access" {
+			t.Fatalf("authorization header = %q, want Bearer fresh-access", header)
+		}
+	}
+}
+
 
 func TestServiceStartPollAndRefresh(t *testing.T) {
 	var tokenRequests []url.Values

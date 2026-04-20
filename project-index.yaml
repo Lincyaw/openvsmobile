@@ -578,6 +578,33 @@ requirements:
       - server/internal/api/github_auth_test.go
     depends_on: [REQ-003]
 
+  - id: REQ-024
+    title: GitHub repo-context binding endpoints
+    description: >
+      Go server derives the current workspace GitHub repository from the
+      workspace git remote, reports whether the authenticated GitHub account
+      can access that repository and whether the GitHub App is installed for
+      it, and resolves PR/review relative file paths back to local workspace
+      files without allowing path traversal outside the repo root.
+    priority: P1
+    status: implemented
+    code:
+      - server/internal/git/repo_context.go
+      - server/internal/github/client.go
+      - server/internal/github/repo_context.go
+      - server/internal/github/service.go
+      - server/internal/github/types.go
+      - server/internal/api/router.go
+      - server/internal/api/github_repo_context.go
+      - server/cmd/server/main.go
+      - docs/github-auth-backend.md
+    tests:
+      - server/internal/git/git_test.go
+      - server/internal/github/service_test.go
+      - server/internal/api/github_repo_context_test.go
+      - server/internal/api/handler_test.go
+    depends_on: [REQ-003, REQ-023]
+
   - id: FIX-001
     title: Search API path sanitization
     description: >
@@ -713,3 +740,31 @@ requirements:
       - app/lib/screens/more_screen.dart
     tests: []
     depends_on: [REQ-014, REQ-020]
+
+  - id: REQ-027
+    title: GitHub current repository context backend
+    description: >
+      Ticket ASE-51 adds workspace-derived GitHub repository context APIs.
+      The Go server resolves the active repository owner/name from the current
+      git remote for SSH and HTTPS remotes, probes GitHub auth/install access
+      with explicit `not_authenticated`, `reauth_required`,
+      `repo_access_unavailable`, and `app_not_installed_for_repo` states, and
+      exposes `/github/repos/current` plus `/github/resolve-local-file` with
+      `/api` aliases. Local file resolution is constrained to the repo root,
+      rejects traversal, and returns `exists: false` for missing files.
+    priority: P1
+    status: implemented
+    code:
+      - project-index.yaml
+      - server/internal/git/repo_context.go
+      - server/internal/github/repo_context.go
+      - server/internal/github/types.go
+      - server/internal/github/client.go
+      - server/internal/github/service.go
+      - server/internal/api/router.go
+      - server/internal/api/github_repo_context.go
+      - docs/github-auth-backend.md
+    tests:
+      - server/internal/github/service_test.go
+      - server/internal/api/github_auth_test.go
+    depends_on: [REQ-023]

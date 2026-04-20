@@ -114,6 +114,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /bridge/terminal/rename", s.handleTerminalRename)
 	mux.HandleFunc("POST /bridge/terminal/split", s.handleTerminalSplit)
 
+	// GitHub repo context endpoints.
+	s.registerGitHubRepoContextRoutes(mux)
+
 	// GitHub auth endpoints.
 	s.registerGitHubAuthRoutes(mux)
 
