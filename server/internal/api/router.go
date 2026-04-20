@@ -11,6 +11,7 @@ import (
 	"github.com/Lincyaw/vscode-mobile/server/internal/claude"
 	"github.com/Lincyaw/vscode-mobile/server/internal/diagnostics"
 	"github.com/Lincyaw/vscode-mobile/server/internal/git"
+	gitauth "github.com/Lincyaw/vscode-mobile/server/internal/github"
 	"github.com/Lincyaw/vscode-mobile/server/internal/terminal"
 )
 
@@ -34,11 +35,16 @@ type Server struct {
 	git              *git.Git
 	termManager      *terminal.Manager
 	diagnosticRunner *diagnostics.Runner
+	githubAuth       *gitauth.Service
 	fileWatchHub     *FileWatchHub
 }
 
 // NewServer creates a new API server.
-func NewServer(fs FileSystem, sessionIndex *claude.SessionIndex, pm *claude.ProcessManager, token string, gitClient *git.Git, termMgr *terminal.Manager, diagRunner *diagnostics.Runner) *Server {
+func NewServer(fs FileSystem, sessionIndex *claude.SessionIndex, pm *claude.ProcessManager, token string, gitClient *git.Git, termMgr *terminal.Manager, diagRunner *diagnostics.Runner, githubAuth ...*gitauth.Service) *Server {
+	var authService *gitauth.Service
+	if len(githubAuth) > 0 {
+		authService = githubAuth[0]
+	}
 	return &Server{
 		fs:               fs,
 		sessionIndex:     sessionIndex,
@@ -47,6 +53,7 @@ func NewServer(fs FileSystem, sessionIndex *claude.SessionIndex, pm *claude.Proc
 		git:              gitClient,
 		termManager:      termMgr,
 		diagnosticRunner: diagRunner,
+		githubAuth:       authService,
 		fileWatchHub:     NewFileWatchHub(),
 	}
 }
@@ -81,6 +88,9 @@ func (s *Server) Handler() http.Handler {
 	// Diagnostics endpoint.
 	mux.HandleFunc("GET /api/diagnostics", s.handleDiagnostics)
 
+	// GitHub auth endpoints.
+	s.registerGitHubAuthRoutes(mux)
+
 	// WebSocket endpoints.
 	mux.HandleFunc("/ws/chat", s.handleWSChat)
 	mux.HandleFunc("/ws/files", s.handleWSFiles)
@@ -92,7 +102,6 @@ func (s *Server) Handler() http.Handler {
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	// Wrap with auth and logging middlewares.
 	return s.loggingMiddleware(s.authMiddleware(mux))
 }
 
@@ -103,8 +112,6 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		wrapped := &responseRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(wrapped, r)
 		status := wrapped.statusCode
-		// If the connection was hijacked for WebSocket, the status stays at the
-		// default 200 because WriteHeader was never called through the wrapper.
 		if status == http.StatusOK && strings.HasPrefix(r.URL.Path, "/ws/") {
 			status = http.StatusSwitchingProtocols
 		}
@@ -122,14 +129,10 @@ func (rr *responseRecorder) WriteHeader(code int) {
 	rr.ResponseWriter.WriteHeader(code)
 }
 
-// Hijack implements http.Hijacker so that WebSocket upgrades work
-// through the logging middleware. Without this, gorilla/websocket's
-// Upgrade() fails with "response does not implement http.Hijacker".
 func (rr *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return rr.ResponseWriter.(http.Hijacker).Hijack()
 }
 
-// Flush implements http.Flusher for streaming responses.
 func (rr *responseRecorder) Flush() {
 	if f, ok := rr.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
@@ -139,36 +142,26 @@ func (rr *responseRecorder) Flush() {
 // authMiddleware checks the connection token.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Health endpoint is unauthenticated so the client can verify
-		// connectivity before checking credentials.
 		if r.URL.Path == "/api/health" {
 			next.ServeHTTP(w, r)
 			return
 		}
-
 		if s.token == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
-
-		// Check query parameter.
-		// NOTE: Passing auth tokens in URL query strings is a security concern
-		// because URLs are logged in server logs, browser history, and proxy logs.
-		// This is acceptable here as a convenience for WebSocket connections from
-		// the mobile client, but the Authorization header should be preferred
-		// for REST API calls.
 		if r.URL.Query().Get("token") == s.token {
 			next.ServeHTTP(w, r)
 			return
 		}
-
-		// Check Authorization header.
-		auth := r.Header.Get("Authorization")
-		if auth == "Bearer "+s.token {
+		if r.Header.Get("Authorization") == "Bearer "+s.token {
 			next.ServeHTTP(w, r)
 			return
 		}
-
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	})
+}
+
+func (s *Server) githubAuthService() *gitauth.Service {
+	return s.githubAuth
 }

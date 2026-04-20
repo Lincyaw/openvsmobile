@@ -453,6 +453,32 @@ requirements:
   # Iteration 5: Bug fixes from code review audit
   # ============================================================
 
+  - id: REQ-023
+    title: GitHub App device-flow auth foundation
+    description: >
+      Go server provides host-aware GitHub App device-flow authentication
+      endpoints for start, poll, status, and disconnect. Authorized polls
+      persist the current account session with access and refresh token expiry
+      metadata using an atomic JSON store. GitHub API calls that require a
+      user token go through refresh preflight so expired or revoked refresh
+      tokens surface a structured reauthorization error instead of leaking
+      partial state.
+    priority: P1
+    status: implemented
+    code:
+      - server/internal/github/client.go
+      - server/internal/github/types.go
+      - server/internal/github/store.go
+      - server/internal/github/service.go
+      - server/internal/api/router.go
+      - server/internal/api/github_auth.go
+      - server/cmd/server/main.go
+    tests:
+      - server/internal/github/service_test.go
+      - server/internal/github/store_test.go
+      - server/internal/api/github_auth_test.go
+    depends_on: [REQ-003]
+
   - id: FIX-001
     title: Search API path sanitization
     description: >
