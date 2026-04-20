@@ -449,6 +449,71 @@ requirements:
       - server/internal/git/git_test.go
     depends_on: [REQ-011]
 
+  - id: REQ-023
+    title: Mobile runtime bridge lifecycle manager
+    description: >
+      Go server tracks a built-in mobile runtime bridge discovery contract,
+      monitors ready/not-ready state, detects generation changes as bridge
+      restarts, and resets state cleanly when the VS Code transport drops or
+      the server shuts down. The bridge manager owns the discovery file poll
+      loop and lifecycle event broadcast foundation without any fallback path.
+    priority: P0
+    status: implemented
+    code:
+      - server/internal/vscode/bridge.go
+      - server/internal/vscode/client.go
+      - server/cmd/server/main.go
+      - openvscode-server/extensions/mobile-runtime-bridge/src/extension.ts
+    tests:
+      - server/internal/vscode/bridge_test.go
+      - server/internal/vscode/bridge_integration_test.go
+    depends_on: [REQ-001]
+
+  - id: REQ-024
+    title: Bridge capabilities discovery API
+    description: >
+      Go server exposes GET /bridge/capabilities with an RFC-shaped capability
+      document once the runtime bridge is ready. Before readiness, the endpoint
+      fails explicitly with structured bridge_not_ready / capability_unavailable
+      errors rather than silently falling back to legacy APIs.
+    priority: P0
+    status: implemented
+    code:
+      - server/internal/api/bridge.go
+      - server/internal/api/router.go
+      - server/internal/vscode/bridge.go
+      - server/cmd/server/main.go
+      - openvscode-server/extensions/mobile-runtime-bridge/src/extension.ts
+    tests:
+      - server/internal/api/bridge_test.go
+      - server/internal/vscode/bridge_test.go
+    depends_on: [REQ-023]
+
+  - id: REQ-025
+    title: Bridge lifecycle event stream
+    description: >
+      Go server exposes WS /bridge/ws/events with a stable {type, payload}
+      envelope and emits bridge/ready plus bridge/restarted lifecycle events.
+      The built-in extension publishes generation-tagged discovery metadata so
+      the server can rebroadcast restart -> ready transitions to clients.
+    priority: P0
+    status: implemented
+    code:
+      - server/internal/api/bridge.go
+      - server/internal/api/router.go
+      - server/internal/vscode/bridge.go
+      - openvscode-server/extensions/mobile-runtime-bridge/package.json
+      - openvscode-server/extensions/mobile-runtime-bridge/tsconfig.json
+      - openvscode-server/extensions/mobile-runtime-bridge/extension.webpack.config.js
+      - openvscode-server/extensions/mobile-runtime-bridge/src/extension.ts
+      - openvscode-server/build/gulpfile.extensions.ts
+      - openvscode-server/build/npm/dirs.ts
+    tests:
+      - server/internal/api/bridge_test.go
+      - server/internal/vscode/bridge_test.go
+      - server/internal/vscode/bridge_integration_test.go
+    depends_on: [REQ-023, REQ-024]
+
   # ============================================================
   # Iteration 5: Bug fixes from code review audit
   # ============================================================

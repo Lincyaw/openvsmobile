@@ -86,6 +86,8 @@ type Client struct {
 	onMessage func(data []byte)
 	// onControl is called for each Control message received.
 	onControl func(data []byte)
+	// onDisconnect is called when the websocket transport is lost.
+	onDisconnect func(error)
 }
 
 // NewClient creates a new Client with a fresh reconnection token.
@@ -158,6 +160,13 @@ func (c *Client) ConnectWithType(ctx context.Context, serverURL string, connecti
 // IPC returns the IPC channel multiplexer for this connection.
 func (c *Client) IPC() *IPCClient {
 	return c.ipcClient
+}
+
+// SetDisconnectHandler registers a callback for transport loss notifications.
+func (c *Client) SetDisconnectHandler(handler func(error)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onDisconnect = handler
 }
 
 // Reconnect attempts to re-establish the connection using the same
@@ -425,6 +434,7 @@ func (c *Client) readLoop() {
 		_, rawData, err := c.conn.ReadMessage()
 		if err != nil {
 			// Connection closed or error.
+			c.notifyDisconnect(err)
 			return
 		}
 
@@ -460,6 +470,7 @@ func (c *Client) handleMessage(msg *ProtocolMessage) {
 		// No action needed.
 	case ProtocolMessageDisconnect:
 		log.Println("vscode: received disconnect")
+		c.notifyDisconnect(fmt.Errorf("received disconnect"))
 	}
 }
 
@@ -479,9 +490,19 @@ func (c *Client) keepAliveLoop() {
 				Data: []byte{},
 			}
 			if err := c.WriteMessage(msg); err != nil {
+				c.notifyDisconnect(err)
 				return
 			}
 		}
+	}
+}
+
+func (c *Client) notifyDisconnect(err error) {
+	c.mu.Lock()
+	handler := c.onDisconnect
+	c.mu.Unlock()
+	if handler != nil {
+		handler(err)
 	}
 }
 
