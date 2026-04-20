@@ -3,7 +3,6 @@ import 'dart:convert';
 
 import 'package:vscode_mobile/models/chat_message.dart';
 import 'package:vscode_mobile/models/session.dart';
-import 'package:vscode_mobile/providers/chat_provider.dart';
 import 'package:vscode_mobile/services/chat_api_client.dart';
 import 'package:vscode_mobile/services/settings_service.dart';
 import 'package:stream_channel/stream_channel.dart';
@@ -87,7 +86,7 @@ class FakeChatApiClient extends ChatApiClient {
   @override
   Future<List<SessionMeta>> getSessions({
     String? query,
-    String? project,
+    String? workspaceRoot,
   }) async {
     return sessions;
   }

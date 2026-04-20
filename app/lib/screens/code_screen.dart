@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../providers/chat_provider.dart';
 import '../providers/editor_provider.dart';
 import 'chat_screen.dart';
 import '../widgets/code_viewer.dart';
