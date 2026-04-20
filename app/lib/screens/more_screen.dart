@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+
 import 'git_screen.dart';
+import 'github_auth_screen.dart';
 import 'settings_screen.dart';
 
 class MoreScreen extends StatelessWidget {
@@ -24,6 +26,18 @@ class MoreScreen extends StatelessWidget {
           ),
           const Divider(),
           ListTile(
+            leading: const Icon(Icons.code),
+            title: const Text('GitHub'),
+            subtitle: const Text('Connect GitHub and inspect auth status'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const GitHubAuthScreen()),
+              );
+            },
+          ),
+          const Divider(),
+          ListTile(
             leading: const Icon(Icons.settings),
             title: const Text('Settings'),
             subtitle: const Text('App configuration'),
@@ -44,7 +58,6 @@ class MoreScreen extends StatelessWidget {
               showAboutDialog(
                 context: context,
                 applicationName: 'VSCode Mobile',
-                // TODO: read version from package_info_plus at runtime
                 applicationVersion: '1.0.0',
                 children: [
                   const Text(
