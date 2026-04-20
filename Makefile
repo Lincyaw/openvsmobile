@@ -7,7 +7,7 @@ ifeq ($(wildcard $(FLUTTER)),)
   FLUTTER := flutter
 endif
 
-.PHONY: all build build-server build-android test lint clean deps run-server install-android help
+.PHONY: all build build-server build-android test verify verify-app lint clean deps run-server install-android help
 
 # Default target: build everything
 all: build
@@ -55,6 +55,11 @@ test:
 	@echo "==> Running Flutter tests..."
 	cd app && $(FLUTTER) test
 
+verify: verify-app
+
+verify-app:
+	@./scripts/verify_repo.sh
+
 lint:
 	@echo "==> Running go vet..."
 	cd server && go vet ./...
@@ -84,6 +89,8 @@ help:
 	@echo "  deps           - Run go mod tidy + flutter pub get"
 	@echo "  install-android- Build and install APK to connected device"
 	@echo "  test           - Run Go and Flutter tests"
+	@echo "  verify         - Run repo verification entry for Flutter app tests"
+	@echo "  verify-app     - Alias for verify"
 	@echo "  lint           - Run go vet + flutter analyze"
 	@echo "  clean          - Remove server_bin and flutter build artifacts"
 	@echo "  help           - Show this help message"
