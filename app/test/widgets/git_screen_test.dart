@@ -61,6 +61,7 @@ void main() {
     final provider = await _buildProvider(repository: _repositoryDocument);
     await tester.pumpWidget(await _buildApp(provider));
     await tester.pumpAndSettle();
+    final changesList = find.byType(Scrollable).last;
 
     expect(find.text('Ahead 2'), findsOneWidget);
     expect(find.text('Behind 1'), findsOneWidget);
@@ -133,7 +134,6 @@ void main() {
     final provider = await _buildProvider(repository: _repositoryDocument);
     await tester.pumpWidget(await _buildApp(provider));
     await tester.pumpAndSettle();
-
     final repositoryList = find.byType(Scrollable).last;
     await tester.scrollUntilVisible(
       find.text('feature.dart'),
@@ -285,6 +285,7 @@ class _FakeGitApiClient extends GitApiClient {
   }
 }
 
+
 class _FakeWebSocketChannel extends StreamChannelMixin<dynamic>
     implements WebSocketChannel {
   _FakeWebSocketChannel();
@@ -331,4 +332,5 @@ class _FakeWebSocketSink implements WebSocketSink {
 
   @override
   Future<void> get done => Future<void>.value();
+
 }

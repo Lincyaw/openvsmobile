@@ -69,6 +69,7 @@ void main() {
     expect(find.text('-old'), findsOneWidget);
   });
 
+
   testWidgets(
     'renders an explicit error state when diff loading fails and exposes retry',
     (tester) async {
@@ -110,6 +111,7 @@ void main() {
       expect(find.text('No diff available for this file'), findsOneWidget);
     },
   );
+
 }
 
 Future<_FakeDiffApiClient> _buildApiClient() async {
@@ -142,9 +144,11 @@ class _FakeDiffApiClient extends GitApiClient {
     String file, {
     bool staged = false,
   }) {
+
     diffRequests += 1;
     if (diffResponses.isNotEmpty) {
       return diffResponses.removeAt(0);
+
     }
     return diffFuture;
   }
