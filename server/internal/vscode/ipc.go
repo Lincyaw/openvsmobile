@@ -29,8 +29,19 @@ func NewIPCClient(c *Client) *IPCClient {
 		client:      c,
 		initialized: make(chan struct{}),
 	}
-	c.onMessage = ipc.onRawMessage
+	ipc.attachClient(c)
 	return ipc
+}
+
+func (ipc *IPCClient) attachClient(c *Client) {
+	ipc.client = c
+	c.onMessage = ipc.onRawMessage
+}
+
+func (ipc *IPCClient) reset(c *Client) {
+	ipc.handlers = sync.Map{}
+	ipc.initialized = make(chan struct{})
+	ipc.attachClient(c)
 }
 
 // GetChannel returns a handle to the named IPC channel.

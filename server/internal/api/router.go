@@ -13,6 +13,7 @@ import (
 	"github.com/Lincyaw/vscode-mobile/server/internal/git"
 	gitauth "github.com/Lincyaw/vscode-mobile/server/internal/github"
 	"github.com/Lincyaw/vscode-mobile/server/internal/terminal"
+	"github.com/Lincyaw/vscode-mobile/server/internal/vscode"
 )
 
 // FileSystem defines the interface for file operations.
@@ -37,6 +38,7 @@ type Server struct {
 	diagnosticRunner *diagnostics.Runner
 	githubAuth       *gitauth.Service
 	fileWatchHub     *FileWatchHub
+	bridgeManager    *vscode.BridgeManager
 }
 
 // NewServer creates a new API server.
@@ -56,6 +58,11 @@ func NewServer(fs FileSystem, sessionIndex *claude.SessionIndex, pm *claude.Proc
 		githubAuth:       authService,
 		fileWatchHub:     NewFileWatchHub(),
 	}
+}
+
+// SetBridgeManager injects the bridge lifecycle manager after server construction.
+func (s *Server) SetBridgeManager(manager *vscode.BridgeManager) {
+	s.bridgeManager = manager
 }
 
 // Handler returns the top-level HTTP handler with all routes.
@@ -87,6 +94,7 @@ func (s *Server) Handler() http.Handler {
 
 	// Diagnostics endpoint.
 	mux.HandleFunc("GET /api/diagnostics", s.handleDiagnostics)
+	mux.HandleFunc("GET /bridge/capabilities", s.handleBridgeCapabilities)
 
 	// GitHub auth endpoints.
 	s.registerGitHubAuthRoutes(mux)
@@ -95,6 +103,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/ws/chat", s.handleWSChat)
 	mux.HandleFunc("/ws/files", s.handleWSFiles)
 	mux.HandleFunc("/ws/terminal", s.handleWSTerminal)
+	mux.HandleFunc("/bridge/ws/events", s.handleWSBridgeEvents)
 
 	// Health-check endpoint (unauthenticated for connectivity tests).
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
@@ -112,7 +121,9 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		wrapped := &responseRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(wrapped, r)
 		status := wrapped.statusCode
-		if status == http.StatusOK && strings.HasPrefix(r.URL.Path, "/ws/") {
+		// If the connection was hijacked for WebSocket, the status stays at the
+		// default 200 because WriteHeader was never called through the wrapper.
+		if status == http.StatusOK && (strings.HasPrefix(r.URL.Path, "/ws/") || strings.HasPrefix(r.URL.Path, "/bridge/ws/")) {
 			status = http.StatusSwitchingProtocols
 		}
 		log.Printf("[HTTP] %s %s -> %d in %s", r.Method, r.URL.Path, status, time.Since(start))

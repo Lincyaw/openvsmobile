@@ -69,6 +69,9 @@ func main() {
 
 	var fs api.FileSystem
 	var vsClient *vscode.Client
+	var bridgeManager *vscode.BridgeManager
+	bridgeCtx, cancelBridge := context.WithCancel(context.Background())
+	defer cancelBridge()
 	if vsCodeURL != "" {
 		vsClient = vscode.NewClient()
 		if err := vsClient.Connect(context.Background(), vsCodeURL, vsCodeTok); err != nil {
@@ -76,6 +79,13 @@ func main() {
 		}
 		fsp := vscode.NewFileSystemProxy(vsClient.IPC(), "vscode-remote")
 		fs = api.NewVSCodeFSAdapter(fsp)
+		bridgeManager = vscode.NewBridgeManager(vscode.BridgeManagerOptions{
+			Client:          vsClient,
+			ServerURL:       vsCodeURL,
+			ConnectionToken: vsCodeTok,
+		})
+		bridgeManager.Start(bridgeCtx)
+		log.Printf("mobile runtime bridge discovery watching %s", bridgeManager.MetadataPath())
 	}
 
 	gitClient := git.NewGit(workDir)
@@ -110,6 +120,7 @@ func main() {
 	}()
 
 	srv := api.NewServer(fs, sessionIndex, pm, token, gitClient, termMgr, diagRunner, githubAuth)
+	srv.SetBridgeManager(bridgeManager)
 
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
@@ -138,6 +149,12 @@ func main() {
 
 	termMgr.CloseAll()
 	pm.Shutdown()
+
+	// Close VS Code connection.
+	cancelBridge()
+	if bridgeManager != nil {
+		bridgeManager.Close()
+	}
 	if vsClient != nil {
 		if err := vsClient.Close(); err != nil {
 			log.Printf("vscode client close error: %v", err)
