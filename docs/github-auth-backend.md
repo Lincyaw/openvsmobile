@@ -249,7 +249,6 @@ Example response:
 
 ```json
 {
-  "github_host": "github.com",
   "repository": {
     "github_host": "github.com",
     "owner": "octo-org",
@@ -271,18 +270,15 @@ Example response:
 
 ### `GET /github/issues`
 
-Supported query params are passed through to the repo issues REST API with
-snake_case responses: `state`, `sort`, `direction`, `since`, `labels`,
-`creator`, `mentioned`, `assignee`, `milestone`, `page`, and `per_page`.
-Pull-request-backed issue records are filtered out from this list.
+Supported query params: `state`, `assigned_to_me`, `created_by_me`,
+`mentioned`, `page`, and `per_page`. The backend normalizes these into
+repo-scoped list or search requests, and pull-request-backed issue records are
+filtered out from this list.
 
 Example response:
 
 ```json
 {
-  "repository": {
-    "full_name": "octo-org/mobile-app"
-  },
   "issues": [
     {
       "number": 42,
@@ -311,7 +307,8 @@ Example response:
 
 ### `GET /github/issues/{number}`
 
-Returns the normalized issue detail payload for the current repository.
+Returns the normalized issue detail payload plus `comments` for the current
+repository.
 
 ### `POST /github/issues/{number}/comments`
 
@@ -328,9 +325,6 @@ Response body:
 
 ```json
 {
-  "repository": {
-    "full_name": "octo-org/mobile-app"
-  },
   "comment": {
     "id": 1001,
     "body": "I can take this one.",
@@ -347,14 +341,17 @@ Response body:
 ### `GET /github/pulls`
 
 Supported query params: `state`, `assigned_to_me`, `created_by_me`, `mentioned`,
-`needs_review`, `head`, `base`, `sort`, `direction`, `page`, and `per_page`.
-Current-user PR filters use a repo-scoped search query so they can be combined
-with pagination and state while still returning normalized PR payloads.
+`needs_review`, `page`, and `per_page`.
+Current-user PR filters use a repo-scoped search query so `assigned_to_me`,
+`created_by_me`, `mentioned`, and `needs_review` can be combined with state and
+pagination while still returning normalized PR payloads. `head`, `base`,
+`sort`, and `direction` are not currently supported on this endpoint.
 
 ### `GET /github/pulls/{number}`
 
-Returns the normalized pull request detail plus aggregated commit status/check
-summary under `pull_request.checks`.
+Returns the normalized pull request detail plus `files`, `comments`, and
+`reviews`. Aggregated commit status/check summary is included under
+`pull_request.checks`.
 
 Example `checks` payload:
 
@@ -388,7 +385,8 @@ Returns normalized changed-file entries with `filename`, `status`, `additions`,
 
 ### `GET /github/pulls/{number}/comments`
 
-Returns normalized review-thread comment entries for the pull request.
+Returns normalized review-thread comment entries plus `reviews` for the pull
+request.
 Supported query params: `sort`, `direction`, `since`, `page`, and `per_page`.
 
 ### `POST /github/pulls/{number}/comments`
@@ -429,6 +427,7 @@ used by auth routes. Expected collaboration error codes include:
 - `invalid_request`: missing/invalid route params, query params, or request body
 - `not_authenticated`: no stored GitHub auth session exists for the repo host
 - `reauth_required`: refresh failed or the access token is no longer usable
+- `app_not_installed_for_repo`: the repo resolves locally but the configured GitHub App is not installed for it
 - `repo_access_unavailable`: GitHub rejected repository access for the account
 - `not_found`: the repo-scoped issue, pull request, or nested resource was not found
 - `github_auth_error`: upstream GitHub request failed in an unexpected way
