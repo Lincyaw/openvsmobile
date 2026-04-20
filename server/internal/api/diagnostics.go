@@ -58,20 +58,31 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if s.editorService != nil && filePath != "" {
-		doc, err := s.editorService.Diagnostics(vscode.EditorRequest{
-			Path:    filePath,
-			WorkDir: workDir,
-		})
-		if err == nil {
-			if strings.EqualFold(r.URL.Query().Get("format"), "lsp") {
-				version := doc.Version
-				writeJSON(w, http.StatusOK, diagnosticsDocumentToReport(doc, &version))
-			} else {
-				writeJSON(w, http.StatusOK, doc.Diagnostics)
-			}
+		if s.documentSync == nil {
+			writeBridgeError(w, http.StatusServiceUnavailable, "bridge_not_ready", "document sync is not configured")
 			return
 		}
-		log.Printf("[Diagnostics] bridge diagnostics unavailable for path=%s workDir=%s: %v", filePath, workDir, err)
+		snapshot, err := s.documentSync.DocumentBuffer(filePath)
+		if err != nil {
+			writeEditorBridgeError(w, err)
+			return
+		}
+		doc, err := s.editorService.Diagnostics(vscode.EditorRequest{
+			Path:    filePath,
+			Version: snapshot.Version,
+			WorkDir: workDir,
+		})
+		if err != nil {
+			writeEditorBridgeError(w, err)
+			return
+		}
+		if strings.EqualFold(r.URL.Query().Get("format"), "lsp") {
+			version := doc.Version
+			writeJSON(w, http.StatusOK, diagnosticsDocumentToReport(doc, &version))
+		} else {
+			writeJSON(w, http.StatusOK, doc.Diagnostics)
+		}
+		return
 	}
 
 	if s.diagnosticRunner == nil {

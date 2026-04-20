@@ -341,13 +341,9 @@ func (s *EditorService) resolveDocument(path string, version int) (DocumentSnaps
 	}
 	snapshot, err := s.documents.DocumentBuffer(path)
 	if err != nil {
-		var bridgeErr *BridgeError
-		if errors.As(err, &bridgeErr) && bridgeErr.Code == "document_not_open" {
-			return s.documents.OpenDocument(path, version, nil)
-		}
 		return DocumentSnapshot{}, err
 	}
-	if version > 0 && snapshot.Version != version {
+	if snapshot.Version != version {
 		return DocumentSnapshot{}, newBridgeError("version_conflict", "document version does not match the tracked buffer", nil)
 	}
 	return snapshot, nil

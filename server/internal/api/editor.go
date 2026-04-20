@@ -13,7 +13,7 @@ import (
 
 type bridgeEditorRequest struct {
 	Path     string                   `json:"path"`
-	Version  int                      `json:"version,omitempty"`
+	Version  *int                     `json:"version,omitempty"`
 	WorkDir  string                   `json:"workDir,omitempty"`
 	Position *vscode.DocumentPosition `json:"position,omitempty"`
 	Range    *vscode.DocumentRange    `json:"range,omitempty"`
@@ -23,14 +23,25 @@ type bridgeEditorRequest struct {
 	Query    string                   `json:"query,omitempty"`
 }
 
+type bridgeEditorRequestRequirements struct {
+	Position bool
+	Range    bool
+	NewName  bool
+}
+
 func (s *Server) handleBridgeEditorDiagnostics(w http.ResponseWriter, r *http.Request) {
 	if s.editorService == nil {
 		writeBridgeError(w, http.StatusNotFound, "capability_unavailable", "editor intelligence bridge is not configured")
 		return
 	}
 
-	req, ok := decodeBridgeEditorQuery(w, r)
-	if !ok {
+	var raw bridgeEditorRequest
+	if !decodeBridgeDocumentRequest(w, r, &raw) {
+		return
+	}
+	req, err := sanitizeBridgeEditorRequest(raw, bridgeEditorRequestRequirements{})
+	if err != nil {
+		writeBridgeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
 	result, err := s.editorService.Diagnostics(req)
@@ -43,60 +54,60 @@ func (s *Server) handleBridgeEditorDiagnostics(w http.ResponseWriter, r *http.Re
 }
 
 func (s *Server) handleBridgeEditorCompletion(w http.ResponseWriter, r *http.Request) {
-	s.handleBridgeEditorRPC(w, r, func(req vscode.EditorRequest) (any, error) {
+	s.handleBridgeEditorRPC(w, r, bridgeEditorRequestRequirements{Position: true}, func(req vscode.EditorRequest) (any, error) {
 		return s.editorService.Completion(req)
 	})
 }
 
 func (s *Server) handleBridgeEditorHover(w http.ResponseWriter, r *http.Request) {
-	s.handleBridgeEditorRPC(w, r, func(req vscode.EditorRequest) (any, error) {
+	s.handleBridgeEditorRPC(w, r, bridgeEditorRequestRequirements{Position: true}, func(req vscode.EditorRequest) (any, error) {
 		return s.editorService.Hover(req)
 	})
 }
 
 func (s *Server) handleBridgeEditorDefinition(w http.ResponseWriter, r *http.Request) {
-	s.handleBridgeEditorRPC(w, r, func(req vscode.EditorRequest) (any, error) {
+	s.handleBridgeEditorRPC(w, r, bridgeEditorRequestRequirements{Position: true}, func(req vscode.EditorRequest) (any, error) {
 		return s.editorService.Definition(req)
 	})
 }
 
 func (s *Server) handleBridgeEditorReferences(w http.ResponseWriter, r *http.Request) {
-	s.handleBridgeEditorRPC(w, r, func(req vscode.EditorRequest) (any, error) {
+	s.handleBridgeEditorRPC(w, r, bridgeEditorRequestRequirements{Position: true}, func(req vscode.EditorRequest) (any, error) {
 		return s.editorService.References(req)
 	})
 }
 
 func (s *Server) handleBridgeEditorSignatureHelp(w http.ResponseWriter, r *http.Request) {
-	s.handleBridgeEditorRPC(w, r, func(req vscode.EditorRequest) (any, error) {
+	s.handleBridgeEditorRPC(w, r, bridgeEditorRequestRequirements{Position: true}, func(req vscode.EditorRequest) (any, error) {
 		return s.editorService.SignatureHelp(req)
 	})
 }
 
 func (s *Server) handleBridgeEditorFormatting(w http.ResponseWriter, r *http.Request) {
-	s.handleBridgeEditorRPC(w, r, func(req vscode.EditorRequest) (any, error) {
+	s.handleBridgeEditorRPC(w, r, bridgeEditorRequestRequirements{}, func(req vscode.EditorRequest) (any, error) {
 		return s.editorService.Formatting(req)
 	})
 }
 
 func (s *Server) handleBridgeEditorCodeActions(w http.ResponseWriter, r *http.Request) {
-	s.handleBridgeEditorRPC(w, r, func(req vscode.EditorRequest) (any, error) {
+	s.handleBridgeEditorRPC(w, r, bridgeEditorRequestRequirements{Range: true}, func(req vscode.EditorRequest) (any, error) {
 		return s.editorService.CodeActions(req)
 	})
 }
 
 func (s *Server) handleBridgeEditorRename(w http.ResponseWriter, r *http.Request) {
-	s.handleBridgeEditorRPC(w, r, func(req vscode.EditorRequest) (any, error) {
+	s.handleBridgeEditorRPC(w, r, bridgeEditorRequestRequirements{Position: true, NewName: true}, func(req vscode.EditorRequest) (any, error) {
 		return s.editorService.Rename(req)
 	})
 }
 
 func (s *Server) handleBridgeEditorDocumentSymbols(w http.ResponseWriter, r *http.Request) {
-	s.handleBridgeEditorRPC(w, r, func(req vscode.EditorRequest) (any, error) {
+	s.handleBridgeEditorRPC(w, r, bridgeEditorRequestRequirements{}, func(req vscode.EditorRequest) (any, error) {
 		return s.editorService.DocumentSymbols(req)
 	})
 }
 
-func (s *Server) handleBridgeEditorRPC(w http.ResponseWriter, r *http.Request, fn func(vscode.EditorRequest) (any, error)) {
+func (s *Server) handleBridgeEditorRPC(w http.ResponseWriter, r *http.Request, requirements bridgeEditorRequestRequirements, fn func(vscode.EditorRequest) (any, error)) {
 	if s.editorService == nil {
 		writeBridgeError(w, http.StatusNotFound, "capability_unavailable", "editor intelligence bridge is not configured")
 		return
@@ -105,7 +116,7 @@ func (s *Server) handleBridgeEditorRPC(w http.ResponseWriter, r *http.Request, f
 	if !decodeBridgeDocumentRequest(w, r, &raw) {
 		return
 	}
-	req, err := sanitizeBridgeEditorRequest(raw)
+	req, err := sanitizeBridgeEditorRequest(raw, requirements)
 	if err != nil {
 		writeBridgeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
@@ -118,32 +129,26 @@ func (s *Server) handleBridgeEditorRPC(w http.ResponseWriter, r *http.Request, f
 	writeJSON(w, http.StatusOK, result)
 }
 
-func decodeBridgeEditorQuery(w http.ResponseWriter, r *http.Request) (vscode.EditorRequest, bool) {
-	path := r.URL.Query().Get("path")
-	if strings.TrimSpace(path) == "" {
-		writeBridgeError(w, http.StatusBadRequest, "invalid_request", "path is required")
-		return vscode.EditorRequest{}, false
-	}
-	workDir := r.URL.Query().Get("workDir")
-	if workDir == "" {
-		workDir = "/"
-	}
-	req, err := sanitizeBridgeEditorRequest(bridgeEditorRequest{Path: path, WorkDir: workDir})
-	if err != nil {
-		writeBridgeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return vscode.EditorRequest{}, false
-	}
-	return req, true
-}
-
-func sanitizeBridgeEditorRequest(raw bridgeEditorRequest) (vscode.EditorRequest, error) {
+func sanitizeBridgeEditorRequest(raw bridgeEditorRequest, requirements bridgeEditorRequestRequirements) (vscode.EditorRequest, error) {
 	path, workDir, err := sanitizeEditorPathContext(raw.Path, raw.WorkDir)
 	if err != nil {
 		return vscode.EditorRequest{}, err
 	}
+	if raw.Version == nil {
+		return vscode.EditorRequest{}, errors.New("version is required")
+	}
+	if requirements.Position && raw.Position == nil {
+		return vscode.EditorRequest{}, errors.New("position is required")
+	}
+	if requirements.Range && raw.Range == nil {
+		return vscode.EditorRequest{}, errors.New("range is required")
+	}
+	if requirements.NewName && strings.TrimSpace(raw.NewName) == "" {
+		return vscode.EditorRequest{}, errors.New("newName is required")
+	}
 	return vscode.EditorRequest{
 		Path:     path,
-		Version:  raw.Version,
+		Version:  *raw.Version,
 		WorkDir:  workDir,
 		Position: raw.Position,
 		Range:    raw.Range,
@@ -180,6 +185,8 @@ func writeEditorBridgeError(w http.ResponseWriter, err error) {
 		switch bridgeErr.Code {
 		case "invalid_request", "invalid_position":
 			status = http.StatusBadRequest
+		case "version_conflict":
+			status = http.StatusConflict
 		case "bridge_not_ready":
 			status = http.StatusServiceUnavailable
 		case "capability_unavailable":
