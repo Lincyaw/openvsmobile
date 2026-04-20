@@ -117,7 +117,7 @@ type ConversationContext struct {
 	WorkspaceRoot string          `json:"workspaceRoot,omitempty"`
 	ActiveFile    string          `json:"activeFile,omitempty"`
 	Cursor        *CursorPosition `json:"cursor,omitempty"`
-	Selection     *SelectionRange `json:"selection,omitempty"`
+	Selection     *SelectionRange `json:"selection"`
 }
 
 // CursorPosition describes a single cursor location in 1-based coordinates.

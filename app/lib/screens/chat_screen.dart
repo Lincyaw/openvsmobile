@@ -99,11 +99,11 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ],
           ),
-          body: Column(
+              body: Column(
             children: [
               if (provider.error != null) _buildErrorBanner(context, provider),
               if (provider.editorContext?.hasContext ?? false)
-                _buildContextBadge(context, provider),
+                _buildContextSummary(context, provider),
               Expanded(child: _buildMessageList(context, provider)),
               _buildInputBar(context, provider),
             ],
@@ -128,30 +128,42 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  Widget _buildContextBadge(BuildContext context, ChatProvider provider) {
+  Widget _buildContextSummary(BuildContext context, ChatProvider provider) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final ctx = provider.editorContext!;
+    final workspace = context.read<WorkspaceProvider>();
+    final fileName = (ctx.activeFile ?? '').split('/').last;
+    final selectionLabel = ctx.selection?.lineLabel ?? 'No selection';
 
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
         color: colorScheme.secondaryContainer,
         borderRadius: BorderRadius.circular(8),
       ),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Icon(Icons.code, size: 18, color: colorScheme.onSecondaryContainer),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(
-              'Context: ${ctx.label}',
-              style: theme.textTheme.labelMedium?.copyWith(
+            child: DefaultTextStyle(
+              style: theme.textTheme.labelMedium!.copyWith(
                 color: colorScheme.onSecondaryContainer,
-                fontFamily: 'monospace',
               ),
-              overflow: TextOverflow.ellipsis,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Workspace: ${workspace.displayName}'),
+                  Text(
+                    'File: $fileName',
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  Text('Selection: $selectionLabel'),
+                ],
+              ),
             ),
           ),
           if (ctx.selection != null)

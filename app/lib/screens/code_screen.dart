@@ -162,7 +162,12 @@ class _CodeScreenState extends State<CodeScreen> {
                         editorProvider.updateContent(content);
                       },
                       onCursorChanged: editorProvider.updateCursor,
-                      onSelectionChanged: editorProvider.updateSelection,
+                      onSelectionChanged: (selection, cursor) {
+                        editorProvider.updateSelection(
+                          selection,
+                          cursor: cursor,
+                        );
+                      },
                       onSave: hasChanges
                           ? () => editorProvider.saveCurrentFile()
                           : null,
