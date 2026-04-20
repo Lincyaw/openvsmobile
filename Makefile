@@ -9,7 +9,7 @@ FLUTTER_BIN := $(strip $(or \
 	$(wildcard $(HOME)/flutter-sdk/flutter/bin/flutter), \
 	$(wildcard /home/faydev/flutter-sdk/flutter/bin/flutter)))
 
-.PHONY: all build build-server build-android test lint clean deps run-server install-android \
+.PHONY: all build build-server build-android test verify verify-app lint clean deps run-server install-android \
 	help flutter-prereq verify-bridge-extension verify-bridge-foundation
 
 # Default target: build everything
@@ -57,6 +57,11 @@ test: flutter-prereq
 	cd server && go test ./...
 	@echo "==> Running Flutter tests..."
 	cd app && $(FLUTTER_BIN) test
+
+verify: verify-app
+
+verify-app:
+	@./scripts/verify_repo.sh
 
 lint: flutter-prereq
 	@echo "==> Running go vet..."
@@ -107,6 +112,8 @@ help:
 	@echo "  deps                    - Run go mod tidy + flutter pub get"
 	@echo "  install-android         - Build and install APK to a connected device"
 	@echo "  test                    - Run Go and Flutter tests"
+	@echo "  verify                  - Run repo verification entry for Flutter app tests"
+	@echo "  verify-app              - Alias for verify"
 	@echo "  lint                    - Run go vet + flutter analyze"
 	@echo "  flutter-prereq          - Show the resolved Flutter SDK or fail with setup guidance"
 	@echo "  verify-bridge-extension - Compile the built-in mobile bridge extension from openvscode-server/"

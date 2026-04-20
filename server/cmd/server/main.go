@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -15,19 +16,24 @@ import (
 	"github.com/Lincyaw/vscode-mobile/server/internal/claude"
 	"github.com/Lincyaw/vscode-mobile/server/internal/diagnostics"
 	"github.com/Lincyaw/vscode-mobile/server/internal/git"
+	gitauth "github.com/Lincyaw/vscode-mobile/server/internal/github"
 	"github.com/Lincyaw/vscode-mobile/server/internal/terminal"
 	"github.com/Lincyaw/vscode-mobile/server/internal/vscode"
 )
 
 func main() {
 	var (
-		port       int
-		vsCodeURL  string
-		vsCodeTok  string
-		claudeHome string
-		claudeBin  string
-		token      string
-		workDir    string
+		port                   int
+		vsCodeURL              string
+		vsCodeTok              string
+		claudeHome             string
+		claudeBin              string
+		token                  string
+		workDir                string
+		githubClientID         string
+		githubHost             string
+		githubAuthStorePath    string
+		githubRefreshThreshold time.Duration
 	)
 
 	flag.IntVar(&port, "port", 8080, "HTTP server port")
@@ -37,6 +43,10 @@ func main() {
 	flag.StringVar(&claudeBin, "claude-bin", "claude", "Claude CLI binary path")
 	flag.StringVar(&token, "token", "", "Connection token for API authentication")
 	flag.StringVar(&workDir, "work-dir", ".", "Working directory for Claude processes")
+	flag.StringVar(&githubClientID, "github-client-id", "", "GitHub App device-flow client ID")
+	flag.StringVar(&githubHost, "github-host", gitauth.DefaultHost, "Default GitHub host for auth")
+	flag.StringVar(&githubAuthStorePath, "github-auth-store", "", "Path to the GitHub auth token store JSON file")
+	flag.DurationVar(&githubRefreshThreshold, "github-refresh-threshold", 5*time.Minute, "Refresh tokens before they expire by this threshold")
 	flag.Parse()
 
 	if claudeHome == "" {
@@ -46,17 +56,17 @@ func main() {
 		}
 		claudeHome = home + "/.claude"
 	}
+	if githubAuthStorePath == "" {
+		githubAuthStorePath = filepath.Join(claudeHome, "github-auth.json")
+	}
 
-	// Initialize session index.
 	sessionIndex := claude.NewSessionIndex(claudeHome)
 	if err := sessionIndex.ScanSessions(); err != nil {
 		log.Printf("warning: failed to scan sessions: %v", err)
 	}
 
-	// Initialize process manager.
 	pm := claude.NewProcessManager(claudeBin, workDir)
 
-	// Initialize filesystem via VS Code remote proxy.
 	var fs api.FileSystem
 	var vsClient *vscode.Client
 	var bridgeManager *vscode.BridgeManager
@@ -78,16 +88,21 @@ func main() {
 		log.Printf("mobile runtime bridge discovery watching %s", bridgeManager.MetadataPath())
 	}
 
-	// Initialize git client.
 	gitClient := git.NewGit(workDir)
-
-	// Initialize terminal manager.
 	termMgr := terminal.NewManager()
-
-	// Initialize diagnostics runner.
 	diagRunner := diagnostics.NewRunner(30 * time.Second)
 
-	// Start periodic session index refresh.
+	var githubAuth *gitauth.Service
+	if githubClientID != "" {
+		githubAuth = gitauth.NewService(
+			gitauth.NewClient(nil),
+			gitauth.NewStore(githubAuthStorePath),
+			githubClientID,
+			githubHost,
+			githubRefreshThreshold,
+		)
+	}
+
 	stopRefresh := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
@@ -104,8 +119,7 @@ func main() {
 		}
 	}()
 
-	// Initialize API server.
-	srv := api.NewServer(fs, sessionIndex, pm, token, gitClient, termMgr, diagRunner)
+	srv := api.NewServer(fs, sessionIndex, pm, token, gitClient, termMgr, diagRunner, githubAuth)
 	srv.SetBridgeManager(bridgeManager)
 
 	httpServer := &http.Server{
@@ -113,7 +127,6 @@ func main() {
 		Handler: srv.Handler(),
 	}
 
-	// Graceful shutdown.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
@@ -126,22 +139,15 @@ func main() {
 
 	<-sigCh
 	log.Println("shutting down...")
-
-	// Stop session refresh goroutine.
 	close(stopRefresh)
 
-	// Shutdown HTTP server.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
 	if err := httpServer.Shutdown(ctx); err != nil {
 		log.Printf("http shutdown error: %v", err)
 	}
 
-	// Shutdown terminals.
 	termMgr.CloseAll()
-
-	// Shutdown Claude processes.
 	pm.Shutdown()
 
 	// Close VS Code connection.
