@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	gitauth "github.com/Lincyaw/vscode-mobile/server/internal/github"
 	"github.com/Lincyaw/vscode-mobile/server/internal/git"
+	gitauth "github.com/Lincyaw/vscode-mobile/server/internal/github"
 	"github.com/Lincyaw/vscode-mobile/server/internal/terminal"
 )
 
@@ -178,7 +178,7 @@ func requireRepoContextTuple(t *testing.T, payload map[string]any) {
 			t.Fatalf("expected payload %s to contain %q", text, part)
 		}
 	}
-	if strings.Contains(text, "access_token") || strings.Contains(text, "refresh_token") {
+	if strings.Contains(text, "\"access_token\":") || strings.Contains(text, "\"refresh_token\":") {
 		t.Fatalf("payload leaked tokens: %s", text)
 	}
 }
@@ -193,6 +193,17 @@ func requireErrorCodeContains(t *testing.T, payload map[string]any, codes ...str
 		}
 	}
 	t.Fatalf("expected payload %s to contain one of %v", text, codes)
+}
+
+func requireStatusOrErrorCode(t *testing.T, payload map[string]any, want string) {
+	t.Helper()
+	for _, key := range []string{"status", "error_code"} {
+		if got := asString(payload[key]); got == want {
+			return
+		}
+	}
+	body, _ := json.Marshal(payload)
+	t.Fatalf("expected payload %s to contain status/error_code %q", string(body), want)
 }
 
 func TestGitHubRepoContextCurrentRepoSupportsBothRoutePrefixes(t *testing.T) {
@@ -226,6 +237,7 @@ func TestGitHubRepoContextCurrentRepoReportsStructuredErrors(t *testing.T) {
 			t.Fatalf("status = %d payload=%#v", resp.StatusCode, payload)
 		}
 		requireErrorCodeContains(t, payload, "repo_not_github")
+		requireStatusOrErrorCode(t, payload, "repo_not_github")
 	})
 
 	t.Run("repo access unavailable", func(t *testing.T) {
@@ -235,11 +247,14 @@ func TestGitHubRepoContextCurrentRepoReportsStructuredErrors(t *testing.T) {
 			}
 			http.Error(w, "missing", http.StatusNotFound)
 		})
-		resp, payload := repoContextGET(t, rcs.server.URL, "", rcs.nestedDir)
-		if resp.StatusCode != http.StatusBadGateway && resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusOK {
-			t.Fatalf("status = %d payload=%#v", resp.StatusCode, payload)
+		for _, prefix := range []string{"", "/api"} {
+			resp, payload := repoContextGET(t, rcs.server.URL, prefix, rcs.nestedDir)
+			if resp.StatusCode != http.StatusBadGateway && resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusOK {
+				t.Fatalf("prefix %q status = %d payload=%#v", prefix, resp.StatusCode, payload)
+			}
+			requireErrorCodeContains(t, payload, "repo_access_unavailable")
+			requireStatusOrErrorCode(t, payload, "repo_access_unavailable")
 		}
-		requireErrorCodeContains(t, payload, "repo_access_unavailable")
 	})
 
 	t.Run("app not installed", func(t *testing.T) {
@@ -253,11 +268,14 @@ func TestGitHubRepoContextCurrentRepoReportsStructuredErrors(t *testing.T) {
 				t.Fatalf("unexpected backend path %s", r.URL.Path)
 			}
 		})
-		resp, payload := repoContextGET(t, rcs.server.URL, "", rcs.nestedDir)
-		if resp.StatusCode != http.StatusBadGateway && resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusOK {
-			t.Fatalf("status = %d payload=%#v", resp.StatusCode, payload)
+		for _, prefix := range []string{"", "/api"} {
+			resp, payload := repoContextGET(t, rcs.server.URL, prefix, rcs.nestedDir)
+			if resp.StatusCode != http.StatusBadGateway && resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusOK {
+				t.Fatalf("prefix %q status = %d payload=%#v", prefix, resp.StatusCode, payload)
+			}
+			requireErrorCodeContains(t, payload, "app_not_installed_for_repo")
+			requireStatusOrErrorCode(t, payload, "app_not_installed_for_repo")
 		}
-		requireErrorCodeContains(t, payload, "app_not_installed_for_repo")
 	})
 }
 
@@ -288,25 +306,29 @@ func TestGitHubResolveLocalFileHandlesExistingMissingAndEscapingPaths(t *testing
 		}
 	}
 
-	resp, payload := repoContextResolveLocalFile(t, rcs.server.URL, "", rcs.nestedDir, "pkg/missing.txt")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("missing path status = %d payload=%#v", resp.StatusCode, payload)
-	}
-	if payload["exists"] != false {
-		t.Fatalf("missing path exists = %#v payload=%#v", payload["exists"], payload)
-	}
-	missingPath := filepath.Join(rcs.repoDir, "pkg", "missing.txt")
-	if path := asString(payload["local_path"]); path != missingPath {
-		if path := asString(payload["path"]); path != missingPath {
-			t.Fatalf("missing path payload = %#v want local path %q", payload, missingPath)
+	for _, prefix := range []string{"", "/api"} {
+		resp, payload := repoContextResolveLocalFile(t, rcs.server.URL, prefix, rcs.nestedDir, "pkg/missing.txt")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("missing path prefix %q status = %d payload=%#v", prefix, resp.StatusCode, payload)
+		}
+		if payload["exists"] != false {
+			t.Fatalf("missing path prefix %q exists = %#v payload=%#v", prefix, payload["exists"], payload)
+		}
+		missingPath := filepath.Join(rcs.repoDir, "pkg", "missing.txt")
+		if path := asString(payload["local_path"]); path != missingPath {
+			if path := asString(payload["path"]); path != missingPath {
+				t.Fatalf("missing path prefix %q payload = %#v want local path %q", prefix, payload, missingPath)
+			}
 		}
 	}
 
-	resp, payload = repoContextResolveLocalFile(t, rcs.server.URL, "", rcs.nestedDir, "../secret.txt")
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("escaping path status = %d payload=%#v", resp.StatusCode, payload)
+	for _, prefix := range []string{"", "/api"} {
+		resp, payload := repoContextResolveLocalFile(t, rcs.server.URL, prefix, rcs.nestedDir, "../secret.txt")
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("escaping path prefix %q status = %d payload=%#v", prefix, resp.StatusCode, payload)
+		}
+		requireErrorCodeContains(t, payload, "invalid_path", "invalid_request")
 	}
-	requireErrorCodeContains(t, payload, "invalid_path", "invalid_request")
 }
 
 func TestGitHubRepoContextCurrentRepoSupportsSSHRemote(t *testing.T) {

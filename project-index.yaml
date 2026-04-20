@@ -766,5 +766,5 @@ requirements:
       - docs/github-auth-backend.md
     tests:
       - server/internal/github/service_test.go
-      - server/internal/api/github_auth_test.go
+      - server/internal/api/github_repo_context_test.go
     depends_on: [REQ-023]

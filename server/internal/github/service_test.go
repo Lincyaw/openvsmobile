@@ -2,8 +2,8 @@ package github
 
 import (
 	"context"
-	"errors"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -78,6 +78,34 @@ func TestServiceRepositoryProbeSuccess(t *testing.T) {
 	}
 }
 
+func TestGetRepoDecodesNestedOwnerLoginPayload(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v3/repos/acme/rocket" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"name":      "rocket",
+			"full_name": "acme/rocket",
+			"private":   true,
+			"owner": map[string]any{
+				"login": "acme",
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	client.SetBaseURLFuncs(func(string) string { return server.URL }, func(string) string { return server.URL + "/api/v3" })
+
+	repo, err := client.GetRepo(context.Background(), DefaultHost, "acme", "rocket", "token")
+	if err != nil {
+		t.Fatalf("GetRepo() error = %v", err)
+	}
+	if repo.Owner != "acme" || repo.Name != "rocket" || repo.FullName != "acme/rocket" {
+		t.Fatalf("GetRepo() repo = %#v", repo)
+	}
+}
+
 func TestServiceRepositoryProbeMapsRepoAccessUnavailable(t *testing.T) {
 	service := newRepoProbeService(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v3/repos/acme/private-repo" {
@@ -102,7 +130,9 @@ func TestServiceRepositoryProbeMapsAppNotInstalled(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"name":      "rocket",
 				"full_name": "acme/rocket",
-				"owner": map[string]any{"login": "acme"},
+				"owner": map[string]any{
+					"login": "acme",
+				},
 			})
 		case "/api/v3/repos/acme/rocket/installation":
 			http.Error(w, "missing installation", http.StatusNotFound)
@@ -190,7 +220,13 @@ func TestServiceRepositoryProbeRefreshesExpiredTokenBeforeAccessChecks(t *testin
 			_ = json.NewEncoder(w).Encode(TokenResponse{AccessToken: "fresh-access", RefreshToken: "fresh-refresh", ExpiresIn: 300, RefreshTokenExpiresIn: 3600})
 		case "/api/v3/repos/acme/rocket":
 			authHeaders = append(authHeaders, r.Header.Get("Authorization"))
-			_ = json.NewEncoder(w).Encode(map[string]any{"name": "rocket", "full_name": "acme/rocket", "owner": map[string]any{"login": "acme"}})
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"name":      "rocket",
+				"full_name": "acme/rocket",
+				"owner": map[string]any{
+					"login": "acme",
+				},
+			})
 		case "/api/v3/repos/acme/rocket/installation":
 			authHeaders = append(authHeaders, r.Header.Get("Authorization"))
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": 88})
@@ -226,7 +262,6 @@ func TestServiceRepositoryProbeRefreshesExpiredTokenBeforeAccessChecks(t *testin
 		}
 	}
 }
-
 
 func TestServiceStartPollAndRefresh(t *testing.T) {
 	var tokenRequests []url.Values

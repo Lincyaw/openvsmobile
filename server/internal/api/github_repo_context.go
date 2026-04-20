@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -113,7 +114,7 @@ func (s *Server) repoContextForWorkspace(workspacePath string) (*gitauth.Reposit
 	}
 	if current.Status == gitauth.RepoStatusRepoNotGitHub {
 		if current.Message != "" {
-			return nil, fmt.Errorf(current.Message)
+			return nil, errors.New(current.Message)
 		}
 		return nil, fmt.Errorf("current workspace is not backed by a GitHub repository")
 	}

@@ -1,6 +1,7 @@
 package github
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -9,24 +10,24 @@ import (
 const DefaultHost = "github.com"
 
 const (
-	RepoStatusOK                   = "ok"
-	RepoStatusRepoNotGitHub        = "repo_not_github"
-	RepoStatusNotAuthenticated     = "not_authenticated"
-	RepoStatusReauthRequired       = "reauth_required"
+	RepoStatusOK                    = "ok"
+	RepoStatusRepoNotGitHub         = "repo_not_github"
+	RepoStatusNotAuthenticated      = "not_authenticated"
+	RepoStatusReauthRequired        = "reauth_required"
 	RepoStatusRepoAccessUnavailable = "repo_access_unavailable"
-	RepoStatusAppNotInstalled      = "app_not_installed_for_repo"
+	RepoStatusAppNotInstalled       = "app_not_installed_for_repo"
 )
 
 var (
-	ErrAuthorizationPending = errors.New("github authorization pending")
-	ErrSlowDown             = errors.New("github authorization slow down")
-	ErrAccessDenied         = errors.New("github access denied")
-	ErrExpiredToken         = errors.New("github device code expired")
-	ErrBadRefreshToken      = errors.New("github bad refresh token")
-	ErrRefreshNotSupported  = errors.New("github refresh token support is required")
-	ErrReauthRequired       = errors.New("github reauthorization required")
-	ErrNotAuthenticated     = errors.New("github not authenticated")
-	ErrRepoAccessUnavailable = errors.New("github repo access unavailable")
+	ErrAuthorizationPending   = errors.New("github authorization pending")
+	ErrSlowDown               = errors.New("github authorization slow down")
+	ErrAccessDenied           = errors.New("github access denied")
+	ErrExpiredToken           = errors.New("github device code expired")
+	ErrBadRefreshToken        = errors.New("github bad refresh token")
+	ErrRefreshNotSupported    = errors.New("github refresh token support is required")
+	ErrReauthRequired         = errors.New("github reauthorization required")
+	ErrNotAuthenticated       = errors.New("github not authenticated")
+	ErrRepoAccessUnavailable  = errors.New("github repo access unavailable")
 	ErrAppNotInstalledForRepo = errors.New("github app not installed for repo")
 )
 
@@ -65,6 +66,39 @@ type Repository struct {
 	RemoteURL  string `json:"remote_url,omitempty"`
 	RepoRoot   string `json:"repo_root,omitempty"`
 	Private    bool   `json:"private,omitempty"`
+}
+
+func (r *Repository) UnmarshalJSON(data []byte) error {
+	type repositoryAlias Repository
+	type repositoryOwner struct {
+		Login string `json:"login"`
+	}
+	type repositoryWire struct {
+		repositoryAlias
+		Owner json.RawMessage `json:"owner"`
+	}
+
+	var payload repositoryWire
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return err
+	}
+
+	*r = Repository(payload.repositoryAlias)
+	if len(payload.Owner) == 0 || string(payload.Owner) == "null" {
+		return nil
+	}
+
+	var owner string
+	if err := json.Unmarshal(payload.Owner, &owner); err == nil {
+		r.Owner = strings.TrimSpace(owner)
+		return nil
+	}
+
+	var nestedOwner repositoryOwner
+	if err := json.Unmarshal(payload.Owner, &nestedOwner); err == nil {
+		r.Owner = strings.TrimSpace(nestedOwner.Login)
+	}
+	return nil
 }
 
 type AppInstallation struct {
