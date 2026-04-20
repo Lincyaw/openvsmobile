@@ -39,9 +39,13 @@ void main() async {
         ChangeNotifierProvider(
           create: (_) => EditorProvider(apiClient: apiClient),
         ),
-        ChangeNotifierProvider(
+        ChangeNotifierProxyProvider<EditorProvider, ChatProvider>(
           create: (_) => ChatProvider(apiClient: chatApiClient)
             ..setWorkspace(workspaceProvider.currentPath),
+          update: (_, editorProvider, chatProvider) {
+            chatProvider!.setEditorContext(editorProvider.chatContext);
+            return chatProvider;
+          },
         ),
         ChangeNotifierProvider(
           create: (_) => GitProvider(apiClient: gitApiClient),

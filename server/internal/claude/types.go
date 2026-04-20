@@ -112,6 +112,26 @@ type StreamInputMessage struct {
 	Content string `json:"content"`
 }
 
+// ConversationContext is the editor/workspace context attached to a chat send.
+type ConversationContext struct {
+	WorkspaceRoot string          `json:"workspaceRoot,omitempty"`
+	ActiveFile    string          `json:"activeFile,omitempty"`
+	Cursor        *CursorPosition `json:"cursor,omitempty"`
+	Selection     *SelectionRange `json:"selection,omitempty"`
+}
+
+// CursorPosition describes a single cursor location in 1-based coordinates.
+type CursorPosition struct {
+	Line   int `json:"line"`
+	Column int `json:"column"`
+}
+
+// SelectionRange describes a selection in 1-based coordinates.
+type SelectionRange struct {
+	Start CursorPosition `json:"start"`
+	End   CursorPosition `json:"end"`
+}
+
 // StreamOutput is the JSON received from claude CLI stdout.
 type StreamOutput struct {
 	Type       string          `json:"type"`

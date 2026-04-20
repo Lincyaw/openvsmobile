@@ -102,7 +102,7 @@ class _ChatScreenState extends State<ChatScreen> {
           body: Column(
             children: [
               if (provider.error != null) _buildErrorBanner(context, provider),
-              if (provider.codeContext != null)
+              if (provider.editorContext?.hasContext ?? false)
                 _buildContextBadge(context, provider),
               Expanded(child: _buildMessageList(context, provider)),
               _buildInputBar(context, provider),
@@ -131,7 +131,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget _buildContextBadge(BuildContext context, ChatProvider provider) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final ctx = provider.codeContext!;
+    final ctx = provider.editorContext!;
 
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -154,14 +154,15 @@ class _ChatScreenState extends State<ChatScreen> {
               overflow: TextOverflow.ellipsis,
             ),
           ),
-          InkWell(
-            onTap: () => provider.setCodeContext(null),
-            child: Icon(
-              Icons.close,
-              size: 18,
-              color: colorScheme.onSecondaryContainer,
+          if (ctx.selection != null)
+            InkWell(
+              onTap: () => context.read<EditorProvider>().clearSelection(),
+              child: Icon(
+                Icons.close,
+                size: 18,
+                color: colorScheme.onSecondaryContainer,
+              ),
             ),
-          ),
         ],
       ),
     );

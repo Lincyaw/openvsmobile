@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/chat_provider.dart';
+import '../providers/editor_provider.dart';
 import 'chat_bubble.dart';
 
 /// Draggable bottom sheet chat panel for contextual AI chat (REQ-009).
@@ -85,7 +86,7 @@ class _ContextualChatState extends State<ContextualChat> {
                 children: [
                   _buildHandle(context),
                   _buildHeader(context, provider),
-                  if (provider.codeContext != null)
+                  if (provider.editorContext?.hasContext ?? false)
                     _buildContextBadge(context, provider),
                   Expanded(
                     child: _buildMessageList(provider, sheetScrollController),
@@ -144,7 +145,7 @@ class _ContextualChatState extends State<ContextualChat> {
   Widget _buildContextBadge(BuildContext context, ChatProvider provider) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final ctx = provider.codeContext!;
+    final ctx = provider.editorContext!;
 
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -168,15 +169,17 @@ class _ContextualChatState extends State<ContextualChat> {
               overflow: TextOverflow.ellipsis,
             ),
           ),
-          const SizedBox(width: 6),
-          InkWell(
-            onTap: () => provider.setCodeContext(null),
-            child: Icon(
-              Icons.close,
-              size: 16,
-              color: colorScheme.onSecondaryContainer,
+          if (ctx.selection != null) ...[
+            const SizedBox(width: 6),
+            InkWell(
+              onTap: () => context.read<EditorProvider>().clearSelection(),
+              child: Icon(
+                Icons.close,
+                size: 16,
+                color: colorScheme.onSecondaryContainer,
+              ),
             ),
-          ),
+          ],
         ],
       ),
     );
@@ -194,7 +197,9 @@ class _ContextualChatState extends State<ContextualChat> {
         child: Padding(
           padding: const EdgeInsets.all(24),
           child: Text(
-            'Ask a question about the selected code',
+            provider.editorContext?.selection != null
+                ? 'Ask a question about the selected code'
+                : 'Ask a question about the current file',
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
