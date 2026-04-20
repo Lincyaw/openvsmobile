@@ -61,7 +61,8 @@ requirements:
       REST endpoints: GET /api/files/* (list/read), PUT /api/files/* (write),
       GET /api/sessions (list Claude sessions), GET /api/sessions/:id/messages.
       WebSocket endpoints: /ws/files (file watch events), /ws/chat (AI
-      conversation stream), /ws/terminal (terminal I/O).
+      conversation stream), /bridge/ws/events (bridge lifecycle stream),
+      /bridge/ws/terminal/:id (session-oriented terminal I/O).
       Auth: connection token passed as query parameter or header.
     priority: P0
     status: implemented
@@ -282,19 +283,28 @@ requirements:
     depends_on: [REQ-001, REQ-003, REQ-007]
 
   - id: REQ-014
-    title: Terminal channel proxy
+    title: Bridge terminal session backend
     description: >
-      Go server provides PTY-based terminal I/O via WebSocket to the
-      Flutter client. Supports creating/resizing/destroying terminal
-      sessions. Uses creack/pty for direct PTY management.
+      Go server exposes bridge terminal endpoints around a unified session
+      model instead of the legacy /ws/terminal byte stream. REST endpoints:
+      GET /bridge/terminal/sessions plus POST /bridge/terminal/create,
+      /attach, /resize, /rename, /close, and /split. WebSocket endpoint:
+      /bridge/ws/terminal/:id for attach/re-attach streaming with ready,
+      output, error, and exit messages. Session lifecycle updates are also
+      rebroadcast on /bridge/ws/events so the mobile client can refresh
+      terminal state without a dedicated VS Code terminal adapter.
     priority: P1
     status: implemented
     code:
       - server/internal/terminal/terminal.go
       - server/internal/api/terminal.go
+      - server/internal/api/router.go
+      - server/internal/api/bridge.go
+      - server/cmd/server/main.go
     tests:
       - server/internal/terminal/terminal_test.go
-    depends_on: [REQ-001, REQ-003]
+      - server/internal/api/handler_test.go
+    depends_on: [REQ-003, REQ-025]
 
   # ============================================================
   # Iteration 3: Nice-to-have

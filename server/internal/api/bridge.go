@@ -39,11 +39,6 @@ func (s *Server) handleBridgeCapabilities(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleWSBridgeEvents(w http.ResponseWriter, r *http.Request) {
-	if s.bridgeManager == nil {
-		http.Error(w, "mobile runtime bridge is not configured", http.StatusServiceUnavailable)
-		return
-	}
-
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("bridge websocket upgrade error: %v", err)
@@ -52,22 +47,42 @@ func (s *Server) handleWSBridgeEvents(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close()
 	log.Printf("[WS/Bridge] connection established")
 
-	events, unsubscribe := s.bridgeManager.Subscribe(true)
-	defer unsubscribe()
+	terminalEvents, unsubscribeTerminal := s.termManager.SubscribeEvents()
+	defer unsubscribeTerminal()
+
+	var bridgeEvents <-chan vscode.BridgeEvent
+	var unsubscribeBridge func()
+	if s.bridgeManager != nil {
+		bridgeEvents, unsubscribeBridge = s.bridgeManager.Subscribe(true)
+		defer unsubscribeBridge()
+	}
 
 	var writeMu sync.Mutex
+	writeEvent := func(event interface{}) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return conn.WriteJSON(event)
+	}
 
 	go func() {
-		for event := range events {
-			writeMu.Lock()
-			err := conn.WriteJSON(event)
-			writeMu.Unlock()
-			if err != nil {
-				log.Printf("[WS/Bridge] write error: %v", err)
+		for event := range terminalEvents {
+			if err := writeEvent(vscode.BridgeEvent{Type: event.Type, Payload: event.Session}); err != nil {
+				log.Printf("[WS/Bridge] terminal event write error: %v", err)
 				return
 			}
 		}
 	}()
+
+	if bridgeEvents != nil {
+		go func() {
+			for event := range bridgeEvents {
+				if err := writeEvent(event); err != nil {
+					log.Printf("[WS/Bridge] bridge event write error: %v", err)
+					return
+				}
+			}
+		}()
+	}
 
 	for {
 		if _, _, err := conn.ReadMessage(); err != nil {

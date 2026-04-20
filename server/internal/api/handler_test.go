@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"github.com/Lincyaw/vscode-mobile/server/internal/claude"
 	"github.com/Lincyaw/vscode-mobile/server/internal/diagnostics"
 	"github.com/Lincyaw/vscode-mobile/server/internal/git"
@@ -692,5 +694,21 @@ func runGitIn(t *testing.T, dir string, args ...string) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v failed: %v\n%s", args, err, out)
+	}
+}
+
+func TestHandler_LegacyTerminalWebSocketRouteRemoved(t *testing.T) {
+	ts, _, _ := newTestServer(t, "")
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/terminal"
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if err == nil {
+		t.Fatal("expected legacy /ws/terminal route to be removed")
+	}
+	if resp != nil && resp.StatusCode == http.StatusSwitchingProtocols {
+		t.Fatalf("legacy /ws/terminal unexpectedly upgraded with status %d", resp.StatusCode)
 	}
 }
