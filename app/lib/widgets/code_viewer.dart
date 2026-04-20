@@ -82,6 +82,8 @@ class _SyntaxTheme {
 class CodeViewer extends StatefulWidget {
   final String content;
   final String fileName;
+  final EditorCursor? revealCursor;
+  final int revealToken;
   final VoidCallback? onAskAi;
   final void Function(EditorSelection? selection)? onSelectionChanged;
   final VoidCallback? onEditRequested;
@@ -91,6 +93,8 @@ class CodeViewer extends StatefulWidget {
     super.key,
     required this.content,
     required this.fileName,
+    this.revealCursor,
+    this.revealToken = 0,
     this.onAskAi,
     this.onSelectionChanged,
     this.onEditRequested,
@@ -115,6 +119,32 @@ class _CodeViewerState extends State<CodeViewer> {
   String? _cachedContent;
   String? _cachedFileName;
   Brightness? _cachedBrightness;
+  late final ScrollController _verticalScrollController;
+
+  @override
+  void initState() {
+    super.initState();
+    _verticalScrollController = ScrollController();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _revealCursorIfNeeded();
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant CodeViewer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.revealToken != widget.revealToken) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _revealCursorIfNeeded();
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _verticalScrollController.dispose();
+    super.dispose();
+  }
 
   Map<int, Diagnostic> get _diagnosticsByLine {
     if (_cachedDiagnosticsSource != widget.diagnostics) {
@@ -300,6 +330,21 @@ class _CodeViewerState extends State<CodeViewer> {
     return EditorCursor(line: line, column: column);
   }
 
+  void _revealCursorIfNeeded() {
+    final cursor = widget.revealCursor;
+    if (cursor == null || !_verticalScrollController.hasClients) {
+      return;
+    }
+    final targetOffset =
+        ((cursor.line - 1) * _fontSize * 1.5) - (_fontSize * 3);
+    final position = _verticalScrollController.position;
+    final clamped = targetOffset.clamp(
+      position.minScrollExtent,
+      position.maxScrollExtent,
+    );
+    _verticalScrollController.jumpTo(clamped.toDouble());
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -350,6 +395,7 @@ class _CodeViewerState extends State<CodeViewer> {
                   }
                 },
                 child: SingleChildScrollView(
+                  controller: _verticalScrollController,
                   child: SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
                     child: Row(

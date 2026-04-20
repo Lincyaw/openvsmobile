@@ -29,6 +29,7 @@ class EditorProvider extends ChangeNotifier {
   int _currentFileIndex = -1;
   EditorCursor? _cursor;
   EditorSelection? _selection;
+  int _revealNonce = 0;
   bool _isLoading = false;
   String? _error;
 
@@ -48,6 +49,7 @@ class EditorProvider extends ChangeNotifier {
   int get currentFileIndex => _currentFileIndex;
   EditorCursor? get cursor => _cursor;
   EditorSelection? get selection => _selection;
+  int get revealNonce => _revealNonce;
   bool get isLoading => _isLoading;
   String? get error => _error;
   EditorChatContext get chatContext => EditorChatContext(
@@ -57,11 +59,11 @@ class EditorProvider extends ChangeNotifier {
   );
 
   /// Open a file by path. If already open, switch to it.
-  Future<void> openFile(String path) async {
+  Future<void> openFile(String path, {EditorCursor? cursor}) async {
     final existingIndex = _openFiles.indexWhere((f) => f.path == path);
     if (existingIndex >= 0) {
       _currentFileIndex = existingIndex;
-      _resetContextForCurrentFile();
+      _resetContextForCurrentFile(cursor: cursor);
       notifyListeners();
       return;
     }
@@ -76,7 +78,7 @@ class EditorProvider extends ChangeNotifier {
       final file = OpenFile(path: path, name: name, originalContent: content);
       _openFiles.add(file);
       _currentFileIndex = _openFiles.length - 1;
-      _resetContextForCurrentFile();
+      _resetContextForCurrentFile(cursor: cursor);
       loadDiagnostics();
     } catch (e) {
       _error = e.toString();
@@ -220,13 +222,18 @@ class EditorProvider extends ChangeNotifier {
     return '/';
   }
 
-  void _resetContextForCurrentFile() {
+  void _resetContextForCurrentFile({EditorCursor? cursor}) {
     if (currentFile == null) {
       _cursor = null;
       _selection = null;
       return;
     }
-    _cursor = const EditorCursor(line: 1, column: 1);
+    if (cursor != null) {
+      _cursor = cursor;
+      _revealNonce++;
+    } else {
+      _cursor = const EditorCursor(line: 1, column: 1);
+    }
     _selection = null;
   }
 }

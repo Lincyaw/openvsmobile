@@ -5,6 +5,8 @@ import '../models/editor_context.dart';
 class CodeEditor extends StatefulWidget {
   final String content;
   final String fileName;
+  final EditorCursor? revealCursor;
+  final int revealToken;
   final void Function(String content) onContentChanged;
   final void Function(EditorCursor cursor)? onCursorChanged;
   final void Function(EditorSelection? selection, EditorCursor cursor)?
@@ -15,6 +17,8 @@ class CodeEditor extends StatefulWidget {
     super.key,
     required this.content,
     required this.fileName,
+    this.revealCursor,
+    this.revealToken = 0,
     required this.onContentChanged,
     this.onCursorChanged,
     this.onSelectionChanged,
@@ -45,6 +49,9 @@ class _CodeEditorState extends State<CodeEditor> {
     _controller.addListener(_onSelectionChanged);
     _editorScrollController.addListener(_syncLineNumbersFromEditor);
     _lineNumberScrollController.addListener(_syncEditorFromLineNumbers);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _revealCursorIfNeeded();
+    });
   }
 
   @override
@@ -57,6 +64,11 @@ class _CodeEditorState extends State<CodeEditor> {
       _controller.text = widget.content;
       _controller.addListener(_onTextChanged);
       _controller.addListener(_onSelectionChanged);
+    }
+    if (oldWidget.revealToken != widget.revealToken) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _revealCursorIfNeeded();
+      });
     }
   }
 
@@ -125,6 +137,21 @@ class _CodeEditorState extends State<CodeEditor> {
     }
 
     return EditorCursor(line: line, column: column);
+  }
+
+  void _revealCursorIfNeeded() {
+    final cursor = widget.revealCursor;
+    if (cursor == null || !_editorScrollController.hasClients) {
+      return;
+    }
+    final targetOffset =
+        ((cursor.line - 1) * _fontSize * 1.5) - (_fontSize * 3);
+    final position = _editorScrollController.position;
+    final clamped = targetOffset.clamp(
+      position.minScrollExtent,
+      position.maxScrollExtent,
+    );
+    _editorScrollController.jumpTo(clamped.toDouble());
   }
 
   @override

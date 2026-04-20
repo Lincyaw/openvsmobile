@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'git_screen.dart';
+import 'github_collaboration_screen.dart';
 import 'github_auth_screen.dart';
 import 'settings_screen.dart';
 
@@ -28,7 +29,21 @@ class MoreScreen extends StatelessWidget {
           ListTile(
             leading: const Icon(Icons.code),
             title: const Text('GitHub'),
-            subtitle: const Text('Connect GitHub and inspect auth status'),
+            subtitle: const Text('Browse issues, pull requests, and reviews'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => const GitHubCollaborationScreen(),
+                ),
+              );
+            },
+          ),
+          const Divider(),
+          ListTile(
+            leading: const Icon(Icons.manage_accounts_outlined),
+            title: const Text('GitHub Connection'),
+            subtitle: const Text('Inspect auth status and reconnect if needed'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () {
               Navigator.of(context).push(

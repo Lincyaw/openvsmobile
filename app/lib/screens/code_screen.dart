@@ -157,6 +157,8 @@ class _CodeScreenState extends State<CodeScreen> {
                   ? CodeEditor(
                       content: file.currentContent,
                       fileName: file.name,
+                      revealCursor: editorProvider.cursor,
+                      revealToken: editorProvider.revealNonce,
                       onContentChanged: (content) {
                         editorProvider.updateContent(content);
                       },
@@ -174,6 +176,8 @@ class _CodeScreenState extends State<CodeScreen> {
                   : CodeViewer(
                       content: file.currentContent,
                       fileName: file.name,
+                      revealCursor: editorProvider.cursor,
+                      revealToken: editorProvider.revealNonce,
                       diagnostics: editorProvider.diagnostics,
                       onSelectionChanged: (selection) {
                         editorProvider.updateSelection(
