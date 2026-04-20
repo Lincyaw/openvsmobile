@@ -524,6 +524,30 @@ requirements:
       - server/internal/vscode/bridge_integration_test.go
     depends_on: [REQ-023, REQ-024]
 
+  - id: REQ-026
+    title: Bridge document sync protocol
+    description: >
+      Ticket ASE-42 / GitHub issue #3 adds a VS Code TextDocument-shaped
+      document sync contract for the mobile runtime bridge. The Go server
+      exposes POST /bridge/doc/open, /bridge/doc/change, /bridge/doc/save,
+      and /bridge/doc/close; tracks per-file in-memory buffers with monotonic
+      versions; validates range/position edits with VS Code-compatible
+      character semantics; returns structured document_not_open,
+      version_conflict, and invalid_position errors; and keeps the latest
+      unsaved buffer available to future workspace edit, diagnostics, and
+      completion features without falling back to legacy git/terminal paths.
+    priority: P0
+    status: implemented
+    code:
+      - server/internal/vscode/bridge.go
+      - server/internal/api/bridge.go
+      - server/internal/api/router.go
+      - server/cmd/server/main.go
+    tests:
+      - server/internal/vscode/document_sync_test.go
+      - server/internal/api/bridge_documents_test.go
+    depends_on: [REQ-003, REQ-023]
+
   # ============================================================
   # Iteration 5: Bug fixes from code review audit
   # ============================================================

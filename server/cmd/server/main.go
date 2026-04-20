@@ -121,6 +121,7 @@ func main() {
 
 	srv := api.NewServer(fs, sessionIndex, pm, token, gitClient, termMgr, diagRunner, githubAuth)
 	srv.SetBridgeManager(bridgeManager)
+	srv.SetDocumentSync(vscode.NewDocumentSyncService(fs))
 
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
