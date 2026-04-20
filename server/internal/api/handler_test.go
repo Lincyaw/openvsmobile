@@ -440,6 +440,48 @@ func TestSessionsSearch_ByQuery(t *testing.T) {
 	}
 }
 
+func TestSessionsSearch_ProjectUsesExactWorkspaceRoot(t *testing.T) {
+	claudeDir := t.TempDir()
+	sessionsDir := filepath.Join(claudeDir, "sessions")
+	os.MkdirAll(sessionsDir, 0o755)
+
+	writeSessionFile(t, claudeDir, 1, "s1", "/tmp/workspaces/app", "cli")
+	writeSessionFile(t, claudeDir, 2, "s2", "/var/tmp/app", "cli")
+	writeSessionFile(t, claudeDir, 3, "s3", "/tmp/workspaces/app-nested", "cli")
+
+	sessIndex := claude.NewSessionIndex(claudeDir)
+	if err := sessIndex.ScanSessions(); err != nil {
+		t.Fatal(err)
+	}
+
+	pm := claude.NewProcessManager("/nonexistent", ".")
+	diagRunner := diagnostics.NewRunner(10 * time.Second)
+	srv := NewServer(nil, sessIndex, pm, "", git.NewGit("."), terminal.NewManager(), diagRunner)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/sessions?project=/tmp/workspaces/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var sessions []claude.SessionMeta
+	if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 exact-root session, got %d", len(sessions))
+	}
+	if sessions[0].SessionID != "s1" {
+		t.Fatalf("expected session s1, got %#v", sessions)
+	}
+}
+
 func TestSessionMessages_E2E(t *testing.T) {
 	claudeDir := t.TempDir()
 	sessionsDir := filepath.Join(claudeDir, "sessions")

@@ -5,8 +5,8 @@ import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../models/chat_message.dart';
+import '../models/editor_context.dart';
 import '../models/session.dart';
-import '../providers/workspace_provider.dart';
 import '../services/chat_api_client.dart';
 
 /// State management for chat functionality.
@@ -15,6 +15,7 @@ import '../services/chat_api_client.dart';
 /// clears the active conversation and reloads sessions for the new workspace.
 class ChatProvider extends ChangeNotifier {
   final ChatApiClient _apiClient;
+  EditorChatContext? _editorContext;
 
   ChatProvider({required ChatApiClient apiClient}) : _apiClient = apiClient;
 
@@ -40,9 +41,8 @@ class ChatProvider extends ChangeNotifier {
   bool _isStreaming = false;
   bool get isStreaming => _isStreaming;
 
-  // -- Code context (for contextual chat / REQ-009) --
-  CodeContext? _codeContext;
-  CodeContext? get codeContext => _codeContext;
+  // -- Editor context shared by contextual + full chat --
+  EditorChatContext? get editorContext => _editorContext;
 
   // -- Session list --
   List<SessionMeta> _sessions = [];
@@ -68,15 +68,15 @@ class ChatProvider extends ChangeNotifier {
     _conversationId = null;
     _pendingMessage = null;
     _isStreaming = false;
-    _codeContext = null;
     _error = null;
     notifyListeners();
     loadSessions();
   }
 
-  /// Set code context for contextual chat.
-  void setCodeContext(CodeContext? context) {
-    _codeContext = context;
+  /// Update the active editor context shared across chat surfaces.
+  void setEditorContext(EditorChatContext? context) {
+    if (_editorContext == context) return;
+    _editorContext = context;
     notifyListeners();
   }
 
@@ -87,7 +87,6 @@ class ChatProvider extends ChangeNotifier {
     _conversationId = null;
     _pendingMessage = null;
     _isStreaming = false;
-    _codeContext = null;
     _error = null;
     notifyListeners();
   }
@@ -122,7 +121,7 @@ class ChatProvider extends ChangeNotifier {
     _error = null;
 
     final dir = workDir ?? _workspacePath;
-    _channel!.sink.add(jsonEncode({'type': 'start', 'workDir': dir}));
+    _channel!.sink.add(jsonEncode({'type': 'start', 'workspaceRoot': dir}));
     notifyListeners();
   }
 
@@ -139,7 +138,13 @@ class ChatProvider extends ChangeNotifier {
     _streamingBlocks.clear();
     _error = null;
 
-    _channel!.sink.add(jsonEncode({'type': 'resume', 'sessionId': sessionId}));
+    _channel!.sink.add(
+      jsonEncode({
+        'type': 'resume',
+        'sessionId': sessionId,
+        'workspaceRoot': _workspacePath,
+      }),
+    );
     notifyListeners();
   }
 
@@ -151,22 +156,11 @@ class ChatProvider extends ChangeNotifier {
       return;
     }
 
-    // Build user message text, including code context if present
-    String messageText = text;
-    if (_codeContext != null) {
-      final ctx = _codeContext!;
-      messageText =
-          'Regarding the code in ${ctx.filePath} '
-          '(lines ${ctx.startLine}-${ctx.endLine}):\n'
-          '```\n${ctx.selectedText}\n```\n\n$text';
-      _codeContext = null; // Clear after sending
-    }
-
     // Add user message locally
     _messages.add(
       ChatMessage(
         role: 'user',
-        content: [ContentBlock(type: 'text', text: messageText)],
+        content: [ContentBlock(type: 'text', text: text)],
       ),
     );
 
@@ -178,7 +172,11 @@ class ChatProvider extends ChangeNotifier {
       jsonEncode({
         'type': 'send',
         'sessionId': _conversationId,
-        'message': messageText,
+        'message': text,
+        'workspaceRoot': _workspacePath,
+        'activeFile': _editorContext?.activeFile,
+        'cursor': _editorContext?.cursor?.toJson(),
+        'selection': _editorContext?.selection?.toJson(),
       }),
     );
     notifyListeners();
@@ -294,11 +292,11 @@ class ChatProvider extends ChangeNotifier {
   }
 
   /// Fetch session list from REST API.
-  /// Defaults to filtering by the current workspace project name.
+  /// Defaults to filtering by the exact current workspace root.
   /// Pass [allProjects] = true to show sessions from all workspaces.
   Future<void> loadSessions({
     String? query,
-    String? project,
+    String? workspaceRoot,
     bool allProjects = false,
   }) async {
     _isLoadingSessions = true;
@@ -306,11 +304,11 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final effectiveProject =
-          allProjects ? null : (project ?? WorkspaceProvider.nameForPath(_workspacePath));
+      final effectiveWorkspaceRoot =
+          allProjects ? null : (workspaceRoot ?? _workspacePath);
       _sessions = await _apiClient.getSessions(
         query: query,
-        project: effectiveProject,
+        workspaceRoot: effectiveWorkspaceRoot,
       );
     } catch (e) {
       _error = e.toString();

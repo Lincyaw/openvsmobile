@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:highlight/highlight.dart' show highlight, Node;
 import '../models/diagnostic.dart';
+import '../models/editor_context.dart';
 
 /// Maps highlight.js CSS class names to TextStyle.
 class _SyntaxTheme {
@@ -81,7 +82,8 @@ class _SyntaxTheme {
 class CodeViewer extends StatefulWidget {
   final String content;
   final String fileName;
-  final void Function(String selectedText)? onAskAi;
+  final VoidCallback? onAskAi;
+  final void Function(EditorSelection? selection)? onSelectionChanged;
   final VoidCallback? onEditRequested;
   final List<Diagnostic> diagnostics;
 
@@ -90,6 +92,7 @@ class CodeViewer extends StatefulWidget {
     required this.content,
     required this.fileName,
     this.onAskAi,
+    this.onSelectionChanged,
     this.onEditRequested,
     this.diagnostics = const [],
   });
@@ -269,6 +272,34 @@ class _CodeViewerState extends State<CodeViewer> {
     return spans;
   }
 
+  EditorSelection? _selectionFromText(String? text) {
+    if (text == null || text.isEmpty) return null;
+    final startOffset = widget.content.indexOf(text);
+    if (startOffset < 0) return null;
+    final endOffset = startOffset + text.length;
+    return EditorSelection(
+      start: _offsetToCursor(startOffset),
+      end: _offsetToCursor(endOffset),
+    );
+  }
+
+  EditorCursor _offsetToCursor(int rawOffset) {
+    final clampedOffset = rawOffset.clamp(0, widget.content.length);
+    var line = 1;
+    var column = 1;
+
+    for (var i = 0; i < clampedOffset; i++) {
+      if (widget.content.codeUnitAt(i) == 10) {
+        line++;
+        column = 1;
+      } else {
+        column++;
+      }
+    }
+
+    return EditorCursor(line: line, column: column);
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -300,11 +331,13 @@ class _CodeViewerState extends State<CodeViewer> {
                   if (text != null &&
                       text.isNotEmpty &&
                       text != _selectedText) {
+                    widget.onSelectionChanged?.call(_selectionFromText(text));
                     setState(() {
                       _selectedText = text;
                       _showToolbar = true;
                     });
                   } else if ((text == null || text.isEmpty) && _showToolbar) {
+                    widget.onSelectionChanged?.call(null);
                     final expectedGeneration = _selectionGeneration;
                     Future.delayed(const Duration(milliseconds: 300), () {
                       if (mounted &&
@@ -411,7 +444,7 @@ class _CodeViewerState extends State<CodeViewer> {
           _SelectionToolbar(
             onAskAi: widget.onAskAi != null
                 ? () {
-                    widget.onAskAi!(_selectedText!);
+                    widget.onAskAi!();
                     setState(() => _showToolbar = false);
                   }
                 : null,

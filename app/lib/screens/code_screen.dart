@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../models/chat_message.dart';
-import '../providers/chat_provider.dart';
 import '../providers/editor_provider.dart';
+import 'chat_screen.dart';
 import '../widgets/code_viewer.dart';
 import '../widgets/code_editor.dart';
 import '../widgets/contextual_chat.dart';
@@ -161,6 +160,13 @@ class _CodeScreenState extends State<CodeScreen> {
                       onContentChanged: (content) {
                         editorProvider.updateContent(content);
                       },
+                      onCursorChanged: editorProvider.updateCursor,
+                      onSelectionChanged: (selection, cursor) {
+                        editorProvider.updateSelection(
+                          selection,
+                          cursor: cursor,
+                        );
+                      },
                       onSave: hasChanges
                           ? () => editorProvider.saveCurrentFile()
                           : null,
@@ -169,19 +175,13 @@ class _CodeScreenState extends State<CodeScreen> {
                       content: file.currentContent,
                       fileName: file.name,
                       diagnostics: editorProvider.diagnostics,
-                      onAskAi: (selectedText) {
-                        editorProvider.setSelectedText(selectedText);
-                        // Set code context on ChatProvider so contextual chat
-                        // includes the selected code snippet.
-                        final lines = selectedText.split('\n');
-                        context.read<ChatProvider>().setCodeContext(
-                          CodeContext(
-                            filePath: file.path,
-                            startLine: 1,
-                            endLine: lines.length,
-                            selectedText: selectedText,
-                          ),
+                      onSelectionChanged: (selection) {
+                        editorProvider.updateSelection(
+                          selection,
+                          cursor: selection?.end ?? editorProvider.cursor,
                         );
+                      },
+                      onAskAi: () {
                         setState(() => _showChat = true);
                       },
                       onEditRequested: () {
@@ -192,6 +192,9 @@ class _CodeScreenState extends State<CodeScreen> {
                 ContextualChat(
                   onExpandToFullChat: () {
                     setState(() => _showChat = false);
+                    Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const ChatScreen()),
+                    );
                   },
                 ),
             ],
