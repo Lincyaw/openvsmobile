@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -40,7 +42,7 @@ func newFakeVSCodeServer(t *testing.T, failHandshakeAttempts int) (*httptest.Ser
 		}
 
 		attempt := fake.attempts.Add(1)
-		if attempt <= fake.failHandshakeAttempts {
+		if attempt <= atomic.LoadInt32(&fake.failHandshakeAttempts) {
 			_ = conn.Close()
 			return
 		}
@@ -333,6 +335,43 @@ func TestReconnectWithRetry_RetriesAfterTransientFailure(t *testing.T) {
 	}
 }
 
+func TestReconnectWithRetry_RecoversAfterDisconnectAndTransientReconnectFailure(t *testing.T) {
+	ts, fake := newFakeVSCodeServer(t, 0)
+	client := NewClient()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := client.Connect(ctx, ts.URL, ""); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close()
+
+	waitForProtocolMessage(t, fake.messages, ProtocolMessageRegular, 2*time.Second)
+
+	// Fail the next reconnect handshake once, then allow the retry to succeed.
+	atomic.StoreInt32(&fake.failHandshakeAttempts, fake.attempts.Load()+1)
+
+	reconnectCtx, reconnectCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer reconnectCancel()
+
+	start := time.Now()
+	if err := client.ReconnectWithRetry(reconnectCtx, ts.URL, "", 3); err != nil {
+		t.Fatalf("ReconnectWithRetry failed: %v", err)
+	}
+
+	if got := fake.attempts.Load(); got != 3 {
+		t.Fatalf("handshake attempts = %d, want 3 (initial connect + failed reconnect + successful reconnect)", got)
+	}
+	if elapsed := time.Since(start); elapsed < time.Second {
+		t.Fatalf("ReconnectWithRetry elapsed = %v, want at least one backoff interval", elapsed)
+	}
+
+	ctxMsg := waitForProtocolMessage(t, fake.messages, ProtocolMessageRegular, 2*time.Second)
+	if len(ctxMsg.Data) == 0 {
+		t.Fatal("expected IPC context bootstrap message after reconnect recovery")
+	}
+}
+
 func TestReconnectWithRetry_StopsWhenContextExpires(t *testing.T) {
 	client := NewClient()
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
@@ -371,4 +410,192 @@ func TestClientClose_SendsDisconnectFrame(t *testing.T) {
 	if disconnect.Type != ProtocolMessageDisconnect {
 		t.Fatalf("disconnect type = %v, want %v", disconnect.Type, ProtocolMessageDisconnect)
 	}
+}
+
+func TestBridgeManager_DisconnectTriggersReconnectAndBroadcastsRecovery(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "bridge.json")
+	writeBridgeMetadataFile(t, metadataPath, BridgeMetadata{
+		ProtocolVersion: defaultBridgeProtocolVersion,
+		Generation:      "gen-1",
+		State:           bridgeStateReady,
+		Capabilities:    map[string]interface{}{"workspace": map[string]interface{}{"enabled": true}},
+	})
+
+	client := NewClient()
+	reconnectStarted := make(chan struct{})
+	reconnectRelease := make(chan struct{})
+	var reconnectCalls atomic.Int32
+	manager := NewBridgeManager(BridgeManagerOptions{
+		MetadataPath: metadataPath,
+		Client:       client,
+		ReconnectFn: func(ctx context.Context) error {
+			reconnectCalls.Add(1)
+			close(reconnectStarted)
+			select {
+			case <-reconnectRelease:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	})
+	events, unsubscribe := manager.Subscribe(false)
+	defer unsubscribe()
+
+	manager.poll()
+	_ = mustReceiveBridgeEvent(t, events, 2*time.Second) // initial bridge/ready
+
+	client.onDisconnect(errors.New("transport closed"))
+
+	select {
+	case <-reconnectStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for reconnect to start")
+	}
+
+	if reconnectCalls.Load() != 1 {
+		t.Fatalf("reconnect calls = %d, want 1", reconnectCalls.Load())
+	}
+	if _, err := manager.Capabilities(); err == nil {
+		t.Fatal("expected bridge capabilities to be unavailable during reconnect")
+	}
+
+	// The stale pre-restart metadata must not make the bridge ready again.
+	manager.poll()
+	if _, err := manager.Capabilities(); err == nil {
+		t.Fatal("expected stale metadata to remain not-ready during reconnect")
+	}
+
+	writeBridgeMetadataFile(t, metadataPath, BridgeMetadata{
+		ProtocolVersion: defaultBridgeProtocolVersion,
+		Generation:      "gen-2",
+		State:           bridgeStateReady,
+		UpdatedAt:       time.Now().UTC(),
+		Capabilities:    map[string]interface{}{"workspace": map[string]interface{}{"enabled": true}},
+	})
+	close(reconnectRelease)
+
+	restarted := mustReceiveBridgeEvent(t, events, 2*time.Second)
+	if restarted.Type != "bridge/restarted" {
+		t.Fatalf("event type = %q, want bridge/restarted", restarted.Type)
+	}
+	ready := mustReceiveBridgeEvent(t, events, 2*time.Second)
+	if ready.Type != "bridge/ready" {
+		t.Fatalf("event type = %q, want bridge/ready", ready.Type)
+	}
+
+	caps, err := manager.Capabilities()
+	if err != nil {
+		t.Fatalf("Capabilities after reconnect failed: %v", err)
+	}
+	if caps.Capabilities["workspace"] == nil {
+		t.Fatalf("expected workspace capability after reconnect, got %#v", caps.Capabilities)
+	}
+}
+
+func TestBridgeManager_ReconnectFailureLeavesBridgeNotReady(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "bridge.json")
+	writeBridgeMetadataFile(t, metadataPath, BridgeMetadata{
+		ProtocolVersion: defaultBridgeProtocolVersion,
+		Generation:      "gen-1",
+		State:           bridgeStateReady,
+	})
+
+	client := NewClient()
+	manager := NewBridgeManager(BridgeManagerOptions{
+		MetadataPath:     metadataPath,
+		Client:           client,
+		ReconnectTimeout: 100 * time.Millisecond,
+		ReconnectFn: func(ctx context.Context) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	})
+
+	manager.poll()
+	client.onDisconnect(errors.New("transport closed"))
+	time.Sleep(150 * time.Millisecond)
+
+	_, err := manager.Capabilities()
+	if err == nil {
+		t.Fatal("expected bridge capabilities to remain unavailable after reconnect failure")
+	}
+	var bridgeErr *BridgeError
+	if !errors.As(err, &bridgeErr) {
+		t.Fatalf("error type = %T, want *BridgeError", err)
+	}
+	if !strings.Contains(bridgeErr.Error(), "reconnect vscode transport") {
+		t.Fatalf("bridge error = %q, want reconnect failure context", bridgeErr.Error())
+	}
+}
+
+func TestClientReconnect_PreservesIPCClientReferences(t *testing.T) {
+	ts, _ := newFakeVSCodeServer(t, 0)
+	client := NewClient()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := client.Connect(ctx, ts.URL, ""); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close()
+
+	originalIPC := client.IPC()
+	if originalIPC == nil {
+		t.Fatal("expected IPC client after initial connect")
+	}
+
+	if err := client.Reconnect(ctx, ts.URL, ""); err != nil {
+		t.Fatalf("Reconnect failed: %v", err)
+	}
+	if got := client.IPC(); got != originalIPC {
+		t.Fatal("expected reconnect to preserve IPC client identity")
+	}
+}
+
+func TestBridgeManager_ConcurrentDisconnectOnlyStartsOneReconnect(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "bridge.json")
+	writeBridgeMetadataFile(t, metadataPath, BridgeMetadata{
+		ProtocolVersion: defaultBridgeProtocolVersion,
+		Generation:      "gen-1",
+		State:           bridgeStateReady,
+	})
+
+	client := NewClient()
+	reconnectRelease := make(chan struct{})
+	var reconnectCalls atomic.Int32
+	manager := NewBridgeManager(BridgeManagerOptions{
+		MetadataPath: metadataPath,
+		Client:       client,
+		ReconnectFn: func(ctx context.Context) error {
+			reconnectCalls.Add(1)
+			select {
+			case <-reconnectRelease:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	})
+	manager.poll()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			client.onDisconnect(fmt.Errorf("transport closed %d", i))
+		}(i)
+	}
+	wg.Wait()
+	close(reconnectRelease)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if reconnectCalls.Load() == 1 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("reconnect calls = %d, want 1", reconnectCalls.Load())
 }

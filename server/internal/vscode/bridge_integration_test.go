@@ -3,6 +3,7 @@ package vscode
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -155,6 +156,43 @@ func waitForBridgeCapabilities(t *testing.T, baseURL string, timeout time.Durati
 	return false, BridgeCapabilitiesDocument{}
 }
 
+func waitForBridgeNotReady(t *testing.T, baseURL string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(baseURL + "/bridge/capabilities")
+		if err == nil {
+			var errBody struct {
+				Code string `json:"code"`
+			}
+			_ = json.NewDecoder(resp.Body).Decode(&errBody)
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusServiceUnavailable && errBody.Code == "bridge_not_ready" {
+				return
+			}
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s/bridge/capabilities to return bridge_not_ready", baseURL)
+}
+
+func waitForFileRead(t *testing.T, baseURL, path, want string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(baseURL + "/api/files" + path)
+		if err == nil {
+			body, readErr := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if readErr == nil && resp.StatusCode == http.StatusOK && string(body) == want {
+				return
+			}
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for file read via bridge-backed API: %s", path)
+}
+
 func dialBridgeEvents(t *testing.T, baseURL string) *websocket.Conn {
 	t.Helper()
 	wsURL := "ws" + strings.TrimPrefix(baseURL, "http") + "/bridge/ws/events"
@@ -199,6 +237,11 @@ func TestIntegration_BridgeLifecycle_EndToEnd(t *testing.T) {
 
 	_, baseURL := startBridgeAPIServer(t, fmt.Sprintf("http://127.0.0.1:%d", vscodePort))
 	conn := dialBridgeEvents(t, baseURL)
+	testFile := filepath.Join(t.TempDir(), "bridge-reconnect.txt")
+	testContent := "bridge reconnect transport ok\n"
+	if err := os.WriteFile(testFile, []byte(testContent), 0o644); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
 
 	sawNotReady, capabilities := waitForBridgeCapabilities(t, baseURL, 20*time.Second)
 	if !sawNotReady {
@@ -212,8 +255,10 @@ func TestIntegration_BridgeLifecycle_EndToEnd(t *testing.T) {
 	if readyEvents[0].Payload == nil {
 		t.Fatalf("expected ready event payload, got %+v", readyEvents[0])
 	}
+	waitForFileRead(t, baseURL, testFile, testContent, 20*time.Second)
 
 	stopProcess(openVSCodeCmd)
+	waitForBridgeNotReady(t, baseURL, 20*time.Second)
 	openVSCodeCmd, restartedPort := startTestServer(t)
 	defer stopProcess(openVSCodeCmd)
 	if restartedPort != vscodePort {
@@ -224,4 +269,13 @@ func TestIntegration_BridgeLifecycle_EndToEnd(t *testing.T) {
 	if events[0].Payload == nil || events[1].Payload == nil {
 		t.Fatalf("expected restarted/ready events to include payloads: %+v", events)
 	}
+
+	sawNotReady, recoveredCaps := waitForBridgeCapabilities(t, baseURL, 20*time.Second)
+	if !sawNotReady {
+		t.Fatal("expected bridge_not_ready while reconnecting after the OpenVSCode restart")
+	}
+	if recoveredCaps.ProtocolVersion == "" {
+		t.Fatal("expected protocolVersion in recovered bridge capabilities response")
+	}
+	waitForFileRead(t, baseURL, testFile, testContent, 20*time.Second)
 }

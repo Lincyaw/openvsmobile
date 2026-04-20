@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -73,6 +74,33 @@ func waitForReadyCapabilities(t *testing.T, baseURL string) vscode.BridgeCapabil
 	}
 	t.Fatal("timed out waiting for bridge capabilities")
 	return vscode.BridgeCapabilitiesDocument{}
+}
+
+func waitForNotReadyBridgeError(t *testing.T, baseURL string) bridgeErrorDetail {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(baseURL + "/bridge/capabilities")
+		if err != nil {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		if resp.StatusCode == http.StatusServiceUnavailable {
+			defer resp.Body.Close()
+			var body bridgeErrorDetail
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatalf("decode bridge error: %v", err)
+			}
+			if body.Code == "bridge_not_ready" {
+				return body
+			}
+		} else {
+			_ = resp.Body.Close()
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for bridge_not_ready error")
+	return bridgeErrorDetail{}
 }
 
 func dialBridgeEvents(t *testing.T, baseURL string) *websocket.Conn {
@@ -149,6 +177,53 @@ func TestBridgeCapabilities_ReadyReturnsRFCDocument(t *testing.T) {
 	}
 }
 
+func TestBridgeCapabilities_NotReadyWindowRecoversToUpdatedCapabilities(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "bridge.json")
+	manager := vscode.NewBridgeManager(vscode.BridgeManagerOptions{MetadataPath: metadataPath, PollInterval: 20 * time.Millisecond})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.Start(ctx)
+	defer manager.Close()
+
+	writeBridgeMetadata(t, metadataPath, vscode.BridgeMetadata{
+		Generation: "gen-1",
+		State:      "ready",
+		Capabilities: map[string]any{
+			"workspace": map[string]any{"enabled": false},
+		},
+	})
+
+	ts := newBridgeEnabledServer(t, manager)
+	initial := waitForReadyCapabilities(t, ts.URL)
+	workspace, ok := initial.Capabilities["workspace"].(map[string]any)
+	if !ok || workspace["enabled"] != false {
+		t.Fatalf("initial workspace capability = %#v, want enabled=false", initial.Capabilities["workspace"])
+	}
+
+	if err := os.Remove(metadataPath); err != nil {
+		t.Fatalf("remove metadata: %v", err)
+	}
+
+	notReady := waitForNotReadyBridgeError(t, ts.URL)
+	if notReady.Message == "" {
+		t.Fatal("expected bridge_not_ready message during reconnect window")
+	}
+
+	writeBridgeMetadata(t, metadataPath, vscode.BridgeMetadata{
+		Generation: "gen-2",
+		State:      "ready",
+		Capabilities: map[string]any{
+			"workspace": map[string]any{"enabled": true},
+		},
+	})
+
+	recovered := waitForReadyCapabilities(t, ts.URL)
+	workspace, ok = recovered.Capabilities["workspace"].(map[string]any)
+	if !ok || workspace["enabled"] != true {
+		t.Fatalf("recovered workspace capability = %#v, want enabled=true", recovered.Capabilities["workspace"])
+	}
+}
+
 func TestBridgeEventsWebSocket_ReplaysReadyThenBroadcastsRestartSequence(t *testing.T) {
 	metadataPath := filepath.Join(t.TempDir(), "bridge.json")
 	manager := vscode.NewBridgeManager(vscode.BridgeManagerOptions{MetadataPath: metadataPath, PollInterval: 20 * time.Millisecond})
@@ -221,5 +296,116 @@ func TestBridgeEventsWebSocket_DropsDisconnectedClientsWithoutBlockingLiveOnes(t
 	ready := readBridgeEvent(t, liveConn)
 	if ready.Type != "bridge/ready" {
 		t.Fatalf("live event type = %q, want bridge/ready", ready.Type)
+	}
+}
+
+func TestBridgeEventsWebSocket_BroadcastsRestartedThenReadyAfterNotReadyWindow(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "bridge.json")
+	manager := vscode.NewBridgeManager(vscode.BridgeManagerOptions{MetadataPath: metadataPath, PollInterval: 20 * time.Millisecond})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.Start(ctx)
+	defer manager.Close()
+
+	writeBridgeMetadata(t, metadataPath, vscode.BridgeMetadata{
+		Generation:   "gen-1",
+		State:        "ready",
+		Capabilities: map[string]any{},
+	})
+
+	ts := newBridgeEnabledServer(t, manager)
+	conn := dialBridgeEvents(t, ts.URL)
+
+	ready := readBridgeEvent(t, conn)
+	if ready.Type != "bridge/ready" {
+		t.Fatalf("first event type = %q, want bridge/ready", ready.Type)
+	}
+
+	if err := os.Remove(metadataPath); err != nil {
+		t.Fatalf("remove metadata: %v", err)
+	}
+	_ = waitForNotReadyBridgeError(t, ts.URL)
+
+	writeBridgeMetadata(t, metadataPath, vscode.BridgeMetadata{
+		Generation:   "gen-2",
+		State:        "ready",
+		Capabilities: map[string]any{},
+	})
+
+	restarted := readBridgeEvent(t, conn)
+	if restarted.Type != "bridge/restarted" {
+		t.Fatalf("second event type = %q, want bridge/restarted", restarted.Type)
+	}
+	ready = readBridgeEvent(t, conn)
+	if ready.Type != "bridge/ready" {
+		t.Fatalf("third event type = %q, want bridge/ready", ready.Type)
+	}
+}
+
+func TestBridgeCapabilities_ReconnectWindowReturnsNotReadyUntilRecoveryCompletes(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "bridge.json")
+	writeBridgeMetadata(t, metadataPath, vscode.BridgeMetadata{
+		Generation:   "gen-1",
+		State:        "ready",
+		Capabilities: map[string]any{},
+	})
+
+	client := vscode.NewClient()
+	reconnectStarted := make(chan struct{})
+	reconnectRelease := make(chan struct{})
+	manager := vscode.NewBridgeManager(vscode.BridgeManagerOptions{
+		MetadataPath: metadataPath,
+		Client:       client,
+		ReconnectFn: func(ctx context.Context) error {
+			close(reconnectStarted)
+			select {
+			case <-reconnectRelease:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	})
+	manager.Start(context.Background())
+	defer manager.Close()
+
+	ts := newBridgeEnabledServer(t, manager)
+	_ = waitForReadyCapabilities(t, ts.URL)
+
+	manager.NotifyTransportLost(errors.New("transport closed"))
+
+	select {
+	case <-reconnectStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for reconnect to start")
+	}
+
+	resp, err := http.Get(ts.URL + "/bridge/capabilities")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+	var errBody bridgeErrorDetail
+	if err := json.NewDecoder(resp.Body).Decode(&errBody); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if errBody.Code != "bridge_not_ready" {
+		t.Fatalf("error code = %q, want bridge_not_ready", errBody.Code)
+	}
+
+	writeBridgeMetadata(t, metadataPath, vscode.BridgeMetadata{
+		Generation:   "gen-2",
+		State:        "ready",
+		UpdatedAt:    time.Now().UTC(),
+		Capabilities: map[string]any{},
+	})
+	close(reconnectRelease)
+
+	doc := waitForReadyCapabilities(t, ts.URL)
+	if doc.ProtocolVersion == "" {
+		t.Fatal("expected ready capabilities after reconnect")
 	}
 }

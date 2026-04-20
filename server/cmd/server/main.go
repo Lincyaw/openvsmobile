@@ -69,7 +69,11 @@ func main() {
 		}
 		fsp := vscode.NewFileSystemProxy(vsClient.IPC(), "vscode-remote")
 		fs = api.NewVSCodeFSAdapter(fsp)
-		bridgeManager = vscode.NewBridgeManager(vscode.BridgeManagerOptions{Client: vsClient})
+		bridgeManager = vscode.NewBridgeManager(vscode.BridgeManagerOptions{
+			Client:          vsClient,
+			ServerURL:       vsCodeURL,
+			ConnectionToken: vsCodeTok,
+		})
 		bridgeManager.Start(bridgeCtx)
 		log.Printf("mobile runtime bridge discovery watching %s", bridgeManager.MetadataPath())
 	}

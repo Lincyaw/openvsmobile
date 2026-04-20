@@ -71,22 +71,33 @@ func newBridgeError(code, message string, cause error) *BridgeError {
 
 // BridgeManagerOptions controls bridge lifecycle discovery.
 type BridgeManagerOptions struct {
-	MetadataPath string
-	PollInterval time.Duration
-	Client       *Client
+	MetadataPath        string
+	PollInterval        time.Duration
+	Client              *Client
+	ServerURL           string
+	ConnectionToken     string
+	ReconnectMaxRetries int
+	ReconnectTimeout    time.Duration
+	ReconnectFn         func(context.Context) error
 }
 
 // BridgeManager discovers the runtime bridge, tracks readiness, and broadcasts lifecycle events.
 type BridgeManager struct {
 	metadataPath string
 	pollInterval time.Duration
+	client       *Client
+	reconnectFn  func(context.Context) error
+	reconnectTTL time.Duration
 
-	mu           sync.RWMutex
-	ready        bool
-	generation   string
-	capabilities BridgeCapabilitiesDocument
-	lastErr      error
-	subscribers  map[chan BridgeEvent]struct{}
+	mu                    sync.RWMutex
+	ready                 bool
+	generation            string
+	awaitingNewGeneration string
+	disconnectedAt        time.Time
+	capabilities          BridgeCapabilitiesDocument
+	lastErr               error
+	subscribers           map[chan BridgeEvent]struct{}
+	reconnecting          bool
 
 	closeOnce sync.Once
 	stopCh    chan struct{}
@@ -106,12 +117,29 @@ func NewBridgeManager(opts BridgeManagerOptions) *BridgeManager {
 	m := &BridgeManager{
 		metadataPath: metadataPath,
 		pollInterval: pollInterval,
+		client:       opts.Client,
+		reconnectTTL: opts.ReconnectTimeout,
 		stopCh:       make(chan struct{}),
 		subscribers:  make(map[chan BridgeEvent]struct{}),
 	}
+	if m.reconnectTTL <= 0 {
+		m.reconnectTTL = 30 * time.Second
+	}
+	switch {
+	case opts.ReconnectFn != nil:
+		m.reconnectFn = opts.ReconnectFn
+	case opts.Client != nil && opts.ServerURL != "":
+		maxRetries := opts.ReconnectMaxRetries
+		if maxRetries <= 0 {
+			maxRetries = 5
+		}
+		m.reconnectFn = func(ctx context.Context) error {
+			return opts.Client.ReconnectWithRetry(ctx, opts.ServerURL, opts.ConnectionToken, maxRetries)
+		}
+	}
 	if opts.Client != nil {
 		opts.Client.SetDisconnectHandler(func(err error) {
-			m.markNotReady(err)
+			m.NotifyTransportLost(err)
 		})
 	}
 	return m
@@ -152,6 +180,12 @@ func (m *BridgeManager) Close() {
 	m.closeOnce.Do(func() {
 		close(m.stopCh)
 	})
+}
+
+// NotifyTransportLost marks the bridge transport unhealthy and starts recovery
+// when reconnect support is configured.
+func (m *BridgeManager) NotifyTransportLost(err error) {
+	m.handleDisconnect(err)
 }
 
 // MetadataPath returns the discovery file path.
@@ -217,6 +251,10 @@ func (m *BridgeManager) poll() {
 		m.markNotReady(fmt.Errorf("bridge state=%s", metadata.State))
 		return
 	}
+	if err := m.validateMetadata(metadata); err != nil {
+		m.markNotReady(err)
+		return
+	}
 	m.applyMetadata(metadata)
 }
 
@@ -254,6 +292,7 @@ func (m *BridgeManager) applyMetadata(metadata BridgeMetadata) {
 	generationChanged := previousGeneration != "" && previousGeneration != metadata.Generation
 	m.ready = true
 	m.generation = metadata.Generation
+	m.awaitingNewGeneration = ""
 	m.capabilities = caps
 	m.lastErr = nil
 	m.mu.Unlock()
@@ -286,6 +325,81 @@ func (m *BridgeManager) markNotReady(err error) {
 	m.capabilities = BridgeCapabilitiesDocument{}
 	m.lastErr = err
 	m.mu.Unlock()
+}
+
+func (m *BridgeManager) validateMetadata(metadata BridgeMetadata) error {
+	m.mu.RLock()
+	reconnecting := m.reconnecting
+	awaiting := m.awaitingNewGeneration
+	disconnectedAt := m.disconnectedAt
+	m.mu.RUnlock()
+
+	if reconnecting {
+		return fmt.Errorf("waiting for vscode transport reconnection")
+	}
+	if awaiting != "" && metadata.Generation == awaiting {
+		if !metadata.UpdatedAt.IsZero() && metadata.UpdatedAt.After(disconnectedAt) {
+			return nil
+		}
+		return fmt.Errorf("waiting for new bridge generation after reconnect")
+	}
+	return nil
+}
+
+func (m *BridgeManager) handleDisconnect(err error) {
+	select {
+	case <-m.stopCh:
+		return
+	default:
+	}
+
+	m.mu.Lock()
+	if m.reconnecting {
+		m.mu.Unlock()
+		return
+	}
+	m.reconnecting = true
+	if m.generation != "" {
+		m.awaitingNewGeneration = m.generation
+	}
+	m.disconnectedAt = time.Now().UTC()
+	m.mu.Unlock()
+
+	m.markNotReady(err)
+	if m.reconnectFn == nil {
+		m.mu.Lock()
+		m.reconnecting = false
+		m.mu.Unlock()
+		return
+	}
+
+	go m.reconnectTransport()
+}
+
+func (m *BridgeManager) reconnectTransport() {
+	ctx, cancel := context.WithTimeout(context.Background(), m.reconnectTTL)
+	defer cancel()
+	go func() {
+		select {
+		case <-m.stopCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	err := m.reconnectFn(ctx)
+	m.mu.Lock()
+	m.reconnecting = false
+	m.mu.Unlock()
+
+	if err != nil {
+		m.markNotReady(fmt.Errorf("reconnect vscode transport: %w", err))
+		return
+	}
+
+	// Re-evaluate bridge metadata immediately after transport recovery so the
+	// next lifecycle transition does not wait for the periodic poll tick.
+	m.poll()
 }
 
 func (m *BridgeManager) broadcast(event BridgeEvent) {
