@@ -35,6 +35,7 @@ type Server struct {
 	token            string
 	git              *git.Git
 	gitService       *vscode.GitService
+	editorService    *vscode.EditorService
 	termManager      *terminal.Manager
 	diagnosticRunner *diagnostics.Runner
 	githubAuth       *gitauth.Service
@@ -79,6 +80,11 @@ func (s *Server) SetDocumentSync(service *vscode.DocumentSyncService) {
 	s.documentSync = service
 }
 
+// SetEditorService injects the bridge-backed editor intelligence service.
+func (s *Server) SetEditorService(service *vscode.EditorService) {
+	s.editorService = service
+}
+
 // Handler returns the top-level HTTP handler with all routes.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -113,6 +119,16 @@ func (s *Server) Handler() http.Handler {
 	// Diagnostics endpoint.
 	mux.HandleFunc("GET /api/diagnostics", s.handleDiagnostics)
 	mux.HandleFunc("GET /bridge/capabilities", s.handleBridgeCapabilities)
+	mux.HandleFunc("POST /bridge/editor/diagnostics", s.handleBridgeEditorDiagnostics)
+	mux.HandleFunc("POST /bridge/editor/completion", s.handleBridgeEditorCompletion)
+	mux.HandleFunc("POST /bridge/editor/hover", s.handleBridgeEditorHover)
+	mux.HandleFunc("POST /bridge/editor/definition", s.handleBridgeEditorDefinition)
+	mux.HandleFunc("POST /bridge/editor/references", s.handleBridgeEditorReferences)
+	mux.HandleFunc("POST /bridge/editor/signature-help", s.handleBridgeEditorSignatureHelp)
+	mux.HandleFunc("POST /bridge/editor/formatting", s.handleBridgeEditorFormatting)
+	mux.HandleFunc("POST /bridge/editor/code-actions", s.handleBridgeEditorCodeActions)
+	mux.HandleFunc("POST /bridge/editor/rename", s.handleBridgeEditorRename)
+	mux.HandleFunc("POST /bridge/editor/document-symbols", s.handleBridgeEditorDocumentSymbols)
 	mux.HandleFunc("POST /bridge/doc/open", s.handleBridgeDocumentOpen)
 	mux.HandleFunc("POST /bridge/doc/change", s.handleBridgeDocumentChange)
 	mux.HandleFunc("POST /bridge/doc/save", s.handleBridgeDocumentSave)
