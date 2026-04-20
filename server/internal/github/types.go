@@ -27,8 +27,11 @@ var (
 	ErrRefreshNotSupported    = errors.New("github refresh token support is required")
 	ErrReauthRequired         = errors.New("github reauthorization required")
 	ErrNotAuthenticated       = errors.New("github not authenticated")
+	ErrRepoNotGitHub          = errors.New("current workspace is not a github repository")
 	ErrRepoAccessUnavailable  = errors.New("github repo access unavailable")
 	ErrAppNotInstalledForRepo = errors.New("github app not installed for repo")
+	ErrInvalidRequest         = errors.New("github invalid request")
+	ErrNotFound               = errors.New("github resource not found")
 )
 
 type DeviceCodeResponse struct {
@@ -52,8 +55,10 @@ type TokenResponse struct {
 }
 
 type User struct {
-	Login string `json:"login"`
-	ID    int64  `json:"id"`
+	Login     string `json:"login"`
+	ID        int64  `json:"id"`
+	AvatarURL string `json:"avatar_url,omitempty"`
+	HTMLURL   string `json:"html_url,omitempty"`
 }
 
 type Repository struct {
@@ -141,6 +146,210 @@ type CurrentRepoContext struct {
 	Message    string      `json:"message,omitempty"`
 }
 
+type Account struct {
+	Login     string `json:"login"`
+	ID        int64  `json:"id"`
+	Name      string `json:"name,omitempty"`
+	AvatarURL string `json:"avatar_url,omitempty"`
+	HTMLURL   string `json:"html_url,omitempty"`
+}
+
+type Actor struct {
+	Login     string `json:"login"`
+	ID        int64  `json:"id"`
+	AvatarURL string `json:"avatar_url,omitempty"`
+	HTMLURL   string `json:"html_url,omitempty"`
+}
+
+type Label struct {
+	Name  string `json:"name"`
+	Color string `json:"color,omitempty"`
+}
+
+type PullRequestRef struct {
+	Label string `json:"label,omitempty"`
+	Ref   string `json:"ref,omitempty"`
+	SHA   string `json:"sha,omitempty"`
+}
+
+type PullRequestChecks struct {
+	State        string                `json:"state"`
+	TotalCount   int                   `json:"total_count"`
+	SuccessCount int                   `json:"success_count"`
+	PendingCount int                   `json:"pending_count"`
+	FailureCount int                   `json:"failure_count"`
+	Checks       []PullRequestCheckRun `json:"checks"`
+}
+
+type PullRequestCheckRun struct {
+	Name        string     `json:"name"`
+	Status      string     `json:"status"`
+	Conclusion  string     `json:"conclusion,omitempty"`
+	DetailsURL  string     `json:"details_url,omitempty"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+}
+
+type Issue struct {
+	Number        int        `json:"number"`
+	Title         string     `json:"title"`
+	State         string     `json:"state"`
+	Body          string     `json:"body,omitempty"`
+	HTMLURL       string     `json:"html_url,omitempty"`
+	CommentsCount int        `json:"comments_count"`
+	Locked        bool       `json:"locked"`
+	Author        *Actor     `json:"author,omitempty"`
+	Assignees     []Actor    `json:"assignees,omitempty"`
+	Labels        []Label    `json:"labels,omitempty"`
+	CreatedAt     *time.Time `json:"created_at,omitempty"`
+	UpdatedAt     *time.Time `json:"updated_at,omitempty"`
+	ClosedAt      *time.Time `json:"closed_at,omitempty"`
+}
+
+type IssueComment struct {
+	ID        int64      `json:"id"`
+	Body      string     `json:"body"`
+	HTMLURL   string     `json:"html_url,omitempty"`
+	Author    *Actor     `json:"author,omitempty"`
+	CreatedAt *time.Time `json:"created_at,omitempty"`
+	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+}
+
+type PullRequest struct {
+	Number              int                `json:"number"`
+	Title               string             `json:"title"`
+	State               string             `json:"state"`
+	Body                string             `json:"body,omitempty"`
+	HTMLURL             string             `json:"html_url,omitempty"`
+	Draft               bool               `json:"draft"`
+	Merged              bool               `json:"merged"`
+	Mergeable           *bool              `json:"mergeable,omitempty"`
+	MergeableState      string             `json:"mergeable_state,omitempty"`
+	CommentsCount       int                `json:"comments_count"`
+	ReviewCommentsCount int                `json:"review_comments_count"`
+	CommitsCount        int                `json:"commits_count"`
+	Additions           int                `json:"additions"`
+	Deletions           int                `json:"deletions"`
+	ChangedFiles        int                `json:"changed_files"`
+	Author              *Actor             `json:"author,omitempty"`
+	Assignees           []Actor            `json:"assignees,omitempty"`
+	Labels              []Label            `json:"labels,omitempty"`
+	BaseRef             PullRequestRef     `json:"base_ref"`
+	HeadRef             PullRequestRef     `json:"head_ref"`
+	CreatedAt           *time.Time         `json:"created_at,omitempty"`
+	UpdatedAt           *time.Time         `json:"updated_at,omitempty"`
+	ClosedAt            *time.Time         `json:"closed_at,omitempty"`
+	MergedAt            *time.Time         `json:"merged_at,omitempty"`
+	Checks              *PullRequestChecks `json:"checks,omitempty"`
+}
+
+type PullRequestFile struct {
+	SHA              string `json:"sha,omitempty"`
+	Filename         string `json:"filename"`
+	Status           string `json:"status"`
+	Additions        int    `json:"additions"`
+	Deletions        int    `json:"deletions"`
+	Changes          int    `json:"changes"`
+	BlobURL          string `json:"blob_url,omitempty"`
+	RawURL           string `json:"raw_url,omitempty"`
+	Patch            string `json:"patch,omitempty"`
+	PreviousFilename string `json:"previous_filename,omitempty"`
+}
+
+type PullRequestComment struct {
+	ID               int64      `json:"id"`
+	Body             string     `json:"body"`
+	HTMLURL          string     `json:"html_url,omitempty"`
+	Path             string     `json:"path,omitempty"`
+	DiffHunk         string     `json:"diff_hunk,omitempty"`
+	CommitID         string     `json:"commit_id,omitempty"`
+	OriginalCommitID string     `json:"original_commit_id,omitempty"`
+	Position         int        `json:"position,omitempty"`
+	OriginalPosition int        `json:"original_position,omitempty"`
+	Line             int        `json:"line,omitempty"`
+	OriginalLine     int        `json:"original_line,omitempty"`
+	Side             string     `json:"side,omitempty"`
+	StartLine        int        `json:"start_line,omitempty"`
+	StartSide        string     `json:"start_side,omitempty"`
+	InReplyToID      int64      `json:"in_reply_to_id,omitempty"`
+	Author           *Actor     `json:"author,omitempty"`
+	CreatedAt        *time.Time `json:"created_at,omitempty"`
+	UpdatedAt        *time.Time `json:"updated_at,omitempty"`
+}
+
+type PullRequestReview struct {
+	ID          int64      `json:"id"`
+	Body        string     `json:"body,omitempty"`
+	State       string     `json:"state,omitempty"`
+	CommitID    string     `json:"commit_id,omitempty"`
+	HTMLURL     string     `json:"html_url,omitempty"`
+	Author      *Actor     `json:"author,omitempty"`
+	SubmittedAt *time.Time `json:"submitted_at,omitempty"`
+}
+
+type IssueListOptions struct {
+	State     string
+	Sort      string
+	Direction string
+	Since     string
+	Labels    string
+	Creator   string
+	Mentioned string
+	Assignee  string
+	Milestone string
+	Page      int
+	PerPage   int
+}
+
+type PullRequestListOptions struct {
+	State     string
+	Head      string
+	Base      string
+	Sort      string
+	Direction string
+	Page      int
+	PerPage   int
+}
+
+type ListOptions struct {
+	Sort      string
+	Direction string
+	Since     string
+	Page      int
+	PerPage   int
+}
+
+type CreateIssueCommentInput struct {
+	Body string `json:"body"`
+}
+
+type CreatePullRequestCommentInput struct {
+	Body      string `json:"body"`
+	Path      string `json:"path,omitempty"`
+	CommitID  string `json:"commit_id,omitempty"`
+	Side      string `json:"side,omitempty"`
+	StartSide string `json:"start_side,omitempty"`
+	Line      int    `json:"line,omitempty"`
+	StartLine int    `json:"start_line,omitempty"`
+	InReplyTo int64  `json:"in_reply_to,omitempty"`
+}
+
+type PullRequestReviewDraftComment struct {
+	Body      string `json:"body"`
+	Path      string `json:"path,omitempty"`
+	Side      string `json:"side,omitempty"`
+	StartSide string `json:"start_side,omitempty"`
+	Line      int    `json:"line,omitempty"`
+	StartLine int    `json:"start_line,omitempty"`
+}
+
+type CreatePullRequestReviewInput struct {
+	Event    string                          `json:"event,omitempty"`
+	Body     string                          `json:"body,omitempty"`
+	CommitID string                          `json:"commit_id,omitempty"`
+	Comments []PullRequestReviewDraftComment `json:"comments,omitempty"`
+}
+
 type HostError struct {
 	Host string
 	Err  error
@@ -222,10 +431,16 @@ func ErrorCode(err error) string {
 		return "reauth_required"
 	case errors.Is(err, ErrNotAuthenticated):
 		return "not_authenticated"
+	case errors.Is(err, ErrRepoNotGitHub):
+		return "repo_not_github"
 	case errors.Is(err, ErrRepoAccessUnavailable):
 		return "repo_access_unavailable"
 	case errors.Is(err, ErrAppNotInstalledForRepo):
 		return "app_not_installed_for_repo"
+	case errors.Is(err, ErrInvalidRequest):
+		return "invalid_request"
+	case errors.Is(err, ErrNotFound):
+		return "not_found"
 	default:
 		return "github_auth_error"
 	}

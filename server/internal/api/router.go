@@ -129,6 +129,9 @@ func (s *Server) Handler() http.Handler {
 	// GitHub repo context endpoints.
 	s.registerGitHubRepoContextRoutes(mux)
 
+	// GitHub collaboration endpoints.
+	s.registerGitHubCollaborationRoutes(mux)
+
 	// GitHub auth endpoints.
 	s.registerGitHubAuthRoutes(mux)
 

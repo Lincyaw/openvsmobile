@@ -15,6 +15,16 @@ All routes are available with or without the `/api` prefix:
 - `POST /github/auth/device/poll`
 - `GET /github/auth/status`
 - `POST /github/auth/disconnect`
+- `GET /github/account`
+- `GET /github/issues`
+- `GET /github/issues/{number}`
+- `POST /github/issues/{number}/comments`
+- `GET /github/pulls`
+- `GET /github/pulls/{number}`
+- `GET /github/pulls/{number}/files`
+- `GET /github/pulls/{number}/comments`
+- `POST /github/pulls/{number}/comments`
+- `POST /github/pulls/{number}/reviews`
 
 ### `GET /github/repos/current`
 
@@ -222,3 +232,203 @@ Before a token-backed GitHub API call runs, the server calls the shared refresh
 preflight. If refresh succeeds, the record is replaced atomically. If refresh
 fails because the refresh token is invalid or expired, callers receive a
 structured `reauth_required` error so the client can restart device flow.
+
+
+## Collaboration endpoints
+
+All collaboration routes derive the current repository from the same workspace
+`path`/repo-context logic as `GET /github/repos/current`. `path` is optional on
+all `GET` endpoints and defaults to the server work dir. `workspace_path` is the
+matching optional field for `POST` requests.
+
+### `GET /github/account`
+
+Returns the authenticated GitHub account for the current repository host.
+
+Example response:
+
+```json
+{
+  "github_host": "github.com",
+  "repository": {
+    "github_host": "github.com",
+    "owner": "octo-org",
+    "name": "mobile-app",
+    "full_name": "octo-org/mobile-app",
+    "remote_name": "origin",
+    "remote_url": "git@github.com:octo-org/mobile-app.git",
+    "repo_root": "/workspace/mobile-app"
+  },
+  "account": {
+    "login": "octocat",
+    "id": 9,
+    "name": "The Octocat",
+    "avatar_url": "https://avatars.githubusercontent.com/u/9?v=4",
+    "html_url": "https://github.com/octocat"
+  }
+}
+```
+
+### `GET /github/issues`
+
+Supported query params are passed through to the repo issues REST API with
+snake_case responses: `state`, `sort`, `direction`, `since`, `labels`,
+`creator`, `mentioned`, `assignee`, `milestone`, `page`, and `per_page`.
+Pull-request-backed issue records are filtered out from this list.
+
+Example response:
+
+```json
+{
+  "repository": {
+    "full_name": "octo-org/mobile-app"
+  },
+  "issues": [
+    {
+      "number": 42,
+      "title": "Fix flaky mobile reconnect",
+      "state": "open",
+      "body": "Reconnect can stall after sleep...",
+      "html_url": "https://github.com/octo-org/mobile-app/issues/42",
+      "comments_count": 3,
+      "locked": false,
+      "author": {
+        "login": "octocat",
+        "id": 9
+      },
+      "labels": [
+        {
+          "name": "bug",
+          "color": "d73a4a"
+        }
+      ],
+      "created_at": "2026-04-19T10:00:00Z",
+      "updated_at": "2026-04-20T08:30:00Z"
+    }
+  ]
+}
+```
+
+### `GET /github/issues/{number}`
+
+Returns the normalized issue detail payload for the current repository.
+
+### `POST /github/issues/{number}/comments`
+
+Request body:
+
+```json
+{
+  "workspace_path": "/workspace/mobile-app",
+  "body": "I can take this one."
+}
+```
+
+Response body:
+
+```json
+{
+  "repository": {
+    "full_name": "octo-org/mobile-app"
+  },
+  "comment": {
+    "id": 1001,
+    "body": "I can take this one.",
+    "html_url": "https://github.com/octo-org/mobile-app/issues/42#issuecomment-1001",
+    "author": {
+      "login": "octocat",
+      "id": 9
+    },
+    "created_at": "2026-04-20T09:00:00Z"
+  }
+}
+```
+
+### `GET /github/pulls`
+
+Supported query params: `state`, `assigned_to_me`, `created_by_me`, `mentioned`,
+`needs_review`, `head`, `base`, `sort`, `direction`, `page`, and `per_page`.
+Current-user PR filters use a repo-scoped search query so they can be combined
+with pagination and state while still returning normalized PR payloads.
+
+### `GET /github/pulls/{number}`
+
+Returns the normalized pull request detail plus aggregated commit status/check
+summary under `pull_request.checks`.
+
+Example `checks` payload:
+
+```json
+{
+  "state": "pending",
+  "total_count": 3,
+  "success_count": 1,
+  "pending_count": 1,
+  "failure_count": 1,
+  "checks": [
+    {
+      "name": "ci / unit-tests",
+      "status": "completed",
+      "conclusion": "success",
+      "details_url": "https://github.com/octo-org/mobile-app/actions/runs/1"
+    },
+    {
+      "name": "buildkite/mobile",
+      "status": "pending",
+      "details_url": "https://buildkite.example/run/2"
+    }
+  ]
+}
+```
+
+### `GET /github/pulls/{number}/files`
+
+Returns normalized changed-file entries with `filename`, `status`, `additions`,
+`deletions`, `changes`, optional `patch`, and optional `previous_filename`.
+
+### `GET /github/pulls/{number}/comments`
+
+Returns normalized review-thread comment entries for the pull request.
+Supported query params: `sort`, `direction`, `since`, `page`, and `per_page`.
+
+### `POST /github/pulls/{number}/comments`
+
+Creates a PR review comment. For inline comments provide `body`, `path`,
+`commit_id`, and `line`; for replies provide `body` plus `in_reply_to`.
+Optional multi-line anchors use `side`, `start_line`, and `start_side`.
+
+### `POST /github/pulls/{number}/reviews`
+
+Creates a pull-request review. `event` should be one of `COMMENT`, `APPROVE`,
+or `REQUEST_CHANGES`. Draft review comments use normalized snake_case fields.
+
+Example request:
+
+```json
+{
+  "workspace_path": "/workspace/mobile-app",
+  "event": "REQUEST_CHANGES",
+  "body": "Please tighten the retry bounds.",
+  "comments": [
+    {
+      "body": "This branch can loop forever.",
+      "path": "server/internal/github/service.go",
+      "line": 142,
+      "side": "RIGHT"
+    }
+  ]
+}
+```
+
+## Collaboration error contract
+
+These endpoints return JSON errors via the same `error_code`/`message` envelope
+used by auth routes. Expected collaboration error codes include:
+
+- `repo_not_github`: the workspace path does not resolve to a GitHub-backed repository
+- `invalid_request`: missing/invalid route params, query params, or request body
+- `not_authenticated`: no stored GitHub auth session exists for the repo host
+- `reauth_required`: refresh failed or the access token is no longer usable
+- `repo_access_unavailable`: GitHub rejected repository access for the account
+- `not_found`: the repo-scoped issue, pull request, or nested resource was not found
+- `github_auth_error`: upstream GitHub request failed in an unexpected way
