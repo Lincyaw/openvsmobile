@@ -1,16 +1,25 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:vscode_mobile/models/diagnostic.dart';
+import 'package:vscode_mobile/models/editor_context.dart';
 import 'package:vscode_mobile/models/github_collaboration_models.dart';
+import 'package:vscode_mobile/providers/chat_provider.dart';
 import 'package:vscode_mobile/providers/editor_provider.dart';
 import 'package:vscode_mobile/providers/github_collaboration_provider.dart';
+import 'package:vscode_mobile/providers/workspace_provider.dart';
+import 'package:vscode_mobile/screens/chat_screen.dart';
 import 'package:vscode_mobile/screens/code_screen.dart';
 import 'package:vscode_mobile/screens/github_pull_request_detail_screen.dart';
 import 'package:vscode_mobile/services/api_client.dart';
 import 'package:vscode_mobile/services/github_collaboration_api_client.dart';
 import 'package:vscode_mobile/services/settings_service.dart';
+
+import '../test_support/chat_test_helpers.dart';
+import '../test_support/editor_test_helpers.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -18,6 +27,62 @@ void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues(<String, Object>{});
   });
+
+  testWidgets(
+    'renders PR AI action, opens chat, and attaches only PR context',
+    (tester) async {
+      final harness = await _buildHarness();
+
+      await tester.pumpWidget(harness.widget);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Summarize PR'), findsOneWidget);
+
+      await tester.tap(find.text('Summarize PR'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(ChatScreen), findsOneWidget);
+
+      final attachment = pendingChatAttachmentJson(harness.chatProvider);
+      final encoded = jsonEncode(attachment);
+      expect(encoded.toLowerCase(), contains('pull'));
+      expect(encoded, contains('Add collaboration UI'));
+      expect(encoded, contains('Implements the GitHub collaboration flow.'));
+      expect(encoded, isNot(contains('Inline note')));
+      expect(encoded, isNot(contains('@@ -10,1 +42,2 @@')));
+    },
+  );
+
+  testWidgets(
+    'review comment AI action attaches only the selected comment and path',
+    (tester) async {
+      final harness = await _buildHarness();
+
+      await tester.pumpWidget(harness.widget);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Conversation'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Inline note'), findsOneWidget);
+      expect(find.text('Second inline note'), findsOneWidget);
+      expect(find.text('Check comment'), findsWidgets);
+
+      await tester.tap(find.text('Check comment').first);
+      await tester.pumpAndSettle();
+
+      expect(find.byType(ChatScreen), findsOneWidget);
+
+      final attachment = pendingChatAttachmentJson(harness.chatProvider);
+      final encoded = jsonEncode(attachment);
+      expect(encoded.toLowerCase(), contains('comment'));
+      expect(encoded, contains('Add collaboration UI'));
+      expect(encoded, contains('Inline note'));
+      expect(encoded, contains('app/lib/main.dart'));
+      expect(encoded, isNot(contains('Second inline note')));
+      expect(encoded, isNot(contains('@@ -10,1 +42,2 @@')));
+    },
+  );
 
   testWidgets('renders checks and submits a review action', (tester) async {
     final harness = await _buildHarness();
@@ -77,7 +142,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(CodeScreen), findsOneWidget);
-    expect(harness.editorProvider.currentFile?.path, '/workspace/repo/app/lib/main.dart');
+    expect(
+      harness.editorProvider.currentFile?.path,
+      '/workspace/repo/app/lib/main.dart',
+    );
     expect(harness.editorProvider.cursor?.line, 42);
   });
 
@@ -111,11 +179,13 @@ class _Harness {
   final Widget widget;
   final _FakeGitHubCollaborationApiClient collabApi;
   final EditorProvider editorProvider;
+  final ChatProvider chatProvider;
 
   const _Harness({
     required this.widget,
     required this.collabApi,
     required this.editorProvider,
+    required this.chatProvider,
   });
 }
 
@@ -124,19 +194,42 @@ Future<_Harness> _buildHarness() async {
   await settings.save('http://server.test', 'secret-token');
   final collabApi = _FakeGitHubCollaborationApiClient(settings);
   final editorApi = _FakeApiClient(settings);
+  final editorBridgeApi = FakeEditorApiClient(settings: settings);
   final collabProvider = GitHubCollaborationProvider(apiClient: collabApi);
   await collabProvider.setWorkspacePath('/workspace/repo');
-  final editorProvider = EditorProvider(apiClient: editorApi);
+  await collabProvider.loadCurrentRepo();
+  final editorProvider = EditorProvider(
+    apiClient: editorApi,
+    editorApiClient: editorBridgeApi,
+  );
+  final chatProvider = ChatProvider(
+    apiClient: FakeChatApiClient(channel: RecordingWebSocketChannel()),
+  );
+  chatProvider.setWorkspace('/workspace/repo');
+  chatProvider.setEditorContext(
+    const EditorChatContext(
+      activeFile: '/workspace/repo/app/lib/main.dart',
+      cursor: EditorCursor(line: 42, column: 1),
+      selection: null,
+    ),
+  );
+  final workspaceProvider = WorkspaceProvider();
+  await workspaceProvider.setWorkspace('/workspace/repo');
 
   return _Harness(
     collabApi: collabApi,
     editorProvider: editorProvider,
+    chatProvider: chatProvider,
     widget: MultiProvider(
       providers: [
         ChangeNotifierProvider<GitHubCollaborationProvider>.value(
           value: collabProvider,
         ),
         ChangeNotifierProvider<EditorProvider>.value(value: editorProvider),
+        ChangeNotifierProvider<ChatProvider>.value(value: chatProvider),
+        ChangeNotifierProvider<WorkspaceProvider>.value(
+          value: workspaceProvider,
+        ),
       ],
       child: const MaterialApp(
         home: GitHubPullRequestDetailScreen(pullRequestNumber: 12),
@@ -158,6 +251,50 @@ class _FakeGitHubCollaborationApiClient extends GitHubCollaborationApiClient {
       });
   final List<GitHubPullRequestReviewInput> reviewInputs =
       <GitHubPullRequestReviewInput>[];
+
+  @override
+  Future<GitHubCurrentRepoContext> fetchCurrentRepo({
+    String workspacePath = '',
+  }) async {
+    return GitHubCurrentRepoContext.fromJson(<String, dynamic>{
+      'status': 'ok',
+      'repository': <String, dynamic>{
+        'id': 1,
+        'github_host': 'github.com',
+        'owner': 'octo',
+        'name': 'repo',
+        'full_name': 'octo/repo',
+        'remote_name': 'origin',
+        'remote_url': 'git@github.com:octo/repo.git',
+        'repo_root': '/workspace/repo',
+        'private': false,
+      },
+    });
+  }
+
+  @override
+  Future<GitHubAccountContext> fetchAccount({String workspacePath = ''}) async {
+    return GitHubAccountContext.fromJson(<String, dynamic>{
+      'repository': <String, dynamic>{
+        'id': 1,
+        'github_host': 'github.com',
+        'owner': 'octo',
+        'name': 'repo',
+        'full_name': 'octo/repo',
+        'remote_name': 'origin',
+        'remote_url': 'git@github.com:octo/repo.git',
+        'repo_root': '/workspace/repo',
+        'private': false,
+      },
+      'account': <String, dynamic>{
+        'login': 'octocat',
+        'id': 9,
+        'name': 'Octo Cat',
+        'avatar_url': '',
+        'html_url': 'https://github.com/octocat',
+      },
+    });
+  }
 
   @override
   Future<GitHubPullRequestDetail> fetchPullRequestDetail(
@@ -199,6 +336,11 @@ class _FakeGitHubCollaborationApiClient extends GitHubCollaborationApiClient {
           'id': 2,
           'body': 'Inline note',
           'path': 'app/lib/main.dart',
+        },
+        <String, dynamic>{
+          'id': 3,
+          'body': 'Second inline note',
+          'path': 'app/lib/other.dart',
         },
       ],
       'reviews': [

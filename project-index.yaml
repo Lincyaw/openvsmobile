@@ -870,3 +870,30 @@ requirements:
       - server/internal/github/service_test.go
       - server/internal/api/github_collaboration_test.go
     depends_on: [REQ-023, REQ-027]
+
+  - id: REQ-030
+    title: GitHub detail screens AI chat handoff
+    description: >
+      Ticket ASE-55 adds explicit AI entry points on GitHub issue and pull
+      request detail screens. The Flutter chat provider keeps default
+      workspace plus active editor context intact, supports a one-shot minimal
+      GitHub attachment for the next send only, and the chat UI previews both
+      IDE context and pending GitHub context before sending.
+    priority: P1
+    status: implemented
+    code:
+      - project-index.yaml
+      - app/lib/models/chat_context_attachment.dart
+      - app/lib/providers/chat_provider.dart
+      - app/lib/navigation/github_chat_navigation.dart
+      - app/lib/screens/chat_screen.dart
+      - app/lib/screens/github_issue_detail_screen.dart
+      - app/lib/screens/github_pull_request_detail_screen.dart
+      - app/lib/widgets/chat_context_summary.dart
+      - app/lib/widgets/contextual_chat.dart
+    tests:
+      - app/test/providers/chat_provider_test.dart
+      - app/test/widgets/contextual_chat_test.dart
+      - app/test/widgets/github_issue_detail_screen_test.dart
+      - app/test/widgets/github_pull_request_detail_screen_test.dart
+    depends_on: [REQ-010, REQ-028, REQ-029]

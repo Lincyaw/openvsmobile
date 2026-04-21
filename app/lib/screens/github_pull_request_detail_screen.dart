@@ -3,8 +3,10 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../models/chat_context_attachment.dart';
 import '../models/editor_context.dart';
 import '../models/github_collaboration_models.dart';
+import '../navigation/github_chat_navigation.dart';
 import '../providers/editor_provider.dart';
 import '../providers/github_collaboration_provider.dart';
 import 'code_screen.dart';
@@ -120,11 +122,27 @@ class _GitHubPullRequestDetailScreenState
                 Expanded(
                   child: TabBarView(
                     children: [
-                      _PullRequestOverviewTab(detail: detail),
+                      _PullRequestOverviewTab(
+                        detail: detail,
+                        onAiSummary: () => _openPullRequestAi(
+                          detail,
+                          action: 'pull_request_overview',
+                          prompt:
+                              'Summarize this pull request and call out review risks.',
+                        ),
+                        onAiReview: () => _openPullRequestAi(
+                          detail,
+                          action: 'pull_request_review',
+                          prompt:
+                              'Review this pull request and suggest feedback or follow-up changes.',
+                        ),
+                      ),
                       _PullRequestFilesTab(
-                        files: detail.files,
+                        detail: detail,
                         isResolvingFile: _isResolvingFile,
                         onOpenFile: (file) => _openFile(provider, file),
+                        onAiFile: (file) =>
+                            _openPullRequestFileAi(detail, file),
                       ),
                       _PullRequestConversationTab(
                         detail: detail,
@@ -137,6 +155,8 @@ class _GitHubPullRequestDetailScreenState
                           });
                         },
                         onSubmit: () => _submitReview(provider),
+                        onAiComment: (comment) =>
+                            _openPullRequestCommentAi(detail, comment),
                       ),
                       _PullRequestChecksTab(detail: detail),
                     ],
@@ -165,7 +185,7 @@ class _GitHubPullRequestDetailScreenState
       }
       if (action.shouldOpenLocalFile) {
         final editorProvider = context.read<EditorProvider>();
-        await editorProvider.openFile(
+        await editorProvider.openFileAt(
           action.localPath,
           cursor: EditorCursor(line: action.line ?? 1, column: 1),
         );
@@ -225,12 +245,89 @@ class _GitHubPullRequestDetailScreenState
       );
     }
   }
+
+  Future<void> _openPullRequestAi(
+    GitHubPullRequestDetail detail, {
+    required String action,
+    required String prompt,
+  }) async {
+    final repository = context
+        .read<GitHubCollaborationProvider>()
+        .repoContext
+        ?.repository;
+    if (repository == null) {
+      return;
+    }
+
+    await openChatWithGitHubAttachment(
+      context,
+      prompt: prompt,
+      attachment: GitHubChatAttachment.pullRequestBody(
+        repository: repository,
+        pullRequest: detail.pullRequest,
+        action: action,
+      ),
+    );
+  }
+
+  Future<void> _openPullRequestCommentAi(
+    GitHubPullRequestDetail detail,
+    GitHubPullRequestComment comment,
+  ) async {
+    final repository = context
+        .read<GitHubCollaborationProvider>()
+        .repoContext
+        ?.repository;
+    if (repository == null) {
+      return;
+    }
+
+    await openChatWithGitHubAttachment(
+      context,
+      prompt: 'Draft a response to this pull request comment.',
+      attachment: GitHubChatAttachment.pullRequestComment(
+        repository: repository,
+        pullRequest: detail.pullRequest,
+        comment: comment,
+      ),
+    );
+  }
+
+  Future<void> _openPullRequestFileAi(
+    GitHubPullRequestDetail detail,
+    GitHubPullRequestFile file,
+  ) async {
+    final repository = context
+        .read<GitHubCollaborationProvider>()
+        .repoContext
+        ?.repository;
+    if (repository == null) {
+      return;
+    }
+
+    await openChatWithGitHubAttachment(
+      context,
+      prompt:
+          'Review the changes in this pull request file and highlight issues.',
+      attachment: GitHubChatAttachment.pullRequestFile(
+        repository: repository,
+        pullRequest: detail.pullRequest,
+        file: file,
+      ),
+    );
+  }
 }
 
 class _PullRequestOverviewTab extends StatelessWidget {
   final GitHubPullRequestDetail detail;
+  final VoidCallback onAiSummary;
+  final VoidCallback onAiReview;
 
-  const _PullRequestOverviewTab({required this.detail});
+  const _PullRequestOverviewTab({
+    required this.detail,
+    required this.onAiSummary,
+    required this.onAiReview,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -271,6 +368,23 @@ class _PullRequestOverviewTab extends StatelessWidget {
                 const SizedBox(height: 12),
                 Text('Base: ${pull.baseRef.ref}'),
                 Text('Head: ${pull.headRef.ref}'),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    FilledButton.icon(
+                      onPressed: onAiSummary,
+                      icon: const Icon(Icons.auto_awesome),
+                      label: const Text('Summarize PR'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: onAiReview,
+                      icon: const Icon(Icons.rate_review_outlined),
+                      label: const Text('AI review'),
+                    ),
+                  ],
+                ),
               ],
             ),
           ),
@@ -292,18 +406,21 @@ class _PullRequestOverviewTab extends StatelessWidget {
 }
 
 class _PullRequestFilesTab extends StatelessWidget {
-  final List<GitHubPullRequestFile> files;
+  final GitHubPullRequestDetail detail;
   final bool isResolvingFile;
   final ValueChanged<GitHubPullRequestFile> onOpenFile;
+  final ValueChanged<GitHubPullRequestFile> onAiFile;
 
   const _PullRequestFilesTab({
-    required this.files,
+    required this.detail,
     required this.isResolvingFile,
     required this.onOpenFile,
+    required this.onAiFile,
   });
 
   @override
   Widget build(BuildContext context) {
+    final files = detail.files;
     if (files.isEmpty) {
       return const Center(child: Text('No changed files reported.'));
     }
@@ -320,7 +437,17 @@ class _PullRequestFilesTab extends StatelessWidget {
               subtitle: Text(
                 '${file.status} · +${file.additions} / -${file.deletions}',
               ),
-              trailing: const Icon(Icons.chevron_right),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    tooltip: 'Ask AI about file',
+                    onPressed: () => onAiFile(file),
+                    icon: const Icon(Icons.auto_awesome_outlined),
+                  ),
+                  const Icon(Icons.chevron_right),
+                ],
+              ),
               onTap: () => onOpenFile(file),
             );
           },
@@ -346,6 +473,7 @@ class _PullRequestConversationTab extends StatelessWidget {
   final bool isSubmitting;
   final ValueChanged<String> onEventChanged;
   final Future<void> Function() onSubmit;
+  final ValueChanged<GitHubPullRequestComment> onAiComment;
 
   const _PullRequestConversationTab({
     required this.detail,
@@ -354,6 +482,7 @@ class _PullRequestConversationTab extends StatelessWidget {
     required this.isSubmitting,
     required this.onEventChanged,
     required this.onSubmit,
+    required this.onAiComment,
   });
 
   @override
@@ -420,11 +549,25 @@ class _PullRequestConversationTab extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      comment.author?.login.isNotEmpty == true
-                          ? comment.author!.login
-                          : 'Unknown author',
-                      style: Theme.of(context).textTheme.titleSmall,
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            comment.author?.login.isNotEmpty == true
+                                ? comment.author!.login
+                                : 'Unknown author',
+                            style: Theme.of(context).textTheme.titleSmall,
+                          ),
+                        ),
+                        TextButton.icon(
+                          onPressed: () => onAiComment(comment),
+                          icon: const Icon(
+                            Icons.auto_awesome_outlined,
+                            size: 18,
+                          ),
+                          label: const Text('Check comment'),
+                        ),
+                      ],
                     ),
                     if (comment.path.isNotEmpty)
                       Text(
