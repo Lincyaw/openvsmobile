@@ -47,22 +47,12 @@ class _GitScreenState extends State<GitScreen> {
       builder: (context, gitProvider, _) {
         final repository =
             gitProvider.repository ?? GitRepositoryState.empty(gitProvider.workDir);
-        final branchLabel = repository.branch.isEmpty ? 'Git' : repository.branch;
 
         _showOperationFeedback(context, gitProvider);
 
         return Scaffold(
           appBar: AppBar(
-            title: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.commit, size: 20),
-                const SizedBox(width: 8),
-                Flexible(
-                  child: Text(branchLabel, overflow: TextOverflow.ellipsis),
-                ),
-              ],
-            ),
+            title: const Text('Git'),
             actions: [
               _ToolbarAction(
                 icon: Icons.download,
@@ -100,7 +90,11 @@ class _GitScreenState extends State<GitScreen> {
           ),
           body: Column(
             children: [
-              _RepositorySummary(repository: repository),
+              _RepoHeader(
+                repository: repository,
+                onBranchTap: () => _showBranchSheet(context, gitProvider),
+                onInfoTap: () => _showRepoInfoSheet(context, repository),
+              ),
               if (gitProvider.activeOperationLabel != null)
                 _OperationStatusCard(label: gitProvider.activeOperationLabel!),
               if (gitProvider.error != null)
@@ -182,6 +176,21 @@ class _GitScreenState extends State<GitScreen> {
       gitProvider.clearFeedback();
     });
   }
+
+  void _showBranchSheet(BuildContext context, GitProvider gitProvider) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => _BranchSwitcherSheet(gitProvider: gitProvider),
+    );
+  }
+
+  void _showRepoInfoSheet(BuildContext context, GitRepositoryState repository) {
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => _RepoInfoSheet(repository: repository),
+    );
+  }
 }
 
 class _ToolbarAction extends StatelessWidget {
@@ -250,89 +259,424 @@ class _OperationStatusCard extends StatelessWidget {
   }
 }
 
-class _RepositorySummary extends StatelessWidget {
+/// Compact repo header: branch picker + horizontal stat badges.
+class _RepoHeader extends StatelessWidget {
   final GitRepositoryState repository;
+  final VoidCallback onBranchTap;
+  final VoidCallback onInfoTap;
 
-  const _RepositorySummary({required this.repository});
+  const _RepoHeader({
+    required this.repository,
+    required this.onBranchTap,
+    required this.onInfoTap,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(12),
-      child: Card(
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                repository.branch.isEmpty ? 'Repository' : repository.branch,
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-              if (repository.upstream.isNotEmpty) ...[
-                const SizedBox(height: 4),
-                Text(
-                  'Upstream: ${repository.upstream}',
-                  style: Theme.of(context).textTheme.bodySmall,
+    final colorScheme = Theme.of(context).colorScheme;
+    final branch = repository.branch.isEmpty ? '…' : repository.branch;
+
+    return Container(
+      color: colorScheme.surfaceContainerHighest.withAlpha(60),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: Row(
+        children: [
+          // Branch picker button
+          Material(
+            color: Colors.transparent,
+            borderRadius: BorderRadius.circular(8),
+            child: InkWell(
+              onTap: onBranchTap,
+              borderRadius: BorderRadius.circular(8),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(8),
+                  color: colorScheme.primaryContainer.withAlpha(120),
                 ),
-              ],
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.call_split,
+                      size: 14,
+                      color: colorScheme.primary,
+                    ),
+                    const SizedBox(width: 4),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 140),
+                      child: Text(
+                        branch,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: colorScheme.primary,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 2),
+                    Icon(
+                      Icons.arrow_drop_down,
+                      size: 16,
+                      color: colorScheme.primary,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          // Horizontal scrolling stat badges
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
                 children: [
-                  _CountChip(label: 'Ahead', value: repository.ahead),
-                  _CountChip(label: 'Behind', value: repository.behind),
-                  _CountChip(label: 'Staged', value: repository.stagedCount),
-                  _CountChip(label: 'Changes', value: repository.unstagedCount),
-                  _CountChip(label: 'Untracked', value: repository.untrackedCount),
-                  _CountChip(
-                    label: 'Conflicts',
-                    value: repository.conflictCount,
-                    color: Theme.of(context).colorScheme.errorContainer,
-                  ),
+                  if (repository.ahead > 0)
+                    _StatBadge(
+                      icon: Icons.arrow_upward,
+                      value: repository.ahead,
+                      color: Colors.blue,
+                    ),
+                  if (repository.behind > 0)
+                    _StatBadge(
+                      icon: Icons.arrow_downward,
+                      value: repository.behind,
+                      color: Colors.orange,
+                    ),
+                  if (repository.stagedCount > 0)
+                    _StatBadge(
+                      icon: Icons.check_circle_outline,
+                      value: repository.stagedCount,
+                      color: Colors.green,
+                    ),
+                  if (repository.unstagedCount > 0)
+                    _StatBadge(
+                      icon: Icons.edit,
+                      value: repository.unstagedCount,
+                      color: Colors.deepOrange,
+                    ),
+                  if (repository.untrackedCount > 0)
+                    _StatBadge(
+                      icon: Icons.add,
+                      value: repository.untrackedCount,
+                      color: Colors.grey,
+                    ),
+                  if (repository.conflictCount > 0)
+                    _StatBadge(
+                      icon: Icons.warning_amber_rounded,
+                      value: repository.conflictCount,
+                      color: Colors.red,
+                    ),
+                  if (repository.totalChanges == 0)
+                    _StatBadge(
+                      icon: Icons.check,
+                      value: null,
+                      label: 'clean',
+                      color: Colors.green,
+                    ),
                 ],
               ),
-              if (repository.remotes.isNotEmpty) ...[
-                const SizedBox(height: 12),
-                Text(
-                  'Remotes',
-                  style: Theme.of(context).textTheme.titleSmall,
-                ),
-                const SizedBox(height: 6),
-                for (final remote in repository.remotes)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 4),
-                    child: Text(
-                      '${remote.name}: ${remote.fetchUrl.isNotEmpty ? remote.fetchUrl : remote.pushUrl}',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                  ),
-              ],
-            ],
+            ),
           ),
+          const SizedBox(width: 4),
+          // Info button for upstream/remotes
+          IconButton(
+            icon: const Icon(Icons.info_outline, size: 18),
+            tooltip: 'Repository info',
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            onPressed: onInfoTap,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatBadge extends StatelessWidget {
+  final IconData icon;
+  final int? value;
+  final String? label;
+  final Color color;
+
+  const _StatBadge({
+    required this.icon,
+    this.value,
+    this.label,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(right: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        color: color.withAlpha(30),
+        border: Border.all(color: color.withAlpha(80), width: 0.5),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: color),
+          const SizedBox(width: 2),
+          Text(
+            value != null ? '$value' : label!,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: color,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Bottom sheet for switching branches.
+class _BranchSwitcherSheet extends StatefulWidget {
+  final GitProvider gitProvider;
+
+  const _BranchSwitcherSheet({required this.gitProvider});
+
+  @override
+  State<_BranchSwitcherSheet> createState() => _BranchSwitcherSheetState();
+}
+
+class _BranchSwitcherSheetState extends State<_BranchSwitcherSheet> {
+  bool _loading = true;
+  List<String> _branches = [];
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadBranches();
+  }
+
+  Future<void> _loadBranches() async {
+    try {
+      final info = await widget.gitProvider.apiClient.getBranches(
+        widget.gitProvider.workDir,
+      );
+      if (!mounted) return;
+      setState(() {
+        _branches = info.branches;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e.toString();
+        _loading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final current = widget.gitProvider.repository?.branch ?? '';
+
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.only(top: 8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.outlineVariant,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Text(
+                'Switch Branch',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ),
+            const SizedBox(height: 8),
+            if (_loading)
+              const Padding(
+                padding: EdgeInsets.all(24),
+                child: Center(child: CircularProgressIndicator()),
+              )
+            else if (_error != null)
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                  'Failed to load branches: $_error',
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+                ),
+              )
+            else if (_branches.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(24),
+                child: Center(child: Text('No branches found')),
+              )
+            else
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: _branches.length,
+                  itemBuilder: (context, index) {
+                    final branch = _branches[index];
+                    final isCurrent = branch == current;
+                    return ListTile(
+                      dense: true,
+                      leading: Icon(
+                        isCurrent ? Icons.check : Icons.call_split,
+                        size: 18,
+                        color: isCurrent
+                            ? Theme.of(context).colorScheme.primary
+                            : null,
+                      ),
+                      title: Text(
+                        branch,
+                        style: TextStyle(
+                          fontWeight:
+                              isCurrent ? FontWeight.w600 : FontWeight.normal,
+                          color: isCurrent
+                              ? Theme.of(context).colorScheme.primary
+                              : null,
+                        ),
+                      ),
+                      onTap: isCurrent
+                          ? null
+                          : () async {
+                              Navigator.of(context).pop();
+                              await widget.gitProvider.apiClient.checkout(
+                                widget.gitProvider.workDir,
+                                branch,
+                              );
+                              await widget.gitProvider.refreshRepository();
+                            },
+                    );
+                  },
+                ),
+              ),
+            const SizedBox(height: 8),
+          ],
         ),
       ),
     );
   }
 }
 
-class _CountChip extends StatelessWidget {
-  final String label;
-  final int value;
-  final Color? color;
+/// Bottom sheet showing upstream and remotes info.
+class _RepoInfoSheet extends StatelessWidget {
+  final GitRepositoryState repository;
 
-  const _CountChip({
-    required this.label,
-    required this.value,
-    this.color,
-  });
+  const _RepoInfoSheet({required this.repository});
 
   @override
   Widget build(BuildContext context) {
-    return Chip(
-      backgroundColor: color,
-      label: Text('$label $value'),
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.outlineVariant,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              repository.branch.isEmpty ? 'Repository Info' : repository.branch,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 12),
+            if (repository.upstream.isNotEmpty) ...[
+              _InfoRow(label: 'Upstream', value: repository.upstream),
+              const SizedBox(height: 8),
+            ],
+            if (repository.ahead > 0 || repository.behind > 0)
+              _InfoRow(
+                label: 'Sync',
+                value: '${repository.ahead} ahead, ${repository.behind} behind',
+              ),
+            if (repository.remotes.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Text('Remotes', style: Theme.of(context).textTheme.titleSmall),
+              const SizedBox(height: 8),
+              for (final remote in repository.remotes)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        remote.name,
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      if (remote.fetchUrl.isNotEmpty)
+                        Text(
+                          remote.fetchUrl,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      if (remote.pushUrl.isNotEmpty &&
+                          remote.pushUrl != remote.fetchUrl)
+                        Text(
+                          remote.pushUrl,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                    ],
+                  ),
+                ),
+            ],
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _InfoRow extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _InfoRow({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '$label: ',
+          style: TextStyle(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            style: const TextStyle(fontWeight: FontWeight.w500),
+          ),
+        ),
+      ],
     );
   }
 }

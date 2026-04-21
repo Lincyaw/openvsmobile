@@ -11,7 +11,7 @@ class SubagentCard extends StatefulWidget {
   final ContentBlock toolUse;
   final ContentBlock? toolResult;
   final String? sessionId;
-  final void Function(String filePath)? onFileTap;
+  final void Function(String filePath, FileAnnotation? annotation)? onFileTap;
 
   const SubagentCard({
     super.key,
