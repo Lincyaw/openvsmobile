@@ -11,7 +11,9 @@ import (
 	"github.com/Lincyaw/vscode-mobile/server/internal/claude"
 	"github.com/Lincyaw/vscode-mobile/server/internal/diagnostics"
 	"github.com/Lincyaw/vscode-mobile/server/internal/git"
+	gitauth "github.com/Lincyaw/vscode-mobile/server/internal/github"
 	"github.com/Lincyaw/vscode-mobile/server/internal/terminal"
+	"github.com/Lincyaw/vscode-mobile/server/internal/vscode"
 )
 
 // FileSystem defines the interface for file operations.
@@ -32,22 +34,21 @@ type Server struct {
 	processManager   *claude.ProcessManager
 	token            string
 	git              *git.Git
+	gitService       *vscode.GitService
+	editorService    *vscode.EditorService
 	termManager      *terminal.Manager
 	diagnosticRunner *diagnostics.Runner
+	githubAuth       *gitauth.Service
 	fileWatchHub     *FileWatchHub
-	fileWatcher      *FileWatcher
+	bridgeManager    *vscode.BridgeManager
+	documentSync     *vscode.DocumentSyncService
 }
 
 // NewServer creates a new API server.
-func NewServer(fs FileSystem, sessionIndex *claude.SessionIndex, pm *claude.ProcessManager, token string, gitClient *git.Git, termMgr *terminal.Manager, diagRunner *diagnostics.Runner) *Server {
-	hub := NewFileWatchHub()
-	var fw *FileWatcher
-	if fs != nil {
-		var err error
-		fw, err = NewFileWatcher(hub)
-		if err != nil {
-			log.Printf("[Server] failed to create file watcher: %v", err)
-		}
+func NewServer(fs FileSystem, sessionIndex *claude.SessionIndex, pm *claude.ProcessManager, token string, gitClient *git.Git, termMgr *terminal.Manager, diagRunner *diagnostics.Runner, githubAuth ...*gitauth.Service) *Server {
+	var authService *gitauth.Service
+	if len(githubAuth) > 0 {
+		authService = githubAuth[0]
 	}
 	return &Server{
 		fs:               fs,
@@ -55,19 +56,33 @@ func NewServer(fs FileSystem, sessionIndex *claude.SessionIndex, pm *claude.Proc
 		processManager:   pm,
 		token:            token,
 		git:              gitClient,
+		gitService:       nil,
 		termManager:      termMgr,
 		diagnosticRunner: diagRunner,
-		fileWatchHub:     hub,
-		fileWatcher:      fw,
+		githubAuth:       authService,
+		fileWatchHub:     NewFileWatchHub(),
+		documentSync:     newDocumentSyncService(fs),
 	}
 }
 
-// Close releases server resources.
-func (s *Server) Close() error {
-	if s.fileWatcher != nil {
-		return s.fileWatcher.Close()
-	}
-	return nil
+// SetBridgeManager injects the bridge lifecycle manager after server construction.
+func (s *Server) SetBridgeManager(manager *vscode.BridgeManager) {
+	s.bridgeManager = manager
+}
+
+// SetGitService injects the bridge-backed Git service after server construction.
+func (s *Server) SetGitService(service *vscode.GitService) {
+	s.gitService = service
+}
+
+// SetDocumentSync injects the bridge-backed document sync service.
+func (s *Server) SetDocumentSync(service *vscode.DocumentSyncService) {
+	s.documentSync = service
+}
+
+// SetEditorService injects the bridge-backed editor intelligence service.
+func (s *Server) SetEditorService(service *vscode.EditorService) {
+	s.editorService = service
 }
 
 // Handler returns the top-level HTTP handler with all routes.
@@ -84,16 +99,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sessions/{id}/subagents/{agentId}/messages", s.handleSubagentMessages)
 	mux.HandleFunc("GET /api/sessions/{id}/subagents/{agentId}/meta", s.handleSubagentMeta)
 
-	// Git endpoints.
-	mux.HandleFunc("GET /api/git/status", s.handleGitStatus)
-	mux.HandleFunc("GET /api/git/diff", s.handleGitDiff)
-	mux.HandleFunc("GET /api/git/log", s.handleGitLog)
-	mux.HandleFunc("GET /api/git/branches", s.handleGitBranches)
-	mux.HandleFunc("GET /api/git/show", s.handleGitShowCommit)
-	mux.HandleFunc("POST /api/git/stage", s.handleGitStage)
-	mux.HandleFunc("POST /api/git/unstage", s.handleGitUnstage)
-	mux.HandleFunc("POST /api/git/commit", s.handleGitCommit)
-	mux.HandleFunc("POST /api/git/checkout", s.handleGitCheckout)
+	// Bridge-backed Git endpoints.
+	mux.HandleFunc("GET /bridge/git/repository", s.handleGitRepository)
+	mux.HandleFunc("GET /bridge/git/diff", s.handleGitDiff)
+	mux.HandleFunc("POST /bridge/git/stage", s.handleGitStage)
+	mux.HandleFunc("POST /bridge/git/unstage", s.handleGitUnstage)
+	mux.HandleFunc("POST /bridge/git/commit", s.handleGitCommit)
+	mux.HandleFunc("POST /bridge/git/checkout", s.handleGitCheckout)
+	mux.HandleFunc("POST /bridge/git/fetch", s.handleGitFetch)
+	mux.HandleFunc("POST /bridge/git/pull", s.handleGitPull)
+	mux.HandleFunc("POST /bridge/git/push", s.handleGitPush)
+	mux.HandleFunc("POST /bridge/git/discard", s.handleGitDiscard)
+	mux.HandleFunc("POST /bridge/git/stash", s.handleGitStash)
+	mux.HandleFunc("POST /bridge/git/stash/apply", s.handleGitStashApply)
 
 	// Search endpoints.
 	mux.HandleFunc("GET /api/search", s.handleSearch)
@@ -101,11 +119,43 @@ func (s *Server) Handler() http.Handler {
 
 	// Diagnostics endpoint.
 	mux.HandleFunc("GET /api/diagnostics", s.handleDiagnostics)
+	mux.HandleFunc("GET /bridge/capabilities", s.handleBridgeCapabilities)
+	mux.HandleFunc("POST /bridge/editor/diagnostics", s.handleBridgeEditorDiagnostics)
+	mux.HandleFunc("POST /bridge/editor/completion", s.handleBridgeEditorCompletion)
+	mux.HandleFunc("POST /bridge/editor/hover", s.handleBridgeEditorHover)
+	mux.HandleFunc("POST /bridge/editor/definition", s.handleBridgeEditorDefinition)
+	mux.HandleFunc("POST /bridge/editor/references", s.handleBridgeEditorReferences)
+	mux.HandleFunc("POST /bridge/editor/signature-help", s.handleBridgeEditorSignatureHelp)
+	mux.HandleFunc("POST /bridge/editor/formatting", s.handleBridgeEditorFormatting)
+	mux.HandleFunc("POST /bridge/editor/code-actions", s.handleBridgeEditorCodeActions)
+	mux.HandleFunc("POST /bridge/editor/rename", s.handleBridgeEditorRename)
+	mux.HandleFunc("POST /bridge/editor/document-symbols", s.handleBridgeEditorDocumentSymbols)
+	mux.HandleFunc("POST /bridge/doc/open", s.handleBridgeDocumentOpen)
+	mux.HandleFunc("POST /bridge/doc/change", s.handleBridgeDocumentChange)
+	mux.HandleFunc("POST /bridge/doc/save", s.handleBridgeDocumentSave)
+	mux.HandleFunc("POST /bridge/doc/close", s.handleBridgeDocumentClose)
+	mux.HandleFunc("GET /bridge/terminal/sessions", s.handleTerminalSessions)
+	mux.HandleFunc("POST /bridge/terminal/create", s.handleTerminalCreate)
+	mux.HandleFunc("POST /bridge/terminal/attach", s.handleTerminalAttach)
+	mux.HandleFunc("POST /bridge/terminal/resize", s.handleTerminalResize)
+	mux.HandleFunc("POST /bridge/terminal/close", s.handleTerminalClose)
+	mux.HandleFunc("POST /bridge/terminal/rename", s.handleTerminalRename)
+	mux.HandleFunc("POST /bridge/terminal/split", s.handleTerminalSplit)
+
+	// GitHub repo context endpoints.
+	s.registerGitHubRepoContextRoutes(mux)
+
+	// GitHub collaboration endpoints.
+	s.registerGitHubCollaborationRoutes(mux)
+
+	// GitHub auth endpoints.
+	s.registerGitHubAuthRoutes(mux)
 
 	// WebSocket endpoints.
 	mux.HandleFunc("/ws/chat", s.handleWSChat)
 	mux.HandleFunc("/ws/files", s.handleWSFiles)
-	mux.HandleFunc("/ws/terminal", s.handleWSTerminal)
+	mux.HandleFunc("GET /bridge/ws/terminal/{id}", s.handleWSBridgeTerminal)
+	mux.HandleFunc("/bridge/ws/events", s.handleWSBridgeEvents)
 
 	// Health-check endpoint (unauthenticated for connectivity tests).
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
@@ -113,7 +163,6 @@ func (s *Server) Handler() http.Handler {
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	// Wrap with auth and logging middlewares.
 	return s.loggingMiddleware(s.authMiddleware(mux))
 }
 
@@ -126,7 +175,7 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		status := wrapped.statusCode
 		// If the connection was hijacked for WebSocket, the status stays at the
 		// default 200 because WriteHeader was never called through the wrapper.
-		if status == http.StatusOK && strings.HasPrefix(r.URL.Path, "/ws/") {
+		if status == http.StatusOK && (strings.HasPrefix(r.URL.Path, "/ws/") || strings.HasPrefix(r.URL.Path, "/bridge/ws/")) {
 			status = http.StatusSwitchingProtocols
 		}
 		log.Printf("[HTTP] %s %s -> %d in %s", r.Method, r.URL.Path, status, time.Since(start))
@@ -143,14 +192,10 @@ func (rr *responseRecorder) WriteHeader(code int) {
 	rr.ResponseWriter.WriteHeader(code)
 }
 
-// Hijack implements http.Hijacker so that WebSocket upgrades work
-// through the logging middleware. Without this, gorilla/websocket's
-// Upgrade() fails with "response does not implement http.Hijacker".
 func (rr *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return rr.ResponseWriter.(http.Hijacker).Hijack()
 }
 
-// Flush implements http.Flusher for streaming responses.
 func (rr *responseRecorder) Flush() {
 	if f, ok := rr.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
@@ -160,36 +205,45 @@ func (rr *responseRecorder) Flush() {
 // authMiddleware checks the connection token.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Health endpoint is unauthenticated so the client can verify
-		// connectivity before checking credentials.
 		if r.URL.Path == "/api/health" {
 			next.ServeHTTP(w, r)
 			return
 		}
-
 		if s.token == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
-
-		// Check query parameter.
-		// NOTE: Passing auth tokens in URL query strings is a security concern
-		// because URLs are logged in server logs, browser history, and proxy logs.
-		// This is acceptable here as a convenience for WebSocket connections from
-		// the mobile client, but the Authorization header should be preferred
-		// for REST API calls.
 		if r.URL.Query().Get("token") == s.token {
 			next.ServeHTTP(w, r)
 			return
 		}
-
-		// Check Authorization header.
-		auth := r.Header.Get("Authorization")
-		if auth == "Bearer "+s.token {
+		if r.Header.Get("Authorization") == "Bearer "+s.token {
 			next.ServeHTTP(w, r)
 			return
 		}
-
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	})
+}
+
+func (s *Server) githubAuthService() *gitauth.Service {
+	return s.githubAuth
+}
+
+func newDocumentSyncService(fs FileSystem) *vscode.DocumentSyncService {
+	if fs == nil {
+		return vscode.NewDocumentSyncService(nil)
+	}
+	return vscode.NewDocumentSyncService(fileSystemDocumentStore{fs: fs})
+}
+
+type fileSystemDocumentStore struct {
+	fs FileSystem
+}
+
+func (s fileSystemDocumentStore) ReadFile(path string) ([]byte, error) {
+	return s.fs.ReadFile(path)
+}
+
+func (s fileSystemDocumentStore) WriteFile(path string, content []byte) error {
+	return s.fs.WriteFile(path, content)
 }

@@ -75,31 +75,23 @@ func (idx *SessionIndex) ListSessions() []SessionMeta {
 
 // SearchSessions returns sessions matching the query string.
 // Matches against cwd (project path) and entrypoint, case-insensitive.
-// If project is non-empty, only sessions whose cwd ends with that project name are returned.
-func (idx *SessionIndex) SearchSessions(query, project string) []SessionMeta {
+// If workspaceRoot is non-empty, absolute/path-like values are matched against
+// the exact cleaned workspace root. Bare names fall back to the legacy
+// project-name filter for compatibility with older callers and tests.
+func (idx *SessionIndex) SearchSessions(query, workspaceRoot string) []SessionMeta {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
 	query = strings.ToLower(query)
-	project = strings.ToLower(project)
+	normalizedRoot := normalizeWorkspaceRoot(workspaceRoot)
 
 	result := make([]SessionMeta, 0)
 	for _, s := range idx.sessions {
 		cwdLower := strings.ToLower(s.Cwd)
 		entryLower := strings.ToLower(s.Entrypoint)
 
-		if project != "" {
-			parts := strings.Split(cwdLower, "/")
-			projectName := ""
-			if len(parts) > 0 {
-				projectName = parts[len(parts)-1]
-				if projectName == "" && len(parts) > 1 {
-					projectName = parts[len(parts)-2]
-				}
-			}
-			if projectName != project {
-				continue
-			}
+		if !matchesWorkspaceRoot(s.Cwd, normalizedRoot) {
+			continue
 		}
 
 		if query != "" {
@@ -111,6 +103,37 @@ func (idx *SessionIndex) SearchSessions(query, project string) []SessionMeta {
 		result = append(result, s)
 	}
 	return result
+}
+
+func normalizeWorkspaceRoot(path string) string {
+	if path == "" {
+		return ""
+	}
+	cleaned := filepath.Clean(strings.TrimSpace(path))
+	if cleaned == "." {
+		return ""
+	}
+	return cleaned
+}
+
+func matchesWorkspaceRoot(cwd, workspaceRoot string) bool {
+	if workspaceRoot == "" {
+		return true
+	}
+
+	if strings.Contains(workspaceRoot, "/") {
+		return normalizeWorkspaceRoot(cwd) == workspaceRoot
+	}
+
+	parts := strings.Split(normalizeWorkspaceRoot(cwd), "/")
+	if len(parts) == 0 {
+		return false
+	}
+	last := parts[len(parts)-1]
+	if last == "" && len(parts) > 1 {
+		last = parts[len(parts)-2]
+	}
+	return strings.EqualFold(last, workspaceRoot)
 }
 
 // GetMessages parses the JSONL file for the given session and returns structured messages.

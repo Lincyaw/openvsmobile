@@ -1,19 +1,19 @@
 import 'dart:convert';
+
 import 'package:http/http.dart' as http;
+import 'package:web_socket_channel/web_socket_channel.dart';
+
 import '../models/git_models.dart';
 import 'api_client.dart' show ApiException;
 import 'settings_service.dart';
 
-/// API client for Git-related endpoints.
 class GitApiClient {
   final SettingsService _settings;
   final http.Client _client;
 
-  GitApiClient({
-    required SettingsService settings,
-    http.Client? client,
-  }) : _settings = settings,
-       _client = client ?? http.Client();
+  GitApiClient({required SettingsService settings, http.Client? client})
+    : _settings = settings,
+      _client = client ?? http.Client();
 
   String get baseUrl => _settings.serverUrl;
   String get token => _settings.authToken;
@@ -30,157 +30,215 @@ class GitApiClient {
     return Uri.parse('$base$path');
   }
 
-  /// Get git status for [path].
-  Future<List<GitStatusEntry>> getStatus(String path) async {
-    final uri = _buildUri('/api/git/status', queryParams: {'path': path});
-    final response = await _client.get(uri, headers: _headers);
-    if (response.statusCode != 200) {
-      throw ApiException(
-        'Failed to get git status: ${response.statusCode}',
-        response.statusCode,
-      );
-    }
-    final List<dynamic> jsonList = (jsonDecode(response.body) as List<dynamic>?) ?? [];
-    return jsonList
-        .map((e) => GitStatusEntry.fromJson(e as Map<String, dynamic>))
-        .toList();
+  Future<GitRepositoryState> getRepository(String path) async {
+    final response = await _client.get(
+      _buildUri('/bridge/git/repository', queryParams: {'path': path}),
+      headers: _headers,
+    );
+    return _decodeRepository(response, 'Failed to fetch repository');
   }
 
-  /// Get diff for [path], optionally for a specific [file] and [staged] state.
-  Future<String> getDiff(
-    String path, {
-    String? file,
+  Future<GitDiffDocument> getDiff(
+    String repoPath,
+    String file, {
     bool staged = false,
   }) async {
-    final queryParams = <String, String>{
-      'path': path,
-      'staged': staged.toString(),
-    };
-    if (file != null) {
-      queryParams['file'] = file;
-    }
-    final uri = _buildUri('/api/git/diff', queryParams: queryParams);
-    final response = await _client.get(uri, headers: _headers);
-    if (response.statusCode != 200) {
-      throw ApiException(
-        'Failed to get diff: ${response.statusCode}',
-        response.statusCode,
-      );
-    }
-    return response.body;
-  }
-
-  /// Get git log for [path] with up to [count] entries.
-  Future<List<GitLogEntry>> getLog(String path, {int count = 20}) async {
-    final uri = _buildUri(
-      '/api/git/log',
-      queryParams: {'path': path, 'count': count.toString()},
+    final response = await _client.get(
+      _buildUri(
+        '/bridge/git/diff',
+        queryParams: {
+          'path': repoPath,
+          'file': file,
+          'staged': staged.toString(),
+        },
+      ),
+      headers: _headers,
     );
-    final response = await _client.get(uri, headers: _headers);
     if (response.statusCode != 200) {
       throw ApiException(
-        'Failed to get git log: ${response.statusCode}',
+        'Failed to fetch diff: ${_extractErrorMessage(response.body)}',
         response.statusCode,
       );
     }
-    final List<dynamic> jsonList = (jsonDecode(response.body) as List<dynamic>?) ?? [];
-    return jsonList
-        .map((e) => GitLogEntry.fromJson(e as Map<String, dynamic>))
-        .toList();
+    return GitDiffDocument.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
   }
 
-  /// Get branch info for [path].
   Future<GitBranchInfo> getBranches(String path) async {
-    final uri = _buildUri('/api/git/branches', queryParams: {'path': path});
-    final response = await _client.get(uri, headers: _headers);
-    if (response.statusCode != 200) {
-      throw ApiException(
-        'Failed to get branches: ${response.statusCode}',
-        response.statusCode,
-      );
-    }
-    final json = jsonDecode(response.body) as Map<String, dynamic>;
-    return GitBranchInfo.fromJson(json);
+    final repository = await getRepository(path);
+    final branchSet = <String>{
+      if (repository.branch.isNotEmpty) repository.branch,
+      for (final remote in repository.remotes) ...remote.branches,
+    };
+    return GitBranchInfo(
+      current: repository.branch,
+      branches: branchSet.toList(growable: false),
+    );
   }
 
-  /// Stage a file at [path] in the repo at [repoPath].
-  Future<void> stageFile(String repoPath, String file) async {
-    final uri = _buildUri('/api/git/stage');
+  Future<GitRepositoryState> stageFile(String repoPath, String file) {
+    return _postRepository('/bridge/git/stage', {
+      'path': repoPath,
+      'file': file,
+    }, errorPrefix: 'Failed to stage file');
+  }
+
+  Future<GitRepositoryState> unstageFile(String repoPath, String file) {
+    return _postRepository('/bridge/git/unstage', {
+      'path': repoPath,
+      'file': file,
+    }, errorPrefix: 'Failed to unstage file');
+  }
+
+  Future<GitRepositoryState> discardFile(String repoPath, String file) {
+    return _postRepository('/bridge/git/discard', {
+      'path': repoPath,
+      'file': file,
+    }, errorPrefix: 'Failed to discard file');
+  }
+
+  Future<GitRepositoryState> commit(String repoPath, String message) {
+    return _postRepository('/bridge/git/commit', {
+      'path': repoPath,
+      'message': message,
+    }, errorPrefix: 'Failed to commit');
+  }
+
+  Future<GitRepositoryState> checkout(
+    String repoPath,
+    String ref, {
+    bool create = false,
+  }) {
+    return _postRepository('/bridge/git/checkout', {
+      'path': repoPath,
+      'ref': ref,
+      'create': create,
+    }, errorPrefix: 'Failed to checkout');
+  }
+
+  Future<GitRepositoryState> fetch(String repoPath, {String? remote}) {
+    return _postRepository('/bridge/git/fetch', {
+      'path': repoPath,
+      if (remote != null && remote.isNotEmpty) 'remote': remote,
+    }, errorPrefix: 'Failed to fetch');
+  }
+
+  Future<GitRepositoryState> pull(
+    String repoPath, {
+    String? remote,
+    String? branch,
+  }) {
+    return _postRepository('/bridge/git/pull', {
+      'path': repoPath,
+      if (remote != null && remote.isNotEmpty) 'remote': remote,
+      if (branch != null && branch.isNotEmpty) 'branch': branch,
+    }, errorPrefix: 'Failed to pull');
+  }
+
+  Future<GitRepositoryState> push(
+    String repoPath, {
+    String? remote,
+    String? branch,
+    bool setUpstream = false,
+  }) {
+    return _postRepository('/bridge/git/push', {
+      'path': repoPath,
+      if (remote != null && remote.isNotEmpty) 'remote': remote,
+      if (branch != null && branch.isNotEmpty) 'branch': branch,
+      'setUpstream': setUpstream,
+    }, errorPrefix: 'Failed to push');
+  }
+
+  Future<GitRepositoryState> stash(
+    String repoPath, {
+    String? message,
+    bool includeUntracked = false,
+  }) {
+    return _postRepository('/bridge/git/stash', {
+      'path': repoPath,
+      if (message != null && message.isNotEmpty) 'message': message,
+      'includeUntracked': includeUntracked,
+    }, errorPrefix: 'Failed to stash changes');
+  }
+
+  Future<GitRepositoryState> applyStash(
+    String repoPath, {
+    String? stash,
+    bool pop = false,
+  }) {
+    return _postRepository('/bridge/git/stash/apply', {
+      'path': repoPath,
+      if (stash != null && stash.isNotEmpty) 'stash': stash,
+      'pop': pop,
+    }, errorPrefix: 'Failed to apply stash');
+  }
+
+  WebSocketChannel connectEventsWebSocket() {
+    final wsBase = baseUrl
+        .replaceFirst('https://', 'wss://')
+        .replaceFirst('http://', 'ws://');
+    final base = wsBase.endsWith('/')
+        ? wsBase.substring(0, wsBase.length - 1)
+        : wsBase;
+    final uri = Uri.parse('$base/bridge/ws/events?token=$token');
+    return WebSocketChannel.connect(uri);
+  }
+
+  Future<GitRepositoryState> _postRepository(
+    String path,
+    Map<String, dynamic> body, {
+    required String errorPrefix,
+  }) async {
     final response = await _client.post(
-      uri,
+      _buildUri(path),
       headers: {..._headers, 'Content-Type': 'application/json'},
-      body: jsonEncode({'path': repoPath, 'file': file}),
+      body: jsonEncode(body),
     );
-    if (response.statusCode != 200) {
-      throw ApiException(
-        'Failed to stage file: ${response.body}',
-        response.statusCode,
-      );
-    }
+    return _decodeRepository(response, errorPrefix);
   }
 
-  /// Unstage a file at [path] in the repo at [repoPath].
-  Future<void> unstageFile(String repoPath, String file) async {
-    final uri = _buildUri('/api/git/unstage');
-    final response = await _client.post(
-      uri,
-      headers: {..._headers, 'Content-Type': 'application/json'},
-      body: jsonEncode({'path': repoPath, 'file': file}),
-    );
+  GitRepositoryState _decodeRepository(
+    http.Response response,
+    String errorPrefix,
+  ) {
     if (response.statusCode != 200) {
       throw ApiException(
-        'Failed to unstage file: ${response.body}',
+        '$errorPrefix: ${_extractErrorMessage(response.body)}',
         response.statusCode,
       );
     }
+    return GitRepositoryState.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
   }
 
-  /// Commit staged changes in the repo at [repoPath] with [message].
-  Future<void> commit(String repoPath, String message) async {
-    final uri = _buildUri('/api/git/commit');
-    final response = await _client.post(
-      uri,
-      headers: {..._headers, 'Content-Type': 'application/json'},
-      body: jsonEncode({'path': repoPath, 'message': message}),
-    );
-    if (response.statusCode != 200) {
-      throw ApiException(
-        'Failed to commit: ${response.body}',
-        response.statusCode,
-      );
+  String _extractErrorMessage(String body) {
+    if (body.isEmpty) {
+      return 'unexpected empty response';
     }
-  }
-
-  /// Get diff/output for a specific commit [hash] in repo at [path].
-  Future<String> getShowCommit(String path, String hash) async {
-    final uri = _buildUri(
-      '/api/git/show',
-      queryParams: {'path': path, 'hash': hash},
-    );
-    final response = await _client.get(uri, headers: _headers);
-    if (response.statusCode != 200) {
-      throw ApiException(
-        'Failed to get commit diff: ${response.statusCode}',
-        response.statusCode,
-      );
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map<String, dynamic>) {
+        final code = decoded['code'] as String?;
+        final message = decoded['message'] as String?;
+        if (code != null &&
+            code.isNotEmpty &&
+            message != null &&
+            message.isNotEmpty) {
+          return '$code: $message';
+        }
+        if (message != null && message.isNotEmpty) {
+          return message;
+        }
+        if (code != null && code.isNotEmpty) {
+          return code;
+        }
+      }
+    } catch (_) {
+      // Fall through to the raw body text.
     }
-    return response.body;
-  }
-
-  /// Checkout [branch] in repo at [repoPath].
-  Future<void> checkoutBranch(String repoPath, String branch) async {
-    final uri = _buildUri('/api/git/checkout');
-    final response = await _client.post(
-      uri,
-      headers: {..._headers, 'Content-Type': 'application/json'},
-      body: jsonEncode({'path': repoPath, 'branch': branch}),
-    );
-    if (response.statusCode != 200) {
-      throw ApiException(
-        'Failed to checkout branch: ${response.body}',
-        response.statusCode,
-      );
-    }
+    return body;
   }
 
   void dispose() {

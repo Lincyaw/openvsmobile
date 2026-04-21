@@ -1,101 +1,116 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
-/// Displays unified diff output with syntax coloring.
-class DiffScreen extends StatelessWidget {
-  final String fileName;
-  final String diffContent;
+import '../models/git_models.dart';
+import '../providers/git_provider.dart';
+import '../widgets/unified_diff_view.dart';
+
+class DiffScreen extends StatefulWidget {
+  final String filePath;
+  final bool staged;
+  final bool isConflict;
 
   const DiffScreen({
     super.key,
-    required this.fileName,
-    required this.diffContent,
+    required this.filePath,
+    required this.staged,
+    this.isConflict = false,
   });
 
   @override
-  Widget build(BuildContext context) {
-    final lines = diffContent.split('\n');
-    final colorScheme = Theme.of(context).colorScheme;
-
-    return Scaffold(
-      appBar: AppBar(title: Text(fileName, overflow: TextOverflow.ellipsis)),
-      body: diffContent.isEmpty
-          ? Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.check_circle_outline,
-                    size: 64,
-                    color: colorScheme.outline,
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    'No changes',
-                    style: Theme.of(
-                      context,
-                    ).textTheme.bodyLarge?.copyWith(color: colorScheme.outline),
-                  ),
-                ],
-              ),
-            )
-          : Scrollbar(
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: SingleChildScrollView(
-                  child: Padding(
-                    padding: const EdgeInsets.all(8),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: List.generate(lines.length, (index) {
-                        final line = lines[index];
-                        return _DiffLine(text: line, colorScheme: colorScheme);
-                      }),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-    );
-  }
+  State<DiffScreen> createState() => _DiffScreenState();
 }
 
-class _DiffLine extends StatelessWidget {
-  final String text;
-  final ColorScheme colorScheme;
+class _DiffScreenState extends State<DiffScreen> {
+  late Future<GitDiffDocument> _diffFuture;
 
-  const _DiffLine({required this.text, required this.colorScheme});
+  @override
+  void initState() {
+    super.initState();
+    _diffFuture = _loadDiff();
+  }
+
+  Future<GitDiffDocument> _loadDiff() {
+    return context.read<GitProvider>().fetchDiff(
+      widget.filePath,
+      staged: widget.staged,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    Color? backgroundColor;
-    Color textColor = colorScheme.onSurface;
+    final colorScheme = Theme.of(context).colorScheme;
 
-    if (text.startsWith('+')) {
-      backgroundColor = Colors.green.withAlpha(isDark ? 40 : 25);
-      textColor = isDark ? Colors.green.shade300 : Colors.green.shade800;
-    } else if (text.startsWith('-')) {
-      backgroundColor = Colors.red.withAlpha(isDark ? 40 : 25);
-      textColor = isDark ? Colors.red.shade300 : Colors.red.shade800;
-    } else if (text.startsWith('@@')) {
-      backgroundColor = Colors.blue.withAlpha(isDark ? 40 : 25);
-      textColor = isDark ? Colors.blue.shade300 : Colors.blue.shade800;
-    }
-
-    return Container(
-      color: backgroundColor,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            text,
-            style: TextStyle(
-              fontFamily: 'monospace',
-              fontSize: 13,
-              color: textColor,
-            ),
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.filePath, overflow: TextOverflow.ellipsis),
+        actions: [
+          IconButton(
+            tooltip: 'Refresh diff',
+            icon: const Icon(Icons.refresh),
+            onPressed: () {
+              setState(() {
+                _diffFuture = _loadDiff();
+              });
+            },
           ),
         ],
+      ),
+      body: FutureBuilder<GitDiffDocument>(
+        future: _diffFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          if (snapshot.hasError) {
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.error_outline,
+                      size: 48,
+                      color: colorScheme.error,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      'Failed to load diff',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '${snapshot.error}',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                    const SizedBox(height: 16),
+                    FilledButton.icon(
+                      onPressed: () {
+                        setState(() {
+                          _diffFuture = _loadDiff();
+                        });
+                      },
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Try again'),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }
+
+          final diff = snapshot.data!;
+          return UnifiedDiffView(
+            diff: diff.diff,
+            isConflict: widget.isConflict,
+            emptyLabel: widget.isConflict
+                ? 'Open this file in the editor to resolve the conflict.'
+                : 'No diff available for this file',
+          );
+        },
       ),
     );
   }

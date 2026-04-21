@@ -2,9 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/chat_provider.dart';
-import '../providers/editor_provider.dart';
 import 'chat_bubble.dart';
-import '../screens/code_screen.dart';
+import 'chat_context_summary.dart';
 
 /// Draggable bottom sheet chat panel for contextual AI chat (REQ-009).
 ///
@@ -24,6 +23,7 @@ class _ContextualChatState extends State<ContextualChat> {
   final _controller = TextEditingController();
   ScrollController? _activeScrollController;
   int _lastMessageCount = 0;
+  String? _lastAppliedDraft;
 
   @override
   void dispose() {
@@ -63,12 +63,13 @@ class _ContextualChatState extends State<ContextualChat> {
   @override
   Widget build(BuildContext context) {
     return DraggableScrollableSheet(
-      initialChildSize: 0.4,
+      initialChildSize: 0.75,
       minChildSize: 0.15,
       maxChildSize: 0.85,
       builder: (context, sheetScrollController) {
         return Consumer<ChatProvider>(
           builder: (context, provider, _) {
+            _syncDraft(provider);
             return Container(
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.surface,
@@ -87,8 +88,17 @@ class _ContextualChatState extends State<ContextualChat> {
                 children: [
                   _buildHandle(context),
                   _buildHeader(context, provider),
-                  if (provider.codeContext != null)
-                    _buildContextBadge(context, provider),
+                  if ((provider.editorContext?.hasContext ?? false) ||
+                      provider.pendingAttachment != null)
+                    ChatContextSummary(
+                      editorContext: provider.editorContext,
+                      attachment: provider.pendingAttachment,
+                      margin: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 4,
+                      ),
+                      onClearAttachment: provider.clearPendingAttachment,
+                    ),
                   Expanded(
                     child: _buildMessageList(provider, sheetScrollController),
                   ),
@@ -100,6 +110,18 @@ class _ContextualChatState extends State<ContextualChat> {
         );
       },
     );
+  }
+
+  void _syncDraft(ChatProvider provider) {
+    final draft = provider.pendingDraftMessage;
+    if (draft == null ||
+        draft == _lastAppliedDraft ||
+        _controller.text.isNotEmpty) {
+      return;
+    }
+    _controller.text = draft;
+    _controller.selection = TextSelection.collapsed(offset: draft.length);
+    _lastAppliedDraft = draft;
   }
 
   Widget _buildHandle(BuildContext context) {
@@ -143,47 +165,6 @@ class _ContextualChatState extends State<ContextualChat> {
     );
   }
 
-  Widget _buildContextBadge(BuildContext context, ChatProvider provider) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    final ctx = provider.codeContext!;
-
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: colorScheme.secondaryContainer,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.code, size: 16, color: colorScheme.onSecondaryContainer),
-          const SizedBox(width: 6),
-          Flexible(
-            child: Text(
-              ctx.label,
-              style: theme.textTheme.labelMedium?.copyWith(
-                color: colorScheme.onSecondaryContainer,
-                fontFamily: 'monospace',
-              ),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          const SizedBox(width: 6),
-          InkWell(
-            onTap: () => provider.setCodeContext(null),
-            child: Icon(
-              Icons.close,
-              size: 16,
-              color: colorScheme.onSecondaryContainer,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildMessageList(
     ChatProvider provider,
     ScrollController sheetScrollController,
@@ -196,7 +177,9 @@ class _ContextualChatState extends State<ContextualChat> {
         child: Padding(
           padding: const EdgeInsets.all(24),
           child: Text(
-            'Ask a question about the selected code',
+            provider.editorContext?.selection != null
+                ? 'Ask a question about the selected code'
+                : 'Ask a question about the current file',
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
@@ -223,25 +206,7 @@ class _ContextualChatState extends State<ContextualChat> {
         final nextMsg = index + 1 < messages.length
             ? messages[index + 1]
             : null;
-        return ChatBubble(
-          message: msg,
-          nextMessage: nextMsg,
-          onFileTap: (filePath) {
-            final editorProvider = context.read<EditorProvider>();
-            editorProvider.openFile(filePath).then((_) {
-              if (context.mounted) {
-                Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => ChangeNotifierProvider.value(
-                      value: editorProvider,
-                      child: const CodeScreen(),
-                    ),
-                  ),
-                );
-              }
-            });
-          },
-        );
+        return ChatBubble(message: msg, nextMessage: nextMsg);
       },
     );
   }

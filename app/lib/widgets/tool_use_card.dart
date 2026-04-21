@@ -8,7 +8,7 @@ class ToolUseCard extends StatefulWidget {
   final ContentBlock? toolResult;
 
   /// Callback when a file path is tapped (for navigation to code viewer).
-  final void Function(String filePath)? onFileTap;
+  final void Function(String filePath, FileAnnotation? annotation)? onFileTap;
 
   const ToolUseCard({
     super.key,
@@ -85,7 +85,8 @@ class _ToolUseCardState extends State<ToolUseCard> {
       case 'Glob':
         icon = Icons.search;
         iconColor = Colors.indigo;
-        subtitle = filePath ?? widget.toolUse.input?['pattern'] as String? ?? 'Search';
+        subtitle =
+            filePath ?? widget.toolUse.input?['pattern'] as String? ?? 'Search';
         break;
       case 'Agent':
         icon = Icons.smart_toy_outlined;
@@ -101,7 +102,7 @@ class _ToolUseCardState extends State<ToolUseCard> {
     return InkWell(
       onTap: () {
         if (filePath != null && widget.onFileTap != null) {
-          widget.onFileTap!(filePath);
+          widget.onFileTap!(filePath, annotation);
         }
       },
       borderRadius: const BorderRadius.vertical(top: Radius.circular(10)),

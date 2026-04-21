@@ -1,12 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../navigation/editor_navigation.dart';
 import '../providers/chat_provider.dart';
-import '../providers/editor_provider.dart';
 import '../providers/workspace_provider.dart';
 import '../widgets/chat_bubble.dart';
-import '../widgets/app_bar_menu.dart';
-import 'code_screen.dart';
+import '../widgets/chat_context_summary.dart';
 import 'session_list_screen.dart';
 
 /// Full-screen AI chat view (tab 2 in bottom navigation).
@@ -21,6 +20,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final _controller = TextEditingController();
   final _scrollController = ScrollController();
   int _lastMessageCount = 0;
+  String? _lastAppliedDraft;
 
   @override
   void dispose() {
@@ -59,6 +59,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget build(BuildContext context) {
     return Consumer<ChatProvider>(
       builder: (context, provider, _) {
+        _syncDraft(provider);
         return Scaffold(
           appBar: AppBar(
             title: Consumer<WorkspaceProvider>(
@@ -70,9 +71,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     Text(
                       ws.displayName,
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Theme.of(context)
-                            .colorScheme
-                            .onSurfaceVariant,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
                       ),
                     ),
                   ],
@@ -98,14 +97,18 @@ class _ChatScreenState extends State<ChatScreen> {
                   provider.clearConversation();
                 },
               ),
-              const AppBarMenu(),
             ],
           ),
           body: Column(
             children: [
               if (provider.error != null) _buildErrorBanner(context, provider),
-              if (provider.codeContext != null)
-                _buildContextBadge(context, provider),
+              if ((provider.editorContext?.hasContext ?? false) ||
+                  provider.pendingAttachment != null)
+                ChatContextSummary(
+                  editorContext: provider.editorContext,
+                  attachment: provider.pendingAttachment,
+                  onClearAttachment: provider.clearPendingAttachment,
+                ),
               Expanded(child: _buildMessageList(context, provider)),
               _buildInputBar(context, provider),
             ],
@@ -113,6 +116,18 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       },
     );
+  }
+
+  void _syncDraft(ChatProvider provider) {
+    final draft = provider.pendingDraftMessage;
+    if (draft == null ||
+        draft == _lastAppliedDraft ||
+        _controller.text.isNotEmpty) {
+      return;
+    }
+    _controller.text = draft;
+    _controller.selection = TextSelection.collapsed(offset: draft.length);
+    _lastAppliedDraft = draft;
   }
 
   Widget _buildErrorBanner(BuildContext context, ChatProvider provider) {
@@ -127,45 +142,6 @@ class _ChatScreenState extends State<ChatScreen> {
           child: const Text('Dismiss'),
         ),
       ],
-    );
-  }
-
-  Widget _buildContextBadge(BuildContext context, ChatProvider provider) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    final ctx = provider.codeContext!;
-
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: colorScheme.secondaryContainer,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        children: [
-          Icon(Icons.code, size: 18, color: colorScheme.onSecondaryContainer),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              'Context: ${ctx.label}',
-              style: theme.textTheme.labelMedium?.copyWith(
-                color: colorScheme.onSecondaryContainer,
-                fontFamily: 'monospace',
-              ),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          InkWell(
-            onTap: () => provider.setCodeContext(null),
-            child: Icon(
-              Icons.close,
-              size: 18,
-              color: colorScheme.onSecondaryContainer,
-            ),
-          ),
-        ],
-      ),
     );
   }
 
@@ -195,20 +171,8 @@ class _ChatScreenState extends State<ChatScreen> {
           message: msg,
           nextMessage: nextMsg,
           sessionId: provider.conversationId,
-          onFileTap: (filePath) {
-            final editorProvider = context.read<EditorProvider>();
-            editorProvider.openFile(filePath).then((_) {
-              if (context.mounted) {
-                Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => ChangeNotifierProvider.value(
-                      value: editorProvider,
-                      child: const CodeScreen(),
-                    ),
-                  ),
-                );
-              }
-            });
+          onFileTap: (filePath, annotation) {
+            openCodeAnnotation(context, path: filePath, annotation: annotation);
           },
         );
       },

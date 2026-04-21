@@ -39,11 +39,13 @@ class ChatApiClient {
   /// Fetch all sessions. Supports optional search query and project filter.
   Future<List<SessionMeta>> getSessions({
     String? query,
-    String? project,
+    String? workspaceRoot,
   }) async {
     final params = <String, String>{};
     if (query != null && query.isNotEmpty) params['q'] = query;
-    if (project != null && project.isNotEmpty) params['project'] = project;
+    if (workspaceRoot != null && workspaceRoot.isNotEmpty) {
+      params['workspaceRoot'] = workspaceRoot;
+    }
 
     final uri = _buildUri(
       '/api/sessions',

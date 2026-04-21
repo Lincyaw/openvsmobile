@@ -1,6 +1,7 @@
 package vscode
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -29,8 +30,19 @@ func NewIPCClient(c *Client) *IPCClient {
 		client:      c,
 		initialized: make(chan struct{}),
 	}
-	c.onMessage = ipc.onRawMessage
+	ipc.attachClient(c)
 	return ipc
+}
+
+func (ipc *IPCClient) attachClient(c *Client) {
+	ipc.client = c
+	c.onMessage = ipc.onRawMessage
+}
+
+func (ipc *IPCClient) reset(c *Client) {
+	ipc.handlers = sync.Map{}
+	ipc.initialized = make(chan struct{})
+	ipc.attachClient(c)
 }
 
 // GetChannel returns a handle to the named IPC channel.
@@ -108,11 +120,18 @@ type IPCChannel struct {
 
 // Call makes a request to this channel's command and waits for the response.
 func (ch *IPCChannel) Call(command string, arg interface{}) (interface{}, error) {
-	// Wait for the server to send the Initialize message before sending requests.
+	return ch.CallContext(context.Background(), command, arg)
+}
+
+// CallContext is like Call but honors cancellation.
+func (ch *IPCChannel) CallContext(ctx context.Context, command string, arg interface{}) (interface{}, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	select {
 	case <-ch.ipc.initialized:
-	case <-time.After(10 * time.Second):
-		return nil, fmt.Errorf("IPC channel not initialized after 10s")
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 
 	id := ch.ipc.nextID()
@@ -147,12 +166,28 @@ func (ch *IPCChannel) Call(command string, arg interface{}) (interface{}, error)
 		return result.data, result.err
 	case <-time.After(defaultCallTimeout):
 		return nil, fmt.Errorf("IPC call %q timed out after %v", command, defaultCallTimeout)
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 
 // Listen subscribes to an event on this channel. It returns a channel that
 // receives event data and a function to stop listening.
 func (ch *IPCChannel) Listen(event string, arg interface{}) (<-chan interface{}, func(), error) {
+	return ch.ListenContext(context.Background(), event, arg)
+}
+
+// ListenContext is like Listen but waits for channel initialization and honors cancellation.
+func (ch *IPCChannel) ListenContext(ctx context.Context, event string, arg interface{}) (<-chan interface{}, func(), error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-ch.ipc.initialized:
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	}
+
 	id := ch.ipc.nextID()
 	eventCh := make(chan interface{}, 64)
 

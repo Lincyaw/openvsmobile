@@ -2,291 +2,427 @@ package api
 
 import (
 	"encoding/json"
-	"log"
+	"errors"
+	"fmt"
 	"net/http"
-	"strconv"
+	"strings"
 
-	"github.com/Lincyaw/vscode-mobile/server/internal/git"
+	"github.com/Lincyaw/vscode-mobile/server/internal/vscode"
 )
 
-// handleGitStatus handles GET /api/git/status?path=<dir>.
-func (s *Server) handleGitStatus(w http.ResponseWriter, r *http.Request) {
-	rawPath := r.URL.Query().Get("path")
-	if rawPath == "" {
-		http.Error(w, "missing 'path' parameter", http.StatusBadRequest)
-		return
-	}
-	path, err := sanitizePath(rawPath, true)
-	if err != nil {
-		http.Error(w, "invalid path: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	log.Printf("[Git] status path=%s", path)
-
-	entries, err := s.git.Status(path)
-	if err != nil {
-		log.Printf("[Git] status error for %s: %v", path, err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if entries == nil {
-		entries = []git.StatusEntry{}
-	}
-
-	writeJSON(w, http.StatusOK, entries)
+type gitPathFilesRequest struct {
+	Path  string   `json:"path"`
+	File  string   `json:"file"`
+	Files []string `json:"files"`
 }
 
-// handleGitDiff handles GET /api/git/diff?path=<dir>&file=<file>&staged=true.
-func (s *Server) handleGitDiff(w http.ResponseWriter, r *http.Request) {
-	rawPath := r.URL.Query().Get("path")
-	if rawPath == "" {
-		http.Error(w, "missing 'path' parameter", http.StatusBadRequest)
-		return
-	}
-	path, err := sanitizePath(rawPath, true)
-	if err != nil {
-		http.Error(w, "invalid path: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	log.Printf("[Git] diff path=%s", path)
-
-	filePath := r.URL.Query().Get("file")
-	if filePath != "" {
-		filePath, err = sanitizeRelativePath(filePath, path)
-		if err != nil {
-			http.Error(w, "invalid file path: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-	}
-	staged := r.URL.Query().Get("staged") == "true"
-
-	diff, err := s.git.Diff(path, filePath, staged)
-	if err != nil {
-		log.Printf("[Git] diff error for %s: %v", path, err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/plain")
-	w.Write([]byte(diff))
+type gitDiffResponse struct {
+	Path   string `json:"path"`
+	Diff   string `json:"diff"`
+	Staged bool   `json:"staged"`
 }
 
-// handleGitLog handles GET /api/git/log?path=<dir>&count=20.
-func (s *Server) handleGitLog(w http.ResponseWriter, r *http.Request) {
-	rawPath := r.URL.Query().Get("path")
-	if rawPath == "" {
-		http.Error(w, "missing 'path' parameter", http.StatusBadRequest)
-		return
-	}
-	path, err := sanitizePath(rawPath, true)
-	if err != nil {
-		http.Error(w, "invalid path: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	log.Printf("[Git] log path=%s", path)
-
-	count := 20
-	if c := r.URL.Query().Get("count"); c != "" {
-		if n, err := strconv.Atoi(c); err == nil && n > 0 {
-			count = n
-		}
-	}
-
-	entries, err := s.git.Log(path, count)
-	if err != nil {
-		log.Printf("[Git] log error for %s: %v", path, err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if entries == nil {
-		entries = []git.LogEntry{}
-	}
-
-	writeJSON(w, http.StatusOK, entries)
-}
-
-// handleGitBranches handles GET /api/git/branches?path=<dir>.
-func (s *Server) handleGitBranches(w http.ResponseWriter, r *http.Request) {
-	rawPath := r.URL.Query().Get("path")
-	if rawPath == "" {
-		http.Error(w, "missing 'path' parameter", http.StatusBadRequest)
-		return
-	}
-	path, err := sanitizePath(rawPath, true)
-	if err != nil {
-		http.Error(w, "invalid path: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	log.Printf("[Git] branches path=%s", path)
-
-	info, err := s.git.BranchInfo(path)
-	if err != nil {
-		log.Printf("[Git] branches error for %s: %v", path, err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, info)
-}
-
-// gitPathFileRequest is the JSON body for stage/unstage requests.
-type gitPathFileRequest struct {
-	Path string `json:"path"`
-	File string `json:"file"`
-}
-
-// gitCommitRequest is the JSON body for commit requests.
 type gitCommitRequest struct {
 	Path    string `json:"path"`
 	Message string `json:"message"`
 }
 
-// gitCheckoutRequest is the JSON body for checkout requests.
 type gitCheckoutRequest struct {
 	Path   string `json:"path"`
+	Ref    string `json:"ref"`
 	Branch string `json:"branch"`
+	Create bool   `json:"create"`
 }
 
-// handleGitStage handles POST /api/git/stage.
+type gitRemoteCommandRequest struct {
+	Path        string `json:"path"`
+	Remote      string `json:"remote"`
+	Branch      string `json:"branch"`
+	SetUpstream bool   `json:"setUpstream"`
+}
+
+type gitStashRequest struct {
+	Path             string `json:"path"`
+	Message          string `json:"message"`
+	IncludeUntracked bool   `json:"includeUntracked"`
+}
+
+type gitStashApplyRequest struct {
+	Path  string `json:"path"`
+	Stash string `json:"stash"`
+	Pop   bool   `json:"pop"`
+}
+
+func (s *Server) handleGitRepository(w http.ResponseWriter, r *http.Request) {
+	repoPath, err := sanitizeRequiredRepoPath(r.URL.Query().Get("path"))
+	if err != nil {
+		writeBridgeError(w, http.StatusBadRequest, "invalid_path", err.Error())
+		return
+	}
+	if s.gitService == nil {
+		writeBridgeError(w, http.StatusServiceUnavailable, "bridge_not_ready", "bridge git service is not configured")
+		return
+	}
+	repo, err := s.gitService.GetRepository(repoPath)
+	if err != nil {
+		s.writeGitBridgeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, repo)
+}
+
+func (s *Server) handleGitDiff(w http.ResponseWriter, r *http.Request) {
+	repoPath, err := sanitizeRequiredRepoPath(r.URL.Query().Get("path"))
+	if err != nil {
+		writeBridgeError(w, http.StatusBadRequest, "invalid_path", err.Error())
+		return
+	}
+	file, err := sanitizeRelativePath(r.URL.Query().Get("file"), repoPath)
+	if err != nil {
+		writeBridgeError(w, http.StatusBadRequest, "invalid_file", err.Error())
+		return
+	}
+	staged := strings.EqualFold(r.URL.Query().Get("staged"), "true")
+
+	if s.gitService == nil && s.git == nil {
+		writeBridgeError(w, http.StatusServiceUnavailable, "bridge_not_ready", "bridge git service is not configured")
+		return
+	}
+
+	if s.gitService == nil {
+		fallback, err := s.git.Diff(repoPath, file, staged)
+		if err != nil {
+			writeBridgeError(w, http.StatusBadGateway, "git_repository_unavailable", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, gitDiffResponse{
+			Path:   file,
+			Diff:   fallback,
+			Staged: staged,
+		})
+		return
+	}
+
+	diff, err := s.gitService.Diff(repoPath, file, staged)
+	if err != nil {
+		if s.git == nil {
+			s.writeGitBridgeError(w, err)
+			return
+		}
+		fallback, fallbackErr := s.git.Diff(repoPath, file, staged)
+		if fallbackErr != nil {
+			s.writeGitBridgeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, gitDiffResponse{
+			Path:   file,
+			Diff:   fallback,
+			Staged: staged,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, gitDiffResponse{
+		Path:   chooseGitPath(diff.Path, file),
+		Diff:   diff.Diff,
+		Staged: diff.Staged,
+	})
+}
+
 func (s *Server) handleGitStage(w http.ResponseWriter, r *http.Request) {
-	var req gitPathFileRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+	if s.gitService == nil {
+		writeBridgeError(w, http.StatusServiceUnavailable, "bridge_not_ready", "bridge git service is not configured")
 		return
 	}
-	if req.Path == "" || req.File == "" {
-		http.Error(w, "missing 'path' or 'file' field", http.StatusBadRequest)
+	var req gitPathFilesRequest
+	if !decodeGitJSON(w, r, &req) {
 		return
 	}
-	path, err := sanitizePath(req.Path, true)
+	repoPath, files, ok := s.parseFileCommandRequest(w, req, true)
+	if !ok {
+		return
+	}
+	repo, err := s.gitService.Stage(repoPath, files)
 	if err != nil {
-		http.Error(w, "invalid path: "+err.Error(), http.StatusBadRequest)
+		s.writeGitBridgeError(w, err)
 		return
 	}
-	file, err := sanitizeRelativePath(req.File, path)
-	if err != nil {
-		http.Error(w, "invalid file path: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	if err := s.git.Stage(path, file); err != nil {
-		log.Printf("[Git] stage error for %s/%s: %v", path, file, err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	log.Printf("[Git] staged %s in %s", file, path)
-	w.WriteHeader(http.StatusOK)
+	writeJSON(w, http.StatusOK, repo)
 }
 
-// handleGitUnstage handles POST /api/git/unstage.
 func (s *Server) handleGitUnstage(w http.ResponseWriter, r *http.Request) {
-	var req gitPathFileRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+	if s.gitService == nil {
+		writeBridgeError(w, http.StatusServiceUnavailable, "bridge_not_ready", "bridge git service is not configured")
 		return
 	}
-	if req.Path == "" || req.File == "" {
-		http.Error(w, "missing 'path' or 'file' field", http.StatusBadRequest)
+	var req gitPathFilesRequest
+	if !decodeGitJSON(w, r, &req) {
 		return
 	}
-	path, err := sanitizePath(req.Path, true)
+	repoPath, files, ok := s.parseFileCommandRequest(w, req, true)
+	if !ok {
+		return
+	}
+	repo, err := s.gitService.Unstage(repoPath, files)
 	if err != nil {
-		http.Error(w, "invalid path: "+err.Error(), http.StatusBadRequest)
+		s.writeGitBridgeError(w, err)
 		return
 	}
-	file, err := sanitizeRelativePath(req.File, path)
-	if err != nil {
-		http.Error(w, "invalid file path: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	if err := s.git.Unstage(path, file); err != nil {
-		log.Printf("[Git] unstage error for %s/%s: %v", path, file, err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	log.Printf("[Git] unstaged %s in %s", file, path)
-	w.WriteHeader(http.StatusOK)
+	writeJSON(w, http.StatusOK, repo)
 }
 
-// handleGitCommit handles POST /api/git/commit.
 func (s *Server) handleGitCommit(w http.ResponseWriter, r *http.Request) {
-	var req gitCommitRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+	if s.gitService == nil {
+		writeBridgeError(w, http.StatusServiceUnavailable, "bridge_not_ready", "bridge git service is not configured")
 		return
 	}
-	if req.Path == "" {
-		http.Error(w, "missing 'path' field", http.StatusBadRequest)
+	var req gitCommitRequest
+	if !decodeGitJSON(w, r, &req) {
+		return
+	}
+	repoPath, err := sanitizeRequiredRepoPath(req.Path)
+	if err != nil {
+		writeBridgeError(w, http.StatusBadRequest, "invalid_path", err.Error())
 		return
 	}
 	if req.Message == "" {
-		http.Error(w, "commit message must not be empty", http.StatusBadRequest)
+		writeBridgeError(w, http.StatusBadRequest, "invalid_request", "commit message must not be empty")
 		return
 	}
-	path, err := sanitizePath(req.Path, true)
+	repo, err := s.gitService.Commit(repoPath, req.Message)
 	if err != nil {
-		http.Error(w, "invalid path: "+err.Error(), http.StatusBadRequest)
+		s.writeGitBridgeError(w, err)
 		return
 	}
-	if err := s.git.Commit(path, req.Message); err != nil {
-		log.Printf("[Git] commit error in %s: %v", path, err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	log.Printf("[Git] committed in %s: %s", path, req.Message)
-	w.WriteHeader(http.StatusOK)
+	writeJSON(w, http.StatusOK, repo)
 }
 
-// handleGitShowCommit handles GET /api/git/show?path=<dir>&hash=<hash>.
-func (s *Server) handleGitShowCommit(w http.ResponseWriter, r *http.Request) {
-	rawPath := r.URL.Query().Get("path")
-	if rawPath == "" {
-		http.Error(w, "missing 'path' parameter", http.StatusBadRequest)
-		return
-	}
-	path, err := sanitizePath(rawPath, true)
-	if err != nil {
-		http.Error(w, "invalid path: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	hash := r.URL.Query().Get("hash")
-	if hash == "" {
-		http.Error(w, "missing 'hash' parameter", http.StatusBadRequest)
-		return
-	}
-	log.Printf("[Git] show commit path=%s hash=%s", path, hash)
-
-	out, err := s.git.ShowCommit(path, hash)
-	if err != nil {
-		log.Printf("[Git] show commit error for %s/%s: %v", path, hash, err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/plain")
-	w.Write([]byte(out))
-}
-
-// handleGitCheckout handles POST /api/git/checkout.
 func (s *Server) handleGitCheckout(w http.ResponseWriter, r *http.Request) {
+	if s.gitService == nil {
+		writeBridgeError(w, http.StatusServiceUnavailable, "bridge_not_ready", "bridge git service is not configured")
+		return
+	}
 	var req gitCheckoutRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+	if !decodeGitJSON(w, r, &req) {
 		return
 	}
-	if req.Path == "" || req.Branch == "" {
-		http.Error(w, "missing 'path' or 'branch' field", http.StatusBadRequest)
-		return
-	}
-	path, err := sanitizePath(req.Path, true)
+	repoPath, err := sanitizeRequiredRepoPath(req.Path)
 	if err != nil {
-		http.Error(w, "invalid path: "+err.Error(), http.StatusBadRequest)
+		writeBridgeError(w, http.StatusBadRequest, "invalid_path", err.Error())
 		return
 	}
-	if err := s.git.Checkout(path, req.Branch); err != nil {
-		log.Printf("[Git] checkout error in %s to %s: %v", path, req.Branch, err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	ref := req.Ref
+	if ref == "" {
+		ref = req.Branch
+	}
+	if ref == "" {
+		writeBridgeError(w, http.StatusBadRequest, "invalid_request", "checkout requires 'ref' or 'branch'")
 		return
 	}
-	log.Printf("[Git] checked out %s in %s", req.Branch, path)
-	w.WriteHeader(http.StatusOK)
+	repo, err := s.gitService.Checkout(repoPath, ref, req.Create)
+	if err != nil {
+		s.writeGitBridgeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, repo)
+}
+
+func (s *Server) handleGitFetch(w http.ResponseWriter, r *http.Request) {
+	s.handleGitRemoteCommand(w, r, func(path string, req gitRemoteCommandRequest) (vscode.GitRepositoryDocument, error) {
+		return s.gitService.Fetch(path, req.Remote)
+	})
+}
+
+func (s *Server) handleGitPull(w http.ResponseWriter, r *http.Request) {
+	s.handleGitRemoteCommand(w, r, func(path string, req gitRemoteCommandRequest) (vscode.GitRepositoryDocument, error) {
+		return s.gitService.Pull(path, req.Remote, req.Branch)
+	})
+}
+
+func (s *Server) handleGitPush(w http.ResponseWriter, r *http.Request) {
+	s.handleGitRemoteCommand(w, r, func(path string, req gitRemoteCommandRequest) (vscode.GitRepositoryDocument, error) {
+		return s.gitService.Push(path, req.Remote, req.Branch, req.SetUpstream)
+	})
+}
+
+func (s *Server) handleGitDiscard(w http.ResponseWriter, r *http.Request) {
+	if s.gitService == nil {
+		writeBridgeError(w, http.StatusServiceUnavailable, "bridge_not_ready", "bridge git service is not configured")
+		return
+	}
+	var req gitPathFilesRequest
+	if !decodeGitJSON(w, r, &req) {
+		return
+	}
+	repoPath, files, ok := s.parseFileCommandRequest(w, req, true)
+	if !ok {
+		return
+	}
+	repo, err := s.gitService.Discard(repoPath, files)
+	if err != nil {
+		s.writeGitBridgeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, repo)
+}
+
+func (s *Server) handleGitStash(w http.ResponseWriter, r *http.Request) {
+	if s.gitService == nil {
+		writeBridgeError(w, http.StatusServiceUnavailable, "bridge_not_ready", "bridge git service is not configured")
+		return
+	}
+	var req gitStashRequest
+	if !decodeGitJSON(w, r, &req) {
+		return
+	}
+	repoPath, err := sanitizeRequiredRepoPath(req.Path)
+	if err != nil {
+		writeBridgeError(w, http.StatusBadRequest, "invalid_path", err.Error())
+		return
+	}
+	repo, err := s.gitService.Stash(repoPath, req.Message, req.IncludeUntracked)
+	if err != nil {
+		s.writeGitBridgeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, repo)
+}
+
+func (s *Server) handleGitStashApply(w http.ResponseWriter, r *http.Request) {
+	if s.gitService == nil {
+		writeBridgeError(w, http.StatusServiceUnavailable, "bridge_not_ready", "bridge git service is not configured")
+		return
+	}
+	var req gitStashApplyRequest
+	if !decodeGitJSON(w, r, &req) {
+		return
+	}
+	repoPath, err := sanitizeRequiredRepoPath(req.Path)
+	if err != nil {
+		writeBridgeError(w, http.StatusBadRequest, "invalid_path", err.Error())
+		return
+	}
+	repo, err := s.gitService.StashApply(repoPath, req.Stash, req.Pop)
+	if err != nil {
+		s.writeGitBridgeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, repo)
+}
+
+func (s *Server) handleGitRemoteCommand(w http.ResponseWriter, r *http.Request, command func(string, gitRemoteCommandRequest) (vscode.GitRepositoryDocument, error)) {
+	if s.gitService == nil {
+		writeBridgeError(w, http.StatusServiceUnavailable, "bridge_not_ready", "bridge git service is not configured")
+		return
+	}
+	var req gitRemoteCommandRequest
+	if !decodeGitJSON(w, r, &req) {
+		return
+	}
+	repoPath, err := sanitizeRequiredRepoPath(req.Path)
+	if err != nil {
+		writeBridgeError(w, http.StatusBadRequest, "invalid_path", err.Error())
+		return
+	}
+	repo, err := command(repoPath, req)
+	if err != nil {
+		s.writeGitBridgeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, repo)
+}
+
+func (s *Server) parseFileCommandRequest(w http.ResponseWriter, req gitPathFilesRequest, requireFiles bool) (string, []string, bool) {
+	repoPath, err := sanitizeRequiredRepoPath(req.Path)
+	if err != nil {
+		writeBridgeError(w, http.StatusBadRequest, "invalid_path", err.Error())
+		return "", nil, false
+	}
+	files := make([]string, 0, len(req.Files)+1)
+	if req.File != "" {
+		files = append(files, req.File)
+	}
+	files = append(files, req.Files...)
+	files, err = sanitizeRelativePaths(files, repoPath)
+	if err != nil {
+		writeBridgeError(w, http.StatusBadRequest, "invalid_file", err.Error())
+		return "", nil, false
+	}
+	if requireFiles && len(files) == 0 {
+		writeBridgeError(w, http.StatusBadRequest, "invalid_request", "at least one file is required")
+		return "", nil, false
+	}
+	return repoPath, files, true
+}
+
+func sanitizeRequiredRepoPath(raw string) (string, error) {
+	return sanitizePath(raw, true)
+}
+
+func sanitizeRelativePaths(raw []string, baseDir string) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	files := make([]string, 0, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for _, entry := range raw {
+		if entry == "" {
+			continue
+		}
+		file, err := sanitizeRelativePath(entry, baseDir)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seen[file]; ok {
+			continue
+		}
+		seen[file] = struct{}{}
+		files = append(files, file)
+	}
+	return files, nil
+}
+
+func decodeGitJSON(w http.ResponseWriter, r *http.Request, dest interface{}) bool {
+	if s := r.Header.Get("Content-Type"); s != "" && s != "application/json" && s != "application/json; charset=utf-8" {
+		// Allow callers that send an empty Content-Type, but reject obviously wrong payload types.
+		if len(s) >= len("application/json") && s[:len("application/json")] != "application/json" {
+			writeBridgeError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("expected application/json body, got %q", s))
+			return false
+		}
+	}
+	defer r.Body.Close()
+	if err := json.NewDecoder(r.Body).Decode(dest); err != nil {
+		writeBridgeError(w, http.StatusBadRequest, "invalid_request", "invalid request body: "+err.Error())
+		return false
+	}
+	return true
+}
+
+func (s *Server) writeGitBridgeError(w http.ResponseWriter, err error) {
+	var bridgeErr *vscode.BridgeError
+	if errors.As(err, &bridgeErr) {
+		status := http.StatusInternalServerError
+		switch bridgeErr.Code {
+		case "bridge_not_ready":
+			status = http.StatusServiceUnavailable
+		case "git_repository_unavailable":
+			status = http.StatusBadGateway
+		case "git_command_failed":
+			status = http.StatusBadGateway
+		case "git_subscription_failed":
+			status = http.StatusServiceUnavailable
+		}
+		writeBridgeError(w, status, bridgeErr.Code, bridgeErr.Message)
+		return
+	}
+	writeBridgeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+}
+
+func chooseGitPath(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }

@@ -2,12 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import '../models/chat_context_attachment.dart';
 import '../models/chat_message.dart';
+import '../models/editor_context.dart';
 import '../models/session.dart';
-import '../providers/workspace_provider.dart';
 import '../services/chat_api_client.dart';
 
 /// State management for chat functionality.
@@ -16,10 +16,10 @@ import '../services/chat_api_client.dart';
 /// clears the active conversation and reloads sessions for the new workspace.
 class ChatProvider extends ChangeNotifier {
   final ChatApiClient _apiClient;
+  EditorChatContext? _editorContext;
+  GitHubChatAttachment? _pendingGitHubAttachment;
 
   ChatProvider({required ChatApiClient apiClient}) : _apiClient = apiClient;
-
-  static const _keySessionPrefix = 'chat_session_';
 
   // -- Workspace binding --
   String _workspacePath = '/';
@@ -43,9 +43,12 @@ class ChatProvider extends ChangeNotifier {
   bool _isStreaming = false;
   bool get isStreaming => _isStreaming;
 
-  // -- Code context (for contextual chat / REQ-009) --
-  CodeContext? _codeContext;
-  CodeContext? get codeContext => _codeContext;
+  // -- Editor context shared by contextual + full chat --
+  EditorChatContext? get editorContext => _editorContext;
+  GitHubChatAttachment? get pendingGitHubAttachment => _pendingGitHubAttachment;
+
+  String? _pendingDraftMessage;
+  String? get pendingDraftMessage => _pendingDraftMessage;
 
   // -- Session list --
   List<SessionMeta> _sessions = [];
@@ -70,53 +73,18 @@ class ChatProvider extends ChangeNotifier {
     _streamingBlocks.clear();
     _conversationId = null;
     _pendingMessage = null;
+    _pendingGitHubAttachment = null;
+    _pendingDraftMessage = null;
     _isStreaming = false;
-    _codeContext = null;
     _error = null;
     notifyListeners();
     loadSessions();
   }
 
-  /// Load persisted session for the current workspace if any.
-  Future<void> loadPersistedSession() async {
-    final prefs = await SharedPreferences.getInstance();
-    final sessionId = prefs.getString('$_keySessionPrefix$_workspacePath');
-    if (sessionId == null || sessionId.isEmpty) return;
-
-    try {
-      final messages = await loadSessionMessages(sessionId);
-      _conversationId = sessionId;
-      _messages.clear();
-      _messages.addAll(messages);
-      notifyListeners();
-    } catch (e) {
-      // Session no longer valid — clear persisted reference.
-      await prefs.remove('$_keySessionPrefix$_workspacePath');
-    }
-  }
-
-  Future<void> _persistSession() async {
-    final prefs = await SharedPreferences.getInstance();
-    if (_conversationId != null) {
-      await prefs.setString(
-        '$_keySessionPrefix$_workspacePath',
-        _conversationId!,
-      );
-    } else {
-      await prefs.remove('$_keySessionPrefix$_workspacePath');
-    }
-  }
-
-  /// Inject pre-loaded historical messages (used when resuming a session).
-  void setHistoryMessages(List<ChatMessage> messages) {
-    _messages.clear();
-    _messages.addAll(messages);
-    notifyListeners();
-  }
-
-  /// Set code context for contextual chat.
-  void setCodeContext(CodeContext? context) {
-    _codeContext = context;
+  /// Update the active editor context shared across chat surfaces.
+  void setEditorContext(EditorChatContext? context) {
+    if (_editorContext == context) return;
+    _editorContext = context;
     notifyListeners();
   }
 
@@ -126,10 +94,37 @@ class ChatProvider extends ChangeNotifier {
     _streamingBlocks.clear();
     _conversationId = null;
     _pendingMessage = null;
+    _pendingGitHubAttachment = null;
+    _pendingDraftMessage = null;
     _isStreaming = false;
-    _codeContext = null;
     _error = null;
-    _persistSession();
+    notifyListeners();
+  }
+
+  void queueGitHubAction({
+    required String prompt,
+    required GitHubChatAttachment attachment,
+  }) {
+    _pendingDraftMessage = prompt;
+    _pendingGitHubAttachment = attachment;
+    notifyListeners();
+  }
+
+  void clearPendingAttachment() {
+    clearPendingGitHubAttachment();
+  }
+
+  GitHubChatAttachment? get pendingAttachment => _pendingGitHubAttachment;
+
+  void setPendingGitHubAttachment(GitHubChatAttachment? attachment) {
+    if (_pendingGitHubAttachment == attachment) return;
+    _pendingGitHubAttachment = attachment;
+    notifyListeners();
+  }
+
+  void clearPendingDraftMessage() {
+    if (_pendingDraftMessage == null) return;
+    _pendingDraftMessage = null;
     notifyListeners();
   }
 
@@ -163,7 +158,7 @@ class ChatProvider extends ChangeNotifier {
     _error = null;
 
     final dir = workDir ?? _workspacePath;
-    _channel!.sink.add(jsonEncode({'type': 'start', 'workDir': dir}));
+    _channel!.sink.add(jsonEncode({'type': 'start', 'workspaceRoot': dir}));
     notifyListeners();
   }
 
@@ -173,14 +168,26 @@ class ChatProvider extends ChangeNotifier {
     startConversation(workDir: workDir);
   }
 
+  void clearPendingGitHubAttachment() {
+    if (_pendingGitHubAttachment == null) return;
+    _pendingGitHubAttachment = null;
+    notifyListeners();
+  }
+
   /// Resume an existing conversation.
   void resumeConversation(String sessionId) {
     _ensureConnected();
-    // Don't clear local messages here — caller may have pre-loaded history.
+    _messages.clear();
     _streamingBlocks.clear();
     _error = null;
 
-    _channel!.sink.add(jsonEncode({'type': 'resume', 'sessionId': sessionId}));
+    _channel!.sink.add(
+      jsonEncode({
+        'type': 'resume',
+        'sessionId': sessionId,
+        'workspaceRoot': _workspacePath,
+      }),
+    );
     notifyListeners();
   }
 
@@ -192,22 +199,11 @@ class ChatProvider extends ChangeNotifier {
       return;
     }
 
-    // Build user message text, including code context if present
-    String messageText = text;
-    if (_codeContext != null) {
-      final ctx = _codeContext!;
-      messageText =
-          'Regarding the code in ${ctx.filePath} '
-          '(lines ${ctx.startLine}-${ctx.endLine}):\n'
-          '```\n${ctx.selectedText}\n```\n\n$text';
-      _codeContext = null; // Clear after sending
-    }
-
     // Add user message locally
     _messages.add(
       ChatMessage(
         role: 'user',
-        content: [ContentBlock(type: 'text', text: messageText)],
+        content: [ContentBlock(type: 'text', text: text)],
       ),
     );
 
@@ -215,13 +211,22 @@ class ChatProvider extends ChangeNotifier {
     _streamingBlocks.clear();
     _error = null;
 
-    _channel!.sink.add(
-      jsonEncode({
-        'type': 'send',
-        'sessionId': _conversationId,
-        'message': messageText,
-      }),
-    );
+    final payload = <String, dynamic>{
+      'type': 'send',
+      'sessionId': _conversationId,
+      'message': text,
+      'workspaceRoot': _workspacePath,
+      'activeFile': _editorContext?.activeFile,
+      'cursor': _editorContext?.cursor?.toJson(),
+      'selection': _editorContext?.selection?.toJson(),
+    };
+    if (_pendingGitHubAttachment != null) {
+      payload['attachment'] = _pendingGitHubAttachment!.toTransportJson();
+    }
+
+    _channel!.sink.add(jsonEncode(payload));
+    _pendingGitHubAttachment = null;
+    _pendingDraftMessage = null;
     notifyListeners();
   }
 
@@ -233,11 +238,7 @@ class ChatProvider extends ChangeNotifier {
 
     switch (type) {
       case 'started':
-        final newId = msg['conversationId'] as String?;
-        if (newId != _conversationId) {
-          _conversationId = newId;
-          _persistSession();
-        }
+        _conversationId = msg['conversationId'] as String?;
         if (_pendingMessage != null) {
           final pending = _pendingMessage!;
           _pendingMessage = null;
@@ -247,24 +248,12 @@ class ChatProvider extends ChangeNotifier {
         break;
 
       case 'resumed':
-        final newId = msg['conversationId'] as String?;
-        if (newId != _conversationId) {
-          _conversationId = newId;
-          _persistSession();
-        }
+        _conversationId = msg['conversationId'] as String?;
         notifyListeners();
         break;
 
       case 'assistant':
         _handleAssistantContent(msg);
-        break;
-
-      case 'user':
-        // Commit any pending assistant stream before recording the user
-        // message (which is typically a tool_result).
-        _commitStreamingMessage();
-        _messages.add(ChatMessage.fromJson(msg));
-        notifyListeners();
         break;
 
       case 'result':
@@ -278,7 +267,6 @@ class ChatProvider extends ChangeNotifier {
         break;
 
       case 'closed':
-        _commitStreamingMessage();
         _isConnected = false;
         _isStreaming = false;
         notifyListeners();
@@ -291,78 +279,33 @@ class ChatProvider extends ChangeNotifier {
     final rawContent = message?['content'] as List<dynamic>?;
     if (rawContent == null) return;
 
-    _isStreaming = true;
-
-    for (final raw in rawContent) {
-      final incoming = ContentBlock.fromJson(raw as Map<String, dynamic>);
-      switch (incoming.type) {
-        case 'text':
-          if (_streamingBlocks.isNotEmpty &&
-              _streamingBlocks.last.type == 'text') {
-            final lastText = _streamingBlocks.last.text ?? '';
-            final newText = incoming.text ?? '';
-            _streamingBlocks[_streamingBlocks.length - 1] = ContentBlock(
-              type: 'text',
-              text: lastText + newText,
-            );
-          } else if (incoming.text != null && incoming.text!.isNotEmpty) {
-            _streamingBlocks.add(incoming);
-          }
-          break;
-
-        case 'thinking':
-          if (_streamingBlocks.isNotEmpty &&
-              _streamingBlocks.last.type == 'thinking') {
-            _streamingBlocks[_streamingBlocks.length - 1] = incoming;
-          } else {
-            _streamingBlocks.add(incoming);
-          }
-          break;
-
-        case 'tool_use':
-          final existingIndex = _streamingBlocks.indexWhere(
-            (b) => b.type == 'tool_use' && b.id == incoming.id,
-          );
-          if (existingIndex >= 0) {
-            _streamingBlocks[existingIndex] = incoming;
-          } else {
-            _streamingBlocks.add(incoming);
-          }
-          break;
-
-        default:
-          _streamingBlocks.add(incoming);
-      }
+    _streamingBlocks.clear();
+    for (final block in rawContent) {
+      _streamingBlocks.add(
+        ContentBlock.fromJson(block as Map<String, dynamic>),
+      );
     }
     notifyListeners();
   }
 
-  void _commitStreamingMessage() {
-    if (_streamingBlocks.isNotEmpty) {
-      _messages.add(
-        ChatMessage(role: 'assistant', content: List.from(_streamingBlocks)),
-      );
-      _streamingBlocks.clear();
-    }
-    _isStreaming = false;
-  }
-
   void _handleResult(Map<String, dynamic> msg) {
-    // The server typically does not emit "result" in stream-json mode,
-    // but keep this handler for backward compatibility.
     final resultText = msg['result'] as String?;
+    if (resultText == null && _streamingBlocks.isEmpty) return;
+
+    // Prefer streaming blocks (richer content) over the plain-text result fallback.
+    List<ContentBlock> blocks;
     if (_streamingBlocks.isNotEmpty) {
-      _commitStreamingMessage();
+      blocks = List.from(_streamingBlocks);
     } else if (resultText != null) {
-      _messages.add(
-        ChatMessage(
-          role: 'assistant',
-          content: [ContentBlock(type: 'text', text: resultText)],
-        ),
-      );
-      _isStreaming = false;
-      notifyListeners();
+      blocks = [ContentBlock(type: 'text', text: resultText)];
+    } else {
+      return;
     }
+
+    _messages.add(ChatMessage(role: 'assistant', content: blocks));
+    _streamingBlocks.clear();
+    _isStreaming = false;
+    notifyListeners();
   }
 
   void _onError(dynamic error) {
@@ -397,11 +340,11 @@ class ChatProvider extends ChangeNotifier {
   }
 
   /// Fetch session list from REST API.
-  /// Defaults to filtering by the current workspace project name.
+  /// Defaults to filtering by the exact current workspace root.
   /// Pass [allProjects] = true to show sessions from all workspaces.
   Future<void> loadSessions({
     String? query,
-    String? project,
+    String? workspaceRoot,
     bool allProjects = false,
   }) async {
     _isLoadingSessions = true;
@@ -409,11 +352,12 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final effectiveProject =
-          allProjects ? null : (project ?? WorkspaceProvider.nameForPath(_workspacePath));
+      final effectiveWorkspaceRoot = allProjects
+          ? null
+          : (workspaceRoot ?? _workspacePath);
       _sessions = await _apiClient.getSessions(
         query: query,
-        project: effectiveProject,
+        workspaceRoot: effectiveWorkspaceRoot,
       );
     } catch (e) {
       _error = e.toString();
@@ -455,7 +399,12 @@ class ChatProvider extends ChangeNotifier {
     _channel = null;
     _isConnected = false;
     // Commit whatever partial content we have as a final assistant message.
-    _commitStreamingMessage();
+    if (_streamingBlocks.isNotEmpty) {
+      _messages.add(
+        ChatMessage(role: 'assistant', content: List.from(_streamingBlocks)),
+      );
+      _streamingBlocks.clear();
+    }
     notifyListeners();
   }
 

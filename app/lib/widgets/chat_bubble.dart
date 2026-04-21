@@ -20,7 +20,7 @@ class ChatBubble extends StatelessWidget {
   final ChatMessage? nextMessage;
 
   /// Callback when a file path in a tool card is tapped.
-  final void Function(String filePath)? onFileTap;
+  final void Function(String filePath, FileAnnotation? annotation)? onFileTap;
 
   /// Session ID for loading subagent conversations.
   final String? sessionId;

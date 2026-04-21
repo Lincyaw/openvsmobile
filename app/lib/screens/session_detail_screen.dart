@@ -1,13 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../navigation/editor_navigation.dart';
 import '../models/chat_message.dart';
 import '../models/session.dart';
 import '../providers/chat_provider.dart';
-import '../providers/editor_provider.dart';
-import '../providers/workspace_provider.dart';
 import '../widgets/chat_bubble.dart';
-import 'code_screen.dart';
 
 /// Read-only view of a past session's full conversation.
 /// Fetches messages from GET /api/sessions/:id/messages.
@@ -58,37 +56,8 @@ class _SessionDetailScreenState extends State<SessionDetailScreen> {
     }
   }
 
-  void _navigateToFile(String filePath) {
-    final editorProvider = context.read<EditorProvider>();
-    editorProvider.openFile(filePath).then((_) {
-      if (mounted) {
-        Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => ChangeNotifierProvider.value(
-              value: editorProvider,
-              child: const CodeScreen(),
-            ),
-          ),
-        );
-      }
-    });
-  }
-
-  void _resumeSession() async {
-    final workspaceProvider = context.read<WorkspaceProvider>();
-    final chatProvider = context.read<ChatProvider>();
-
-    await workspaceProvider.setWorkspace(widget.session.cwd);
-    chatProvider.setWorkspace(widget.session.cwd);
-    if (_messages != null) {
-      chatProvider.setHistoryMessages(_messages!);
-    }
-    chatProvider.resumeConversation(widget.session.sessionId);
-
-    if (mounted) {
-      // Pop back to the main shell (Chat tab) rather than just the list screen.
-      Navigator.of(context).popUntil((route) => route.isFirst);
-    }
+  Future<void> _navigateToFile(String filePath, FileAnnotation? annotation) {
+    return openCodeAnnotation(context, path: filePath, annotation: annotation);
   }
 
   @override
@@ -110,11 +79,6 @@ class _SessionDetailScreenState extends State<SessionDetailScreen> {
               ),
             ),
         ],
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        icon: const Icon(Icons.play_arrow),
-        label: const Text('Resume'),
-        onPressed: _isLoading ? null : _resumeSession,
       ),
       body: _buildBody(),
     );
@@ -183,7 +147,7 @@ class _SessionDetailScreenState extends State<SessionDetailScreen> {
           message: msg,
           nextMessage: nextMsg,
           sessionId: widget.session.sessionId,
-          onFileTap: (filePath) => _navigateToFile(filePath),
+          onFileTap: _navigateToFile,
         );
       },
     );

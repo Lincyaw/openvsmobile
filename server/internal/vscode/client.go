@@ -63,6 +63,13 @@ type Client struct {
 	conn *websocket.Conn
 	mu   sync.Mutex
 
+	// connEpoch identifies the currently active websocket transport so stale
+	// read/keepalive goroutines do not report disconnects for superseded
+	// connections during reconnect.
+	connEpoch atomic.Uint64
+	// disconnectEpoch ensures a transport loss is only reported once per epoch.
+	disconnectEpoch atomic.Uint64
+
 	// reconnectionToken identifies this session for reconnection.
 	reconnectionToken string
 
@@ -86,6 +93,8 @@ type Client struct {
 	onMessage func(data []byte)
 	// onControl is called for each Control message received.
 	onControl func(data []byte)
+	// onDisconnect is called when the websocket transport is lost.
+	onDisconnect func(error)
 }
 
 // NewClient creates a new Client with a fresh reconnection token.
@@ -121,7 +130,12 @@ func (c *Client) ConnectWithType(ctx context.Context, serverURL string, connecti
 	if err != nil {
 		return fmt.Errorf("websocket dial: %w", err)
 	}
+	c.mu.Lock()
 	c.conn = conn
+	stopKeepAlive := c.stopKeepAlive
+	epoch := c.connEpoch.Add(1)
+	c.disconnectEpoch.Store(0)
+	c.mu.Unlock()
 
 	if err := c.performHandshake(ctx, connectionToken, connType, commit); err != nil {
 		conn.Close()
@@ -139,17 +153,21 @@ func (c *Client) ConnectWithType(ctx context.Context, serverURL string, connecti
 	}
 
 	// Attach the IPC multiplexer.
-	c.ipcClient = NewIPCClient(c)
+	if c.ipcClient == nil {
+		c.ipcClient = NewIPCClient(c)
+	} else {
+		c.ipcClient.reset(c)
+	}
 
 	// Replay any messages buffered during handshake (e.g., Initialize).
 	for _, msg := range c.bufferedMessages {
-		c.handleMessage(msg)
+		c.handleMessage(msg, epoch)
 	}
 	c.bufferedMessages = nil
 
 	// Start the read loop and keep-alive.
-	go c.readLoop()
-	go c.keepAliveLoop()
+	go c.readLoop(conn, epoch)
+	go c.keepAliveLoop(conn, stopKeepAlive, epoch)
 
 	log.Printf("[VSCode] connected to %s (type=%d)", serverURL, connType)
 	return nil
@@ -160,14 +178,21 @@ func (c *Client) IPC() *IPCClient {
 	return c.ipcClient
 }
 
+// SetDisconnectHandler registers a callback for transport loss notifications.
+func (c *Client) SetDisconnectHandler(handler func(error)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onDisconnect = handler
+}
+
 // Reconnect attempts to re-establish the connection using the same
 // reconnection token. It performs a new WebSocket dial with reconnection=true,
 // replays the handshake, and restores the IPC layer.
 func (c *Client) Reconnect(ctx context.Context, serverURL string, connectionToken string) error {
 	// Close existing connection if any.
 	c.mu.Lock()
-	if c.conn != nil {
-		c.conn.Close()
+	if existing := c.conn; existing != nil {
+		_ = existing.Close()
 	}
 	c.mu.Unlock()
 
@@ -175,7 +200,7 @@ func (c *Client) Reconnect(ctx context.Context, serverURL string, connectionToke
 	select {
 	case <-c.stopKeepAlive:
 	default:
-		close(c.stopKeepAlive)
+		closeSignal(c.stopKeepAlive)
 	}
 	c.stopKeepAlive = make(chan struct{})
 
@@ -192,7 +217,12 @@ func (c *Client) Reconnect(ctx context.Context, serverURL string, connectionToke
 	if err != nil {
 		return fmt.Errorf("websocket reconnect dial: %w", err)
 	}
+	c.mu.Lock()
 	c.conn = conn
+	stopKeepAlive := c.stopKeepAlive
+	epoch := c.connEpoch.Add(1)
+	c.disconnectEpoch.Store(0)
+	c.mu.Unlock()
 
 	if err := c.performHandshake(ctx, connectionToken, ConnectionTypeManagement, ""); err != nil {
 		conn.Close()
@@ -207,15 +237,20 @@ func (c *Client) Reconnect(ctx context.Context, serverURL string, connectionToke
 		return fmt.Errorf("reconnect send IPC ctx: %w", err)
 	}
 
-	// Re-attach IPC.
-	c.ipcClient = NewIPCClient(c)
+	// Re-attach IPC without replacing the object so long-lived proxies that hold
+	// the IPCClient continue to use the restored transport.
+	if c.ipcClient == nil {
+		c.ipcClient = NewIPCClient(c)
+	} else {
+		c.ipcClient.reset(c)
+	}
 	for _, msg := range c.bufferedMessages {
-		c.handleMessage(msg)
+		c.handleMessage(msg, epoch)
 	}
 	c.bufferedMessages = nil
 
-	go c.readLoop()
-	go c.keepAliveLoop()
+	go c.readLoop(conn, epoch)
+	go c.keepAliveLoop(conn, stopKeepAlive, epoch)
 
 	log.Printf("[VSCode] reconnected to %s", serverURL)
 	return nil
@@ -250,7 +285,7 @@ func (c *Client) ReconnectWithRetry(ctx context.Context, serverURL, connectionTo
 func (c *Client) Close() error {
 	var closeErr error
 	c.closeOnce.Do(func() {
-		close(c.stopKeepAlive)
+		closeSignal(c.stopKeepAlive)
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		if c.conn == nil {
@@ -420,11 +455,12 @@ func (c *Client) SendRegular(data []byte) error {
 }
 
 // readLoop continuously reads messages from the WebSocket and dispatches them.
-func (c *Client) readLoop() {
+func (c *Client) readLoop(conn *websocket.Conn, epoch uint64) {
 	for {
-		_, rawData, err := c.conn.ReadMessage()
+		_, rawData, err := conn.ReadMessage()
 		if err != nil {
 			// Connection closed or error.
+			c.notifyDisconnect(epoch, err)
 			return
 		}
 
@@ -438,12 +474,12 @@ func (c *Client) readLoop() {
 				log.Printf("vscode: decode error: %v", err)
 				break
 			}
-			c.handleMessage(msg)
+			c.handleMessage(msg, epoch)
 		}
 	}
 }
 
-func (c *Client) handleMessage(msg *ProtocolMessage) {
+func (c *Client) handleMessage(msg *ProtocolMessage, epoch uint64) {
 	switch msg.Type {
 	case ProtocolMessageRegular:
 		c.incomingMsgID.Store(msg.ID)
@@ -460,16 +496,17 @@ func (c *Client) handleMessage(msg *ProtocolMessage) {
 		// No action needed.
 	case ProtocolMessageDisconnect:
 		log.Println("vscode: received disconnect")
+		c.notifyDisconnect(epoch, fmt.Errorf("received disconnect"))
 	}
 }
 
 // keepAliveLoop sends periodic keep-alive frames.
-func (c *Client) keepAliveLoop() {
+func (c *Client) keepAliveLoop(conn *websocket.Conn, stopCh <-chan struct{}, epoch uint64) {
 	ticker := time.NewTicker(keepAliveSendTime)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-c.stopKeepAlive:
+		case <-stopCh:
 			return
 		case <-ticker.C:
 			msg := &ProtocolMessage{
@@ -478,10 +515,52 @@ func (c *Client) keepAliveLoop() {
 				Ack:  0,
 				Data: []byte{},
 			}
-			if err := c.WriteMessage(msg); err != nil {
+			if err := c.writeMessageOnConn(conn, msg); err != nil {
+				c.notifyDisconnect(epoch, err)
 				return
 			}
 		}
+	}
+}
+
+func (c *Client) notifyDisconnect(epoch uint64, err error) {
+	c.mu.Lock()
+	if c.connEpoch.Load() != epoch {
+		c.mu.Unlock()
+		return
+	}
+	handler := c.onDisconnect
+	c.mu.Unlock()
+	if handler == nil {
+		return
+	}
+	if !c.disconnectEpoch.CompareAndSwap(0, epoch) {
+		return
+	}
+	handler(err)
+}
+
+func (c *Client) writeMessageOnConn(conn *websocket.Conn, msg *ProtocolMessage) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if conn == nil {
+		return fmt.Errorf("not connected")
+	}
+	if c.conn != conn {
+		return fmt.Errorf("stale connection")
+	}
+	data := EncodeProtocolMessage(msg)
+	return conn.WriteMessage(websocket.BinaryMessage, data)
+}
+
+func closeSignal(ch chan struct{}) {
+	if ch == nil {
+		return
+	}
+	select {
+	case <-ch:
+	default:
+		close(ch)
 	}
 }
 

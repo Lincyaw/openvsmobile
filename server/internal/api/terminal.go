@@ -3,213 +3,337 @@ package api
 import (
 	"encoding/base64"
 	"encoding/json"
-	"log"
+	"errors"
+	"fmt"
 	"net/http"
-	"sync"
+	"strings"
 
 	"github.com/gorilla/websocket"
 
 	"github.com/Lincyaw/vscode-mobile/server/internal/terminal"
 )
 
-// terminalMessage is the JSON wire format for terminal WebSocket messages.
-type terminalMessage struct {
-	Type    string `json:"type"`
-	ID      string `json:"id"`
-	Shell   string `json:"shell,omitempty"`
-	WorkDir string `json:"workDir,omitempty"`
-	Rows    uint16 `json:"rows,omitempty"`
-	Cols    uint16 `json:"cols,omitempty"`
-	Data    string `json:"data,omitempty"`
-	Error   string `json:"error,omitempty"`
+type terminalCreateRequest struct {
+	Name    string `json:"name"`
+	Cwd     string `json:"cwd"`
+	Profile string `json:"profile"`
+	Rows    uint16 `json:"rows"`
+	Cols    uint16 `json:"cols"`
 }
 
-// handleWSTerminal handles the /ws/terminal WebSocket endpoint.
-func (s *Server) handleWSTerminal(w http.ResponseWriter, r *http.Request) {
+type terminalIDRequest struct {
+	ID string `json:"id"`
+}
+
+type terminalResizeRequest struct {
+	ID   string `json:"id"`
+	Rows uint16 `json:"rows"`
+	Cols uint16 `json:"cols"`
+}
+
+type terminalRenameRequest struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type terminalSplitRequest struct {
+	ParentID string `json:"parentId"`
+	Name     string `json:"name"`
+}
+
+type terminalWSMessage struct {
+	Type  string `json:"type"`
+	Data  string `json:"data,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
+func (s *Server) handleTerminalSessions(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.termManager.List())
+}
+
+func (s *Server) handleTerminalCreate(w http.ResponseWriter, r *http.Request) {
+	var req terminalCreateRequest
+	if err := decodeTerminalJSONBody(r, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_terminal_request", err.Error())
+		return
+	}
+	if err := validateTerminalProfile(req.Profile); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_terminal_profile", err.Error())
+		return
+	}
+	if req.Cwd == "" {
+		req.Cwd = "/"
+	}
+	if req.Cwd != "/" {
+		cleaned, err := sanitizePath(req.Cwd, true)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_terminal_cwd", err.Error())
+			return
+		}
+		req.Cwd = cleaned
+	}
+
+	session, err := s.termManager.CreateSession(terminal.CreateOptions{
+		Name:    req.Name,
+		Shell:   profileShell(req.Profile),
+		WorkDir: req.Cwd,
+		Profile: normalizeProfile(req.Profile),
+		Rows:    req.Rows,
+		Cols:    req.Cols,
+	})
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "terminal_create_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, session.Snapshot())
+}
+
+func (s *Server) handleTerminalAttach(w http.ResponseWriter, r *http.Request) {
+	var req terminalIDRequest
+	if err := decodeTerminalJSONBody(r, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_terminal_request", err.Error())
+		return
+	}
+	term, ok := s.termManager.Get(req.ID)
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, "terminal_not_found", "terminal session not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, term.Snapshot())
+}
+
+func (s *Server) handleTerminalResize(w http.ResponseWriter, r *http.Request) {
+	var req terminalResizeRequest
+	if err := decodeTerminalJSONBody(r, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_terminal_request", err.Error())
+		return
+	}
+	session, err := s.termManager.ResizeSession(req.ID, req.Rows, req.Cols)
+	if err != nil {
+		writeJSONError(w, terminalStatus(err), "terminal_resize_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, session)
+}
+
+func (s *Server) handleTerminalClose(w http.ResponseWriter, r *http.Request) {
+	var req terminalIDRequest
+	if err := decodeTerminalJSONBody(r, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_terminal_request", err.Error())
+		return
+	}
+	session, err := s.termManager.CloseSession(req.ID)
+	if err != nil {
+		writeJSONError(w, terminalStatus(err), "terminal_close_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, session)
+}
+
+func (s *Server) handleTerminalRename(w http.ResponseWriter, r *http.Request) {
+	var req terminalRenameRequest
+	if err := decodeTerminalJSONBody(r, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_terminal_request", err.Error())
+		return
+	}
+	if req.Name == "" {
+		writeJSONError(w, http.StatusBadRequest, "invalid_terminal_name", "name is required")
+		return
+	}
+	session, err := s.termManager.Rename(req.ID, req.Name)
+	if err != nil {
+		writeJSONError(w, terminalStatus(err), "terminal_rename_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, session)
+}
+
+func (s *Server) handleTerminalSplit(w http.ResponseWriter, r *http.Request) {
+	var req terminalSplitRequest
+	if err := decodeTerminalJSONBody(r, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_terminal_request", err.Error())
+		return
+	}
+	session, err := s.termManager.Split(req.ParentID, req.Name)
+	if err != nil {
+		writeJSONError(w, terminalStatus(err), "terminal_split_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, session)
+}
+
+func (s *Server) handleWSBridgeTerminal(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("id")
+	term, ok := s.termManager.Get(sessionID)
+	if !ok {
+		http.Error(w, "terminal session not found", http.StatusNotFound)
+		return
+	}
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("terminal websocket upgrade error: %v", err)
 		return
 	}
 	defer conn.Close()
-	log.Printf("[WS/Terminal] connection established")
 
-	// connMu protects writes to the WebSocket connection from concurrent goroutines.
-	var connMu sync.Mutex
-
-	// Track goroutines reading from terminals so we can clean up.
-	var wg sync.WaitGroup
-	// Track which terminals were created via this connection.
-	var createdIDs []string
-	var idsMu sync.Mutex
-
-	defer func() {
-		// Close all terminals created on this connection.
-		idsMu.Lock()
-		ids := createdIDs
-		idsMu.Unlock()
-		for _, id := range ids {
-			_ = s.termManager.Close(id)
-		}
-		wg.Wait()
-	}()
-
-	sendMsg := func(msg terminalMessage) {
-		connMu.Lock()
-		defer connMu.Unlock()
-		if err := conn.WriteJSON(msg); err != nil {
-			log.Printf("terminal ws write error: %v", err)
-		}
+	attachment, err := s.termManager.Attach(sessionID)
+	if err != nil {
+		http.Error(w, err.Error(), terminalStatus(err))
+		return
 	}
+	defer attachment.Close()
 
-	sendError := func(id string, errMsg string) {
-		sendMsg(terminalMessage{Type: "error", ID: id, Error: errMsg})
+	if err := conn.WriteJSON(map[string]any{
+		"type":    "ready",
+		"session": term.Snapshot(),
+	}); err != nil {
+		return
 	}
-
-	for {
-		_, rawMsg, err := conn.ReadMessage()
-		if err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
-				log.Printf("[WS/Terminal] read error: %v", err)
-			}
-			log.Printf("[WS/Terminal] connection closed")
-			return
-		}
-
-		var msg terminalMessage
-		if err := json.Unmarshal(rawMsg, &msg); err != nil {
-			sendError("", "invalid message format")
+	for _, chunk := range [][]byte{attachment.Backlog()} {
+		if len(chunk) == 0 {
 			continue
 		}
+		if err := conn.WriteJSON(terminalWSMessage{
+			Type: "output",
+			Data: base64.StdEncoding.EncodeToString(chunk),
+		}); err != nil {
+			return
+		}
+	}
 
-		switch msg.Type {
-		case "create":
-			s.handleTermCreate(&wg, conn, &connMu, &createdIDs, &idsMu, msg, sendMsg, sendError)
-		case "input":
-			s.handleTermInput(msg, sendError)
-		case "resize":
-			s.handleTermResize(msg, sendError)
-		case "close":
-			s.handleTermClose(msg, sendMsg, sendError)
-		default:
-			sendError(msg.ID, "unknown message type: "+msg.Type)
+	errCh := make(chan error, 1)
+	go func() {
+		for chunk := range attachment.Output() {
+			if err := conn.WriteJSON(terminalWSMessage{
+				Type: "output",
+				Data: base64.StdEncoding.EncodeToString(chunk),
+			}); err != nil {
+				errCh <- err
+				return
+			}
+		}
+		errCh <- nil
+	}()
+
+	readCh := make(chan []byte, 1)
+	readErrCh := make(chan error, 1)
+	go func() {
+		for {
+			_, payload, err := conn.ReadMessage()
+			if err != nil {
+				readErrCh <- err
+				return
+			}
+			readCh <- payload
+		}
+	}()
+
+	for {
+		select {
+		case outputErr := <-errCh:
+			if outputErr == nil {
+				_ = conn.WriteJSON(map[string]any{
+					"type":    "exit",
+					"session": term.Snapshot(),
+				})
+			}
+			return
+		case err := <-readErrCh:
+			_ = err
+			return
+		case payload := <-readCh:
+			var msg terminalWSMessage
+			if err := json.Unmarshal(payload, &msg); err != nil {
+				_ = conn.WriteJSON(terminalWSMessage{Type: "error", Error: "invalid terminal websocket message"})
+				continue
+			}
+			if msg.Type != "input" {
+				_ = conn.WriteJSON(terminalWSMessage{Type: "error", Error: "unsupported terminal websocket message"})
+				continue
+			}
+
+			input, err := decodeTerminalInput(msg.Data)
+			if err != nil {
+				_ = conn.WriteJSON(terminalWSMessage{Type: "error", Error: err.Error()})
+				continue
+			}
+			if _, err := term.Write(input); err != nil {
+				_ = conn.WriteJSON(terminalWSMessage{Type: "error", Error: err.Error()})
+				return
+			}
 		}
 	}
 }
 
-// allowedShells is the set of permitted shell commands for terminal creation.
-// Any shell not in this list is rejected to prevent arbitrary command execution.
+func decodeTerminalJSONBody(r *http.Request, dest any) error {
+	if r.Body == nil {
+		return errors.New("request body is required")
+	}
+	defer r.Body.Close()
+
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dest); err != nil {
+		return err
+	}
+	return nil
+}
+
+func decodeTerminalInput(data string) ([]byte, error) {
+	if data == "" {
+		return nil, errors.New("input data is required")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(data)
+	if err == nil {
+		return decoded, nil
+	}
+	return []byte(data), nil
+}
+
+func validateTerminalProfile(profile string) error {
+	if !allowedShells[profileShell(profile)] {
+		return fmt.Errorf("profile not allowed: %s", profile)
+	}
+	return nil
+}
+
+func normalizeProfile(profile string) string {
+	if profile == "" {
+		return "bash"
+	}
+	return profile
+}
+
+func profileShell(profile string) string {
+	switch profile {
+	case "", "bash", "/bin/bash", "/usr/bin/bash":
+		return "/bin/bash"
+	case "zsh", "/bin/zsh", "/usr/bin/zsh":
+		return "/bin/zsh"
+	case "sh", "/bin/sh":
+		return "/bin/sh"
+	default:
+		return profile
+	}
+}
+
+func terminalStatus(err error) int {
+	if err == nil {
+		return http.StatusOK
+	}
+	if errors.Is(err, websocket.ErrBadHandshake) {
+		return http.StatusBadRequest
+	}
+	if strings.Contains(err.Error(), "not found") {
+		return http.StatusNotFound
+	}
+	return http.StatusBadRequest
+}
+
 var allowedShells = map[string]bool{
-	"":              true, // empty means default (/bin/bash)
 	"/bin/bash":     true,
 	"/bin/sh":       true,
 	"/bin/zsh":      true,
 	"/usr/bin/bash": true,
 	"/usr/bin/zsh":  true,
-	"bash":          true,
-	"sh":            true,
-	"zsh":           true,
-}
-
-func (s *Server) handleTermCreate(
-	wg *sync.WaitGroup,
-	conn *websocket.Conn,
-	connMu *sync.Mutex,
-	createdIDs *[]string,
-	idsMu *sync.Mutex,
-	msg terminalMessage,
-	sendMsg func(terminalMessage),
-	sendError func(string, string),
-) {
-	if msg.ID == "" {
-		sendError("", "missing terminal id")
-		return
-	}
-
-	// Validate shell against allowlist to prevent arbitrary command execution.
-	if !allowedShells[msg.Shell] {
-		sendError(msg.ID, "shell not allowed: "+msg.Shell)
-		return
-	}
-
-	// Validate workDir to prevent path traversal.
-	if msg.WorkDir != "" {
-		cleanedDir, err := sanitizePath(msg.WorkDir, true)
-		if err != nil {
-			sendError(msg.ID, "invalid workDir: "+err.Error())
-			return
-		}
-		msg.WorkDir = cleanedDir
-	}
-
-	term, err := s.termManager.Create(msg.ID, msg.Shell, msg.WorkDir, msg.Rows, msg.Cols)
-	if err != nil {
-		sendError(msg.ID, "failed to create terminal: "+err.Error())
-		return
-	}
-
-	idsMu.Lock()
-	*createdIDs = append(*createdIDs, msg.ID)
-	idsMu.Unlock()
-
-	log.Printf("[WS/Terminal] created terminal %s via websocket", msg.ID)
-	sendMsg(terminalMessage{Type: "created", ID: msg.ID})
-
-	// Start a goroutine to read PTY output and send to client.
-	wg.Add(1)
-	go func(t *terminal.Terminal, id string) {
-		defer wg.Done()
-		buf := make([]byte, 4096)
-		for {
-			n, err := t.Read(buf)
-			if err != nil {
-				// PTY closed or process exited.
-				return
-			}
-			encoded := base64.StdEncoding.EncodeToString(buf[:n])
-			connMu.Lock()
-			writeErr := conn.WriteJSON(terminalMessage{
-				Type: "output",
-				ID:   id,
-				Data: encoded,
-			})
-			connMu.Unlock()
-			if writeErr != nil {
-				return
-			}
-		}
-	}(term, msg.ID)
-}
-
-func (s *Server) handleTermInput(msg terminalMessage, sendError func(string, string)) {
-	t, ok := s.termManager.Get(msg.ID)
-	if !ok {
-		sendError(msg.ID, "terminal not found")
-		return
-	}
-
-	data, err := base64.StdEncoding.DecodeString(msg.Data)
-	if err != nil {
-		// Try raw string if not base64.
-		data = []byte(msg.Data)
-	}
-
-	if _, err := t.Write(data); err != nil {
-		sendError(msg.ID, "write error: "+err.Error())
-	}
-}
-
-func (s *Server) handleTermResize(msg terminalMessage, sendError func(string, string)) {
-	if err := s.termManager.Resize(msg.ID, msg.Rows, msg.Cols); err != nil {
-		sendError(msg.ID, "resize error: "+err.Error())
-	}
-}
-
-func (s *Server) handleTermClose(msg terminalMessage, sendMsg func(terminalMessage), sendError func(string, string)) {
-	if err := s.termManager.Close(msg.ID); err != nil {
-		sendError(msg.ID, "close error: "+err.Error())
-		return
-	}
-	log.Printf("[WS/Terminal] closed terminal %s via websocket", msg.ID)
-	sendMsg(terminalMessage{Type: "closed", ID: msg.ID})
 }

@@ -6,80 +6,287 @@ import (
 	"time"
 )
 
-func TestCreate(t *testing.T) {
+func waitForOutputChunk(t *testing.T, ch <-chan []byte, timeout time.Duration, wantSubstring string) []byte {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case chunk, ok := <-ch:
+			if !ok {
+				t.Fatal("attachment output closed before expected chunk arrived")
+			}
+			if strings.Contains(string(chunk), wantSubstring) {
+				return chunk
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for output containing %q", wantSubstring)
+		}
+	}
+}
+
+func waitForManagerEvent(t *testing.T, ch <-chan Event, timeout time.Duration, wantType string) Event {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case event, ok := <-ch:
+			if !ok {
+				t.Fatal("event stream closed before expected event arrived")
+			}
+			if event.Type == wantType {
+				return event
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for manager event %q", wantType)
+		}
+	}
+}
+
+func TestCreateAndAttachReplaysBacklogAcrossAttachments(t *testing.T) {
 	m := NewManager()
 	defer m.CloseAll()
 
-	term, err := m.Create("test-1", "/bin/bash", "/tmp", 24, 80)
+	term, err := m.CreateSession(CreateOptions{Name: "primary", Shell: "/bin/bash", WorkDir: "/tmp", Rows: 24, Cols: 80})
 	if err != nil {
-		t.Fatalf("Create failed: %v", err)
+		t.Fatalf("CreateSession failed: %v", err)
 	}
 
-	// Write a command.
-	_, err = term.Write([]byte("echo hello\n"))
+	attachment, err := m.Attach(term.ID)
 	if err != nil {
+		t.Fatalf("Attach failed: %v", err)
+	}
+	defer attachment.Close()
+
+	if _, err := term.Write([]byte("echo hello-from-attach\n")); err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+	waitForOutputChunk(t, attachment.Output(), 5*time.Second, "hello-from-attach")
+
+	attachment.Close()
+	replay, err := m.Attach(term.ID)
+	if err != nil {
+		t.Fatalf("reattach failed: %v", err)
+	}
+	defer replay.Close()
+	if !strings.Contains(string(replay.Backlog()), "hello-from-attach") {
+		t.Fatalf("replay backlog = %q, want substring %q", string(replay.Backlog()), "hello-from-attach")
+	}
+}
+
+func TestResizeRenameSplitLifecycle(t *testing.T) {
+	m := NewManager()
+	defer m.CloseAll()
+
+	parent, err := m.CreateSession(CreateOptions{Name: "main", Shell: "/bin/bash", WorkDir: "/tmp", Rows: 24, Cols: 80})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	if err := m.Resize(parent.ID, 30, 120); err != nil {
+		t.Fatalf("Resize failed: %v", err)
+	}
+	resized, ok := m.Get(parent.ID)
+	if !ok {
+		t.Fatal("expected resized session to remain addressable")
+	}
+	if snapshot := resized.Snapshot(); snapshot.Rows != 30 || snapshot.Cols != 120 {
+		t.Fatalf("resized session dims = %dx%d, want 30x120", snapshot.Rows, snapshot.Cols)
+	}
+
+	renamed, err := m.Rename(parent.ID, "renamed-main")
+	if err != nil {
+		t.Fatalf("Rename failed: %v", err)
+	}
+	if renamed.Name != "renamed-main" {
+		t.Fatalf("renamed session name = %q, want %q", renamed.Name, "renamed-main")
+	}
+
+	split, err := m.Split(parent.ID, "split-pane")
+	if err != nil {
+		t.Fatalf("Split failed: %v", err)
+	}
+	if split.ID == parent.ID {
+		t.Fatal("split session id should differ from parent id")
+	}
+	if split.Cwd != renamed.Cwd || split.Profile != renamed.Profile {
+		t.Fatalf("split session should inherit cwd/profile, got cwd=%q profile=%q", split.Cwd, split.Profile)
+	}
+
+	listed := m.List()
+	if len(listed) != 2 {
+		t.Fatalf("List count = %d, want 2", len(listed))
+	}
+}
+
+func TestExitStatePersistsForReattachUntilClose(t *testing.T) {
+	m := NewManager()
+	defer m.CloseAll()
+
+	term, err := m.CreateSession(CreateOptions{Name: "exit-state", Shell: "/bin/bash", WorkDir: "/tmp"})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	if _, err := term.Write([]byte("echo before-exit\nexit 7\n")); err != nil {
 		t.Fatalf("Write failed: %v", err)
 	}
 
-	// Read output with a timeout.
-	buf := make([]byte, 4096)
-	var output strings.Builder
-	deadline := time.After(5 * time.Second)
+	select {
+	case <-term.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for terminal to exit")
+	}
 
-	for {
-		select {
-		case <-deadline:
-			t.Fatalf("timed out waiting for output; got so far: %q", output.String())
-		default:
-		}
+	snapshot := term.Snapshot()
+	if snapshot.State != StateExited {
+		t.Fatalf("session state after exit = %q, want %q", snapshot.State, StateExited)
+	}
+	if snapshot.ExitCode == nil || *snapshot.ExitCode != 7 {
+		t.Fatalf("stored exit code = %+v, want 7", snapshot.ExitCode)
+	}
 
-		n, err := term.Read(buf)
-		if err != nil {
-			t.Fatalf("Read error: %v", err)
+	replay, err := m.Attach(term.ID)
+	if err != nil {
+		t.Fatalf("reattach failed: %v", err)
+	}
+	defer replay.Close()
+	if !strings.Contains(string(replay.Backlog()), "before-exit") {
+		t.Fatalf("reattach backlog = %q, want substring %q", string(replay.Backlog()), "before-exit")
+	}
+	select {
+	case _, ok := <-replay.Output():
+		if ok {
+			t.Fatal("expected exited session attachment output channel to be closed")
 		}
-		output.Write(buf[:n])
-		if strings.Contains(output.String(), "hello") {
-			break
-		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for exited attachment stream to close")
+	}
+
+	// Closing an exited attachment should be safe even after the output channel is drained.
+	replay.Close()
+	replay.Close()
+
+	closeAllDone := make(chan struct{})
+	go func() {
+		m.CloseAll()
+		close(closeAllDone)
+	}()
+
+	select {
+	case <-closeAllDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for CloseAll after exited attachment cleanup")
+	}
+
+	if _, ok := m.Get(term.ID); ok {
+		t.Fatal("expected CloseAll to remove exited session from manager")
 	}
 }
 
-func TestResize(t *testing.T) {
+func TestCloseBroadcastsClosedEventAndRemovesSession(t *testing.T) {
+	m := NewManager()
+	events, unsubscribe := m.SubscribeEvents()
+	defer unsubscribe()
+
+	term, err := m.CreateSession(CreateOptions{Name: "close-me", Shell: "/bin/bash", WorkDir: "/tmp"})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	_ = waitForManagerEvent(t, events, 3*time.Second, "terminal/session.created")
+
+	closed, err := m.CloseSession(term.ID)
+	if err != nil {
+		t.Fatalf("CloseSession failed: %v", err)
+	}
+	if closed.State != StateExited {
+		t.Fatalf("closed session state = %q, want %q", closed.State, StateExited)
+	}
+
+	event := waitForManagerEvent(t, events, 3*time.Second, "terminal/session.closed")
+	if event.Session.ID != term.ID {
+		t.Fatalf("closed event id = %q, want %q", event.Session.ID, term.ID)
+	}
+
+	if _, ok := m.Get(term.ID); ok {
+		t.Fatal("expected closed session to be removed from manager")
+	}
+}
+
+func TestCloseExitedSessionBroadcastsClosedEventAndRemovesSession(t *testing.T) {
+	m := NewManager()
+	events, unsubscribe := m.SubscribeEvents()
+	defer unsubscribe()
+
+	term, err := m.CreateSession(CreateOptions{Name: "close-after-exit", Shell: "/bin/bash", WorkDir: "/tmp"})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	_ = waitForManagerEvent(t, events, 3*time.Second, "terminal/session.created")
+
+	if _, err := term.Write([]byte("exit 9\n")); err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+
+	select {
+	case <-term.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for terminal to exit")
+	}
+
+	exited := term.Snapshot()
+	if exited.State != StateExited {
+		t.Fatalf("session state after exit = %q, want %q", exited.State, StateExited)
+	}
+	if exited.ExitCode == nil || *exited.ExitCode != 9 {
+		t.Fatalf("stored exit code after exit = %+v, want 9", exited.ExitCode)
+	}
+
+	closed, err := m.CloseSession(term.ID)
+	if err != nil {
+		t.Fatalf("CloseSession failed after exit: %v", err)
+	}
+	if closed.State != StateExited {
+		t.Fatalf("closed session state = %q, want %q", closed.State, StateExited)
+	}
+	if closed.ExitCode == nil || *closed.ExitCode != 9 {
+		t.Fatalf("closed exit code = %+v, want 9", closed.ExitCode)
+	}
+
+	event := waitForManagerEvent(t, events, 3*time.Second, "terminal/session.closed")
+	if event.Session.ID != term.ID {
+		t.Fatalf("closed event id = %q, want %q", event.Session.ID, term.ID)
+	}
+	if event.Session.State != StateExited {
+		t.Fatalf("closed event state = %q, want %q", event.Session.State, StateExited)
+	}
+	if event.Session.ExitCode == nil || *event.Session.ExitCode != 9 {
+		t.Fatalf("closed event exit code = %+v, want 9", event.Session.ExitCode)
+	}
+
+	if _, ok := m.Get(term.ID); ok {
+		t.Fatal("expected explicitly closed exited session to be removed from manager")
+	}
+}
+
+func TestErrorsForDuplicateAndMissingSessions(t *testing.T) {
 	m := NewManager()
 	defer m.CloseAll()
 
-	_, err := m.Create("test-resize", "/bin/bash", "/tmp", 24, 80)
+	term, err := m.CreateSession(CreateOptions{ID: "dup", Name: "dup", Shell: "/bin/bash", WorkDir: "/tmp"})
 	if err != nil {
-		t.Fatalf("Create failed: %v", err)
+		t.Fatalf("initial CreateSession failed: %v", err)
+	}
+	if term.ID != "dup" {
+		t.Fatalf("created id = %q, want dup", term.ID)
 	}
 
-	if err := m.Resize("test-resize", 30, 120); err != nil {
-		t.Fatalf("Resize failed: %v", err)
+	if _, err := m.CreateSession(CreateOptions{ID: "dup", Name: "dup", Shell: "/bin/bash", WorkDir: "/tmp"}); err == nil {
+		t.Fatal("expected duplicate terminal id to be rejected")
 	}
-}
-
-func TestClose(t *testing.T) {
-	m := NewManager()
-
-	term, err := m.Create("test-close", "/bin/bash", "/tmp", 24, 80)
-	if err != nil {
-		t.Fatalf("Create failed: %v", err)
+	if err := m.Resize("missing", 30, 120); err == nil {
+		t.Fatal("expected resize on missing terminal to fail")
 	}
-
-	if err := m.Close("test-close"); err != nil {
-		t.Fatalf("Close failed: %v", err)
-	}
-
-	// The done channel should be closed shortly after.
-	select {
-	case <-term.Done():
-		// success
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for Done() channel to close")
-	}
-
-	// Verify the terminal is removed from the manager.
-	if _, ok := m.Get("test-close"); ok {
-		t.Fatal("terminal should have been removed from manager after close")
+	if _, err := m.CloseSession("missing"); err == nil {
+		t.Fatal("expected close on missing terminal to fail")
 	}
 }
