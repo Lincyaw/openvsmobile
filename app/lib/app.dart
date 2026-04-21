@@ -67,7 +67,7 @@ class _MainShellState extends State<MainShell> {
       () {
         if (!mounted) return;
         context.read<FileProvider>().refresh();
-        context.read<GitProvider>().refreshAll();
+        context.read<GitProvider>().refreshRepository();
       },
     );
 

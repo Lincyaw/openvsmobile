@@ -254,3 +254,148 @@ func (g *Git) Commit(path string, message string) error {
 	_, err := g.run("-C", dir, "commit", "-m", message)
 	return err
 }
+
+// Fetch runs `git fetch <remote>`.
+func (g *Git) Fetch(path string, remote string) error {
+	dir := g.resolveDir(path)
+	args := []string{"-C", dir, "fetch"}
+	if remote != "" {
+		args = append(args, remote)
+	}
+	_, err := g.run(args...)
+	return err
+}
+
+// Pull runs `git pull <remote> <branch>`.
+func (g *Git) Pull(path string, remote string, branch string) error {
+	dir := g.resolveDir(path)
+	args := []string{"-C", dir, "pull"}
+	if remote != "" {
+		args = append(args, remote)
+	}
+	if branch != "" {
+		args = append(args, branch)
+	}
+	_, err := g.run(args...)
+	return err
+}
+
+// Push runs `git push <remote> <branch>`.
+func (g *Git) Push(path string, remote string, branch string, setUpstream bool) error {
+	dir := g.resolveDir(path)
+	args := []string{"-C", dir, "push"}
+	if setUpstream {
+		args = append(args, "--set-upstream")
+	}
+	if remote != "" {
+		args = append(args, remote)
+	}
+	if branch != "" {
+		args = append(args, branch)
+	}
+	_, err := g.run(args...)
+	return err
+}
+
+// Discard runs `git checkout -- <file>` to discard local changes.
+func (g *Git) Discard(path string, file string) error {
+	dir := g.resolveDir(path)
+	_, err := g.run("-C", dir, "checkout", "--", file)
+	return err
+}
+
+// Stash runs `git stash push`.
+func (g *Git) Stash(path string, message string, includeUntracked bool) error {
+	dir := g.resolveDir(path)
+	args := []string{"-C", dir, "stash", "push"}
+	if message != "" {
+		args = append(args, "-m", message)
+	}
+	if includeUntracked {
+		args = append(args, "-u")
+	}
+	_, err := g.run(args...)
+	return err
+}
+
+// StashApply runs `git stash apply` or `git stash pop`.
+func (g *Git) StashApply(path string, stash string, pop bool) error {
+	dir := g.resolveDir(path)
+	args := []string{"-C", dir, "stash"}
+	if pop {
+		args = append(args, "pop")
+	} else {
+		args = append(args, "apply")
+	}
+	if stash != "" {
+		args = append(args, stash)
+	}
+	_, err := g.run(args...)
+	return err
+}
+
+// GetRepository returns a full repository state document.
+func (g *Git) GetRepository(path string) (map[string]any, error) {
+	dir := g.resolveDir(path)
+
+	status, err := g.Status(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	branchInfo, err := g.BranchInfo(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	remotes := []map[string]any{}
+	remotesOut, _ := g.run("-C", dir, "remote", "-v")
+	seen := map[string]bool{}
+	for _, line := range strings.Split(remotesOut, "\n") {
+		parts := strings.Fields(line)
+		if len(parts) < 3 {
+			continue
+		}
+		name := parts[0]
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		remotes = append(remotes, map[string]any{"name": name, "fetchUrl": parts[1]})
+	}
+
+	staged := []map[string]any{}
+	unstaged := []map[string]any{}
+	untracked := []map[string]any{}
+	for _, e := range status {
+		entry := map[string]any{"path": e.Path, "status": e.Status}
+		if e.Staged {
+			staged = append(staged, entry)
+		} else if e.Status == "untracked" {
+			untracked = append(untracked, entry)
+		} else {
+			unstaged = append(unstaged, entry)
+		}
+	}
+
+	ahead, behind := 0, 0
+	if branchInfo.Current != "" {
+		revOut, _ := g.run("-C", dir, "rev-list", "--left-right", "--count", "HEAD...@{upstream}")
+		parts := strings.Fields(revOut)
+		if len(parts) == 2 {
+			ahead, _ = strconv.Atoi(parts[0])
+			behind, _ = strconv.Atoi(parts[1])
+		}
+	}
+
+	return map[string]any{
+		"path":      dir,
+		"branch":    branchInfo.Current,
+		"ahead":     ahead,
+		"behind":    behind,
+		"remotes":   remotes,
+		"staged":    staged,
+		"unstaged":  unstaged,
+		"untracked": untracked,
+	}, nil
+}

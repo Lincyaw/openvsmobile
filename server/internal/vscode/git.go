@@ -396,7 +396,7 @@ func (s *GitService) ipcChannel() (*IPCChannel, error) {
 		return nil, newBridgeError("bridge_not_ready", "mobile runtime bridge is not ready", nil)
 	}
 	if s.bridge != nil {
-		if _, err := s.bridge.Capabilities(); err != nil {
+		if err := s.bridge.RequireCapability("git"); err != nil {
 			return nil, err
 		}
 	}

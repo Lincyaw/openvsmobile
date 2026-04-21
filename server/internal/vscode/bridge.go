@@ -153,7 +153,11 @@ func DefaultBridgeMetadataPath() string {
 	if override := os.Getenv("OPENVSCODE_MOBILE_BRIDGE_METADATA_PATH"); override != "" {
 		return override
 	}
-	return filepath.Join(os.TempDir(), "openvscode-mobile", "bridge-metadata.json")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), "openvscode-mobile", "bridge-metadata.json")
+	}
+	return filepath.Join(home, ".config", "openvscode-mobile", "bridge-metadata.json")
 }
 
 // Start begins the discovery loop and returns immediately.
