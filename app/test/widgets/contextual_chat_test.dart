@@ -68,15 +68,15 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.textContaining('Workspace'), findsOneWidget);
-      expect(find.textContaining('alpha'), findsWidgets);
-      expect(find.textContaining('File'), findsOneWidget);
-      expect(find.textContaining('main.dart'), findsWidgets);
-      expect(find.textContaining('No selection'), findsOneWidget);
+      expect(findTextContaining('Workspace'), findsOneWidget);
+      expect(findTextContaining('alpha'), findsWidgets);
+      expect(findTextContaining('File'), findsOneWidget);
+      expect(findTextContaining('main.dart'), findsWidgets);
+      expect(findTextContaining('No selection'), findsOneWidget);
     });
 
     testWidgets(
-      'summary updates when selection is cleared and survives expand to full chat',
+      'summary shows the queued GitHub attachment details and survives expand to full chat',
       (WidgetTester tester) async {
         await workspaceProvider.setWorkspace('/workspaces/alpha');
         chatProvider.setWorkspace('/workspaces/alpha');
@@ -90,6 +90,15 @@ void main() {
             ),
           ),
         );
+        queueIssueCommentAttachmentForNextTurn(
+          chatProvider,
+          actionLabel: 'Check issue comment',
+          repository: 'octo/repo',
+          issueNumber: 7,
+          title: 'Fix reconnect',
+          commentId: 11,
+          commentBody: 'Can we narrow the retry window?',
+        );
 
         var expanded = false;
         await tester.pumpWidget(
@@ -101,19 +110,15 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        expect(find.textContaining('Selection'), findsOneWidget);
-        expect(find.textContaining('No selection'), findsNothing);
-
-        chatProvider.setEditorContext(
-          const EditorChatContext(
-            activeFile: '/workspaces/alpha/lib/main.dart',
-            cursor: EditorCursor(line: 12, column: 6),
-            selection: null,
-          ),
+        expect(findTextContaining('Workspace'), findsOneWidget);
+        expect(findTextContaining('main.dart'), findsWidgets);
+        expect(findTextContaining('Selection'), findsOneWidget);
+        expect(findTextContaining('Fix reconnect'), findsOneWidget);
+        expect(
+          findTextContaining('Can we narrow the retry window?'),
+          findsOneWidget,
         );
-        await tester.pumpAndSettle();
-
-        expect(find.textContaining('No selection'), findsOneWidget);
+        expect(findTextContaining('octo/repo'), findsWidgets);
 
         await tester.tap(find.byTooltip('Open full chat'));
         await tester.pumpAndSettle();
@@ -128,9 +133,14 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        expect(find.textContaining('Workspace'), findsOneWidget);
-        expect(find.textContaining('main.dart'), findsWidgets);
-        expect(find.textContaining('No selection'), findsOneWidget);
+        expect(findTextContaining('Workspace'), findsOneWidget);
+        expect(findTextContaining('main.dart'), findsWidgets);
+        expect(findTextContaining('Fix reconnect'), findsOneWidget);
+        expect(
+          findTextContaining('Can we narrow the retry window?'),
+          findsOneWidget,
+        );
+        expect(findTextContaining('octo/repo'), findsWidgets);
       },
     );
   });

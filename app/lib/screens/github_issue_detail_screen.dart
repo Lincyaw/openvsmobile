@@ -3,7 +3,9 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../models/chat_context_attachment.dart';
 import '../models/github_collaboration_models.dart';
+import '../navigation/github_chat_navigation.dart';
 import '../providers/github_collaboration_provider.dart';
 
 class GitHubIssueDetailScreen extends StatefulWidget {
@@ -93,7 +95,21 @@ class _GitHubIssueDetailScreenState extends State<GitHubIssueDetailScreen> {
                 child: ListView(
                   padding: const EdgeInsets.all(16),
                   children: [
-                    _IssueHeader(issue: detail.issue),
+                    _IssueHeader(
+                      issue: detail.issue,
+                      onAiOverview: () => _openIssueAi(
+                        detail,
+                        action: 'issue_overview',
+                        prompt:
+                            'Summarize the key context and next steps for this GitHub issue.',
+                      ),
+                      onAiReply: () => _openIssueAi(
+                        detail,
+                        action: 'issue_reply',
+                        prompt:
+                            'Draft a helpful response or implementation plan for this GitHub issue.',
+                      ),
+                    ),
                     const SizedBox(height: 16),
                     Card(
                       child: Padding(
@@ -120,7 +136,10 @@ class _GitHubIssueDetailScreenState extends State<GitHubIssueDetailScreen> {
                       )
                     else
                       ...detail.comments.map(
-                        (comment) => _IssueCommentCard(comment: comment),
+                        (comment) => _IssueCommentCard(
+                          comment: comment,
+                          onAiReply: () => _openIssueCommentAi(detail, comment),
+                        ),
                       ),
                   ],
                 ),
@@ -160,12 +179,65 @@ class _GitHubIssueDetailScreenState extends State<GitHubIssueDetailScreen> {
       ),
     );
   }
+
+  Future<void> _openIssueAi(
+    GitHubIssueDetail detail, {
+    required String action,
+    required String prompt,
+  }) async {
+    final repository = context
+        .read<GitHubCollaborationProvider>()
+        .repoContext
+        ?.repository;
+    if (repository == null) {
+      return;
+    }
+
+    await openChatWithGitHubAttachment(
+      context,
+      prompt: prompt,
+      attachment: GitHubChatAttachment.issueBody(
+        repository: repository,
+        issue: detail.issue,
+        action: action,
+      ),
+    );
+  }
+
+  Future<void> _openIssueCommentAi(
+    GitHubIssueDetail detail,
+    GitHubIssueComment comment,
+  ) async {
+    final repository = context
+        .read<GitHubCollaborationProvider>()
+        .repoContext
+        ?.repository;
+    if (repository == null) {
+      return;
+    }
+
+    await openChatWithGitHubAttachment(
+      context,
+      prompt: 'Draft a response to this GitHub issue comment.',
+      attachment: GitHubChatAttachment.issueComment(
+        repository: repository,
+        issue: detail.issue,
+        comment: comment,
+      ),
+    );
+  }
 }
 
 class _IssueHeader extends StatelessWidget {
   final GitHubIssue issue;
+  final VoidCallback onAiOverview;
+  final VoidCallback onAiReply;
 
-  const _IssueHeader({required this.issue});
+  const _IssueHeader({
+    required this.issue,
+    required this.onAiOverview,
+    required this.onAiReply,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -197,6 +269,23 @@ class _IssueHeader extends StatelessWidget {
                   ),
               ],
             ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                FilledButton.icon(
+                  onPressed: onAiOverview,
+                  icon: const Icon(Icons.auto_awesome),
+                  label: const Text('Summarize issue'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: onAiReply,
+                  icon: const Icon(Icons.mode_comment_outlined),
+                  label: const Text('Draft reply'),
+                ),
+              ],
+            ),
           ],
         ),
       ),
@@ -206,8 +295,9 @@ class _IssueHeader extends StatelessWidget {
 
 class _IssueCommentCard extends StatelessWidget {
   final GitHubIssueComment comment;
+  final VoidCallback onAiReply;
 
-  const _IssueCommentCard({required this.comment});
+  const _IssueCommentCard({required this.comment, required this.onAiReply});
 
   @override
   Widget build(BuildContext context) {
@@ -219,11 +309,22 @@ class _IssueCommentCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              comment.author?.login.isNotEmpty == true
-                  ? comment.author!.login
-                  : 'Unknown author',
-              style: Theme.of(context).textTheme.titleSmall,
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    comment.author?.login.isNotEmpty == true
+                        ? comment.author!.login
+                        : 'Unknown author',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed: onAiReply,
+                  icon: const Icon(Icons.auto_awesome_outlined, size: 18),
+                  label: const Text('Check comment'),
+                ),
+              ],
             ),
             if (comment.createdAt != null)
               Text(
@@ -264,7 +365,7 @@ class _IssueCommentComposer extends StatelessWidget {
               child: TextField(
                 controller: controller,
                 minLines: 1,
-                maxLines: 4,
+                maxLines: 5,
                 decoration: const InputDecoration(
                   labelText: 'Add a comment',
                   border: OutlineInputBorder(),
@@ -273,7 +374,7 @@ class _IssueCommentComposer extends StatelessWidget {
             ),
             const SizedBox(width: 12),
             FilledButton(
-              onPressed: isSubmitting ? null : () => onSubmit(),
+              onPressed: isSubmitting ? null : onSubmit,
               child: isSubmitting
                   ? const SizedBox(
                       width: 16,

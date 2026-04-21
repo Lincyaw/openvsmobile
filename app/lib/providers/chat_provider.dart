@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import '../models/chat_context_attachment.dart';
 import '../models/chat_message.dart';
 import '../models/editor_context.dart';
 import '../models/session.dart';
@@ -16,6 +17,7 @@ import '../services/chat_api_client.dart';
 class ChatProvider extends ChangeNotifier {
   final ChatApiClient _apiClient;
   EditorChatContext? _editorContext;
+  GitHubChatAttachment? _pendingGitHubAttachment;
 
   ChatProvider({required ChatApiClient apiClient}) : _apiClient = apiClient;
 
@@ -43,6 +45,10 @@ class ChatProvider extends ChangeNotifier {
 
   // -- Editor context shared by contextual + full chat --
   EditorChatContext? get editorContext => _editorContext;
+  GitHubChatAttachment? get pendingGitHubAttachment => _pendingGitHubAttachment;
+
+  String? _pendingDraftMessage;
+  String? get pendingDraftMessage => _pendingDraftMessage;
 
   // -- Session list --
   List<SessionMeta> _sessions = [];
@@ -67,6 +73,8 @@ class ChatProvider extends ChangeNotifier {
     _streamingBlocks.clear();
     _conversationId = null;
     _pendingMessage = null;
+    _pendingGitHubAttachment = null;
+    _pendingDraftMessage = null;
     _isStreaming = false;
     _error = null;
     notifyListeners();
@@ -86,8 +94,37 @@ class ChatProvider extends ChangeNotifier {
     _streamingBlocks.clear();
     _conversationId = null;
     _pendingMessage = null;
+    _pendingGitHubAttachment = null;
+    _pendingDraftMessage = null;
     _isStreaming = false;
     _error = null;
+    notifyListeners();
+  }
+
+  void queueGitHubAction({
+    required String prompt,
+    required GitHubChatAttachment attachment,
+  }) {
+    _pendingDraftMessage = prompt;
+    _pendingGitHubAttachment = attachment;
+    notifyListeners();
+  }
+
+  void clearPendingAttachment() {
+    clearPendingGitHubAttachment();
+  }
+
+  GitHubChatAttachment? get pendingAttachment => _pendingGitHubAttachment;
+
+  void setPendingGitHubAttachment(GitHubChatAttachment? attachment) {
+    if (_pendingGitHubAttachment == attachment) return;
+    _pendingGitHubAttachment = attachment;
+    notifyListeners();
+  }
+
+  void clearPendingDraftMessage() {
+    if (_pendingDraftMessage == null) return;
+    _pendingDraftMessage = null;
     notifyListeners();
   }
 
@@ -131,6 +168,12 @@ class ChatProvider extends ChangeNotifier {
     startConversation(workDir: workDir);
   }
 
+  void clearPendingGitHubAttachment() {
+    if (_pendingGitHubAttachment == null) return;
+    _pendingGitHubAttachment = null;
+    notifyListeners();
+  }
+
   /// Resume an existing conversation.
   void resumeConversation(String sessionId) {
     _ensureConnected();
@@ -168,17 +211,22 @@ class ChatProvider extends ChangeNotifier {
     _streamingBlocks.clear();
     _error = null;
 
-    _channel!.sink.add(
-      jsonEncode({
-        'type': 'send',
-        'sessionId': _conversationId,
-        'message': text,
-        'workspaceRoot': _workspacePath,
-        'activeFile': _editorContext?.activeFile,
-        'cursor': _editorContext?.cursor?.toJson(),
-        'selection': _editorContext?.selection?.toJson(),
-      }),
-    );
+    final payload = <String, dynamic>{
+      'type': 'send',
+      'sessionId': _conversationId,
+      'message': text,
+      'workspaceRoot': _workspacePath,
+      'activeFile': _editorContext?.activeFile,
+      'cursor': _editorContext?.cursor?.toJson(),
+      'selection': _editorContext?.selection?.toJson(),
+    };
+    if (_pendingGitHubAttachment != null) {
+      payload['attachment'] = _pendingGitHubAttachment!.toTransportJson();
+    }
+
+    _channel!.sink.add(jsonEncode(payload));
+    _pendingGitHubAttachment = null;
+    _pendingDraftMessage = null;
     notifyListeners();
   }
 
@@ -304,8 +352,9 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final effectiveWorkspaceRoot =
-          allProjects ? null : (workspaceRoot ?? _workspacePath);
+      final effectiveWorkspaceRoot = allProjects
+          ? null
+          : (workspaceRoot ?? _workspacePath);
       _sessions = await _apiClient.getSessions(
         query: query,
         workspaceRoot: effectiveWorkspaceRoot,

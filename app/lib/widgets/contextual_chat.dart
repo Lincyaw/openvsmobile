@@ -2,9 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/chat_provider.dart';
-import '../providers/editor_provider.dart';
-import '../providers/workspace_provider.dart';
 import 'chat_bubble.dart';
+import 'chat_context_summary.dart';
 
 /// Draggable bottom sheet chat panel for contextual AI chat (REQ-009).
 ///
@@ -24,6 +23,7 @@ class _ContextualChatState extends State<ContextualChat> {
   final _controller = TextEditingController();
   ScrollController? _activeScrollController;
   int _lastMessageCount = 0;
+  String? _lastAppliedDraft;
 
   @override
   void dispose() {
@@ -63,12 +63,13 @@ class _ContextualChatState extends State<ContextualChat> {
   @override
   Widget build(BuildContext context) {
     return DraggableScrollableSheet(
-      initialChildSize: 0.4,
+      initialChildSize: 0.75,
       minChildSize: 0.15,
       maxChildSize: 0.85,
       builder: (context, sheetScrollController) {
         return Consumer<ChatProvider>(
           builder: (context, provider, _) {
+            _syncDraft(provider);
             return Container(
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.surface,
@@ -87,8 +88,17 @@ class _ContextualChatState extends State<ContextualChat> {
                 children: [
                   _buildHandle(context),
                   _buildHeader(context, provider),
-                  if (provider.editorContext?.hasContext ?? false)
-                    _buildContextSummary(context, provider),
+                  if ((provider.editorContext?.hasContext ?? false) ||
+                      provider.pendingAttachment != null)
+                    ChatContextSummary(
+                      editorContext: provider.editorContext,
+                      attachment: provider.pendingAttachment,
+                      margin: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 4,
+                      ),
+                      onClearAttachment: provider.clearPendingAttachment,
+                    ),
                   Expanded(
                     child: _buildMessageList(provider, sheetScrollController),
                   ),
@@ -100,6 +110,18 @@ class _ContextualChatState extends State<ContextualChat> {
         );
       },
     );
+  }
+
+  void _syncDraft(ChatProvider provider) {
+    final draft = provider.pendingDraftMessage;
+    if (draft == null ||
+        draft == _lastAppliedDraft ||
+        _controller.text.isNotEmpty) {
+      return;
+    }
+    _controller.text = draft;
+    _controller.selection = TextSelection.collapsed(offset: draft.length);
+    _lastAppliedDraft = draft;
   }
 
   Widget _buildHandle(BuildContext context) {
@@ -137,58 +159,6 @@ class _ContextualChatState extends State<ContextualChat> {
               tooltip: 'Open full chat',
               onPressed: widget.onExpandToFullChat,
               constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildContextSummary(BuildContext context, ChatProvider provider) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    final ctx = provider.editorContext!;
-    final workspace = context.read<WorkspaceProvider>();
-    final fileName = (ctx.activeFile ?? '').split('/').last;
-    final selectionLabel = ctx.selection?.lineLabel ?? 'No selection';
-
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: colorScheme.secondaryContainer,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(Icons.code, size: 16, color: colorScheme.onSecondaryContainer),
-          const SizedBox(width: 8),
-          Expanded(
-            child: DefaultTextStyle(
-              style: theme.textTheme.labelMedium!.copyWith(
-                color: colorScheme.onSecondaryContainer,
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Workspace: ${workspace.displayName}'),
-                  Text(
-                    'File: $fileName',
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  Text('Selection: $selectionLabel'),
-                ],
-              ),
-            ),
-          ),
-          if (ctx.selection != null)
-            InkWell(
-              onTap: () => context.read<EditorProvider>().clearSelection(),
-              child: Icon(
-                Icons.close,
-                size: 16,
-                color: colorScheme.onSecondaryContainer,
-              ),
             ),
         ],
       ),

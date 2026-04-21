@@ -3,9 +3,9 @@ import 'package:provider/provider.dart';
 
 import '../navigation/editor_navigation.dart';
 import '../providers/chat_provider.dart';
-import '../providers/editor_provider.dart';
 import '../providers/workspace_provider.dart';
 import '../widgets/chat_bubble.dart';
+import '../widgets/chat_context_summary.dart';
 import 'session_list_screen.dart';
 
 /// Full-screen AI chat view (tab 2 in bottom navigation).
@@ -20,6 +20,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final _controller = TextEditingController();
   final _scrollController = ScrollController();
   int _lastMessageCount = 0;
+  String? _lastAppliedDraft;
 
   @override
   void dispose() {
@@ -58,6 +59,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget build(BuildContext context) {
     return Consumer<ChatProvider>(
       builder: (context, provider, _) {
+        _syncDraft(provider);
         return Scaffold(
           appBar: AppBar(
             title: Consumer<WorkspaceProvider>(
@@ -100,8 +102,13 @@ class _ChatScreenState extends State<ChatScreen> {
           body: Column(
             children: [
               if (provider.error != null) _buildErrorBanner(context, provider),
-              if (provider.editorContext?.hasContext ?? false)
-                _buildContextSummary(context, provider),
+              if ((provider.editorContext?.hasContext ?? false) ||
+                  provider.pendingAttachment != null)
+                ChatContextSummary(
+                  editorContext: provider.editorContext,
+                  attachment: provider.pendingAttachment,
+                  onClearAttachment: provider.clearPendingAttachment,
+                ),
               Expanded(child: _buildMessageList(context, provider)),
               _buildInputBar(context, provider),
             ],
@@ -109,6 +116,18 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       },
     );
+  }
+
+  void _syncDraft(ChatProvider provider) {
+    final draft = provider.pendingDraftMessage;
+    if (draft == null ||
+        draft == _lastAppliedDraft ||
+        _controller.text.isNotEmpty) {
+      return;
+    }
+    _controller.text = draft;
+    _controller.selection = TextSelection.collapsed(offset: draft.length);
+    _lastAppliedDraft = draft;
   }
 
   Widget _buildErrorBanner(BuildContext context, ChatProvider provider) {
@@ -123,55 +142,6 @@ class _ChatScreenState extends State<ChatScreen> {
           child: const Text('Dismiss'),
         ),
       ],
-    );
-  }
-
-  Widget _buildContextSummary(BuildContext context, ChatProvider provider) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    final ctx = provider.editorContext!;
-    final workspace = context.read<WorkspaceProvider>();
-    final fileName = (ctx.activeFile ?? '').split('/').last;
-    final selectionLabel = ctx.selection?.lineLabel ?? 'No selection';
-
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: colorScheme.secondaryContainer,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(Icons.code, size: 18, color: colorScheme.onSecondaryContainer),
-          const SizedBox(width: 8),
-          Expanded(
-            child: DefaultTextStyle(
-              style: theme.textTheme.labelMedium!.copyWith(
-                color: colorScheme.onSecondaryContainer,
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Workspace: ${workspace.displayName}'),
-                  Text('File: $fileName', overflow: TextOverflow.ellipsis),
-                  Text('Selection: $selectionLabel'),
-                ],
-              ),
-            ),
-          ),
-          if (ctx.selection != null)
-            InkWell(
-              onTap: () => context.read<EditorProvider>().clearSelection(),
-              child: Icon(
-                Icons.close,
-                size: 18,
-                color: colorScheme.onSecondaryContainer,
-              ),
-            ),
-        ],
-      ),
     );
   }
 
