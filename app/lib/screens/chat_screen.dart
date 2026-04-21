@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../navigation/editor_navigation.dart';
 import '../providers/chat_provider.dart';
 import '../providers/editor_provider.dart';
 import '../providers/workspace_provider.dart';
 import '../widgets/chat_bubble.dart';
-import 'code_screen.dart';
 import 'session_list_screen.dart';
 
 /// Full-screen AI chat view (tab 2 in bottom navigation).
@@ -69,9 +69,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     Text(
                       ws.displayName,
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Theme.of(context)
-                            .colorScheme
-                            .onSurfaceVariant,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
                       ),
                     ),
                   ],
@@ -99,7 +97,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ],
           ),
-              body: Column(
+          body: Column(
             children: [
               if (provider.error != null) _buildErrorBanner(context, provider),
               if (provider.editorContext?.hasContext ?? false)
@@ -157,10 +155,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text('Workspace: ${workspace.displayName}'),
-                  Text(
-                    'File: $fileName',
-                    overflow: TextOverflow.ellipsis,
-                  ),
+                  Text('File: $fileName', overflow: TextOverflow.ellipsis),
                   Text('Selection: $selectionLabel'),
                 ],
               ),
@@ -206,20 +201,8 @@ class _ChatScreenState extends State<ChatScreen> {
           message: msg,
           nextMessage: nextMsg,
           sessionId: provider.conversationId,
-          onFileTap: (filePath) {
-            final editorProvider = context.read<EditorProvider>();
-            editorProvider.openFile(filePath).then((_) {
-              if (context.mounted) {
-                Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => ChangeNotifierProvider.value(
-                      value: editorProvider,
-                      child: const CodeScreen(),
-                    ),
-                  ),
-                );
-              }
-            });
+          onFileTap: (filePath, annotation) {
+            openCodeAnnotation(context, path: filePath, annotation: annotation);
           },
         );
       },

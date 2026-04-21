@@ -13,6 +13,7 @@ import 'providers/workspace_provider.dart';
 import 'services/api_client.dart';
 import 'services/browser_launcher.dart';
 import 'services/chat_api_client.dart';
+import 'services/editor_api_client.dart';
 import 'services/git_api_client.dart';
 import 'services/github_collaboration_api_client.dart';
 import 'services/github_auth_api_client.dart';
@@ -26,6 +27,7 @@ void main() async {
 
   final apiClient = ApiClient(settings: settings);
   final chatApiClient = ChatApiClient(settings: settings);
+  final editorApiClient = EditorApiClient(settings: settings);
   final gitApiClient = GitApiClient(settings: settings);
   final githubAuthApiClient = GitHubAuthApiClient(settings: settings);
   final githubCollaborationApiClient = GitHubCollaborationApiClient(
@@ -48,7 +50,10 @@ void main() async {
                 ..setProject(workspaceProvider.currentPath),
         ),
         ChangeNotifierProvider(
-          create: (_) => EditorProvider(apiClient: apiClient),
+          create: (_) => EditorProvider(
+            apiClient: apiClient,
+            editorApiClient: editorApiClient,
+          ),
         ),
         ChangeNotifierProxyProvider<EditorProvider, ChatProvider>(
           create: (_) =>

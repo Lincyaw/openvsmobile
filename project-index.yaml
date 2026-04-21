@@ -557,6 +557,46 @@ requirements:
       - server/internal/api/bridge_documents_test.go
     depends_on: [REQ-003, REQ-023]
 
+  - id: REQ-029
+    title: Flutter bridge-backed editor experience
+    description: >
+      Ticket ASE-44 upgrades the mobile editor from a local text field wrapper
+      into a bridge-backed document experience. Open documents track synced
+      content, version, dirty state, cursor/selection, and bridge lifecycle
+      events; editor RPCs respect `/bridge/capabilities`; definitions,
+      references, diagnostics, content search hits, and chat/session file
+      annotations share one open-and-locate flow with reveal state and jump
+      history; and diagnostics are visible both inline and through a
+      problems-style surface.
+    priority: P0
+    status: implemented
+    code:
+      - project-index.yaml
+      - app/lib/main.dart
+      - app/lib/models/chat_message.dart
+      - app/lib/models/diagnostic.dart
+      - app/lib/models/editor_models.dart
+      - app/lib/navigation/editor_navigation.dart
+      - app/lib/providers/editor_provider.dart
+      - app/lib/screens/chat_screen.dart
+      - app/lib/screens/code_screen.dart
+      - app/lib/screens/files_screen.dart
+      - app/lib/screens/search_screen.dart
+      - app/lib/screens/session_detail_screen.dart
+      - app/lib/services/editor_api_client.dart
+      - app/lib/widgets/chat_bubble.dart
+      - app/lib/widgets/code_editor.dart
+      - app/lib/widgets/code_viewer.dart
+      - app/lib/widgets/tool_use_card.dart
+    tests:
+      - app/test/services/editor_api_client_test.dart
+      - app/test/providers/editor_provider_test.dart
+      - app/test/widgets/code_screen_test.dart
+      - app/test/widgets/code_viewer_test.dart
+      - app/test/widgets/search_screen_test.dart
+      - app/test/widgets/contextual_chat_test.dart
+    depends_on: [REQ-007, REQ-008, REQ-010, REQ-013, REQ-024, REQ-025, REQ-026]
+
   # ============================================================
   # Iteration 5: Bug fixes from code review audit
   # ============================================================

@@ -1,12 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../navigation/editor_navigation.dart';
 import '../providers/chat_provider.dart';
 import '../providers/file_provider.dart';
 import '../providers/git_provider.dart';
-import '../providers/editor_provider.dart';
 import '../providers/workspace_provider.dart';
 import '../widgets/file_tree_view.dart';
-import 'code_screen.dart';
 
 class FilesScreen extends StatelessWidget {
   const FilesScreen({super.key});
@@ -47,19 +46,7 @@ class FilesScreen extends StatelessWidget {
       ),
       body: FileTreeView(
         onFileTap: (path, name) {
-          final editorProvider = context.read<EditorProvider>();
-          editorProvider.openFile(path).then((_) {
-            if (context.mounted) {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => ChangeNotifierProvider.value(
-                    value: editorProvider,
-                    child: const CodeScreen(),
-                  ),
-                ),
-              );
-            }
-          });
+          openCodePath(context, path: path);
         },
         onCreateFile: (parentPath, name) =>
             _handleCreateFile(context, parentPath, name),
@@ -195,8 +182,9 @@ class FilesScreen extends StatelessWidget {
                           'Recent',
                           style: Theme.of(listCtx).textTheme.labelLarge
                               ?.copyWith(
-                                color:
-                                    Theme.of(listCtx).colorScheme.onSurfaceVariant,
+                                color: Theme.of(
+                                  listCtx,
+                                ).colorScheme.onSurfaceVariant,
                               ),
                         ),
                       ),

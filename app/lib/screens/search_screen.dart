@@ -2,10 +2,9 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../navigation/editor_navigation.dart';
 import '../providers/search_provider.dart';
-import '../providers/editor_provider.dart';
 import '../providers/workspace_provider.dart';
-import 'code_screen.dart';
 
 class SearchScreen extends StatefulWidget {
   const SearchScreen({super.key});
@@ -37,20 +36,8 @@ class _SearchScreenState extends State<SearchScreen> {
     }
   }
 
-  void _onResultTap(String path, String name) {
-    final editorProvider = context.read<EditorProvider>();
-    editorProvider.openFile(path).then((_) {
-      if (mounted) {
-        Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => ChangeNotifierProvider.value(
-              value: editorProvider,
-              child: const CodeScreen(),
-            ),
-          ),
-        );
-      }
-    });
+  Future<void> _onResultTap(String path, {int? line}) {
+    return openCodePath(context, path: path, line: line);
   }
 
   @override
@@ -240,9 +227,7 @@ class _SearchScreenState extends State<SearchScreen> {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
-          onTap: result.isDirectory
-              ? null
-              : () => _onResultTap(result.path, result.name),
+          onTap: result.isDirectory ? null : () => _onResultTap(result.path),
         );
       },
     );
@@ -280,7 +265,7 @@ class _SearchScreenState extends State<SearchScreen> {
             ],
           ),
           isThreeLine: true,
-          onTap: () => _onResultTap(result.file, fileName),
+          onTap: () => _onResultTap(result.file, line: result.line),
         );
       },
     );
