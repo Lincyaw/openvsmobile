@@ -6,6 +6,7 @@ import 'providers/chat_provider.dart';
 import 'providers/editor_provider.dart';
 import 'providers/file_provider.dart';
 import 'providers/git_provider.dart';
+import 'providers/github_collaboration_provider.dart';
 import 'providers/github_auth_provider.dart';
 import 'providers/search_provider.dart';
 import 'providers/workspace_provider.dart';
@@ -14,6 +15,7 @@ import 'services/browser_launcher.dart';
 import 'services/chat_api_client.dart';
 import 'services/editor_api_client.dart';
 import 'services/git_api_client.dart';
+import 'services/github_collaboration_api_client.dart';
 import 'services/github_auth_api_client.dart';
 import 'services/settings_service.dart';
 
@@ -28,6 +30,9 @@ void main() async {
   final editorApiClient = EditorApiClient(settings: settings);
   final gitApiClient = GitApiClient(settings: settings);
   final githubAuthApiClient = GitHubAuthApiClient(settings: settings);
+  final githubCollaborationApiClient = GitHubCollaborationApiClient(
+    settings: settings,
+  );
   final browserLauncher = BrowserLauncher();
 
   final workspaceProvider = WorkspaceProvider();
@@ -72,6 +77,19 @@ void main() async {
           ),
           update: (_, workspace, githubAuthProvider) {
             final provider = githubAuthProvider!;
+            provider.setWorkspacePath(workspace.currentPath);
+            return provider;
+          },
+        ),
+        ChangeNotifierProxyProvider<
+          WorkspaceProvider,
+          GitHubCollaborationProvider
+        >(
+          create: (_) => GitHubCollaborationProvider(
+            apiClient: githubCollaborationApiClient,
+          ),
+          update: (_, workspace, collaborationProvider) {
+            final provider = collaborationProvider!;
             provider.setWorkspacePath(workspace.currentPath);
             return provider;
           },
