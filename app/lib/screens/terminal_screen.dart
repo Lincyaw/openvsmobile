@@ -47,6 +47,8 @@ class _TerminalScreenState extends State<TerminalScreen> {
   final _focusNode = FocusNode();
   final _httpClient = http.Client();
 
+  bool _ctrlMode = false;
+
   // Line-based buffer for terminal output.
   final List<String> _lines = [''];
   final _currentLine = StringBuffer();
@@ -333,6 +335,34 @@ class _TerminalScreenState extends State<TerminalScreen> {
   void _onSubmit(String text) {
     _sendInput('$text\n');
     _inputController.clear();
+    _focusNode.requestFocus();
+  }
+
+  /// Send raw control characters directly to the PTY (bypassing the input field).
+  void _sendRaw(String chars) {
+    if (!_connected || _channel == null) return;
+    _sendInput(chars);
+  }
+
+  /// Insert text at the current cursor position in the input field.
+  void _insertAtCursor(String text) {
+    final value = _inputController.text;
+    final selection = _inputController.selection;
+    final start = selection.isValid ? selection.start : value.length;
+    final end = selection.isValid ? selection.end : value.length;
+    final newText = value.replaceRange(start, end, text);
+    final newOffset = start + text.length;
+    _inputController.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: newOffset),
+    );
+    _focusNode.requestFocus();
+  }
+
+  /// Toggle Ctrl modifier mode for the next toolbar key press.
+  void _toggleCtrlMode() {
+    setState(() => _ctrlMode = !_ctrlMode);
+    _focusNode.requestFocus();
   }
 
   void _reconnect() {
@@ -447,73 +477,379 @@ class _TerminalScreenState extends State<TerminalScreen> {
               },
             ),
           ),
+          // Terminal key toolbar + input field.
           Container(
-            padding: EdgeInsets.only(
-              left: 8,
-              right: 8,
-              top: 4,
-              bottom: MediaQuery.of(context).padding.bottom + 4,
-            ),
             color: isDark
                 ? const Color(0xFF252526)
                 : colorScheme.surfaceContainerHigh,
-            child: Row(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  '\$ ',
-                  style: TextStyle(
-                    fontFamily: 'monospace',
-                    color: colorScheme.primary,
-                    fontSize: 14,
-                  ),
+                // Function key toolbar (Termux-style).
+                _TerminalKeyToolbar(
+                  ctrlMode: _ctrlMode,
+                  onToggleCtrl: _toggleCtrlMode,
+                  onSendRaw: _sendRaw,
+                  onInsert: _insertAtCursor,
+                  enabled: _connected,
                 ),
-                Expanded(
-                  child: TextField(
-                    controller: _inputController,
-                    focusNode: _focusNode,
-                    style: TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 13,
-                      color: isDark
-                          ? const Color(0xFFD4D4D4)
-                          : colorScheme.onSurface,
-                    ),
-                    decoration: InputDecoration(
-                      border: InputBorder.none,
-                      hintText: 'Enter command...',
-                      hintStyle: TextStyle(
-                        color: colorScheme.onSurfaceVariant.withValues(
-                          alpha: 0.5,
+                // Input row.
+                Padding(
+                  padding: EdgeInsets.only(
+                    left: 8,
+                    right: 8,
+                    top: 2,
+                    bottom: MediaQuery.of(context).padding.bottom + 4,
+                  ),
+                  child: Row(
+                    children: [
+                      Text(
+                        '\$ ',
+                        style: TextStyle(
+                          fontFamily: 'monospace',
+                          color: colorScheme.primary,
+                          fontSize: 14,
                         ),
                       ),
-                      isDense: true,
-                      contentPadding: const EdgeInsets.symmetric(vertical: 8),
-                    ),
-                    onSubmitted: _onSubmit,
-                    textInputAction: TextInputAction.send,
-                    enabled: _connected,
-                  ),
-                ),
-                IconButton(
-                  icon: Icon(
-                    Icons.send,
-                    size: 20,
-                    color: _connected
-                        ? colorScheme.primary
-                        : colorScheme.onSurfaceVariant.withValues(alpha: 0.3),
-                  ),
-                  onPressed: _connected
-                      ? () => _onSubmit(_inputController.text)
-                      : null,
-                  constraints: const BoxConstraints(
-                    minWidth: 40,
-                    minHeight: 40,
+                      Expanded(
+                        child: TextField(
+                          controller: _inputController,
+                          focusNode: _focusNode,
+                          style: TextStyle(
+                            fontFamily: 'monospace',
+                            fontSize: 13,
+                            color: isDark
+                                ? const Color(0xFFD4D4D4)
+                                : colorScheme.onSurface,
+                          ),
+                          decoration: InputDecoration(
+                            border: InputBorder.none,
+                            hintText: 'Enter command...',
+                            hintStyle: TextStyle(
+                              color: colorScheme.onSurfaceVariant.withValues(
+                                alpha: 0.5,
+                              ),
+                            ),
+                            isDense: true,
+                            contentPadding:
+                                const EdgeInsets.symmetric(vertical: 8),
+                          ),
+                          onSubmitted: _onSubmit,
+                          textInputAction: TextInputAction.send,
+                          enabled: _connected,
+                        ),
+                      ),
+                      IconButton(
+                        icon: Icon(
+                          Icons.send,
+                          size: 20,
+                          color: _connected
+                              ? colorScheme.primary
+                              : colorScheme.onSurfaceVariant
+                                  .withValues(alpha: 0.3),
+                        ),
+                        onPressed: _connected
+                            ? () => _onSubmit(_inputController.text)
+                            : null,
+                        constraints: const BoxConstraints(
+                          minWidth: 40,
+                          minHeight: 40,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Termux-style function key toolbar for mobile terminal input.
+class _TerminalKeyToolbar extends StatelessWidget {
+  final bool ctrlMode;
+  final VoidCallback onToggleCtrl;
+  final void Function(String) onSendRaw;
+  final void Function(String) onInsert;
+  final bool enabled;
+
+  const _TerminalKeyToolbar({
+    required this.ctrlMode,
+    required this.onToggleCtrl,
+    required this.onSendRaw,
+    required this.onInsert,
+    required this.enabled,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    Widget keyButton({
+      required String label,
+      required VoidCallback? onTap,
+      bool active = false,
+      double? width,
+    }) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 2),
+        child: Material(
+          color: active
+              ? colorScheme.primaryContainer
+              : colorScheme.surfaceContainerHighest.withAlpha(80),
+          borderRadius: BorderRadius.circular(6),
+          child: InkWell(
+            onTap: enabled ? onTap : null,
+            borderRadius: BorderRadius.circular(6),
+            child: Container(
+              width: width ?? 40,
+              height: 32,
+              alignment: Alignment.center,
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: active
+                      ? colorScheme.primary
+                      : enabled
+                          ? colorScheme.onSurface
+                          : colorScheme.onSurfaceVariant
+                              .withValues(alpha: 0.4),
+                  fontFamily: 'monospace',
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    Widget iconKeyButton({
+      required IconData icon,
+      required String tooltip,
+      required VoidCallback? onTap,
+      bool active = false,
+    }) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 2),
+        child: Material(
+          color: active
+              ? colorScheme.primaryContainer
+              : colorScheme.surfaceContainerHighest.withAlpha(80),
+          borderRadius: BorderRadius.circular(6),
+          child: InkWell(
+            onTap: enabled ? onTap : null,
+            borderRadius: BorderRadius.circular(6),
+            child: Container(
+              width: 36,
+              height: 32,
+              alignment: Alignment.center,
+              child: Icon(
+                icon,
+                size: 16,
+                color: active
+                    ? colorScheme.primary
+                    : enabled
+                        ? colorScheme.onSurface
+                        : colorScheme.onSurfaceVariant
+                            .withValues(alpha: 0.4),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            // Ctrl toggle.
+            keyButton(
+              label: 'Ctrl',
+              onTap: onToggleCtrl,
+              active: ctrlMode,
+              width: 42,
+            ),
+            // Esc.
+            keyButton(
+              label: 'Esc',
+              onTap: () => onSendRaw('\x1B'),
+              width: 40,
+            ),
+            // Tab.
+            keyButton(
+              label: 'Tab',
+              onTap: () => onSendRaw('\t'),
+              width: 38,
+            ),
+            // Separator.
+            const SizedBox(width: 4),
+            // Arrow keys.
+            iconKeyButton(
+              icon: Icons.arrow_upward,
+              tooltip: 'Up',
+              onTap: () => onSendRaw('\x1B[A'),
+            ),
+            iconKeyButton(
+              icon: Icons.arrow_downward,
+              tooltip: 'Down',
+              onTap: () => onSendRaw('\x1B[B'),
+            ),
+            iconKeyButton(
+              icon: Icons.arrow_back,
+              tooltip: 'Left',
+              onTap: () => onSendRaw('\x1B[D'),
+            ),
+            iconKeyButton(
+              icon: Icons.arrow_forward,
+              tooltip: 'Right',
+              onTap: () => onSendRaw('\x1B[C'),
+            ),
+            // Separator.
+            const SizedBox(width: 4),
+            // Common chars (Ctrl mode sends control char).
+            _CharKey(
+              label: '/',
+              ctrlMode: ctrlMode,
+              onSendRaw: onSendRaw,
+              onInsert: onInsert,
+              enabled: enabled,
+            ),
+            _CharKey(
+              label: '-',
+              ctrlMode: ctrlMode,
+              onSendRaw: onSendRaw,
+              onInsert: onInsert,
+              enabled: enabled,
+            ),
+            _CharKey(
+              label: '|',
+              ctrlMode: ctrlMode,
+              onSendRaw: onSendRaw,
+              onInsert: onInsert,
+              enabled: enabled,
+            ),
+            _CharKey(
+              label: '~',
+              ctrlMode: ctrlMode,
+              onSendRaw: onSendRaw,
+              onInsert: onInsert,
+              enabled: enabled,
+            ),
+            _CharKey(
+              label: '.',
+              ctrlMode: ctrlMode,
+              onSendRaw: onSendRaw,
+              onInsert: onInsert,
+              enabled: enabled,
+            ),
+            _CharKey(
+              label: '_',
+              ctrlMode: ctrlMode,
+              onSendRaw: onSendRaw,
+              onInsert: onInsert,
+              enabled: enabled,
+            ),
+            // Separator.
+            const SizedBox(width: 4),
+            // Direct Ctrl combo buttons.
+            keyButton(
+              label: '^C',
+              onTap: () => onSendRaw('\x03'),
+              width: 32,
+            ),
+            keyButton(
+              label: '^D',
+              onTap: () => onSendRaw('\x04'),
+              width: 32,
+            ),
+            keyButton(
+              label: '^L',
+              onTap: () => onSendRaw('\x0C'),
+              width: 32,
+            ),
+            keyButton(
+              label: '^U',
+              onTap: () => onSendRaw('\x15'),
+              width: 32,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A character key that behaves differently in Ctrl mode.
+class _CharKey extends StatelessWidget {
+  final String label;
+  final bool ctrlMode;
+  final void Function(String) onSendRaw;
+  final void Function(String) onInsert;
+  final bool enabled;
+
+  const _CharKey({
+    required this.label,
+    required this.ctrlMode,
+    required this.onSendRaw,
+    required this.onInsert,
+    required this.enabled,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final isActive = ctrlMode;
+
+    String ctrlVersion(String ch) {
+      final code = ch.codeUnitAt(0);
+      return String.fromCharCode(code & 0x1F);
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 2),
+      child: Material(
+        color: isActive
+            ? colorScheme.primaryContainer
+            : colorScheme.surfaceContainerHighest.withAlpha(80),
+        borderRadius: BorderRadius.circular(6),
+        child: InkWell(
+          onTap: enabled
+              ? () {
+                  if (ctrlMode) {
+                    onSendRaw(ctrlVersion(label));
+                  } else {
+                    onInsert(label);
+                  }
+                }
+              : null,
+          borderRadius: BorderRadius.circular(6),
+          child: Container(
+            width: 30,
+            height: 32,
+            alignment: Alignment.center,
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: isActive
+                    ? colorScheme.primary
+                    : enabled
+                        ? colorScheme.onSurface
+                        : colorScheme.onSurfaceVariant.withValues(alpha: 0.4),
+                fontFamily: 'monospace',
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
