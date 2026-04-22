@@ -88,7 +88,7 @@ void main() {
         expect(provider.splitViewEnabled, isTrue);
 
         apiClient.emitEvent(
-          'terminal/session.updated',
+          'terminal/sessionUpdated',
           sessionToJson(
             terminalSession(
               id: splitId!,

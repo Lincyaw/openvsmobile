@@ -96,13 +96,13 @@ void main() {
       final completionApplied = await provider.applyCompletionItem(
         completionItem(
           label: 'print',
-        primaryEdit: textEdit(
-          startLine: 0,
-          startCharacter: 0,
-          endLine: 0,
-          endCharacter: 5,
-          newText: 'print()',
-        ),
+          primaryEdit: textEdit(
+            startLine: 0,
+            startCharacter: 0,
+            endLine: 0,
+            endCharacter: 5,
+            newText: 'print()',
+          ),
           additionalTextEdits: <EditorTextEdit>[
             textEdit(
               startLine: 0,
@@ -189,9 +189,9 @@ void main() {
       expect(provider.error, contains('Completion'));
 
       editorApi.eventsChannel.serverSendJson(<String, dynamic>{
-        'type': 'bridge/diagnosticsChanged',
+        'type': 'document/diagnosticsChanged',
         'payload': <String, dynamic>{
-          'path': '/workspace/lib/main.dart',
+          'file': '/workspace/lib/main.dart',
           'diagnostics': <Map<String, dynamic>>[
             <String, dynamic>{
               'range': <String, dynamic>{

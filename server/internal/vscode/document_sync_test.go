@@ -313,3 +313,147 @@ func TestDocumentSyncServiceRequiresOpenDocumentForChangeSaveAndClose(t *testing
 		})
 	}
 }
+
+func TestRuntimeDocumentSyncServiceLifecycle(t *testing.T) {
+	store := newStubDocumentStore()
+	store.files["/workspace/runtime.txt"] = []byte("disk")
+	runtimeState := NewDocumentSyncService(store)
+
+	ts, _ := newEditorRuntimeServer(t, func(command string, payload map[string]any) any {
+		return handleRuntimeDocumentCommandForTest(t, runtimeState, command, payload)
+	})
+	client := connectEditorClient(t, ts.URL)
+	manager := readyEditorManager(t, client)
+	svc := NewRuntimeDocumentSyncService(client, manager, store)
+
+	content := "draft\n"
+	snapshot, err := svc.OpenDocument("/workspace/runtime.txt", 1, &content)
+	if err != nil {
+		t.Fatalf("open document: %v", err)
+	}
+	if snapshot.Content != "draft\n" || snapshot.Version != 1 {
+		t.Fatalf("unexpected open snapshot: %+v", snapshot)
+	}
+
+	snapshot, err = svc.ApplyDocumentChanges("/workspace/runtime.txt", 2, []DocumentChange{{
+		Range: &DocumentRange{
+			Start: DocumentPosition{Line: 0, Character: 5},
+			End:   DocumentPosition{Line: 0, Character: 5},
+		},
+		Text: " updated",
+	}})
+	if err != nil {
+		t.Fatalf("apply document changes: %v", err)
+	}
+	if snapshot.Content != "draft updated\n" || snapshot.Version != 2 {
+		t.Fatalf("unexpected changed snapshot: %+v", snapshot)
+	}
+
+	latest, err := svc.DocumentBuffer("/workspace/runtime.txt")
+	if err != nil {
+		t.Fatalf("document buffer: %v", err)
+	}
+	if latest.Content != "draft updated\n" || latest.Version != 2 {
+		t.Fatalf("unexpected runtime buffer: %+v", latest)
+	}
+
+	if _, err := svc.ApplyDocumentChanges("/workspace/runtime.txt", 2, []DocumentChange{{Text: "stale"}}); err == nil {
+		t.Fatal("expected stale version conflict")
+	} else if bridgeErr, ok := err.(*BridgeError); !ok || bridgeErr.Code != "version_conflict" {
+		t.Fatalf("stale version error = %#v, want version_conflict", err)
+	}
+
+	if string(store.files["/workspace/runtime.txt"]) != "disk" {
+		t.Fatalf("disk content before runtime save = %q, want unchanged", string(store.files["/workspace/runtime.txt"]))
+	}
+
+	if _, err := svc.SaveDocument("/workspace/runtime.txt"); err != nil {
+		t.Fatalf("save document: %v", err)
+	}
+	if string(store.files["/workspace/runtime.txt"]) != "draft updated\n" {
+		t.Fatalf("saved content = %q, want %q", string(store.files["/workspace/runtime.txt"]), "draft updated\n")
+	}
+
+	if err := svc.CloseDocument("/workspace/runtime.txt"); err != nil {
+		t.Fatalf("close document: %v", err)
+	}
+	if _, err := svc.DocumentBuffer("/workspace/runtime.txt"); err == nil {
+		t.Fatal("expected document buffer after close to fail")
+	}
+}
+
+func handleRuntimeDocumentCommandForTest(t *testing.T, docs *DocumentSyncService, command string, payload map[string]any) any {
+	t.Helper()
+
+	response := func(snapshot DocumentSnapshot, err error) any {
+		if err != nil {
+			return runtimeDocumentErrorResponseForTest(err)
+		}
+		return map[string]any{
+			"ok":       true,
+			"snapshot": snapshot,
+		}
+	}
+
+	switch command {
+	case "open":
+		var req struct {
+			Path    string  `json:"path"`
+			Version int     `json:"version"`
+			Content *string `json:"content,omitempty"`
+		}
+		if err := decodeJSON(payload, &req); err != nil {
+			t.Fatalf("decode open payload: %v", err)
+		}
+		return response(docs.OpenDocument(req.Path, req.Version, req.Content))
+	case "change":
+		var req struct {
+			Path    string           `json:"path"`
+			Version int              `json:"version"`
+			Changes []DocumentChange `json:"changes"`
+		}
+		if err := decodeJSON(payload, &req); err != nil {
+			t.Fatalf("decode change payload: %v", err)
+		}
+		return response(docs.ApplyDocumentChanges(req.Path, req.Version, req.Changes))
+	case "save":
+		path, _ := payload["path"].(string)
+		return response(docs.SaveDocument(path))
+	case "snapshot":
+		path, _ := payload["path"].(string)
+		return response(docs.DocumentBuffer(path))
+	case "close":
+		path, _ := payload["path"].(string)
+		if err := docs.CloseDocument(path); err != nil {
+			return runtimeDocumentErrorResponseForTest(err)
+		}
+		return map[string]any{
+			"ok":     true,
+			"path":   path,
+			"closed": true,
+		}
+	default:
+		t.Fatalf("unexpected runtime document command %q", command)
+		return nil
+	}
+}
+
+func runtimeDocumentErrorResponseForTest(err error) any {
+	bridgeErr, ok := err.(*BridgeError)
+	if !ok {
+		return map[string]any{
+			"ok": false,
+			"error": map[string]any{
+				"code":    "document_sync_failed",
+				"message": err.Error(),
+			},
+		}
+	}
+	return map[string]any{
+		"ok": false,
+		"error": map[string]any{
+			"code":    bridgeErr.Code,
+			"message": bridgeErr.Message,
+		},
+	}
+}

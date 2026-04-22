@@ -386,7 +386,7 @@ func (s *GitService) publishRepositoryChanged(repo GitRepositoryDocument) {
 		return
 	}
 	s.bridge.Publish(BridgeEvent{
-		Type:    "bridge/git/repositoryChanged",
+		Type:    "git/repositoryChanged",
 		Payload: repo,
 	})
 }

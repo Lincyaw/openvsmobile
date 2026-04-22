@@ -23,6 +23,8 @@ const (
 
 // BridgeCapabilitiesDocument is the RFC-shaped capabilities document exposed to clients.
 type BridgeCapabilitiesDocument struct {
+	State           string                 `json:"state"`
+	Generation      string                 `json:"generation"`
 	ProtocolVersion string                 `json:"protocolVersion"`
 	BridgeVersion   string                 `json:"bridgeVersion,omitempty"`
 	Capabilities    map[string]interface{} `json:"capabilities"`
@@ -251,16 +253,11 @@ func (m *BridgeManager) Subscribe(replayCurrent bool) (<-chan BridgeEvent, func(
 	m.mu.Lock()
 	m.subscribers[ch] = struct{}{}
 	ready := m.ready
-	generation := m.generation
+	caps := cloneCapabilities(m.capabilities)
 	m.mu.Unlock()
 
 	if replayCurrent && ready {
-		ch <- BridgeEvent{
-			Type: "bridge/ready",
-			Payload: map[string]interface{}{
-				"generation": generation,
-			},
-		}
+		ch <- BridgeEvent{Type: "bridge/ready", Payload: readyPayload(caps)}
 	}
 
 	unsubscribe := func() {
@@ -319,9 +316,11 @@ func readBridgeMetadata(path string) (BridgeMetadata, error) {
 
 func (m *BridgeManager) applyMetadata(metadata BridgeMetadata) {
 	caps := BridgeCapabilitiesDocument{
+		State:           metadata.State,
+		Generation:      metadata.Generation,
 		ProtocolVersion: metadata.ProtocolVersion,
 		BridgeVersion:   metadata.BridgeVersion,
-		Capabilities:    cloneMap(metadata.Capabilities),
+		Capabilities:    normalizeBridgeCapabilities(metadata.Capabilities),
 	}
 
 	m.mu.Lock()
@@ -346,13 +345,8 @@ func (m *BridgeManager) applyMetadata(metadata BridgeMetadata) {
 	}
 	if !wasReady || generationChanged {
 		m.broadcast(BridgeEvent{
-			Type: "bridge/ready",
-			Payload: map[string]interface{}{
-				"generation":      metadata.Generation,
-				"protocolVersion": metadata.ProtocolVersion,
-				"bridgeVersion":   metadata.BridgeVersion,
-				"capabilities":    cloneMap(metadata.Capabilities),
-			},
+			Type:    "bridge/ready",
+			Payload: readyPayload(caps),
 		})
 	}
 }
@@ -441,6 +435,8 @@ func (m *BridgeManager) reconnectTransport() {
 }
 
 func (m *BridgeManager) broadcast(event BridgeEvent) {
+	event = normalizeBridgeEvent(event)
+
 	m.mu.RLock()
 	deferred := make([]chan BridgeEvent, 0)
 	for ch := range m.subscribers {
@@ -464,9 +460,21 @@ func (m *BridgeManager) broadcast(event BridgeEvent) {
 
 func cloneCapabilities(doc BridgeCapabilitiesDocument) BridgeCapabilitiesDocument {
 	return BridgeCapabilitiesDocument{
+		State:           doc.State,
+		Generation:      doc.Generation,
 		ProtocolVersion: doc.ProtocolVersion,
 		BridgeVersion:   doc.BridgeVersion,
 		Capabilities:    cloneMap(doc.Capabilities),
+	}
+}
+
+func readyPayload(doc BridgeCapabilitiesDocument) map[string]interface{} {
+	return map[string]interface{}{
+		"state":           doc.State,
+		"generation":      doc.Generation,
+		"protocolVersion": doc.ProtocolVersion,
+		"bridgeVersion":   doc.BridgeVersion,
+		"capabilities":    cloneMap(doc.Capabilities),
 	}
 }
 
@@ -496,27 +504,246 @@ func cloneBridgeValue(value any) any {
 	}
 }
 
+func normalizeBridgeCapabilities(raw map[string]interface{}) map[string]interface{} {
+	return map[string]interface{}{
+		"documents": normalizeDocumentsCapability(raw),
+		"lsp":       normalizeLSPCapability(raw),
+		"git":       normalizeCategoryCapability(raw, "git"),
+		"terminal":  normalizeCategoryCapability(raw, "terminal"),
+		"workspace": normalizeCategoryCapability(raw, "workspace"),
+	}
+}
+
+func normalizeDocumentsCapability(raw map[string]interface{}) map[string]interface{} {
+	for _, candidate := range []string{"documents", "document", "files", "editor"} {
+		if value, ok := raw[candidate]; ok {
+			return normalizeCapabilityObject(value)
+		}
+	}
+	return map[string]interface{}{"enabled": false}
+}
+
+func normalizeLSPCapability(raw map[string]interface{}) map[string]interface{} {
+	lsp := map[string]interface{}{}
+	source, _ := capabilityEntry(raw["lsp"])
+	for _, feature := range []string{
+		"diagnostics",
+		"completion",
+		"hover",
+		"definition",
+		"references",
+		"signatureHelp",
+		"formatting",
+		"codeActions",
+		"rename",
+		"documentSymbols",
+	} {
+		if value, ok := source[feature]; ok {
+			lsp[feature] = normalizeCapabilityObject(value)
+			continue
+		}
+		found := false
+		for _, alias := range capabilityPathAliases(feature) {
+			if value, ok := raw[alias]; ok {
+				lsp[feature] = normalizeCapabilityObject(value)
+				found = true
+				break
+			}
+		}
+		if !found {
+			lsp[feature] = map[string]interface{}{"enabled": false}
+		}
+	}
+	lsp["enabled"] = anyChildCapabilityEnabled(lsp)
+	return lsp
+}
+
+func normalizeCategoryCapability(raw map[string]interface{}, name string) map[string]interface{} {
+	if value, ok := raw[name]; ok {
+		return normalizeCapabilityObject(value)
+	}
+	return map[string]interface{}{"enabled": false}
+}
+
+func normalizeCapabilityObject(value any) map[string]interface{} {
+	entry, ok := capabilityEntry(value)
+	if !ok {
+		return map[string]interface{}{"enabled": false}
+	}
+	normalized := cloneMap(entry)
+	for key, child := range entry {
+		if key == "enabled" || key == "reason" {
+			continue
+		}
+		switch child.(type) {
+		case map[string]any:
+			normalized[key] = normalizeCapabilityObject(child)
+		}
+	}
+	if _, ok := normalized["enabled"]; !ok {
+		normalized["enabled"] = anyChildCapabilityEnabled(normalized)
+	}
+	return normalized
+}
+
+func anyChildCapabilityEnabled(entry map[string]interface{}) bool {
+	for key, value := range entry {
+		if key == "enabled" || key == "reason" {
+			continue
+		}
+		child, ok := capabilityEntry(value)
+		if !ok {
+			continue
+		}
+		if capabilityEnabled(child) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeBridgeEvent(event BridgeEvent) BridgeEvent {
+	switch event.Type {
+	case "document/diagnosticsChanged", "bridge/editor/diagnosticsChanged", "bridge/diagnosticsChanged":
+		event.Type = "document/diagnosticsChanged"
+		event.Payload = normalizeDiagnosticsEventPayload(event.Payload)
+	case "git/repositoryChanged", "bridge/git/repositoryChanged":
+		event.Type = "git/repositoryChanged"
+		event.Payload = normalizeRepositoryEventPayload(event.Payload)
+	}
+	return event
+}
+
+func normalizeDiagnosticsEventPayload(payload any) any {
+	doc, ok := toObjectMap(payload)
+	if !ok {
+		return payload
+	}
+	file := firstNonEmpty(
+		stringValue(doc["file"]),
+		stringValue(doc["path"]),
+		stringValue(doc["filePath"]),
+	)
+	if file != "" {
+		doc["file"] = file
+		if _, ok := doc["path"]; !ok {
+			doc["path"] = file
+		}
+	}
+	return doc
+}
+
+func normalizeRepositoryEventPayload(payload any) any {
+	doc, ok := toObjectMap(payload)
+	if !ok {
+		return payload
+	}
+	if repositoryRaw, ok := doc["repository"]; ok {
+		repository, repoOK := toObjectMap(repositoryRaw)
+		if !repoOK {
+			return payload
+		}
+		if path := firstNonEmpty(stringValue(repository["path"]), stringValue(doc["path"])); path != "" {
+			repository["path"] = path
+		}
+		return repository
+	}
+	return doc
+}
+
+func stringValue(value any) string {
+	if text, ok := value.(string); ok {
+		return text
+	}
+	return ""
+}
+
 func lookupCapability(capabilities map[string]interface{}, name string) (map[string]any, bool) {
 	if capabilities == nil {
 		return nil, false
 	}
-	if exact, ok := capabilityEntry(capabilities[name]); ok {
-		return exact, true
-	}
-	current := capabilities
-	parts := strings.Split(name, ".")
-	for _, part := range parts {
-		next, ok := current[part]
-		if !ok {
-			return nil, false
+	for _, candidate := range capabilityPathAliases(name) {
+		if exact, ok := capabilityEntry(capabilities[candidate]); ok {
+			return exact, true
 		}
-		entry, ok := capabilityEntry(next)
-		if !ok {
-			return nil, false
+		current := capabilities
+		matched := true
+		for _, part := range strings.Split(candidate, ".") {
+			next, ok := current[part]
+			if !ok {
+				matched = false
+				break
+			}
+			entry, ok := capabilityEntry(next)
+			if !ok {
+				matched = false
+				break
+			}
+			current = entry
 		}
-		current = entry
+		if matched {
+			return current, true
+		}
 	}
-	return current, true
+	return nil, false
+}
+
+func capabilityPathAliases(name string) []string {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return nil
+	}
+	aliases := []string{trimmed}
+	switch trimmed {
+	case "documents", "document", "files", "editor":
+		aliases = append(aliases, "documents")
+	case "diagnostics":
+		aliases = append(aliases, "lsp.diagnostics")
+	case "completion":
+		aliases = append(aliases, "lsp.completion")
+	case "hover":
+		aliases = append(aliases, "lsp.hover")
+	case "definition":
+		aliases = append(aliases, "lsp.definition")
+	case "references":
+		aliases = append(aliases, "lsp.references")
+	case "signatureHelp", "signature_help":
+		aliases = append(aliases, "lsp.signatureHelp")
+	case "formatting":
+		aliases = append(aliases, "lsp.formatting")
+	case "codeActions", "codeAction":
+		aliases = append(aliases, "lsp.codeActions")
+	case "rename":
+		aliases = append(aliases, "lsp.rename")
+	case "documentSymbols", "documentSymbol":
+		aliases = append(aliases, "lsp.documentSymbols")
+	case "git":
+		aliases = append(aliases, "git")
+	case "terminal":
+		aliases = append(aliases, "terminal")
+	case "workspace":
+		aliases = append(aliases, "workspace")
+	}
+	if strings.HasPrefix(trimmed, "lsp.") {
+		aliases = append(aliases, strings.TrimPrefix(trimmed, "lsp."))
+	}
+	return dedupeStrings(aliases)
+}
+
+func dedupeStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func capabilityEntry(value any) (map[string]any, bool) {
@@ -579,6 +806,8 @@ type DocumentStore interface {
 	WriteFile(path string, content []byte) error
 }
 
+const documentsChannelName = "openvsmobile/documents"
+
 type documentSession struct {
 	path    string
 	version int
@@ -597,6 +826,7 @@ type DocumentManager struct {
 // DocumentSyncService exposes the bridge document lifecycle used by the API layer.
 type DocumentSyncService struct {
 	manager *DocumentManager
+	runtime *runtimeDocumentSyncClient
 }
 
 // NewDocumentSyncService creates a document sync service backed by the provided store.
@@ -611,6 +841,17 @@ func NewDocumentSyncService(store DocumentStore) *DocumentSyncService {
 	}
 }
 
+// NewRuntimeDocumentSyncService creates a bridge-backed document sync service
+// that keeps document state inside the OpenVSCode runtime process.
+func NewRuntimeDocumentSyncService(client *Client, bridge *BridgeManager, fallbackStore DocumentStore) *DocumentSyncService {
+	if client == nil {
+		return NewDocumentSyncService(fallbackStore)
+	}
+	return &DocumentSyncService{
+		runtime: newRuntimeDocumentSyncClient(client, bridge),
+	}
+}
+
 // NewDocumentManager creates a document session manager.
 func NewDocumentManager(opts DocumentManagerOptions) *DocumentManager {
 	return &DocumentManager{
@@ -622,6 +863,9 @@ func NewDocumentManager(opts DocumentManagerOptions) *DocumentManager {
 
 // OpenDocument starts or replaces the tracked session for path.
 func (s *DocumentSyncService) OpenDocument(path string, version int, content *string) (DocumentSnapshot, error) {
+	if s != nil && s.runtime != nil {
+		return s.runtime.OpenDocument(path, version, content)
+	}
 	if s == nil || s.manager == nil {
 		return DocumentSnapshot{}, newBridgeError("bridge_not_ready", "mobile runtime bridge is not ready", nil)
 	}
@@ -630,6 +874,9 @@ func (s *DocumentSyncService) OpenDocument(path string, version int, content *st
 
 // ApplyDocumentChanges applies a versioned batch of incremental edits.
 func (s *DocumentSyncService) ApplyDocumentChanges(path string, version int, changes []DocumentChange) (DocumentSnapshot, error) {
+	if s != nil && s.runtime != nil {
+		return s.runtime.ApplyDocumentChanges(path, version, changes)
+	}
 	if s == nil || s.manager == nil {
 		return DocumentSnapshot{}, newBridgeError("bridge_not_ready", "mobile runtime bridge is not ready", nil)
 	}
@@ -638,6 +885,9 @@ func (s *DocumentSyncService) ApplyDocumentChanges(path string, version int, cha
 
 // SaveDocument persists the latest accepted in-memory buffer.
 func (s *DocumentSyncService) SaveDocument(path string) (DocumentSnapshot, error) {
+	if s != nil && s.runtime != nil {
+		return s.runtime.SaveDocument(path)
+	}
 	if s == nil || s.manager == nil {
 		return DocumentSnapshot{}, newBridgeError("bridge_not_ready", "mobile runtime bridge is not ready", nil)
 	}
@@ -646,6 +896,9 @@ func (s *DocumentSyncService) SaveDocument(path string) (DocumentSnapshot, error
 
 // CloseDocument releases the tracked session for path.
 func (s *DocumentSyncService) CloseDocument(path string) error {
+	if s != nil && s.runtime != nil {
+		return s.runtime.CloseDocument(path)
+	}
 	if s == nil || s.manager == nil {
 		return newBridgeError("bridge_not_ready", "mobile runtime bridge is not ready", nil)
 	}
@@ -654,10 +907,131 @@ func (s *DocumentSyncService) CloseDocument(path string) error {
 
 // DocumentBuffer returns the latest unsaved buffer for an open document.
 func (s *DocumentSyncService) DocumentBuffer(path string) (DocumentSnapshot, error) {
+	if s != nil && s.runtime != nil {
+		return s.runtime.DocumentBuffer(path)
+	}
 	if s == nil || s.manager == nil {
 		return DocumentSnapshot{}, newBridgeError("bridge_not_ready", "mobile runtime bridge is not ready", nil)
 	}
 	return s.manager.DocumentBuffer(path)
+}
+
+type runtimeDocumentSyncClient struct {
+	client      *Client
+	bridge      *BridgeManager
+	channelName string
+}
+
+type runtimeDocumentResponse struct {
+	OK       bool                  `json:"ok"`
+	Snapshot *DocumentSnapshot     `json:"snapshot,omitempty"`
+	Error    *runtimeDocumentError `json:"error,omitempty"`
+	Path     string                `json:"path,omitempty"`
+	Closed   bool                  `json:"closed,omitempty"`
+}
+
+type runtimeDocumentError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+func newRuntimeDocumentSyncClient(client *Client, bridge *BridgeManager) *runtimeDocumentSyncClient {
+	return &runtimeDocumentSyncClient{
+		client:      client,
+		bridge:      bridge,
+		channelName: documentsChannelName,
+	}
+}
+
+func (c *runtimeDocumentSyncClient) OpenDocument(path string, version int, content *string) (DocumentSnapshot, error) {
+	payload := map[string]any{
+		"path":    path,
+		"version": version,
+	}
+	if content != nil {
+		payload["content"] = *content
+	}
+	return c.callSnapshot("open", payload)
+}
+
+func (c *runtimeDocumentSyncClient) ApplyDocumentChanges(path string, version int, changes []DocumentChange) (DocumentSnapshot, error) {
+	return c.callSnapshot("change", map[string]any{
+		"path":    path,
+		"version": version,
+		"changes": changes,
+	})
+}
+
+func (c *runtimeDocumentSyncClient) SaveDocument(path string) (DocumentSnapshot, error) {
+	return c.callSnapshot("save", map[string]any{"path": path})
+}
+
+func (c *runtimeDocumentSyncClient) CloseDocument(path string) error {
+	response, err := c.call("close", map[string]any{"path": path})
+	if err != nil {
+		return err
+	}
+	if !response.OK {
+		return c.envelopeError(response, "runtime document close failed")
+	}
+	return nil
+}
+
+func (c *runtimeDocumentSyncClient) DocumentBuffer(path string) (DocumentSnapshot, error) {
+	return c.callSnapshot("snapshot", map[string]any{"path": path})
+}
+
+func (c *runtimeDocumentSyncClient) callSnapshot(command string, payload map[string]any) (DocumentSnapshot, error) {
+	response, err := c.call(command, payload)
+	if err != nil {
+		return DocumentSnapshot{}, err
+	}
+	if !response.OK {
+		return DocumentSnapshot{}, c.envelopeError(response, fmt.Sprintf("runtime document %s failed", command))
+	}
+	if response.Snapshot == nil {
+		return DocumentSnapshot{}, newBridgeError("document_response_invalid", "runtime document response did not include a snapshot", nil)
+	}
+	return *response.Snapshot, nil
+}
+
+func (c *runtimeDocumentSyncClient) call(command string, payload map[string]any) (runtimeDocumentResponse, error) {
+	channel, err := c.ipcChannel()
+	if err != nil {
+		return runtimeDocumentResponse{}, err
+	}
+	raw, err := channel.Call(command, payload)
+	if err != nil {
+		return runtimeDocumentResponse{}, newBridgeError("document_sync_failed", fmt.Sprintf("runtime document %s request failed", command), err)
+	}
+	var response runtimeDocumentResponse
+	if err := decodeJSON(raw, &response); err != nil {
+		return runtimeDocumentResponse{}, newBridgeError("document_response_invalid", "failed to decode runtime document response", err)
+	}
+	return response, nil
+}
+
+func (c *runtimeDocumentSyncClient) ipcChannel() (*IPCChannel, error) {
+	if c == nil || c.client == nil || c.client.IPC() == nil {
+		return nil, newBridgeError("bridge_not_ready", "mobile runtime bridge is not ready", nil)
+	}
+	if c.bridge != nil {
+		enabled, err := c.bridge.CapabilityEnabled("documents", "document")
+		if err != nil {
+			return nil, err
+		}
+		if !enabled {
+			return nil, newBridgeError("capability_unavailable", "bridge capability documents is unavailable", nil)
+		}
+	}
+	return c.client.IPC().GetChannel(c.channelName), nil
+}
+
+func (c *runtimeDocumentSyncClient) envelopeError(response runtimeDocumentResponse, fallbackMessage string) error {
+	if response.Error != nil {
+		return newBridgeError(response.Error.Code, response.Error.Message, nil)
+	}
+	return newBridgeError("document_sync_failed", fallbackMessage, nil)
 }
 
 func (m *DocumentManager) OpenDocument(path string, version int, content *string) (DocumentSnapshot, error) {

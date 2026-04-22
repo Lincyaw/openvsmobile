@@ -416,9 +416,9 @@ func TestBridgeDocumentLifecycle_VersionedBufferFeedsDiagnosticsEventPayload(t *
 	}
 
 	manager.Publish(vscode.BridgeEvent{
-		Type: "bridge/diagnosticsChanged",
+		Type: "document/diagnosticsChanged",
 		Payload: map[string]any{
-			"path":    filePath,
+			"file":    filePath,
 			"version": snapshot.Version,
 			"diagnostics": []any{
 				map[string]any{
@@ -430,10 +430,13 @@ func TestBridgeDocumentLifecycle_VersionedBufferFeedsDiagnosticsEventPayload(t *
 	})
 
 	event := readBridgeEvent(t, conn)
-	if event.Type != "bridge/diagnosticsChanged" {
-		t.Fatalf("event type = %q, want bridge/diagnosticsChanged", event.Type)
+	if event.Type != "document/diagnosticsChanged" {
+		t.Fatalf("event type = %q, want document/diagnosticsChanged", event.Type)
 	}
 	payload := requireEventPayload(t, event)
+	if got := requirePayloadValue(t, payload, "file"); got != filePath {
+		t.Fatalf("event file = %#v, want %q", got, filePath)
+	}
 	if got := requirePayloadValue(t, payload, "path"); got != filePath {
 		t.Fatalf("event path = %#v, want %q", got, filePath)
 	}

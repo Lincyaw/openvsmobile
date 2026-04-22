@@ -58,6 +58,14 @@ type Attachment struct {
 	closeFn func()
 }
 
+func NewAttachment(backlog []byte, output <-chan []byte, closeFn func()) *Attachment {
+	return &Attachment{
+		backlog: append([]byte(nil), backlog...),
+		output:  output,
+		closeFn: closeFn,
+	}
+}
+
 func (a *Attachment) Backlog() []byte {
 	if a == nil || len(a.backlog) == 0 {
 		return nil

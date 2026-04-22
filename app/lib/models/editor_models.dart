@@ -20,10 +20,12 @@ class BridgeCapability {
   final bool enabled;
   final String? reason;
   final Map<String, dynamic> raw;
+  final Map<String, BridgeCapability> children;
 
   const BridgeCapability({
     required this.enabled,
     required this.raw,
+    this.children = const <String, BridgeCapability>{},
     this.reason,
   });
 
@@ -32,10 +34,23 @@ class BridgeCapability {
       return BridgeCapability(enabled: json, raw: <String, dynamic>{});
     }
     if (json is Map<String, dynamic>) {
+      final children = <String, BridgeCapability>{};
+      for (final entry in json.entries) {
+        if (entry.key == 'enabled' || entry.key == 'reason') {
+          continue;
+        }
+        final value = entry.value;
+        if (value is bool || value is Map) {
+          children[entry.key] = BridgeCapability.fromJson(value);
+        }
+      }
       return BridgeCapability(
-        enabled: json['enabled'] as bool? ?? false,
+        enabled:
+            json['enabled'] as bool? ??
+            children.values.any((child) => child.enabled),
         reason: json['reason'] as String?,
         raw: Map<String, dynamic>.from(json),
+        children: children,
       );
     }
     if (json is Map) {
@@ -79,15 +94,108 @@ class BridgeCapabilitiesDocument {
     );
   }
 
-  bool isEnabled(String name, [Iterable<String> aliases = const <String>[]]) {
-    final candidates = <String>[name, ...aliases];
-    for (final candidate in candidates) {
-      final capability = capabilities[candidate];
-      if (capability != null) {
-        return capability.enabled;
+  BridgeCapability? capability(
+    String name, [
+    Iterable<String> aliases = const <String>[],
+  ]) {
+    for (final candidate in _capabilityCandidates(name, aliases)) {
+      final segments = candidate.split('.');
+      BridgeCapability? current = capabilities[segments.first];
+      for (var index = 1; current != null && index < segments.length; index++) {
+        current = current.children[segments[index]];
+      }
+      if (current != null) {
+        return current;
       }
     }
-    return false;
+    return null;
+  }
+
+  bool isEnabled(String name, [Iterable<String> aliases = const <String>[]]) {
+    return capability(name, aliases)?.enabled ?? false;
+  }
+}
+
+Iterable<String> _capabilityCandidates(
+  String name,
+  Iterable<String> aliases,
+) sync* {
+  final seen = <String>{};
+  for (final candidate in <String>[name, ...aliases]) {
+    final trimmed = candidate.trim();
+    if (trimmed.isEmpty || !seen.add(trimmed)) {
+      continue;
+    }
+    yield trimmed;
+    switch (trimmed) {
+      case 'documents':
+      case 'document':
+      case 'files':
+      case 'editor':
+        if (seen.add('documents')) {
+          yield 'documents';
+        }
+        break;
+      case 'diagnostics':
+        if (seen.add('lsp.diagnostics')) {
+          yield 'lsp.diagnostics';
+        }
+        break;
+      case 'completion':
+        if (seen.add('lsp.completion')) {
+          yield 'lsp.completion';
+        }
+        break;
+      case 'hover':
+        if (seen.add('lsp.hover')) {
+          yield 'lsp.hover';
+        }
+        break;
+      case 'definition':
+        if (seen.add('lsp.definition')) {
+          yield 'lsp.definition';
+        }
+        break;
+      case 'references':
+        if (seen.add('lsp.references')) {
+          yield 'lsp.references';
+        }
+        break;
+      case 'signatureHelp':
+      case 'signature_help':
+        if (seen.add('lsp.signatureHelp')) {
+          yield 'lsp.signatureHelp';
+        }
+        break;
+      case 'formatting':
+        if (seen.add('lsp.formatting')) {
+          yield 'lsp.formatting';
+        }
+        break;
+      case 'codeActions':
+      case 'codeAction':
+        if (seen.add('lsp.codeActions')) {
+          yield 'lsp.codeActions';
+        }
+        break;
+      case 'rename':
+        if (seen.add('lsp.rename')) {
+          yield 'lsp.rename';
+        }
+        break;
+      case 'documentSymbols':
+      case 'documentSymbol':
+        if (seen.add('lsp.documentSymbols')) {
+          yield 'lsp.documentSymbols';
+        }
+        break;
+    }
+    if (trimmed.startsWith('lsp.')) {
+      final shorthand = trimmed.substring(4);
+      if (seen.add(shorthand)) {
+        yield shorthand;
+      }
+    }
   }
 }
 

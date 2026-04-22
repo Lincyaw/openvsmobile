@@ -9,7 +9,7 @@ import 'providers/file_provider.dart';
 import 'providers/git_provider.dart';
 import 'screens/files_screen.dart';
 import 'screens/chat_screen.dart';
-import 'screens/terminal_screen.dart';
+import 'screens/terminal_workspace_screen.dart';
 import 'screens/git_screen.dart';
 import 'services/settings_service.dart';
 
@@ -73,12 +73,7 @@ class _MainShellState extends State<MainShell> {
 
     final tabs = <Widget>[
       const FilesScreen(),
-      TerminalScreen(
-        baseUrl: settings.serverUrl,
-        token: settings.authToken,
-        workDir: wsPath,
-        isActive: _currentIndex == 1,
-      ),
+      TerminalWorkspaceScreen(isActive: _currentIndex == 1),
       const ChatScreen(),
       const GitScreen(),
     ];

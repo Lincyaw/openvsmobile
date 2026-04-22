@@ -23,6 +23,7 @@ class Diagnostic {
   }) {
     final rawRange = json['range'];
     final filePath =
+        json['file'] as String? ??
         json['filePath'] as String? ??
         json['path'] as String? ??
         defaultPath ??
@@ -53,7 +54,7 @@ class Diagnostic {
   }
 
   static List<Diagnostic> listFromReportJson(Map<String, dynamic> json) {
-    final path = json['path'] as String? ?? '';
+    final path = json['file'] as String? ?? json['path'] as String? ?? '';
     final rawDiagnostics = json['diagnostics'];
     if (rawDiagnostics is! List) {
       return const <Diagnostic>[];

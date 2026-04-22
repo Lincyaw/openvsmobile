@@ -134,17 +134,27 @@ func requirePayloadValue(t *testing.T, payload map[string]any, key string) any {
 
 func requireBoolCapability(t *testing.T, payload map[string]any, capability string, want bool) {
 	t.Helper()
+	entry := requireCapabilityEntry(t, payload, capability)
+	if entry["enabled"] != want {
+		t.Fatalf("capability %q enabled = %#v, want %v", capability, entry["enabled"], want)
+	}
+}
+
+func requireCapabilityEntry(t *testing.T, payload map[string]any, capability string) map[string]any {
+	t.Helper()
 	capabilities, ok := requirePayloadValue(t, payload, "capabilities").(map[string]any)
 	if !ok {
 		t.Fatalf("payload capabilities = %#v, want map[string]any", payload["capabilities"])
 	}
-	entry, ok := capabilities[capability].(map[string]any)
-	if !ok {
-		t.Fatalf("capability %q = %#v, want map[string]any", capability, capabilities[capability])
+	current := capabilities
+	for _, part := range strings.Split(capability, ".") {
+		next, ok := current[part].(map[string]any)
+		if !ok {
+			t.Fatalf("capability %q segment %q = %#v, want map[string]any", capability, part, current[part])
+		}
+		current = next
 	}
-	if entry["enabled"] != want {
-		t.Fatalf("capability %q enabled = %#v, want %v", capability, entry["enabled"], want)
-	}
+	return current
 }
 
 func requireEventPayload(t *testing.T, event vscode.BridgeEvent) map[string]any {
@@ -198,14 +208,22 @@ func TestBridgeCapabilities_ReadyReturnsRFCDocument(t *testing.T) {
 
 	ts := newBridgeEnabledServer(t, manager)
 	doc := waitForReadyCapabilities(t, ts.URL)
+	if doc.State != "ready" {
+		t.Fatalf("state = %q, want %q", doc.State, "ready")
+	}
+	if doc.Generation != "gen-1" {
+		t.Fatalf("generation = %q, want %q", doc.Generation, "gen-1")
+	}
 	if doc.ProtocolVersion == "" {
 		t.Fatal("expected protocolVersion in capabilities response")
 	}
 	if doc.BridgeVersion != "0.1.0" {
 		t.Fatalf("bridgeVersion = %q, want %q", doc.BridgeVersion, "0.1.0")
 	}
-	if len(doc.Capabilities) != 0 {
-		t.Fatalf("capabilities len = %d, want 0", len(doc.Capabilities))
+	for _, capability := range []string{"documents", "lsp", "git", "terminal", "workspace"} {
+		if _, ok := doc.Capabilities[capability]; !ok {
+			t.Fatalf("capabilities missing %q: %#v", capability, doc.Capabilities)
+		}
 	}
 }
 
@@ -244,11 +262,11 @@ func TestBridgeCapabilities_PreservesEditorFeatureMatrix(t *testing.T) {
 	if doc.BridgeVersion != "0.3.0" {
 		t.Fatalf("bridgeVersion = %q, want %q", doc.BridgeVersion, "0.3.0")
 	}
-	requireBoolCapability(t, map[string]any{"capabilities": doc.Capabilities}, "diagnostics", true)
-	requireBoolCapability(t, map[string]any{"capabilities": doc.Capabilities}, "completion", true)
-	requireBoolCapability(t, map[string]any{"capabilities": doc.Capabilities}, "formatting", false)
-	requireBoolCapability(t, map[string]any{"capabilities": doc.Capabilities}, "rename", false)
-	requireBoolCapability(t, map[string]any{"capabilities": doc.Capabilities}, "documentSymbols", true)
+	requireBoolCapability(t, map[string]any{"capabilities": doc.Capabilities}, "lsp.diagnostics", true)
+	requireBoolCapability(t, map[string]any{"capabilities": doc.Capabilities}, "lsp.completion", true)
+	requireBoolCapability(t, map[string]any{"capabilities": doc.Capabilities}, "lsp.formatting", false)
+	requireBoolCapability(t, map[string]any{"capabilities": doc.Capabilities}, "lsp.rename", false)
+	requireBoolCapability(t, map[string]any{"capabilities": doc.Capabilities}, "lsp.documentSymbols", true)
 }
 
 func TestBridgeCapabilities_NotReadyWindowRecoversToUpdatedCapabilities(t *testing.T) {
@@ -362,6 +380,9 @@ func TestBridgeEventsWebSocket_StableEnvelopeCarriesLifecyclePayloads(t *testing
 		t.Fatalf("first event type = %q, want bridge/ready", ready.Type)
 	}
 	readyPayload := requireEventPayload(t, ready)
+	if got := requirePayloadValue(t, readyPayload, "state"); got != "ready" {
+		t.Fatalf("ready state = %#v, want %q", got, "ready")
+	}
 	if got := requirePayloadValue(t, readyPayload, "generation"); got != "gen-1" {
 		t.Fatalf("ready generation = %#v, want %q", got, "gen-1")
 	}
@@ -433,9 +454,9 @@ func TestBridgeEventsWebSocket_ForwardsDiagnosticsChangedEvents(t *testing.T) {
 	}
 
 	manager.Publish(vscode.BridgeEvent{
-		Type: "bridge/diagnosticsChanged",
+		Type: "document/diagnosticsChanged",
 		Payload: map[string]any{
-			"path":    "/workspace/lib/main.dart",
+			"file":    "/workspace/lib/main.dart",
 			"version": 9,
 			"diagnostics": []any{
 				map[string]any{
@@ -448,10 +469,13 @@ func TestBridgeEventsWebSocket_ForwardsDiagnosticsChangedEvents(t *testing.T) {
 	})
 
 	event := readBridgeEvent(t, conn)
-	if event.Type != "bridge/diagnosticsChanged" {
-		t.Fatalf("event type = %q, want bridge/diagnosticsChanged", event.Type)
+	if event.Type != "document/diagnosticsChanged" {
+		t.Fatalf("event type = %q, want document/diagnosticsChanged", event.Type)
 	}
 	payload := requireEventPayload(t, event)
+	if got := requirePayloadValue(t, payload, "file"); got != "/workspace/lib/main.dart" {
+		t.Fatalf("file = %#v, want %q", got, "/workspace/lib/main.dart")
+	}
 	if got := requirePayloadValue(t, payload, "path"); got != "/workspace/lib/main.dart" {
 		t.Fatalf("path = %#v, want %q", got, "/workspace/lib/main.dart")
 	}

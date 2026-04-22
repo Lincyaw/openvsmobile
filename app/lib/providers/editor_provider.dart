@@ -138,13 +138,11 @@ class EditorProvider extends ChangeNotifier {
     if (capabilities == null) {
       return null;
     }
-    for (final candidate in <String>[name, ...aliases]) {
-      final capability = capabilities.capabilities[candidate];
-      if (capability != null &&
-          capability.reason != null &&
-          capability.reason!.isNotEmpty) {
-        return capability.reason;
-      }
+    final capability = capabilities.capability(name, aliases);
+    if (capability != null &&
+        capability.reason != null &&
+        capability.reason!.isNotEmpty) {
+      return capability.reason;
     }
     return null;
   }
@@ -882,7 +880,8 @@ class EditorProvider extends ChangeNotifier {
         await _reopenBridgeDocuments();
         return;
       }
-      if (event.type != 'bridge/editor/diagnosticsChanged' &&
+      if (event.type != 'document/diagnosticsChanged' &&
+          event.type != 'bridge/editor/diagnosticsChanged' &&
           event.type != 'bridge/diagnosticsChanged') {
         return;
       }
@@ -891,7 +890,7 @@ class EditorProvider extends ChangeNotifier {
         return;
       }
       final report = Map<String, dynamic>.from(payload);
-      final path = report['path'] as String? ?? '';
+      final path = report['file'] as String? ?? report['path'] as String? ?? '';
       OpenFile? file;
       for (final candidate in _openFiles) {
         if (candidate.path == path) {

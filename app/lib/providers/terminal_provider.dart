@@ -725,14 +725,19 @@ class TerminalProvider extends ChangeNotifier {
         Map<String, dynamic>.from(payload),
       );
       switch (type) {
+        case 'terminal/sessionCreated':
         case 'terminal/session.created':
+        case 'terminal/sessionUpdated':
         case 'terminal/session.updated':
           _upsertSession(session);
           notifyListeners();
-          if (type == 'terminal/session.created' && _activeSessionId == null) {
+          if ((type == 'terminal/sessionCreated' ||
+                  type == 'terminal/session.created') &&
+              _activeSessionId == null) {
             unawaited(activateSession(session.id));
           }
           break;
+        case 'terminal/sessionClosed':
         case 'terminal/session.closed':
           unawaited(_removeSession(session.id, notify: true));
           break;

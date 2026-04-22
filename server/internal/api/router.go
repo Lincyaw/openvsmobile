@@ -36,6 +36,7 @@ type Server struct {
 	git              *git.Git
 	gitService       *vscode.GitService
 	editorService    *vscode.EditorService
+	terminalService  *vscode.TerminalService
 	termManager      *terminal.Manager
 	diagnosticRunner *diagnostics.Runner
 	githubAuth       *gitauth.Service
@@ -58,6 +59,7 @@ func NewServer(fs FileSystem, sessionIndex *claude.SessionIndex, pm *claude.Proc
 		git:              gitClient,
 		gitService:       nil,
 		termManager:      termMgr,
+		terminalService:  nil,
 		diagnosticRunner: diagRunner,
 		githubAuth:       authService,
 		fileWatchHub:     NewFileWatchHub(),
@@ -83,6 +85,11 @@ func (s *Server) SetDocumentSync(service *vscode.DocumentSyncService) {
 // SetEditorService injects the bridge-backed editor intelligence service.
 func (s *Server) SetEditorService(service *vscode.EditorService) {
 	s.editorService = service
+}
+
+// SetTerminalService injects the bridge-backed terminal service.
+func (s *Server) SetTerminalService(service *vscode.TerminalService) {
+	s.terminalService = service
 }
 
 // Handler returns the top-level HTTP handler with all routes.

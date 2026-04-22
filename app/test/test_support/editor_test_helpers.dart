@@ -535,22 +535,44 @@ class FakeEditorApiClient extends EditorApiClient {
 BridgeCapabilitiesDocument defaultCapabilities({
   Map<String, dynamic>? overrides,
 }) {
+  final lspOverrides = <String, dynamic>{};
+  final topLevelOverrides = <String, dynamic>{};
+  for (final entry in (overrides ?? const <String, dynamic>{}).entries) {
+    if (entry.key.contains('.') ||
+        entry.key == 'documents' ||
+        entry.key == 'git' ||
+        entry.key == 'terminal' ||
+        entry.key == 'workspace' ||
+        entry.key == 'lsp') {
+      topLevelOverrides[entry.key] = entry.value;
+    } else {
+      lspOverrides[entry.key] = entry.value;
+    }
+  }
   return BridgeCapabilitiesDocument.fromJson(<String, dynamic>{
     'state': 'ready',
     'generation': 'gen-1',
     'protocolVersion': '2026-04-20',
     'bridgeVersion': '0.3.0',
     'capabilities': <String, dynamic>{
-      'diagnostics': <String, dynamic>{'enabled': true},
-      'completion': <String, dynamic>{'enabled': true, 'textEdit': true},
-      'hover': <String, dynamic>{'enabled': true},
-      'definition': <String, dynamic>{'enabled': true},
-      'references': <String, dynamic>{'enabled': true},
-      'signatureHelp': <String, dynamic>{'enabled': true},
-      'formatting': <String, dynamic>{'enabled': true},
-      'codeActions': <String, dynamic>{'enabled': true},
-      'rename': <String, dynamic>{'enabled': true},
-      ...?overrides,
+      'documents': <String, dynamic>{'enabled': true},
+      'lsp': <String, dynamic>{
+        'enabled': true,
+        'diagnostics': <String, dynamic>{'enabled': true},
+        'completion': <String, dynamic>{'enabled': true, 'textEdit': true},
+        'hover': <String, dynamic>{'enabled': true},
+        'definition': <String, dynamic>{'enabled': true},
+        'references': <String, dynamic>{'enabled': true},
+        'signatureHelp': <String, dynamic>{'enabled': true},
+        'formatting': <String, dynamic>{'enabled': true},
+        'codeActions': <String, dynamic>{'enabled': true},
+        'rename': <String, dynamic>{'enabled': true},
+        ...lspOverrides,
+      },
+      'git': <String, dynamic>{'enabled': true},
+      'terminal': <String, dynamic>{'enabled': true},
+      'workspace': <String, dynamic>{'enabled': false},
+      ...topLevelOverrides,
     },
   });
 }
