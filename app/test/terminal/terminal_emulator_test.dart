@@ -1,8 +1,7 @@
-import 'dart:convert';
-import 'dart:io';
-
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vscode_mobile/terminal/terminal_emulator.dart';
+
+import '../test_support/terminal_test_helpers.dart';
 
 void main() {
   group('TerminalEmulator', () {
@@ -143,19 +142,58 @@ void main() {
     });
 
     test('replays a real zellij startup fixture into the alternate screen', () {
-      final fixture = File(
-        'test/fixtures/terminal/zellij_startup.base64',
-      ).readAsStringSync().trim();
-      final bytes = base64Decode(fixture);
-      final emulator = TerminalEmulator(rows: 24, cols: 80);
-
-      emulator.writeBytes(bytes);
+      final emulator = replayTerminalFixture('zellij_startup.base64');
       final snapshot = emulator.snapshot();
 
       expect(snapshot.isAlternateBuffer, isTrue);
       expect(snapshot.plainText, contains('Zellij'));
       expect(snapshot.plainText, contains('Ctrl'));
       expect(snapshot.applicationCursorKeys, isFalse);
+    });
+
+    test('replays zellij pane and tab transitions back to the main buffer', () {
+      final emulator = replayTerminalFixture('zellij_pane_tab_cycle.base64');
+      final snapshot = emulator.snapshot();
+
+      expect(snapshot.isAlternateBuffer, isFalse);
+      expect(snapshot.plainText, contains('zellij done'));
+      expect(emulator.plainText, isNot(contains('Pane 1: editor')));
+    });
+
+    test('replays a tmux status-bar restore fixture', () {
+      final emulator = replayTerminalFixture('tmux_status_restore.base64');
+      final snapshot = emulator.snapshot();
+
+      expect(snapshot.isAlternateBuffer, isFalse);
+      expect(snapshot.plainText, contains('restored session after reattach'));
+      expect(snapshot.plainText, contains('[80x24] restored 18:00'));
+    });
+
+    test('replays a vim edit-and-exit fixture', () {
+      final emulator = replayTerminalFixture('vim_edit_exit.base64');
+      final snapshot = emulator.snapshot();
+
+      expect(snapshot.isAlternateBuffer, isFalse);
+      expect(snapshot.plainText, contains('saved notes.txt'));
+      expect(snapshot.plainText, isNot(contains('[Modified]')));
+    });
+
+    test('replays a neovim edit-and-exit fixture', () {
+      final emulator = replayTerminalFixture('neovim_edit_exit.base64');
+      final snapshot = emulator.snapshot();
+
+      expect(snapshot.isAlternateBuffer, isFalse);
+      expect(snapshot.plainText, contains('wrote init.lua'));
+      expect(snapshot.plainText, isNot(contains('-- INSERT --')));
+    });
+
+    test('replays an htop refresh-and-exit fixture', () {
+      final emulator = replayTerminalFixture('htop_refresh_exit.base64');
+      final snapshot = emulator.snapshot();
+
+      expect(snapshot.isAlternateBuffer, isFalse);
+      expect(snapshot.plainText, contains('exit htop'));
+      expect(snapshot.plainText, isNot(contains('CPU[||||      ] 42%')));
     });
   });
 }

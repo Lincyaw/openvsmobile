@@ -197,15 +197,54 @@ void main() {
       await pumpMicrotasks();
 
       expect(socket.sink.sentMessages.length, beforeReplayMessages + 1);
-      final redrawPayload = jsonDecode(
-        socket.sink.sentMessages.last as String,
-      ) as Map<String, dynamic>;
+      final redrawPayload =
+          jsonDecode(socket.sink.sentMessages.last as String)
+              as Map<String, dynamic>;
       expect(redrawPayload['type'], 'input');
       expect(
         utf8.decode(base64Decode(redrawPayload['data'] as String)),
         '\x0C',
       );
     });
+
+    test('zellij startup fixture replay restores the welcome screen', () async {
+      await provider.ensureInitialized();
+
+      final socket = apiClient.socketFor('term-1');
+      socket.serverReady(apiClient.sessionsById['term-1']);
+      final beforeReplayMessages = socket.sink.sentMessages.length;
+      socket.serverSend(<String, dynamic>{
+        'type': 'replay',
+        'data': base64Encode(decodeTerminalFixture('zellij_startup.base64')),
+      });
+      await pumpMicrotasks();
+
+      final session = provider.sessionFor('term-1')!;
+      expect(session.snapshot.isAlternateBuffer, isTrue);
+      expect(session.outputText, contains('Zellij'));
+      expect(socket.sink.sentMessages.length, beforeReplayMessages + 1);
+    });
+
+    test(
+      'vim fixture replay lands back on the shell backlog without redraw',
+      () async {
+        await provider.ensureInitialized();
+
+        final socket = apiClient.socketFor('term-1');
+        socket.serverReady(apiClient.sessionsById['term-1']);
+        final beforeReplayMessages = socket.sink.sentMessages.length;
+        socket.serverSend(<String, dynamic>{
+          'type': 'replay',
+          'data': base64Encode(decodeTerminalFixture('vim_edit_exit.base64')),
+        });
+        await pumpMicrotasks();
+
+        final session = provider.sessionFor('term-1')!;
+        expect(session.snapshot.isAlternateBuffer, isFalse);
+        expect(session.outputText, contains('saved notes.txt'));
+        expect(socket.sink.sentMessages.length, beforeReplayMessages);
+      },
+    );
 
     test('resizing an alternate-screen session requests a redraw', () async {
       await provider.ensureInitialized();
@@ -227,9 +266,9 @@ void main() {
       expect(provider.sessionFor('term-1')!.session.cols, 52);
       expect(socket.sink.sentMessages.length, beforeResizeMessages + 1);
 
-      final redrawPayload = jsonDecode(
-        socket.sink.sentMessages.last as String,
-      ) as Map<String, dynamic>;
+      final redrawPayload =
+          jsonDecode(socket.sink.sentMessages.last as String)
+              as Map<String, dynamic>;
       expect(redrawPayload['type'], 'input');
       expect(
         utf8.decode(base64Decode(redrawPayload['data'] as String)),

@@ -1,11 +1,14 @@
-import 'dart:async';
 import 'dart:convert';
+import 'dart:async';
+import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:stream_channel/stream_channel.dart';
 import 'package:vscode_mobile/models/terminal_session.dart';
 import 'package:vscode_mobile/services/terminal_api_client.dart';
+import 'package:vscode_mobile/terminal/terminal_emulator.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 class RecordingTerminalSink implements WebSocketSink {
@@ -391,4 +394,22 @@ int? readIntProperty(dynamic target, List<String> names) {
 Future<void> pumpMicrotasks() async {
   await Future<void>.delayed(Duration.zero);
   await Future<void>.delayed(Duration.zero);
+}
+
+String loadTerminalFixtureBase64(String name) {
+  return File('test/fixtures/terminal/$name').readAsStringSync().trim();
+}
+
+Uint8List decodeTerminalFixture(String name) {
+  return base64Decode(loadTerminalFixtureBase64(name));
+}
+
+TerminalEmulator replayTerminalFixture(
+  String name, {
+  int rows = 24,
+  int cols = 80,
+}) {
+  final emulator = TerminalEmulator(rows: rows, cols: cols);
+  emulator.writeBytes(decodeTerminalFixture(name));
+  return emulator;
 }

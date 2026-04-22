@@ -4,6 +4,8 @@ import 'package:vscode_mobile/theme/monospace_text.dart';
 import 'package:vscode_mobile/terminal/terminal_emulator.dart';
 import 'package:vscode_mobile/widgets/terminal_renderer.dart';
 
+import '../test_support/terminal_test_helpers.dart';
+
 void main() {
   group('TerminalRenderer', () {
     testWidgets('renders scrollback display lines from the emulator snapshot', (
@@ -119,6 +121,36 @@ void main() {
         root.style?.fontFamilyFallback,
         containsAll(kMonospaceFontFallback.take(3)),
       );
+    });
+
+    testWidgets('renders zellij fixture content from the alternate buffer', (
+      tester,
+    ) async {
+      final snapshot = replayTerminalFixture(
+        'zellij_startup.base64',
+      ).snapshot();
+      expect(snapshot.isAlternateBuffer, isTrue);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 300,
+              height: 320,
+              child: TerminalRenderer(
+                snapshot: snapshot,
+                scrollController: ScrollController(),
+                fontSize: 13,
+                lineHeight: 1.4,
+                defaultForeground: const Color(0xFFD4D4D4),
+                defaultBackground: const Color(0xFF1E1E1E),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      expect(find.textContaining('Zellij', findRichText: true), findsWidgets);
     });
   });
 }

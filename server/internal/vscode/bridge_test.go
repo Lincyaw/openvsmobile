@@ -239,6 +239,9 @@ func TestBridgeManager_ReadyTransitionPublishesCapabilities(t *testing.T) {
 	if !ok || terminal["enabled"] != true {
 		t.Fatalf("terminal capability = %#v, want enabled=true", caps.Capabilities["terminal"])
 	}
+	if caps.Generation != "gen-1" {
+		t.Fatalf("generation = %q, want %q", caps.Generation, "gen-1")
+	}
 
 	ready := mustReceiveBridgeEvent(t, events, 2*time.Second)
 	if ready.Type != "bridge/ready" {
