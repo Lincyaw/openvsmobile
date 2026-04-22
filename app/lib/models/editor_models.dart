@@ -65,6 +65,7 @@ class BridgeCapabilitiesDocument {
   final String protocolVersion;
   final String bridgeVersion;
   final String generation;
+  final Map<String, dynamic> rawCapabilities;
   final Map<String, BridgeCapability> capabilities;
 
   const BridgeCapabilitiesDocument({
@@ -72,11 +73,15 @@ class BridgeCapabilitiesDocument {
     required this.protocolVersion,
     required this.bridgeVersion,
     required this.generation,
+    required this.rawCapabilities,
     required this.capabilities,
   });
 
   factory BridgeCapabilitiesDocument.fromJson(Map<String, dynamic> json) {
     final rawCapabilities = json['capabilities'];
+    final normalizedRaw = rawCapabilities is Map
+        ? Map<String, dynamic>.from(rawCapabilities)
+        : <String, dynamic>{};
     final capabilities = <String, BridgeCapability>{};
     if (rawCapabilities is Map) {
       for (final entry in rawCapabilities.entries) {
@@ -90,6 +95,7 @@ class BridgeCapabilitiesDocument {
       protocolVersion: json['protocolVersion'] as String? ?? '',
       bridgeVersion: json['bridgeVersion'] as String? ?? '',
       generation: json['generation'] as String? ?? '',
+      rawCapabilities: normalizedRaw,
       capabilities: capabilities,
     );
   }
@@ -98,103 +104,95 @@ class BridgeCapabilitiesDocument {
     String name, [
     Iterable<String> aliases = const <String>[],
   ]) {
-    for (final candidate in _capabilityCandidates(name, aliases)) {
-      final segments = candidate.split('.');
-      BridgeCapability? current = capabilities[segments.first];
-      for (var index = 1; current != null && index < segments.length; index++) {
-        current = current.children[segments[index]];
-      }
-      if (current != null) {
-        return current;
+    return resolveCapability(name, aliases);
+  }
+
+  bool isEnabled(String name, [Iterable<String> aliases = const <String>[]]) {
+    final capability = resolveCapability(name, aliases);
+    return capability?.enabled ?? false;
+  }
+
+  BridgeCapability? resolveCapability(
+    String name, [
+    Iterable<String> aliases = const <String>[],
+  ]) {
+    final candidates = <String>[name, ...aliases];
+    for (final candidate in candidates) {
+      final capability =
+          _lookupCapability(rawCapabilities, candidate) ??
+          _lookupCapability(
+            rawCapabilities,
+            _canonicalCapabilityName(candidate),
+          );
+      if (capability != null) {
+        return capability;
       }
     }
     return null;
   }
 
-  bool isEnabled(String name, [Iterable<String> aliases = const <String>[]]) {
-    return capability(name, aliases)?.enabled ?? false;
-  }
-}
-
-Iterable<String> _capabilityCandidates(
-  String name,
-  Iterable<String> aliases,
-) sync* {
-  final seen = <String>{};
-  for (final candidate in <String>[name, ...aliases]) {
-    final trimmed = candidate.trim();
-    if (trimmed.isEmpty || !seen.add(trimmed)) {
-      continue;
+  static BridgeCapability? _lookupCapability(
+    Map<String, dynamic> raw,
+    String? name,
+  ) {
+    if (name == null || name.isEmpty) {
+      return null;
     }
-    yield trimmed;
-    switch (trimmed) {
-      case 'documents':
-      case 'document':
-      case 'files':
-      case 'editor':
-        if (seen.add('documents')) {
-          yield 'documents';
+    dynamic current = raw[name];
+    if (current == null && name.contains('.')) {
+      current = raw;
+      for (final part in name.split('.')) {
+        if (current is Map && current.containsKey(part)) {
+          current = current[part];
+        } else {
+          return null;
         }
-        break;
-      case 'diagnostics':
-        if (seen.add('lsp.diagnostics')) {
-          yield 'lsp.diagnostics';
-        }
-        break;
-      case 'completion':
-        if (seen.add('lsp.completion')) {
-          yield 'lsp.completion';
-        }
-        break;
-      case 'hover':
-        if (seen.add('lsp.hover')) {
-          yield 'lsp.hover';
-        }
-        break;
-      case 'definition':
-        if (seen.add('lsp.definition')) {
-          yield 'lsp.definition';
-        }
-        break;
-      case 'references':
-        if (seen.add('lsp.references')) {
-          yield 'lsp.references';
-        }
-        break;
-      case 'signatureHelp':
-      case 'signature_help':
-        if (seen.add('lsp.signatureHelp')) {
-          yield 'lsp.signatureHelp';
-        }
-        break;
-      case 'formatting':
-        if (seen.add('lsp.formatting')) {
-          yield 'lsp.formatting';
-        }
-        break;
-      case 'codeActions':
-      case 'codeAction':
-        if (seen.add('lsp.codeActions')) {
-          yield 'lsp.codeActions';
-        }
-        break;
-      case 'rename':
-        if (seen.add('lsp.rename')) {
-          yield 'lsp.rename';
-        }
-        break;
-      case 'documentSymbols':
-      case 'documentSymbol':
-        if (seen.add('lsp.documentSymbols')) {
-          yield 'lsp.documentSymbols';
-        }
-        break;
-    }
-    if (trimmed.startsWith('lsp.')) {
-      final shorthand = trimmed.substring(4);
-      if (seen.add(shorthand)) {
-        yield shorthand;
       }
+    }
+    if (current == null) {
+      return null;
+    }
+    return BridgeCapability.fromJson(current);
+  }
+
+  static String? _canonicalCapabilityName(String name) {
+    switch (name) {
+      case 'documents':
+        return 'documents';
+      case 'diagnostics':
+        return 'lsp.diagnostics';
+      case 'completion':
+        return 'lsp.completion';
+      case 'hover':
+        return 'lsp.hover';
+      case 'definition':
+        return 'lsp.definition';
+      case 'references':
+        return 'lsp.references';
+      case 'signatureHelp':
+      case 'signature-help':
+      case 'signature_help':
+        return 'lsp.signatureHelp';
+      case 'formatting':
+        return 'lsp.formatting';
+      case 'codeActions':
+      case 'code-actions':
+      case 'codeAction':
+        return 'lsp.codeActions';
+      case 'rename':
+        return 'lsp.rename';
+      case 'documentSymbols':
+      case 'document-symbols':
+      case 'documentSymbol':
+        return 'lsp.documentSymbols';
+      case 'git':
+        return 'git';
+      case 'terminal':
+        return 'terminal';
+      case 'workspace':
+        return 'workspace';
+      default:
+        return null;
     }
   }
 }

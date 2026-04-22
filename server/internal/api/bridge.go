@@ -140,6 +140,19 @@ func (s *Server) handleWSBridgeEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func bridgeTerminalEventType(internal string) string {
+	switch internal {
+	case "terminal/session.created":
+		return "terminal/sessionCreated"
+	case "terminal/session.updated":
+		return "terminal/sessionUpdated"
+	case "terminal/session.closed":
+		return "terminal/sessionClosed"
+	default:
+		return internal
+	}
+}
+
 func writeBridgeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, bridgeErrorDetail{Code: code, Message: message})
 }

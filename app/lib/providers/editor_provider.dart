@@ -138,7 +138,7 @@ class EditorProvider extends ChangeNotifier {
     if (capabilities == null) {
       return null;
     }
-    final capability = capabilities.capability(name, aliases);
+    final capability = capabilities.resolveCapability(name, aliases);
     if (capability != null &&
         capability.reason != null &&
         capability.reason!.isNotEmpty) {

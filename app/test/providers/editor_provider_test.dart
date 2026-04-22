@@ -154,6 +154,96 @@ void main() {
   );
 
   test(
+    'applies formatting, quick fix, and rename workspace edits from bridge',
+    () async {
+      await provider.openFile('/workspace/lib/main.dart');
+      await settleAsync();
+
+      editorApi.formattingResponse = <EditorTextEdit>[
+        textEdit(
+          startLine: 0,
+          startCharacter: 0,
+          endLine: 0,
+          endCharacter: 6,
+          newText: 'print();',
+        ),
+      ];
+
+      final formatted = await provider.formatCurrentFile();
+      await settleAsync();
+
+      expect(formatted, isTrue);
+      expect(provider.currentFile?.currentContent, 'print();\n');
+
+      editorApi.codeActionsResponse = <EditorCodeAction>[
+        EditorCodeAction(
+          title: 'Apply quick fix',
+          kind: 'quickfix',
+          edit: const EditorWorkspaceEdit(
+            changes: <String, List<EditorTextEdit>>{
+              '/workspace/lib/main.dart': <EditorTextEdit>[
+                EditorTextEdit(
+                  range: DocumentRange(
+                    start: DocumentPosition(line: 0, character: 0),
+                    end: DocumentPosition(line: 0, character: 5),
+                  ),
+                  newText: 'fixed',
+                ),
+              ],
+            },
+          ),
+          raw: const <String, dynamic>{'title': 'Apply quick fix'},
+        ),
+      ];
+
+      final actions = await provider.loadCodeActions(quickFixOnly: true);
+      expect(actions, hasLength(1));
+
+      final quickFixed = await provider.applyCodeAction(actions.single);
+      await settleAsync();
+
+      expect(quickFixed, isTrue);
+      expect(provider.currentFile?.currentContent, 'fixed();\n');
+
+      editorApi.renameResponse = const EditorWorkspaceEdit(
+        changes: <String, List<EditorTextEdit>>{
+          '/workspace/lib/main.dart': <EditorTextEdit>[
+            EditorTextEdit(
+              range: DocumentRange(
+                start: DocumentPosition(line: 0, character: 0),
+                end: DocumentPosition(line: 0, character: 5),
+              ),
+              newText: 'renamed',
+            ),
+          ],
+          '/workspace/lib/helper.dart': <EditorTextEdit>[
+            EditorTextEdit(
+              range: DocumentRange(
+                start: DocumentPosition(line: 0, character: 0),
+                end: DocumentPosition(line: 0, character: 3),
+              ),
+              newText: 'renamed',
+            ),
+          ],
+        },
+      );
+
+      provider.updateCursor(const EditorCursor(line: 1, column: 2));
+      final renamed = await provider.renameSymbol('renamed');
+      await settleAsync();
+
+      expect(renamed, isTrue);
+      expect(provider.currentFile?.currentContent, 'renamed();\n');
+
+      final helper = provider.openFiles.firstWhere(
+        (OpenFile file) => file.path == '/workspace/lib/helper.dart',
+      );
+      expect(helper.currentContent, 'renamed();\n');
+      expect(helper.version, greaterThanOrEqualTo(2));
+    },
+  );
+
+  test(
     'records jump history and jumps back to the previous location',
     () async {
       await provider.openFileAt('/workspace/lib/main.dart', line: 1);
