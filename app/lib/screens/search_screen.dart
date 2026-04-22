@@ -29,10 +29,16 @@ class _SearchScreenState extends State<SearchScreen> {
   void _onSearch(String query) {
     final provider = context.read<SearchProvider>();
     final rootPath = context.read<WorkspaceProvider>().currentPath;
-    if (provider.searchMode == SearchMode.fileContent) {
-      provider.searchContent(query, rootPath);
-    } else {
-      provider.search(query, rootPath);
+    switch (provider.searchMode) {
+      case SearchMode.fileName:
+        provider.search(query, rootPath);
+        break;
+      case SearchMode.fileContent:
+        provider.searchContent(query, rootPath);
+        break;
+      case SearchMode.workspaceSymbols:
+        provider.searchSymbols(query, rootPath);
+        break;
     }
   }
 
@@ -51,7 +57,7 @@ class _SearchScreenState extends State<SearchScreen> {
               children: [
                 const Text('Search'),
                 Text(
-                  'in ${ws.displayName}',
+                  'in ${ws.statusLabel}',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
@@ -68,19 +74,26 @@ class _SearchScreenState extends State<SearchScreen> {
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
             child: Consumer<SearchProvider>(
               builder: (context, provider, _) {
+                final segments = <ButtonSegment<SearchMode>>[
+                  const ButtonSegment(
+                    value: SearchMode.fileName,
+                    label: Text('Files'),
+                    icon: Icon(Icons.insert_drive_file),
+                  ),
+                  const ButtonSegment(
+                    value: SearchMode.fileContent,
+                    label: Text('Content'),
+                    icon: Icon(Icons.text_snippet),
+                  ),
+                  if (provider.workspaceSymbolsAvailable)
+                    const ButtonSegment(
+                      value: SearchMode.workspaceSymbols,
+                      label: Text('Symbols'),
+                      icon: Icon(Icons.account_tree_outlined),
+                    ),
+                ];
                 return SegmentedButton<SearchMode>(
-                  segments: const [
-                    ButtonSegment(
-                      value: SearchMode.fileName,
-                      label: Text('Files'),
-                      icon: Icon(Icons.insert_drive_file),
-                    ),
-                    ButtonSegment(
-                      value: SearchMode.fileContent,
-                      label: Text('Content'),
-                      icon: Icon(Icons.text_snippet),
-                    ),
-                  ],
+                  segments: segments,
                   selected: {provider.searchMode},
                   onSelectionChanged: (selected) {
                     provider.setSearchMode(selected.first);
@@ -103,6 +116,8 @@ class _SearchScreenState extends State<SearchScreen> {
                   decoration: InputDecoration(
                     hintText: provider.searchMode == SearchMode.fileContent
                         ? 'Search in file contents...'
+                        : provider.searchMode == SearchMode.workspaceSymbols
+                        ? 'Search workspace symbols...'
                         : 'Search files...',
                     prefixIcon: const Icon(Icons.search),
                     suffixIcon: _controller.text.isNotEmpty
@@ -181,6 +196,9 @@ class _SearchScreenState extends State<SearchScreen> {
                         Text(
                           provider.searchMode == SearchMode.fileContent
                               ? 'Search for text in files'
+                              : provider.searchMode ==
+                                    SearchMode.workspaceSymbols
+                              ? 'Search for symbols across the workspace'
                               : 'Search for files by name',
                           style: Theme.of(context).textTheme.bodyLarge
                               ?.copyWith(
@@ -192,10 +210,14 @@ class _SearchScreenState extends State<SearchScreen> {
                   );
                 }
 
-                if (provider.searchMode == SearchMode.fileContent) {
-                  return _buildContentResults(provider);
+                switch (provider.searchMode) {
+                  case SearchMode.fileContent:
+                    return _buildContentResults(provider);
+                  case SearchMode.workspaceSymbols:
+                    return _buildSymbolResults(provider);
+                  case SearchMode.fileName:
+                    return _buildFileResults(provider);
                 }
-                return _buildFileResults(provider);
               },
             ),
           ),
@@ -266,6 +288,30 @@ class _SearchScreenState extends State<SearchScreen> {
           ),
           isThreeLine: true,
           onTap: () => _onResultTap(result.file, line: result.line),
+        );
+      },
+    );
+  }
+
+  Widget _buildSymbolResults(SearchProvider provider) {
+    if (provider.symbolResults.isEmpty) {
+      return _buildEmptyState(provider.query);
+    }
+
+    return ListView.builder(
+      itemCount: provider.symbolResults.length,
+      itemBuilder: (context, index) {
+        final result = provider.symbolResults[index];
+        return ListTile(
+          leading: const Icon(Icons.account_tree_outlined),
+          title: Text(result.name),
+          subtitle: Text(
+            result.subtitle,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          onTap: () =>
+              _onResultTap(result.path, line: result.range.startLineOneBased),
         );
       },
     );

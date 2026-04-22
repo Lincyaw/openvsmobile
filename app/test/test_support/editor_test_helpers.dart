@@ -252,6 +252,14 @@ class FakeEditorApiClient extends EditorApiClient {
   );
   List<Map<String, dynamic>> documentSymbolsResponse =
       const <Map<String, dynamic>>[];
+  List<String> workspaceFoldersResponse = const <String>[];
+  List<WorkspaceSymbolResult> workspaceSymbolsResponse =
+      const <WorkspaceSymbolResult>[];
+  List<Map<String, dynamic>> workspaceFileSearchResponse =
+      const <Map<String, dynamic>>[];
+  List<ContentSearchResult> workspaceTextSearchResponse =
+      const <ContentSearchResult>[];
+  List<Diagnostic> workspaceProblemsResponse = const <Diagnostic>[];
 
   Future<DocumentSnapshot> Function(String path, int version, String? content)?
   openDocumentHandler;
@@ -523,6 +531,70 @@ class FakeEditorApiClient extends EditorApiClient {
       ..._workDirField(workDir),
     });
     return List<Map<String, dynamic>>.from(documentSymbolsResponse);
+  }
+
+  @override
+  Future<List<String>> workspaceFolders() async {
+    rpcCalls.add(<String, dynamic>{'method': 'workspaceFolders'});
+    return List<String>.from(workspaceFoldersResponse);
+  }
+
+  @override
+  Future<List<WorkspaceSymbolResult>> workspaceSymbols({
+    required String query,
+    String? workDir,
+    int? max = 200,
+  }) async {
+    rpcCalls.add(<String, dynamic>{
+      'method': 'workspaceSymbols',
+      'query': query,
+      'max': max,
+      ..._workDirField(workDir),
+    });
+    return List<WorkspaceSymbolResult>.from(workspaceSymbolsResponse);
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> workspaceSearchFiles({
+    required String query,
+    String? workDir,
+    int? max = 200,
+  }) async {
+    rpcCalls.add(<String, dynamic>{
+      'method': 'workspaceSearchFiles',
+      'query': query,
+      'max': max,
+      ..._workDirField(workDir),
+    });
+    return List<Map<String, dynamic>>.from(workspaceFileSearchResponse);
+  }
+
+  @override
+  Future<List<ContentSearchResult>> workspaceSearchText({
+    required String query,
+    String? workDir,
+    int? max = 200,
+  }) async {
+    rpcCalls.add(<String, dynamic>{
+      'method': 'workspaceSearchText',
+      'query': query,
+      'max': max,
+      ..._workDirField(workDir),
+    });
+    return List<ContentSearchResult>.from(workspaceTextSearchResponse);
+  }
+
+  @override
+  Future<List<Diagnostic>> workspaceProblems({
+    String? workDir,
+    int? max = 200,
+  }) async {
+    rpcCalls.add(<String, dynamic>{
+      'method': 'workspaceProblems',
+      'max': max,
+      ..._workDirField(workDir),
+    });
+    return List<Diagnostic>.from(workspaceProblemsResponse);
   }
 
   Future<void> disposeFakes() async {

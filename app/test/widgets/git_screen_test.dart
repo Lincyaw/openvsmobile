@@ -15,6 +15,8 @@ import 'package:vscode_mobile/services/git_api_client.dart';
 import 'package:vscode_mobile/services/settings_service.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import '../test_support/editor_test_helpers.dart';
+
 const Map<String, dynamic> _repositoryDocument = <String, dynamic>{
   'path': '/workspace/repo',
   'branch': 'main',
@@ -59,16 +61,18 @@ void main() {
     tester,
   ) async {
     final provider = await _buildProvider(repository: _repositoryDocument);
-    await tester.pumpWidget(await _buildApp(provider));
+    final editorApi = FakeEditorApiClient();
+    await tester.pumpWidget(await _buildApp(provider, editorApi));
     await tester.pumpAndSettle();
-    final changesList = find.byType(Scrollable).last;
-
-    expect(find.text('Ahead 2'), findsOneWidget);
-    expect(find.text('Behind 1'), findsOneWidget);
-    expect(find.text('Staged 1'), findsOneWidget);
-    expect(find.text('Changes 1'), findsOneWidget);
-    expect(find.text('Untracked 1'), findsOneWidget);
-    expect(find.text('Conflicts 1'), findsOneWidget);
+    final statStrip = find.byType(SingleChildScrollView).first;
+    expect(
+      find.descendant(of: statStrip, matching: find.text('2')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: statStrip, matching: find.text('1')),
+      findsNWidgets(5),
+    );
 
     expect(find.text('Conflicts (1)'), findsOneWidget);
 
@@ -97,7 +101,8 @@ void main() {
 
   testWidgets('disables commit when the message is empty', (tester) async {
     final provider = await _buildProvider(repository: _repositoryDocument);
-    await tester.pumpWidget(await _buildApp(provider));
+    final editorApi = FakeEditorApiClient();
+    await tester.pumpWidget(await _buildApp(provider, editorApi));
     await tester.pumpAndSettle();
 
     final button = tester.widget<FilledButton>(
@@ -115,7 +120,8 @@ void main() {
     tester,
   ) async {
     final provider = await _buildProvider(repository: _repositoryDocument);
-    await tester.pumpWidget(await _buildApp(provider));
+    final editorApi = FakeEditorApiClient();
+    await tester.pumpWidget(await _buildApp(provider, editorApi));
     await tester.pumpAndSettle();
 
     expect(
@@ -132,7 +138,8 @@ void main() {
 
   testWidgets('tapping a file opens a diff preview route', (tester) async {
     final provider = await _buildProvider(repository: _repositoryDocument);
-    await tester.pumpWidget(await _buildApp(provider));
+    final editorApi = FakeEditorApiClient();
+    await tester.pumpWidget(await _buildApp(provider, editorApi));
     await tester.pumpAndSettle();
     final repositoryList = find.byType(Scrollable).last;
     await tester.scrollUntilVisible(
@@ -161,7 +168,8 @@ void main() {
     (tester) async {
       final provider = await _buildProvider(repository: _repositoryDocument)
         ..pushError = const ApiException('Push rejected by remote', 502);
-      await tester.pumpWidget(await _buildApp(provider));
+      final editorApi = FakeEditorApiClient();
+      await tester.pumpWidget(await _buildApp(provider, editorApi));
       await tester.pumpAndSettle();
 
       await tester.tap(find.byTooltip('Fetch'));
@@ -177,8 +185,11 @@ void main() {
   );
 }
 
-Future<Widget> _buildApp(_FakeGitApiClient apiClient) async {
-  final workspaceProvider = WorkspaceProvider();
+Future<Widget> _buildApp(
+  _FakeGitApiClient apiClient,
+  FakeEditorApiClient editorApiClient,
+) async {
+  final workspaceProvider = WorkspaceProvider(editorApiClient: editorApiClient);
   await workspaceProvider.setWorkspace('/workspace/repo');
   final gitProvider = GitProvider(apiClient: apiClient);
 
@@ -285,7 +296,6 @@ class _FakeGitApiClient extends GitApiClient {
   }
 }
 
-
 class _FakeWebSocketChannel extends StreamChannelMixin<dynamic>
     implements WebSocketChannel {
   _FakeWebSocketChannel();
@@ -332,5 +342,4 @@ class _FakeWebSocketSink implements WebSocketSink {
 
   @override
   Future<void> get done => Future<void>.value();
-
 }

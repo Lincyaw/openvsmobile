@@ -8,6 +8,7 @@ import 'package:vscode_mobile/providers/workspace_provider.dart';
 import 'package:vscode_mobile/screens/terminal_workspace_screen.dart';
 import 'package:vscode_mobile/services/settings_service.dart';
 
+import '../test_support/editor_test_helpers.dart';
 import '../test_support/terminal_test_helpers.dart';
 
 void main() {
@@ -16,6 +17,7 @@ void main() {
     late TerminalProvider terminalProvider;
     late WorkspaceProvider workspaceProvider;
     late SettingsService settingsService;
+    late FakeEditorApiClient editorApiClient;
 
     setUp(() async {
       SharedPreferences.setMockInitialValues(<String, Object>{});
@@ -26,7 +28,8 @@ void main() {
         ],
       );
       terminalProvider = TerminalProvider(apiClient: apiClient);
-      workspaceProvider = WorkspaceProvider();
+      editorApiClient = FakeEditorApiClient();
+      workspaceProvider = WorkspaceProvider(editorApiClient: editorApiClient);
       settingsService = SettingsService();
       await workspaceProvider.load();
       await workspaceProvider.setWorkspace('/workspace');
@@ -37,6 +40,7 @@ void main() {
       terminalProvider.dispose();
       workspaceProvider.dispose();
       settingsService.dispose();
+      await editorApiClient.disposeFakes();
       await apiClient.disposeFakes();
     });
 
@@ -48,9 +52,15 @@ void main() {
       await tester.pumpWidget(
         MultiProvider(
           providers: [
-            ChangeNotifierProvider<SettingsService>.value(value: settingsService),
-            ChangeNotifierProvider<WorkspaceProvider>.value(value: workspaceProvider),
-            ChangeNotifierProvider<TerminalProvider>.value(value: terminalProvider),
+            ChangeNotifierProvider<SettingsService>.value(
+              value: settingsService,
+            ),
+            ChangeNotifierProvider<WorkspaceProvider>.value(
+              value: workspaceProvider,
+            ),
+            ChangeNotifierProvider<TerminalProvider>.value(
+              value: terminalProvider,
+            ),
           ],
           child: const MaterialApp(
             home: TerminalWorkspaceScreen(isActive: true),
@@ -61,25 +71,26 @@ void main() {
       await tester.pump(const Duration(milliseconds: 50));
     }
 
-    testWidgets('renders multi-session controls and split markers on wide layouts', (
-      tester,
-    ) async {
-      await terminalProvider.ensureInitialized();
-      terminalProvider.setSplitViewEnabled(true);
-      await terminalProvider.activateSession('term-2', openInSecondary: true);
+    testWidgets(
+      'renders multi-session controls and split markers on wide layouts',
+      (tester) async {
+        await terminalProvider.ensureInitialized();
+        terminalProvider.setSplitViewEnabled(true);
+        await terminalProvider.activateSession('term-2', openInSecondary: true);
 
-      await pumpScreen(tester, const Size(1200, 900));
+        await pumpScreen(tester, const Size(1200, 900));
 
-      expect(find.text('New'), findsOneWidget);
-      expect(find.text('Named'), findsOneWidget);
-      expect(find.text('Refresh'), findsOneWidget);
-      expect(find.text('Split current'), findsOneWidget);
-      expect(find.text('Alpha'), findsWidgets);
-      expect(find.text('Beta'), findsWidgets);
-      expect(find.text('Primary'), findsOneWidget);
-      expect(find.text('Split'), findsOneWidget);
-      expect(find.text('/workspace'), findsWidgets);
-    });
+        expect(find.text('New'), findsOneWidget);
+        expect(find.text('Named'), findsOneWidget);
+        expect(find.text('Refresh'), findsOneWidget);
+        expect(find.text('Split current'), findsOneWidget);
+        expect(find.text('Alpha'), findsWidgets);
+        expect(find.text('Beta'), findsWidgets);
+        expect(find.text('Primary'), findsOneWidget);
+        expect(find.text('Split'), findsOneWidget);
+        expect(find.text('/workspace'), findsWidgets);
+      },
+    );
 
     testWidgets('shows reconnecting and exited session states', (tester) async {
       await terminalProvider.ensureInitialized();

@@ -798,6 +798,14 @@ class EditorProvider extends ChangeNotifier {
     );
   }
 
+  Future<List<Diagnostic>> workspaceProblems({String? workDir}) async {
+    try {
+      return await editorApiClient.workspaceProblems(workDir: workDir);
+    } catch (_) {
+      return allDiagnostics;
+    }
+  }
+
   @override
   void dispose() {
     _isDisposed = true;

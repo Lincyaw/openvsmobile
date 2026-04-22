@@ -37,6 +37,7 @@ type Server struct {
 	gitService       *vscode.GitService
 	editorService    *vscode.EditorService
 	terminalService  *vscode.TerminalService
+	workspaceService *vscode.WorkspaceService
 	termManager      *terminal.Manager
 	diagnosticRunner *diagnostics.Runner
 	githubAuth       *gitauth.Service
@@ -60,6 +61,7 @@ func NewServer(fs FileSystem, sessionIndex *claude.SessionIndex, pm *claude.Proc
 		gitService:       nil,
 		termManager:      termMgr,
 		terminalService:  nil,
+		workspaceService: nil,
 		diagnosticRunner: diagRunner,
 		githubAuth:       authService,
 		fileWatchHub:     NewFileWatchHub(),
@@ -90,6 +92,11 @@ func (s *Server) SetEditorService(service *vscode.EditorService) {
 // SetTerminalService injects the bridge-backed terminal service.
 func (s *Server) SetTerminalService(service *vscode.TerminalService) {
 	s.terminalService = service
+}
+
+// SetWorkspaceService injects the bridge-backed workspace service.
+func (s *Server) SetWorkspaceService(service *vscode.WorkspaceService) {
+	s.workspaceService = service
 }
 
 // Handler returns the top-level HTTP handler with all routes.
@@ -148,6 +155,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /bridge/terminal/close", s.handleTerminalClose)
 	mux.HandleFunc("POST /bridge/terminal/rename", s.handleTerminalRename)
 	mux.HandleFunc("POST /bridge/terminal/split", s.handleTerminalSplit)
+	mux.HandleFunc("GET /bridge/workspace/folders", s.handleBridgeWorkspaceFolders)
+	mux.HandleFunc("POST /bridge/workspace/symbols", s.handleBridgeWorkspaceSymbols)
+	mux.HandleFunc("POST /bridge/workspace/search/files", s.handleBridgeWorkspaceSearchFiles)
+	mux.HandleFunc("POST /bridge/workspace/search/text", s.handleBridgeWorkspaceSearchText)
+	mux.HandleFunc("POST /bridge/workspace/problems", s.handleBridgeWorkspaceProblems)
 
 	// GitHub repo context endpoints.
 	s.registerGitHubRepoContextRoutes(mux)

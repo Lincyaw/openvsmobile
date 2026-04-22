@@ -36,7 +36,7 @@ void main() async {
   );
   final browserLauncher = BrowserLauncher();
 
-  final workspaceProvider = WorkspaceProvider();
+  final workspaceProvider = WorkspaceProvider(editorApiClient: editorApiClient);
   await workspaceProvider.load();
 
   runApp(
@@ -69,7 +69,10 @@ void main() async {
           create: (_) => GitProvider(apiClient: gitApiClient),
         ),
         ChangeNotifierProvider(
-          create: (_) => SearchProvider(apiClient: apiClient),
+          create: (_) => SearchProvider(
+            apiClient: apiClient,
+            editorApiClient: editorApiClient,
+          ),
         ),
         ChangeNotifierProvider(create: (_) => TerminalProvider()),
         ChangeNotifierProxyProvider<WorkspaceProvider, GitHubAuthProvider>(

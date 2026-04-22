@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../models/editor_models.dart';
 import '../providers/editor_provider.dart';
+import '../providers/workspace_provider.dart';
 import '../widgets/code_editor.dart';
 import '../widgets/code_viewer.dart';
 import '../widgets/contextual_chat.dart';
@@ -151,9 +152,15 @@ class _CodeScreenState extends State<CodeScreen> {
     BuildContext context,
     EditorProvider editorProvider,
   ) async {
-    final diagnostics = editorProvider.allDiagnostics;
+    final workspaceRoot = context.read<WorkspaceProvider>().currentPath;
+    final diagnostics = await editorProvider.workspaceProblems(
+      workDir: workspaceRoot,
+    );
+    if (!context.mounted) {
+      return;
+    }
     if (diagnostics.isEmpty) {
-      await _showFeedback(context, 'No problems for open files.');
+      await _showFeedback(context, 'No problems in the current workspace.');
       return;
     }
 

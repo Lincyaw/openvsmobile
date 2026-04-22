@@ -50,13 +50,16 @@ _createSearchHarness() async {
       '/workspace/lib/other.dart': 'other file\n',
     },
   );
-  final workspaceProvider = WorkspaceProvider();
+  final workspaceProvider = WorkspaceProvider(editorApiClient: editorApi);
   await workspaceProvider.setWorkspace('/workspace');
   final editorProvider = EditorProvider(
     apiClient: fileApi,
     editorApiClient: editorApi,
   );
-  final searchProvider = SearchProvider(apiClient: fileApi);
+  final searchProvider = SearchProvider(
+    apiClient: fileApi,
+    editorApiClient: editorApi,
+  );
   return (
     fileApi: fileApi,
     editorApi: editorApi,

@@ -213,7 +213,7 @@ Future<_Harness> _buildHarness() async {
       selection: null,
     ),
   );
-  final workspaceProvider = WorkspaceProvider();
+  final workspaceProvider = WorkspaceProvider(editorApiClient: editorBridgeApi);
   await workspaceProvider.setWorkspace('/workspace/repo');
 
   return _Harness(

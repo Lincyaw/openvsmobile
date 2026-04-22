@@ -74,6 +74,7 @@ func main() {
 	var documentSync *vscode.DocumentSyncService
 	var editorService *vscode.EditorService
 	var terminalService *vscode.TerminalService
+	var workspaceService *vscode.WorkspaceService
 	bridgeCtx, cancelBridge := context.WithCancel(context.Background())
 	defer cancelBridge()
 	if vsCodeURL != "" {
@@ -95,6 +96,8 @@ func main() {
 		if err := terminalService.Start(bridgeCtx); err != nil {
 			log.Fatalf("failed to start terminal bridge service: %v", err)
 		}
+		workspaceService = vscode.NewWorkspaceService(vsClient, bridgeManager)
+		workspaceService.Start(bridgeCtx)
 		documentSync = vscode.NewRuntimeDocumentSyncService(vsClient, bridgeManager, fs)
 		editorService = vscode.NewEditorService(vsClient, bridgeManager, documentSync)
 		editorService.Start(bridgeCtx)
@@ -140,6 +143,7 @@ func main() {
 	srv.SetDocumentSync(documentSync)
 	srv.SetEditorService(editorService)
 	srv.SetTerminalService(terminalService)
+	srv.SetWorkspaceService(workspaceService)
 
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
@@ -179,6 +183,9 @@ func main() {
 	}
 	if terminalService != nil {
 		terminalService.Close()
+	}
+	if workspaceService != nil {
+		workspaceService.Close()
 	}
 	if bridgeManager != nil {
 		bridgeManager.Close()

@@ -190,6 +190,7 @@ func (ch *IPCChannel) ListenContext(ctx context.Context, event string, arg inter
 
 	id := ch.ipc.nextID()
 	eventCh := make(chan interface{}, 64)
+	var once sync.Once
 
 	ch.ipc.handlers.Store(id, responseHandler(func(respType ResponseType, data interface{}) {
 		if respType == ResponseTypeEventFire {
@@ -208,10 +209,12 @@ func (ch *IPCChannel) ListenContext(ctx context.Context, event string, arg inter
 	}
 
 	dispose := func() {
-		ch.ipc.handlers.Delete(id)
-		close(eventCh)
-		// Best effort: send dispose notification.
-		_ = ch.ipc.sendRequest(RequestTypeEventDispose, id, "", "", nil)
+		once.Do(func() {
+			ch.ipc.handlers.Delete(id)
+			close(eventCh)
+			// Best effort: send dispose notification.
+			_ = ch.ipc.sendRequest(RequestTypeEventDispose, id, "", "", nil)
+		})
 	}
 
 	return eventCh, dispose, nil

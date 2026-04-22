@@ -5,6 +5,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../models/diagnostic.dart';
 import '../models/editor_models.dart';
+import '../models/search_result.dart';
 import 'api_client.dart' show ApiException;
 import 'settings_service.dart';
 
@@ -64,6 +65,20 @@ class EditorApiClient {
 
   WebSocketChannel connectEventsWebSocket() {
     return _channelFactory(_wsUri('/bridge/ws/events'));
+  }
+
+  Future<List<String>> workspaceFolders() async {
+    final response = await _client.get(
+      _httpUri('/bridge/workspace/folders'),
+      headers: {'Authorization': 'Bearer $token'},
+    );
+    _ensureSuccess(response, 'load workspace folders');
+    return _decodeList(response.body, 'workspace folders response')
+        .whereType<Map>()
+        .map((entry) => Map<String, dynamic>.from(entry))
+        .map((entry) => entry['path'] as String? ?? '')
+        .where((path) => path.isNotEmpty)
+        .toList();
   }
 
   Future<DocumentSnapshot> openDocument({
@@ -304,6 +319,75 @@ class EditorApiClient {
         .toList();
   }
 
+  Future<List<WorkspaceSymbolResult>> workspaceSymbols({
+    required String query,
+    String? workDir,
+    int? max,
+  }) async {
+    final response = await _post(
+      '/bridge/workspace/symbols',
+      _workspacePayload(query: query, workDir: workDir, max: max),
+      action: 'query workspace symbols',
+    );
+    return _decodeList(response.body, 'workspace symbols response')
+        .whereType<Map>()
+        .map(
+          (entry) =>
+              WorkspaceSymbolResult.fromJson(Map<String, dynamic>.from(entry)),
+        )
+        .toList();
+  }
+
+  Future<List<Map<String, dynamic>>> workspaceSearchFiles({
+    required String query,
+    String? workDir,
+    int? max,
+  }) async {
+    final response = await _post(
+      '/bridge/workspace/search/files',
+      _workspacePayload(query: query, workDir: workDir, max: max),
+      action: 'search workspace files',
+    );
+    return _decodeList(response.body, 'workspace file search response')
+        .whereType<Map>()
+        .map((entry) => Map<String, dynamic>.from(entry))
+        .toList();
+  }
+
+  Future<List<ContentSearchResult>> workspaceSearchText({
+    required String query,
+    String? workDir,
+    int? max,
+  }) async {
+    final response = await _post(
+      '/bridge/workspace/search/text',
+      _workspacePayload(query: query, workDir: workDir, max: max),
+      action: 'search workspace text',
+    );
+    return _decodeList(response.body, 'workspace text search response')
+        .whereType<Map>()
+        .map(
+          (entry) =>
+              ContentSearchResult.fromJson(Map<String, dynamic>.from(entry)),
+        )
+        .toList();
+  }
+
+  Future<List<Diagnostic>> workspaceProblems({
+    String? workDir,
+    int? max,
+  }) async {
+    final response = await _post(
+      '/bridge/workspace/problems',
+      _workspacePayload(workDir: workDir, max: max),
+      action: 'load workspace problems',
+    );
+    return _decodeList(response.body, 'workspace problems response')
+        .whereType<Map>()
+        .map((entry) => Diagnostic.fromJson(Map<String, dynamic>.from(entry)))
+        .toList();
+  }
+
   Future<List<EditorLocation>> _locationRequest(
     String endpoint, {
     required String action,
@@ -345,6 +429,18 @@ class EditorApiClient {
       if (range != null) 'range': range.toJson(),
       if (workDir != null && workDir.isNotEmpty) 'workDir': workDir,
       if (newName != null && newName.isNotEmpty) 'newName': newName,
+    };
+  }
+
+  Map<String, dynamic> _workspacePayload({
+    String? query,
+    String? workDir,
+    int? max,
+  }) {
+    return <String, dynamic>{
+      if (query != null && query.isNotEmpty) 'query': query,
+      if (workDir != null && workDir.isNotEmpty) 'workDir': workDir,
+      if (max != null && max > 0) 'max': max,
     };
   }
 

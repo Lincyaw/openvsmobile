@@ -15,6 +15,7 @@ import 'package:vscode_mobile/services/github_collaboration_api_client.dart';
 import 'package:vscode_mobile/services/settings_service.dart';
 
 import '../test_support/chat_test_helpers.dart';
+import '../test_support/editor_test_helpers.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -122,7 +123,9 @@ Future<_Harness> _buildHarness() async {
       selection: null,
     ),
   );
-  final workspaceProvider = WorkspaceProvider();
+  final workspaceProvider = WorkspaceProvider(
+    editorApiClient: FakeEditorApiClient(settings: settings),
+  );
   await workspaceProvider.setWorkspace('/workspace/repo');
 
   return _Harness(

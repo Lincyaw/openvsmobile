@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# niserver — quick launcher for OpenVSMobile (Go server + OpenVSCode Server)
+# Usage:
+#   ./niserver              start both in foreground
+#   ./niserver -vscode-url ""  skip VSCode connection
+#   ./niserver -- -port 9090   pass extra flags to Go server after --
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# ── Token ───────────────────────────────────────────────
+TOKEN="test"
+
+# ── Find OpenVSCode Server ──────────────────────────────
+VSCODE_PORT=""
+VSCODE_URL=""
+
+# Check if an openvscode-server is already running
+# We verify both HTTP and WebSocket (skip the bad handshake on 3000 caused by docker-proxy)
+for p in 3001 3000 3002 3003 3004; do
+    if curl -s -o /dev/null "http://localhost:$p/" 2>/dev/null; then
+        # Verify WebSocket upgrade works by sending a WS handshake
+        if curl -s -I -N \
+            -H "Connection: Upgrade" \
+            -H "Upgrade: websocket" \
+            -H "Sec-WebSocket-Version: 13" \
+            -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+            "http://localhost:$p/?reconnectionToken=test\&reconnection=false\&skipWebSocketFrames=false" 2>/dev/null \
+            | grep -q "101 Switching Protocols"; then
+            VSCODE_PORT=$p
+            VSCODE_URL="http://localhost:$p"
+            echo "==> Found working OpenVSCode Server on port $p"
+            break
+        fi
+    fi
+done
+
+# If not found, try to start one
+if [[ -z "$VSCODE_PORT" ]]; then
+    VSCODE_PORT=3001
+    # Prefer release build in /tmp
+    if [[ -f /tmp/openvscode-release/openvscode-server-v1.109.5-linux-x64/bin/openvscode-server ]]; then
+        VSCODE_BIN="/tmp/openvscode-release/openvscode-server-v1.109.5-linux-x64/bin/openvscode-server"
+    # Fall back to source build
+    elif [[ -f openvscode-server/out/server-main.js ]]; then
+        VSCODE_BIN="node openvscode-server/out/server-main.js"
+    else
+        echo "==> Warning: no OpenVSCode Server found, starting without VSCode connection"
+        VSCODE_URL=""
+    fi
+
+    if [[ -n "${VSCODE_BIN:-}" ]]; then
+        # Find an available port
+        while ss -tln | grep -q ":$VSCODE_PORT "; do
+            VSCODE_PORT=$((VSCODE_PORT + 1))
+        done
+
+        echo "==> Starting OpenVSCode Server on port $VSCODE_PORT..."
+        nohup $VSCODE_BIN --port "$VSCODE_PORT" --host 0.0.0.0 --without-connection-token \
+            > /tmp/openvscode-server.log 2>&1 &
+        VSCODE_PID=$!
+
+        # Wait for it to be ready
+        for i in {1..30}; do
+            if curl -s -o /dev/null "http://localhost:$VSCODE_PORT/" 2>/dev/null; then
+                break
+            fi
+            sleep 0.5
+        done
+
+        if ! curl -s -o /dev/null "http://localhost:$VSCODE_PORT/" 2>/dev/null; then
+            echo "==> Error: OpenVSCode Server failed to start (see /tmp/openvscode-server.log)"
+            exit 1
+        fi
+
+        VSCODE_URL="http://localhost:$VSCODE_PORT"
+        echo "==> OpenVSCode Server ready at $VSCODE_URL (PID $VSCODE_PID)"
+    fi
+fi
+
+# ── Build Go args ───────────────────────────────────────
+ARGS=("-port" "8084")
+if [[ -n "$TOKEN" ]]; then
+    ARGS+=("-token" "$TOKEN")
+fi
+if [[ -n "$VSCODE_URL" ]]; then
+    ARGS+=("-vscode-url" "$VSCODE_URL")
+fi
+
+# If user passes flags after --, append them
+EXTRA=()
+SEEN_DASH_DASH=false
+for arg in "$@"; do
+    if [[ "$arg" == "--" ]]; then
+        SEEN_DASH_DASH=true
+        continue
+    fi
+    if $SEEN_DASH_DASH; then
+        EXTRA+=("$arg")
+    else
+        # Override defaults if user explicitly passes the same flag
+        if [[ "$arg" == "-vscode-url" ]]; then
+            VSCODE_URL=""  # will be set by the next loop iteration
+        fi
+        ARGS+=("$arg")
+    fi
+done
+ARGS+=("${EXTRA[@]}")
+
+echo "==> Starting Go server: ./server_bin ${ARGS[*]}"
+exec ./server_bin "${ARGS[@]}"

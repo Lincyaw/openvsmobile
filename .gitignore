@@ -26,3 +26,10 @@ Thumbs.db
 .env
 .env.*
 .remember
+.server_token
+
+# Local runtime artifacts
+.worktrees/
+server.log
+server/server.log
+server_bin
