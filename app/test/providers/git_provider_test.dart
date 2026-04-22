@@ -121,7 +121,7 @@ void main() {
       await provider.refreshRepository();
 
       client.emitEvent(<String, dynamic>{
-        'type': 'bridge/git/repositoryChanged',
+        'type': 'git/repositoryChanged',
         'payload': _updatedRepositoryDocument,
       });
       await Future<void>.delayed(Duration.zero);
@@ -271,13 +271,13 @@ class _RecordingGitApiClient extends GitApiClient {
   }
 }
 
-
-class _FakeWebSocketChannel with StreamChannelMixin<dynamic>
+class _FakeWebSocketChannel
+    with StreamChannelMixin<dynamic>
     implements WebSocketChannel {
   _FakeWebSocketChannel()
-      : controller = StreamController<dynamic>.broadcast(sync: true),
-        _sinkController = StreamController<dynamic>(sync: true),
-        _ready = Completer<void>() {
+    : controller = StreamController<dynamic>.broadcast(sync: true),
+      _sinkController = StreamController<dynamic>(sync: true),
+      _ready = Completer<void>() {
     _ready.complete();
     _sink = _FakeWebSocketSink(_sinkController.sink);
   }
@@ -286,7 +286,6 @@ class _FakeWebSocketChannel with StreamChannelMixin<dynamic>
   final StreamController<dynamic> _sinkController;
   final Completer<void> _ready;
   late final _FakeWebSocketSink _sink;
-
 
   @override
   int? get closeCode => null;

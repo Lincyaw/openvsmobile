@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Lincyaw/vscode-mobile/server/internal/terminal"
 	"github.com/Lincyaw/vscode-mobile/server/internal/vscode"
 )
 
@@ -88,7 +89,13 @@ func (s *Server) handleWSBridgeEvents(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close()
 	log.Printf("[WS/Bridge] connection established")
 
-	terminalEvents, unsubscribeTerminal := s.termManager.SubscribeEvents()
+	var terminalEvents <-chan terminal.Event
+	var unsubscribeTerminal func()
+	if s.terminalService != nil {
+		terminalEvents, unsubscribeTerminal = s.terminalService.SubscribeEvents()
+	} else {
+		terminalEvents, unsubscribeTerminal = s.termManager.SubscribeEvents()
+	}
 	defer unsubscribeTerminal()
 
 	var bridgeEvents <-chan vscode.BridgeEvent
@@ -107,7 +114,7 @@ func (s *Server) handleWSBridgeEvents(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		for event := range terminalEvents {
-			if err := writeEvent(vscode.BridgeEvent{Type: event.Type, Payload: event.Session}); err != nil {
+			if err := writeEvent(normalizeTerminalBridgeEvent(event)); err != nil {
 				log.Printf("[WS/Bridge] terminal event write error: %v", err)
 				return
 			}
@@ -244,4 +251,17 @@ func writeDocumentSyncError(w http.ResponseWriter, err error) {
 		return
 	}
 	writeBridgeError(w, http.StatusInternalServerError, "bridge_error", "bridge document request failed")
+}
+
+func normalizeTerminalBridgeEvent(event terminal.Event) vscode.BridgeEvent {
+	switch event.Type {
+	case "terminal/session.created":
+		return vscode.BridgeEvent{Type: "terminal/sessionCreated", Payload: event.Session}
+	case "terminal/session.updated":
+		return vscode.BridgeEvent{Type: "terminal/sessionUpdated", Payload: event.Session}
+	case "terminal/session.closed":
+		return vscode.BridgeEvent{Type: "terminal/sessionClosed", Payload: event.Session}
+	default:
+		return vscode.BridgeEvent{Type: event.Type, Payload: event.Session}
+	}
 }

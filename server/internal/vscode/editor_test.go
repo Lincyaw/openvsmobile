@@ -199,6 +199,7 @@ func readyEditorManager(t *testing.T, client *Client) *BridgeManager {
 		ProtocolVersion: defaultBridgeProtocolVersion,
 		BridgeVersion:   "0.3.0",
 		Capabilities: map[string]interface{}{
+			"documents":       map[string]interface{}{"enabled": true},
 			"diagnostics":     map[string]interface{}{"enabled": true},
 			"completion":      map[string]interface{}{"enabled": true},
 			"hover":           map[string]interface{}{"enabled": true},
@@ -234,7 +235,7 @@ func expectRequestPayload(t *testing.T, got editorRequestCapture, wantCommand st
 	}
 }
 
-func TestEditorServiceSendsVersionedUnsavedBufferAndRequiredContext(t *testing.T) {
+func TestEditorServiceSendsVersionedRuntimeContextAndRequiredContext(t *testing.T) {
 	ts, requests := newEditorRuntimeServer(t, func(command string, payload map[string]any) any {
 		switch command {
 		case "completion":
@@ -272,7 +273,6 @@ func TestEditorServiceSendsVersionedUnsavedBufferAndRequiredContext(t *testing.T
 		t.Fatalf("apply document changes: %v", err)
 	}
 
-	unsaved := "print('draft') // unsaved;\n"
 	position := DocumentPosition{Line: 0, Character: 7}
 	rangeEdit := DocumentRange{
 		Start: DocumentPosition{Line: 0, Character: 7},
@@ -283,80 +283,80 @@ func TestEditorServiceSendsVersionedUnsavedBufferAndRequiredContext(t *testing.T
 		name        string
 		call        func(EditorRequest) (any, error)
 		req         EditorRequest
-		wantCommand  string
+		wantCommand string
 		mustHave    []string
 		mustNotHave []string
 	}{
 		{
-			name: "completion",
-			call: func(req EditorRequest) (any, error) { return editor.Completion(req) },
-			req:  EditorRequest{Path: "/workspace/main.dart", Version: 2, Position: &position},
+			name:        "completion",
+			call:        func(req EditorRequest) (any, error) { return editor.Completion(req) },
+			req:         EditorRequest{Path: "/workspace/main.dart", Version: 2, Position: &position},
 			wantCommand: "completion",
-			mustHave:    []string{"path", "version", "content", "position"},
+			mustHave:    []string{"path", "version", "position"},
 			mustNotHave: []string{"range", "newName"},
 		},
 		{
-			name: "hover",
-			call: func(req EditorRequest) (any, error) { return editor.Hover(req) },
-			req:  EditorRequest{Path: "/workspace/main.dart", Version: 2, Position: &position},
+			name:        "hover",
+			call:        func(req EditorRequest) (any, error) { return editor.Hover(req) },
+			req:         EditorRequest{Path: "/workspace/main.dart", Version: 2, Position: &position},
 			wantCommand: "hover",
-			mustHave:    []string{"path", "version", "content", "position"},
+			mustHave:    []string{"path", "version", "position"},
 			mustNotHave: []string{"range", "newName"},
 		},
 		{
-			name: "definition",
-			call: func(req EditorRequest) (any, error) { return editor.Definition(req) },
-			req:  EditorRequest{Path: "/workspace/main.dart", Version: 2, Position: &position},
+			name:        "definition",
+			call:        func(req EditorRequest) (any, error) { return editor.Definition(req) },
+			req:         EditorRequest{Path: "/workspace/main.dart", Version: 2, Position: &position},
 			wantCommand: "definition",
-			mustHave:    []string{"path", "version", "content", "position"},
+			mustHave:    []string{"path", "version", "position"},
 			mustNotHave: []string{"range", "newName"},
 		},
 		{
-			name: "references",
-			call: func(req EditorRequest) (any, error) { return editor.References(req) },
-			req:  EditorRequest{Path: "/workspace/main.dart", Version: 2, Position: &position},
+			name:        "references",
+			call:        func(req EditorRequest) (any, error) { return editor.References(req) },
+			req:         EditorRequest{Path: "/workspace/main.dart", Version: 2, Position: &position},
 			wantCommand: "references",
-			mustHave:    []string{"path", "version", "content", "position"},
+			mustHave:    []string{"path", "version", "position"},
 			mustNotHave: []string{"range", "newName"},
 		},
 		{
-			name: "signatureHelp",
-			call: func(req EditorRequest) (any, error) { return editor.SignatureHelp(req) },
-			req:  EditorRequest{Path: "/workspace/main.dart", Version: 2, Position: &position},
+			name:        "signatureHelp",
+			call:        func(req EditorRequest) (any, error) { return editor.SignatureHelp(req) },
+			req:         EditorRequest{Path: "/workspace/main.dart", Version: 2, Position: &position},
 			wantCommand: "signatureHelp",
-			mustHave:    []string{"path", "version", "content", "position"},
+			mustHave:    []string{"path", "version", "position"},
 			mustNotHave: []string{"range", "newName"},
 		},
 		{
-			name: "codeActions",
-			call: func(req EditorRequest) (any, error) { return editor.CodeActions(req) },
-			req:  EditorRequest{Path: "/workspace/main.dart", Version: 2, Range: &rangeEdit},
+			name:        "codeActions",
+			call:        func(req EditorRequest) (any, error) { return editor.CodeActions(req) },
+			req:         EditorRequest{Path: "/workspace/main.dart", Version: 2, Range: &rangeEdit},
 			wantCommand: "codeActions",
-			mustHave:    []string{"path", "version", "content", "range"},
+			mustHave:    []string{"path", "version", "range"},
 			mustNotHave: []string{"position", "newName"},
 		},
 		{
-			name: "rename",
-			call: func(req EditorRequest) (any, error) { return editor.Rename(req) },
-			req:  EditorRequest{Path: "/workspace/main.dart", Version: 2, Position: &position, NewName: "renamedValue"},
+			name:        "rename",
+			call:        func(req EditorRequest) (any, error) { return editor.Rename(req) },
+			req:         EditorRequest{Path: "/workspace/main.dart", Version: 2, Position: &position, NewName: "renamedValue"},
 			wantCommand: "rename",
-			mustHave:    []string{"path", "version", "content", "position", "newName"},
+			mustHave:    []string{"path", "version", "position", "newName"},
 			mustNotHave: []string{"range"},
 		},
 		{
-			name: "formatting",
-			call: func(req EditorRequest) (any, error) { return editor.Formatting(req) },
-			req:  EditorRequest{Path: "/workspace/main.dart", Version: 2},
+			name:        "formatting",
+			call:        func(req EditorRequest) (any, error) { return editor.Formatting(req) },
+			req:         EditorRequest{Path: "/workspace/main.dart", Version: 2},
 			wantCommand: "formatting",
-			mustHave:    []string{"path", "version", "content"},
+			mustHave:    []string{"path", "version"},
 			mustNotHave: []string{"position", "range", "newName"},
 		},
 		{
-			name: "documentSymbols",
-			call: func(req EditorRequest) (any, error) { return editor.DocumentSymbols(req) },
-			req:  EditorRequest{Path: "/workspace/main.dart", Version: 2},
+			name:        "documentSymbols",
+			call:        func(req EditorRequest) (any, error) { return editor.DocumentSymbols(req) },
+			req:         EditorRequest{Path: "/workspace/main.dart", Version: 2},
 			wantCommand: "documentSymbols",
-			mustHave:    []string{"path", "version", "content"},
+			mustHave:    []string{"path", "version"},
 			mustNotHave: []string{"position", "range", "newName"},
 		},
 	}
@@ -370,8 +370,8 @@ func TestEditorServiceSendsVersionedUnsavedBufferAndRequiredContext(t *testing.T
 
 			req := <-requests
 			expectRequestPayload(t, req, tc.wantCommand, tc.mustHave, tc.mustNotHave)
-			if got := req.Payload["content"]; got != unsaved {
-				t.Fatalf("payload content = %#v, want %q", got, unsaved)
+			if _, ok := req.Payload["content"]; ok {
+				t.Fatalf("payload unexpectedly included content: %#v", req.Payload)
 			}
 			if tc.wantCommand == "rename" {
 				if got := req.Payload["newName"]; got != "renamedValue" {

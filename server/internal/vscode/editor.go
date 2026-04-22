@@ -189,7 +189,7 @@ func (s *EditorService) Diagnostics(req EditorRequest) (EditorDiagnosticsDocumen
 		return EditorDiagnosticsDocument{}, err
 	}
 	if s.bridge != nil {
-		s.bridge.Publish(BridgeEvent{Type: "bridge/editor/diagnosticsChanged", Payload: doc})
+		s.bridge.Publish(BridgeEvent{Type: "document/diagnosticsChanged", Payload: doc})
 	}
 	return doc, nil
 }
@@ -298,7 +298,6 @@ func (s *EditorService) callWithDocument(command, capability string, req EditorR
 	payload := map[string]any{
 		"path":    snapshot.Path,
 		"version": snapshot.Version,
-		"content": snapshot.Content,
 	}
 	if req.Position != nil {
 		payload["position"] = req.Position
@@ -381,7 +380,7 @@ func (s *EditorService) subscribeDiagnostics(ctx context.Context) error {
 					continue
 				}
 				if s.bridge != nil {
-					s.bridge.Publish(BridgeEvent{Type: "bridge/diagnosticsChanged", Payload: doc})
+					s.bridge.Publish(BridgeEvent{Type: "document/diagnosticsChanged", Payload: doc})
 				}
 			}
 		}

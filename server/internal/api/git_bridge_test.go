@@ -16,9 +16,10 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/gorilla/websocket"
+
 	"github.com/Lincyaw/vscode-mobile/server/internal/claude"
 	"github.com/Lincyaw/vscode-mobile/server/internal/diagnostics"
-	"github.com/Lincyaw/vscode-mobile/server/internal/git"
 	"github.com/Lincyaw/vscode-mobile/server/internal/terminal"
 	"github.com/Lincyaw/vscode-mobile/server/internal/vscode"
 )
@@ -159,7 +160,19 @@ func TestGitBridgeDiff_SuccessReturnsUnifiedDiff(t *testing.T) {
 		t.Fatalf("write modified file: %v", err)
 	}
 
-	ts := newGitBackedServer(t, repoPath)
+	ts := newBridgeGitServer(t, repoPath, map[string]any{
+		"path":         repoPath,
+		"branch":       "main",
+		"upstream":     "origin/main",
+		"ahead":        0,
+		"behind":       0,
+		"remotes":      []map[string]any{{"name": "origin", "fetchUrl": "git@example.com:repo.git", "pushUrl": "git@example.com:repo.git"}},
+		"staged":       []map[string]any{},
+		"unstaged":     []map[string]any{{"path": "hello.txt", "status": "modified"}},
+		"untracked":    []map[string]any{},
+		"conflicts":    []map[string]any{},
+		"mergeChanges": []map[string]any{},
+	}, "diff --git a/hello.txt b/hello.txt\n--- a/hello.txt\n+++ b/hello.txt\n@@ -1 +1 @@\n-hello world\n+hello bridge\n")
 	resp, err := http.Get(ts.URL + "/bridge/git/diff?path=" + url.QueryEscape(repoPath) + "&file=" + url.QueryEscape("hello.txt"))
 	if err != nil {
 		t.Fatal(err)
@@ -209,12 +222,162 @@ func createGitDiffTestRepo(t *testing.T) (string, func()) {
 	return dir, func() {}
 }
 
-func newGitBackedServer(t *testing.T, repoPath string) *httptest.Server {
+func newBridgeGitServer(t *testing.T, repoPath string, repository map[string]any, diff string) *httptest.Server {
 	t.Helper()
+	if repository["path"] == nil {
+		repository["path"] = repoPath
+	}
+
+	runtimeTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		auth := mustReadAPIEditorProtocolMessage(t, conn)
+		if auth.Type != vscode.ProtocolMessageControl {
+			t.Errorf("auth message type = %v, want control", auth.Type)
+			return
+		}
+		var authReq vscode.AuthRequest
+		if err := json.Unmarshal(auth.Data, &authReq); err != nil {
+			t.Errorf("unmarshal auth request: %v", err)
+			return
+		}
+		mustWriteAPIEditorControlJSON(t, conn, map[string]any{
+			"type":       "sign",
+			"data":       "challenge",
+			"signedData": "challenge",
+		})
+
+		connType := mustReadAPIEditorProtocolMessage(t, conn)
+		if connType.Type != vscode.ProtocolMessageControl {
+			t.Errorf("connection type message type = %v, want control", connType.Type)
+			return
+		}
+		mustWriteAPIEditorControlJSON(t, conn, map[string]any{"type": "ok"})
+
+		bootstrap := mustReadAPIEditorProtocolMessage(t, conn)
+		if bootstrap.Type != vscode.ProtocolMessageRegular {
+			t.Errorf("bootstrap message type = %v, want regular", bootstrap.Type)
+			return
+		}
+		mustWriteAPIEditorProtocolMessage(t, conn, &vscode.ProtocolMessage{
+			Type: vscode.ProtocolMessageRegular,
+			Data: vscode.EncodeIPCMessage([]interface{}{int(vscode.ResponseTypeInitialize)}, nil),
+		})
+
+		for {
+			msg, err := readAPIEditorProtocolMessage(conn)
+			if err != nil {
+				return
+			}
+			if msg.Type != vscode.ProtocolMessageRegular {
+				continue
+			}
+			header, body, err := vscode.DecodeIPCMessage(msg.Data)
+			if err != nil {
+				t.Errorf("decode ipc message: %v", err)
+				return
+			}
+			hdr, ok := header.([]interface{})
+			if !ok || len(hdr) < 2 {
+				t.Errorf("header = %#v, want request header", header)
+				return
+			}
+			reqType, ok := hdr[0].(int)
+			if !ok {
+				t.Errorf("request type header = %#v, want int", hdr[0])
+				return
+			}
+			if vscode.RequestType(reqType) != vscode.RequestTypePromise {
+				continue
+			}
+			id, ok := hdr[1].(int)
+			if !ok {
+				t.Errorf("request id header = %#v, want int", hdr[1])
+				return
+			}
+			if len(hdr) < 4 {
+				t.Errorf("request header = %#v, want 4 entries", hdr)
+				return
+			}
+			channelName, _ := hdr[2].(string)
+			command, _ := hdr[3].(string)
+			if channelName != "openvsmobile/git" {
+				t.Errorf("unexpected channel %q", channelName)
+				return
+			}
+
+			payload, _ := body.(map[string]any)
+			var response any
+			switch command {
+			case "repository":
+				response = repository
+			case "diff":
+				file, _ := payload["file"].(string)
+				staged, _ := payload["staged"].(bool)
+				response = map[string]any{
+					"path":   file,
+					"diff":   diff,
+					"staged": staged,
+				}
+			default:
+				t.Errorf("unexpected git command %q", command)
+				return
+			}
+
+			mustWriteAPIEditorProtocolMessage(t, conn, &vscode.ProtocolMessage{
+				Type: vscode.ProtocolMessageRegular,
+				Data: vscode.EncodeIPCMessage([]interface{}{int(vscode.ResponseTypePromiseSuccess), id}, response),
+			})
+		}
+	}))
+	t.Cleanup(runtimeTS.Close)
+
+	client := vscode.NewClient()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	if err := client.Connect(ctx, runtimeTS.URL, ""); err != nil {
+		t.Fatalf("connect bridge client: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = client.Close()
+	})
+
+	metadataPath := filepath.Join(t.TempDir(), "bridge.json")
+	manager := vscode.NewBridgeManager(vscode.BridgeManagerOptions{
+		MetadataPath: metadataPath,
+		Client:       client,
+		PollInterval: 20 * time.Millisecond,
+	})
+	writeBridgeMetadata(t, metadataPath, vscode.BridgeMetadata{
+		Generation:      "gen-git",
+		State:           "ready",
+		ProtocolVersion: "2026-04-20",
+		BridgeVersion:   "0.3.0",
+		Capabilities: map[string]any{
+			"git": map[string]any{"enabled": true},
+		},
+	})
+	managerCtx, managerCancel := context.WithCancel(context.Background())
+	t.Cleanup(managerCancel)
+	manager.Start(managerCtx)
+	t.Cleanup(manager.Close)
+	waitForAPIEditorBridgeReady(t, manager)
 
 	sessionIndex := claude.NewSessionIndex(t.TempDir())
 	pm := claude.NewProcessManager("/nonexistent/claude", ".")
-	srv := NewServer(newMockFS(), sessionIndex, pm, "", git.NewGit(repoPath), terminal.NewManager(), diagnostics.NewRunner(10*time.Second))
+	srv := NewServer(newMockFS(), sessionIndex, pm, "", nil, terminal.NewManager(), diagnostics.NewRunner(10*time.Second))
+	srv.SetBridgeManager(manager)
+	gitService := vscode.NewGitService(client, manager)
+	gitService.Start(managerCtx)
+	t.Cleanup(gitService.Close)
+	srv.SetGitService(gitService)
+
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts
@@ -298,21 +461,19 @@ func TestBridgeEventsWebSocket_ForwardsGitRepositoryChangedEnvelope(t *testing.T
 	conn := dialBridgeEvents(t, ts.URL)
 
 	event := vscode.BridgeEvent{
-		Type: "bridge/git/repositoryChanged",
+		Type: "git/repositoryChanged",
 		Payload: map[string]any{
-			"path": "/workspace/repo",
-			"repository": map[string]any{
-				"branch":       "main",
-				"upstream":     "origin/main",
-				"ahead":        1,
-				"behind":       0,
-				"remotes":      []map[string]any{{"name": "origin", "fetchUrl": "git@github.com:Lincyaw/openvsmobile.git"}},
-				"staged":       []map[string]any{{"path": "lib/staged.dart", "status": "modified"}},
-				"unstaged":     []map[string]any{},
-				"untracked":    []map[string]any{},
-				"conflicts":    []map[string]any{{"path": "lib/conflicted.dart", "status": "both_modified"}},
-				"mergeChanges": []map[string]any{{"path": "lib/merge_only.dart", "status": "added_by_them"}},
-			},
+			"path":         "/workspace/repo",
+			"branch":       "main",
+			"upstream":     "origin/main",
+			"ahead":        1,
+			"behind":       0,
+			"remotes":      []map[string]any{{"name": "origin", "fetchUrl": "git@github.com:Lincyaw/openvsmobile.git"}},
+			"staged":       []map[string]any{{"path": "lib/staged.dart", "status": "modified"}},
+			"unstaged":     []map[string]any{},
+			"untracked":    []map[string]any{},
+			"conflicts":    []map[string]any{{"path": "lib/conflicted.dart", "status": "both_modified"}},
+			"mergeChanges": []map[string]any{{"path": "lib/merge_only.dart", "status": "added_by_them"}},
 		},
 	}
 
@@ -321,8 +482,8 @@ func TestBridgeEventsWebSocket_ForwardsGitRepositoryChangedEnvelope(t *testing.T
 	}
 
 	got := readBridgeEvent(t, conn)
-	if got.Type != "bridge/git/repositoryChanged" {
-		t.Fatalf("event type = %q, want %q", got.Type, "bridge/git/repositoryChanged")
+	if got.Type != "git/repositoryChanged" {
+		t.Fatalf("event type = %q, want %q", got.Type, "git/repositoryChanged")
 	}
 
 	payload := requireEventPayload(t, got)
@@ -330,17 +491,13 @@ func TestBridgeEventsWebSocket_ForwardsGitRepositoryChangedEnvelope(t *testing.T
 		t.Fatalf("payload path = %#v, want %q", payload["path"], "/workspace/repo")
 	}
 
-	repository, ok := requirePayloadValue(t, payload, "repository").(map[string]any)
-	if !ok {
-		t.Fatalf("repository payload = %#v, want map[string]any", payload["repository"])
+	if payload["branch"] != "main" {
+		t.Fatalf("repository branch = %#v, want %q", payload["branch"], "main")
 	}
-	if repository["branch"] != "main" {
-		t.Fatalf("repository branch = %#v, want %q", repository["branch"], "main")
+	if len(payload["conflicts"].([]any)) != 1 {
+		t.Fatalf("conflicts = %#v, want 1 entry", payload["conflicts"])
 	}
-	if len(repository["conflicts"].([]any)) != 1 {
-		t.Fatalf("conflicts = %#v, want 1 entry", repository["conflicts"])
-	}
-	if len(repository["mergeChanges"].([]any)) != 1 {
-		t.Fatalf("mergeChanges = %#v, want 1 entry", repository["mergeChanges"])
+	if len(payload["mergeChanges"].([]any)) != 1 {
+		t.Fatalf("mergeChanges = %#v, want 1 entry", payload["mergeChanges"])
 	}
 }

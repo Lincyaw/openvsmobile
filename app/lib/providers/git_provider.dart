@@ -7,7 +7,16 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/git_models.dart';
 import '../services/git_api_client.dart';
 
-enum GitOperationType { refresh, stage, unstage, discard, commit, fetch, pull, push }
+enum GitOperationType {
+  refresh,
+  stage,
+  unstage,
+  discard,
+  commit,
+  fetch,
+  pull,
+  push,
+}
 
 enum GitFeedbackKind { success, error }
 
@@ -46,7 +55,8 @@ class GitProvider extends ChangeNotifier {
   String get workDir => _workDir;
   GitOperationFeedback? get feedback => _feedback;
 
-  bool isRunning(GitOperationType operation) => _runningOperations.contains(operation);
+  bool isRunning(GitOperationType operation) =>
+      _runningOperations.contains(operation);
   bool get hasActiveOperation => _runningOperations.isNotEmpty;
 
   String? get activeOperationLabel {
@@ -100,22 +110,22 @@ class GitProvider extends ChangeNotifier {
   }
 
   Future<void> stageFile(String file) => _runRepositoryAction(
-        GitOperationType.stage,
-        () => apiClient.stageFile(_workDir, file),
-        successMessage: 'Staged $file',
-      );
+    GitOperationType.stage,
+    () => apiClient.stageFile(_workDir, file),
+    successMessage: 'Staged $file',
+  );
 
   Future<void> unstageFile(String file) => _runRepositoryAction(
-        GitOperationType.unstage,
-        () => apiClient.unstageFile(_workDir, file),
-        successMessage: 'Unstaged $file',
-      );
+    GitOperationType.unstage,
+    () => apiClient.unstageFile(_workDir, file),
+    successMessage: 'Unstaged $file',
+  );
 
   Future<void> discardFile(String file) => _runRepositoryAction(
-        GitOperationType.discard,
-        () => apiClient.discardFile(_workDir, file),
-        successMessage: 'Discarded local changes for $file',
-      );
+    GitOperationType.discard,
+    () => apiClient.discardFile(_workDir, file),
+    successMessage: 'Discarded local changes for $file',
+  );
 
   Future<void> commit(String message) async {
     final trimmed = message.trim();
@@ -140,22 +150,22 @@ class GitProvider extends ChangeNotifier {
   }
 
   Future<void> fetch() => _runRepositoryAction(
-        GitOperationType.fetch,
-        () => apiClient.fetch(_workDir),
-        successMessage: 'Fetch completed',
-      );
+    GitOperationType.fetch,
+    () => apiClient.fetch(_workDir),
+    successMessage: 'Fetch completed',
+  );
 
   Future<void> pull() => _runRepositoryAction(
-        GitOperationType.pull,
-        () => apiClient.pull(_workDir),
-        successMessage: 'Pull completed',
-      );
+    GitOperationType.pull,
+    () => apiClient.pull(_workDir),
+    successMessage: 'Pull completed',
+  );
 
   Future<void> push() => _runRepositoryAction(
-        GitOperationType.push,
-        () => apiClient.push(_workDir),
-        successMessage: 'Push completed',
-      );
+    GitOperationType.push,
+    () => apiClient.push(_workDir),
+    successMessage: 'Push completed',
+  );
 
   Future<GitDiffDocument> fetchDiff(String file, {bool staged = false}) {
     return apiClient.getDiff(_workDir, file, staged: staged);
@@ -276,7 +286,8 @@ class GitProvider extends ChangeNotifier {
 
   Future<void> applyBridgeEvent(Map<String, dynamic> event) async {
     final hadRepository = _applyRepositoryEvent(event);
-    if (event['type'] != 'bridge/git/repositoryChanged') {
+    if (event['type'] != 'git/repositoryChanged' &&
+        event['type'] != 'bridge/git/repositoryChanged') {
       return;
     }
     final payload = event['payload'];
@@ -305,7 +316,8 @@ class GitProvider extends ChangeNotifier {
 
   bool _applyRepositoryEvent(Map<String, dynamic> decoded) {
     final event = BridgeEventEnvelope.fromJson(decoded);
-    if (event.type != 'bridge/git/repositoryChanged') {
+    if (event.type != 'git/repositoryChanged' &&
+        event.type != 'bridge/git/repositoryChanged') {
       return false;
     }
     if (event.payload is! Map) {

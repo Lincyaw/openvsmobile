@@ -9,6 +9,7 @@ import 'providers/git_provider.dart';
 import 'providers/github_collaboration_provider.dart';
 import 'providers/github_auth_provider.dart';
 import 'providers/search_provider.dart';
+import 'providers/terminal_provider.dart';
 import 'providers/workspace_provider.dart';
 import 'services/api_client.dart';
 import 'services/browser_launcher.dart';
@@ -70,6 +71,7 @@ void main() async {
         ChangeNotifierProvider(
           create: (_) => SearchProvider(apiClient: apiClient),
         ),
+        ChangeNotifierProvider(create: (_) => TerminalProvider()),
         ChangeNotifierProxyProvider<WorkspaceProvider, GitHubAuthProvider>(
           create: (_) => GitHubAuthProvider(
             apiClient: githubAuthApiClient,

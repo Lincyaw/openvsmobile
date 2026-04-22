@@ -28,11 +28,15 @@ void main() {
             'protocolVersion': '2026-04-20',
             'bridgeVersion': '0.3.0',
             'capabilities': <String, dynamic>{
-              'completion': <String, dynamic>{
+              'documents': <String, dynamic>{'enabled': true},
+              'lsp': <String, dynamic>{
                 'enabled': true,
-                'textEdit': true,
+                'completion': <String, dynamic>{
+                  'enabled': true,
+                  'textEdit': true,
+                },
+                'rename': <String, dynamic>{'enabled': false},
               },
-              'rename': <String, dynamic>{'enabled': false},
             },
           }),
           200,
@@ -47,7 +51,7 @@ void main() {
     expect(document.protocolVersion, '2026-04-20');
     expect(document.bridgeVersion, '0.3.0');
     expect(document.isEnabled('completion'), isTrue);
-    expect(document.capabilities['completion']?.raw['textEdit'], isTrue);
+    expect(document.capability('lsp.completion')?.raw['textEdit'], isTrue);
     expect(document.isEnabled('rename'), isFalse);
   });
 

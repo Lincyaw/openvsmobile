@@ -73,6 +73,7 @@ func main() {
 	var gitService *vscode.GitService
 	var documentSync *vscode.DocumentSyncService
 	var editorService *vscode.EditorService
+	var terminalService *vscode.TerminalService
 	bridgeCtx, cancelBridge := context.WithCancel(context.Background())
 	defer cancelBridge()
 	if vsCodeURL != "" {
@@ -90,7 +91,11 @@ func main() {
 		bridgeManager.Start(bridgeCtx)
 		gitService = vscode.NewGitService(vsClient, bridgeManager)
 		gitService.Start(bridgeCtx)
-		documentSync = vscode.NewDocumentSyncService(fs)
+		terminalService = vscode.NewTerminalService(vsClient, bridgeManager)
+		if err := terminalService.Start(bridgeCtx); err != nil {
+			log.Fatalf("failed to start terminal bridge service: %v", err)
+		}
+		documentSync = vscode.NewRuntimeDocumentSyncService(vsClient, bridgeManager, fs)
 		editorService = vscode.NewEditorService(vsClient, bridgeManager, documentSync)
 		editorService.Start(bridgeCtx)
 		log.Printf("mobile runtime bridge discovery watching %s", bridgeManager.MetadataPath())
@@ -134,6 +139,7 @@ func main() {
 	srv.SetGitService(gitService)
 	srv.SetDocumentSync(documentSync)
 	srv.SetEditorService(editorService)
+	srv.SetTerminalService(terminalService)
 
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
@@ -170,6 +176,9 @@ func main() {
 	}
 	if editorService != nil {
 		editorService.Close()
+	}
+	if terminalService != nil {
+		terminalService.Close()
 	}
 	if bridgeManager != nil {
 		bridgeManager.Close()

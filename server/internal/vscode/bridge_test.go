@@ -226,6 +226,12 @@ func TestBridgeManager_ReadyTransitionPublishesCapabilities(t *testing.T) {
 	if caps.ProtocolVersion != defaultBridgeProtocolVersion {
 		t.Fatalf("protocolVersion = %q, want %q", caps.ProtocolVersion, defaultBridgeProtocolVersion)
 	}
+	if caps.State != bridgeStateReady {
+		t.Fatalf("state = %q, want %q", caps.State, bridgeStateReady)
+	}
+	if caps.Generation != "gen-1" {
+		t.Fatalf("generation = %q, want %q", caps.Generation, "gen-1")
+	}
 	if caps.BridgeVersion != "0.1.0" {
 		t.Fatalf("bridgeVersion = %q, want 0.1.0", caps.BridgeVersion)
 	}
@@ -273,9 +279,13 @@ func TestBridgeManager_CapabilitiesDeepClonePreservesEditorFeatureFlags(t *testi
 	if err != nil {
 		t.Fatalf("Capabilities failed: %v", err)
 	}
-	diagnostics, ok := first.Capabilities["diagnostics"].(map[string]interface{})
+	lsp, ok := first.Capabilities["lsp"].(map[string]interface{})
 	if !ok {
-		t.Fatalf("diagnostics capability = %#v, want map[string]interface{}", first.Capabilities["diagnostics"])
+		t.Fatalf("lsp capability = %#v, want map[string]interface{}", first.Capabilities["lsp"])
+	}
+	diagnostics, ok := lsp["diagnostics"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("diagnostics capability = %#v, want map[string]interface{}", lsp["diagnostics"])
 	}
 	diagnostics["enabled"] = false
 	diagnostics["kinds"] = []interface{}{"mutated"}
@@ -284,9 +294,13 @@ func TestBridgeManager_CapabilitiesDeepClonePreservesEditorFeatureFlags(t *testi
 	if err != nil {
 		t.Fatalf("Capabilities second read failed: %v", err)
 	}
-	diagnostics, ok = second.Capabilities["diagnostics"].(map[string]interface{})
+	lsp, ok = second.Capabilities["lsp"].(map[string]interface{})
 	if !ok {
-		t.Fatalf("diagnostics capability second read = %#v, want map[string]interface{}", second.Capabilities["diagnostics"])
+		t.Fatalf("lsp capability second read = %#v, want map[string]interface{}", second.Capabilities["lsp"])
+	}
+	diagnostics, ok = lsp["diagnostics"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("diagnostics capability second read = %#v, want map[string]interface{}", lsp["diagnostics"])
 	}
 	if diagnostics["enabled"] != true {
 		t.Fatalf("diagnostics enabled = %#v, want true after caller mutation", diagnostics["enabled"])
@@ -347,7 +361,7 @@ func TestBridgeManager_BroadcastsGitRepositoryChangedStableEnvelope(t *testing.T
 	defer unsubscribe()
 
 	manager.broadcast(BridgeEvent{
-		Type: "bridge/git/repositoryChanged",
+		Type: "git/repositoryChanged",
 		Payload: map[string]interface{}{
 			"path": "/workspace/repo",
 			"repository": map[string]interface{}{
@@ -382,8 +396,8 @@ func TestBridgeManager_BroadcastsGitRepositoryChangedStableEnvelope(t *testing.T
 	})
 
 	event := mustReceiveBridgeEvent(t, events, 2*time.Second)
-	if event.Type != "bridge/git/repositoryChanged" {
-		t.Fatalf("event type = %q, want bridge/git/repositoryChanged", event.Type)
+	if event.Type != "git/repositoryChanged" {
+		t.Fatalf("event type = %q, want git/repositoryChanged", event.Type)
 	}
 
 	payload, ok := event.Payload.(map[string]interface{})
@@ -393,22 +407,17 @@ func TestBridgeManager_BroadcastsGitRepositoryChangedStableEnvelope(t *testing.T
 	if payload["path"] != "/workspace/repo" {
 		t.Fatalf("payload path = %#v, want %q", payload["path"], "/workspace/repo")
 	}
-
-	repository, ok := payload["repository"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("repository = %#v, want map[string]interface{}", payload["repository"])
+	if payload["ahead"] != 3 {
+		t.Fatalf("ahead = %#v, want 3", payload["ahead"])
 	}
-	if repository["ahead"] != 3 {
-		t.Fatalf("ahead = %#v, want 3", repository["ahead"])
+	if len(payload["remotes"].([]interface{})) != 1 {
+		t.Fatalf("remotes = %#v, want 1 entry", payload["remotes"])
 	}
-	if len(repository["remotes"].([]interface{})) != 1 {
-		t.Fatalf("remotes = %#v, want 1 entry", repository["remotes"])
+	if len(payload["conflicts"].([]interface{})) != 1 {
+		t.Fatalf("conflicts = %#v, want 1 entry", payload["conflicts"])
 	}
-	if len(repository["conflicts"].([]interface{})) != 1 {
-		t.Fatalf("conflicts = %#v, want 1 entry", repository["conflicts"])
-	}
-	if len(repository["mergeChanges"].([]interface{})) != 1 {
-		t.Fatalf("mergeChanges = %#v, want 1 entry", repository["mergeChanges"])
+	if len(payload["mergeChanges"].([]interface{})) != 1 {
+		t.Fatalf("mergeChanges = %#v, want 1 entry", payload["mergeChanges"])
 	}
 }
 
@@ -418,7 +427,7 @@ func TestBridgeManager_PublishDiagnosticsChangedStableEnvelope(t *testing.T) {
 	defer unsubscribe()
 
 	manager.Publish(BridgeEvent{
-		Type: "bridge/diagnosticsChanged",
+		Type: "document/diagnosticsChanged",
 		Payload: map[string]interface{}{
 			"path":    "/workspace/lib/main.dart",
 			"version": 7,
@@ -436,13 +445,16 @@ func TestBridgeManager_PublishDiagnosticsChangedStableEnvelope(t *testing.T) {
 	})
 
 	event := mustReceiveBridgeEvent(t, events, 2*time.Second)
-	if event.Type != "bridge/diagnosticsChanged" {
-		t.Fatalf("event type = %q, want bridge/diagnosticsChanged", event.Type)
+	if event.Type != "document/diagnosticsChanged" {
+		t.Fatalf("event type = %q, want document/diagnosticsChanged", event.Type)
 	}
 
 	payload, ok := event.Payload.(map[string]interface{})
 	if !ok {
 		t.Fatalf("payload = %#v, want map[string]interface{}", event.Payload)
+	}
+	if payload["file"] != "/workspace/lib/main.dart" {
+		t.Fatalf("payload file = %#v, want %q", payload["file"], "/workspace/lib/main.dart")
 	}
 	if payload["path"] != "/workspace/lib/main.dart" {
 		t.Fatalf("payload path = %#v, want %q", payload["path"], "/workspace/lib/main.dart")

@@ -25,10 +25,11 @@ type apiEditorRequestCapture struct {
 	Payload map[string]any
 }
 
-func newAPIEditorRuntimeServer(t *testing.T, responseFor func(command string, payload map[string]any) any) (*httptest.Server, <-chan apiEditorRequestCapture) {
+func newAPIEditorRuntimeServer(t *testing.T, fs *mockFS, responseFor func(command string, payload map[string]any, docs *vscode.DocumentSyncService) any) (*httptest.Server, <-chan apiEditorRequestCapture) {
 	t.Helper()
 
 	requests := make(chan apiEditorRequestCapture, 32)
+	runtimeDocuments := vscode.NewDocumentSyncService(fs)
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -117,10 +118,20 @@ func newAPIEditorRuntimeServer(t *testing.T, responseFor func(command string, pa
 				t.Errorf("request id header = %#v, want int", hdr[1])
 				return
 			}
+			channelName, _ := hdr[2].(string)
 			command, _ := hdr[3].(string)
 			payload, _ := body.(map[string]any)
 			if payload == nil {
 				payload = map[string]any{}
+			}
+
+			if channelName == "openvsmobile/documents" {
+				respBody := handleAPIRuntimeDocumentCommand(t, runtimeDocuments, command, payload)
+				mustWriteAPIEditorProtocolMessage(t, conn, &vscode.ProtocolMessage{
+					Type: vscode.ProtocolMessageRegular,
+					Data: vscode.EncodeIPCMessage([]interface{}{int(vscode.ResponseTypePromiseSuccess), id}, respBody),
+				})
+				continue
 			}
 
 			select {
@@ -130,7 +141,7 @@ func newAPIEditorRuntimeServer(t *testing.T, responseFor func(command string, pa
 				return
 			}
 
-			respBody := responseFor(command, payload)
+			respBody := responseFor(command, payload, runtimeDocuments)
 			mustWriteAPIEditorProtocolMessage(t, conn, &vscode.ProtocolMessage{
 				Type: vscode.ProtocolMessageRegular,
 				Data: vscode.EncodeIPCMessage([]interface{}{int(vscode.ResponseTypePromiseSuccess), id}, respBody),
@@ -140,6 +151,90 @@ func newAPIEditorRuntimeServer(t *testing.T, responseFor func(command string, pa
 
 	t.Cleanup(ts.Close)
 	return ts, requests
+}
+
+func handleAPIRuntimeDocumentCommand(t *testing.T, docs *vscode.DocumentSyncService, command string, payload map[string]any) any {
+	t.Helper()
+
+	snapshotResponse := func(snapshot vscode.DocumentSnapshot, err error) any {
+		if err != nil {
+			return apiRuntimeDocumentErrorEnvelope(err)
+		}
+		return map[string]any{
+			"ok":       true,
+			"snapshot": snapshot,
+		}
+	}
+
+	switch command {
+	case "open":
+		var req struct {
+			Path    string  `json:"path"`
+			Version int     `json:"version"`
+			Content *string `json:"content,omitempty"`
+		}
+		if err := decodePayloadInto(payload, &req); err != nil {
+			t.Fatalf("decode runtime open payload: %v", err)
+		}
+		return snapshotResponse(docs.OpenDocument(req.Path, req.Version, req.Content))
+	case "change":
+		var req struct {
+			Path    string                  `json:"path"`
+			Version int                     `json:"version"`
+			Changes []vscode.DocumentChange `json:"changes"`
+		}
+		if err := decodePayloadInto(payload, &req); err != nil {
+			t.Fatalf("decode runtime change payload: %v", err)
+		}
+		return snapshotResponse(docs.ApplyDocumentChanges(req.Path, req.Version, req.Changes))
+	case "save":
+		path, _ := payload["path"].(string)
+		return snapshotResponse(docs.SaveDocument(path))
+	case "snapshot":
+		path, _ := payload["path"].(string)
+		return snapshotResponse(docs.DocumentBuffer(path))
+	case "close":
+		path, _ := payload["path"].(string)
+		if err := docs.CloseDocument(path); err != nil {
+			return apiRuntimeDocumentErrorEnvelope(err)
+		}
+		return map[string]any{
+			"ok":     true,
+			"path":   path,
+			"closed": true,
+		}
+	default:
+		t.Fatalf("unexpected runtime document command %q", command)
+		return nil
+	}
+}
+
+func apiRuntimeDocumentErrorEnvelope(err error) any {
+	bridgeErr, ok := err.(*vscode.BridgeError)
+	if !ok {
+		return map[string]any{
+			"ok": false,
+			"error": map[string]any{
+				"code":    "document_sync_failed",
+				"message": err.Error(),
+			},
+		}
+	}
+	return map[string]any{
+		"ok": false,
+		"error": map[string]any{
+			"code":    bridgeErr.Code,
+			"message": bridgeErr.Message,
+		},
+	}
+}
+
+func decodePayloadInto(raw map[string]any, dest any) error {
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, dest)
 }
 
 func mustReadAPIEditorProtocolMessage(t *testing.T, conn *websocket.Conn) *vscode.ProtocolMessage {
@@ -179,10 +274,10 @@ func mustWriteAPIEditorProtocolMessage(t *testing.T, conn *websocket.Conn, msg *
 	}
 }
 
-func newAPIEditorBridgeServer(t *testing.T, fs *mockFS, responseFor func(command string, payload map[string]any) any) (*httptest.Server, <-chan apiEditorRequestCapture) {
+func newAPIEditorBridgeServer(t *testing.T, fs *mockFS, responseFor func(command string, payload map[string]any, docs *vscode.DocumentSyncService) any) (*httptest.Server, <-chan apiEditorRequestCapture) {
 	t.Helper()
 
-	runtimeTS, requests := newAPIEditorRuntimeServer(t, responseFor)
+	runtimeTS, requests := newAPIEditorRuntimeServer(t, fs, responseFor)
 	client := vscode.NewClient()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
@@ -210,6 +305,7 @@ func newAPIEditorBridgeServer(t *testing.T, fs *mockFS, responseFor func(command
 		ProtocolVersion: "2026-04-20",
 		BridgeVersion:   "0.3.0",
 		Capabilities: map[string]any{
+			"documents":       map[string]any{"enabled": true},
 			"diagnostics":     map[string]any{"enabled": true},
 			"completion":      map[string]any{"enabled": true},
 			"hover":           map[string]any{"enabled": true},
@@ -228,7 +324,7 @@ func newAPIEditorBridgeServer(t *testing.T, fs *mockFS, responseFor func(command
 	t.Cleanup(manager.Close)
 	waitForAPIEditorBridgeReady(t, manager)
 
-	documents := vscode.NewDocumentSyncService(fs)
+	documents := vscode.NewRuntimeDocumentSyncService(client, manager, fs)
 	srv.SetBridgeManager(manager)
 	srv.SetDocumentSync(documents)
 	srv.SetEditorService(vscode.NewEditorService(client, manager, documents))
@@ -251,17 +347,75 @@ func waitForAPIEditorBridgeReady(t *testing.T, manager *vscode.BridgeManager) {
 	t.Fatal("timed out waiting for bridge manager readiness")
 }
 
-func TestBridgeEditorCompletionUsesUnsavedBufferAndVersionedContext(t *testing.T) {
+func TestBridgeDocumentLifecycle_RuntimeBackedSavePersistsLatestAcceptedBuffer(t *testing.T) {
+	fs := newMockFS()
+	workDir := t.TempDir()
+	filePath := filepath.Join(workDir, "runtime.txt")
+	fs.files[filePath] = []byte("disk copy\n")
+
+	ts, _ := newAPIEditorBridgeServer(t, fs, func(command string, payload map[string]any, docs *vscode.DocumentSyncService) any {
+		return map[string]any{"items": []any{}}
+	})
+
+	requireBridgeDocumentSuccess(t, ts.URL, "/bridge/doc/open", map[string]any{
+		"path":    filePath,
+		"version": 1,
+		"content": "draft\n",
+	})
+	requireBridgeDocumentSuccess(t, ts.URL, "/bridge/doc/change", map[string]any{
+		"path":    filePath,
+		"version": 2,
+		"changes": []bridgeDocChange{{
+			Range: &bridgeDocRange{
+				Start: bridgeDocPosition{Line: 0, Character: 5},
+				End:   bridgeDocPosition{Line: 0, Character: 5},
+			},
+			Text: " updated",
+		}},
+	})
+
+	if got := string(fs.files[filePath]); got != "disk copy\n" {
+		t.Fatalf("disk content before runtime save = %q, want unchanged", got)
+	}
+
+	requireBridgeDocumentSuccess(t, ts.URL, "/bridge/doc/save", map[string]any{
+		"path": filePath,
+	})
+	if got := string(fs.files[filePath]); got != "draft updated\n" {
+		t.Fatalf("saved runtime content = %q, want %q", got, "draft updated\n")
+	}
+
+	requireBridgeDocumentSuccess(t, ts.URL, "/bridge/doc/close", map[string]any{
+		"path": filePath,
+	})
+	requireBridgeDocumentError(t, ts.URL, "/bridge/doc/save", map[string]any{
+		"path": filePath,
+	}, "document_not_open", http.StatusNotFound)
+}
+
+func TestBridgeEditorCompletionUsesRuntimeDocumentStateAndVersionedContext(t *testing.T) {
 	fs := newMockFS()
 	workDir := t.TempDir()
 	filePath := filepath.Join(workDir, "main.dart")
 	fs.files[filePath] = []byte("print('disk');\n")
 
-	ts, requests := newAPIEditorBridgeServer(t, fs, func(command string, payload map[string]any) any {
+	ts, requests := newAPIEditorBridgeServer(t, fs, func(command string, payload map[string]any, docs *vscode.DocumentSyncService) any {
 		if command != "completion" {
 			return map[string]any{"items": []any{}}
 		}
-		return map[string]any{"isIncomplete": false, "items": []any{}}
+		snapshot, err := docs.DocumentBuffer(payload["path"].(string))
+		if err != nil {
+			t.Fatalf("runtime completion snapshot: %v", err)
+		}
+		return map[string]any{
+			"isIncomplete": false,
+			"items": []any{
+				map[string]any{
+					"label":  snapshot.Content,
+					"detail": "2",
+				},
+			},
+		}
 	})
 
 	requireBridgeDocumentSuccess(t, ts.URL, "/bridge/doc/open", map[string]any{
@@ -292,6 +446,24 @@ func TestBridgeEditorCompletionUsesUnsavedBufferAndVersionedContext(t *testing.T
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("completion status = %d, body=%s", resp.StatusCode, string(body))
 	}
+	var completionPayload map[string]any
+	if err := json.Unmarshal(body, &completionPayload); err != nil {
+		t.Fatalf("decode completion body: %v; body=%s", err, string(body))
+	}
+	items, ok := completionPayload["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("completion items = %#v, want 1 item", completionPayload["items"])
+	}
+	item, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("completion item = %#v, want object", items[0])
+	}
+	if got := item["label"]; got != "print('draft') // unsaved;\n" {
+		t.Fatalf("completion label = %#v, want runtime unsaved buffer", got)
+	}
+	if got := item["detail"]; got != "2" {
+		t.Fatalf("completion detail = %#v, want runtime version 2", got)
+	}
 
 	req := <-requests
 	if req.Command != "completion" {
@@ -303,8 +475,8 @@ func TestBridgeEditorCompletionUsesUnsavedBufferAndVersionedContext(t *testing.T
 	if got, ok := req.Payload["version"].(float64); !ok || got != 2 {
 		t.Fatalf("bridge version = %#v, want 2", req.Payload["version"])
 	}
-	if got := req.Payload["content"]; got != "print('draft') // unsaved;\n" {
-		t.Fatalf("bridge content = %#v, want unsaved buffer", got)
+	if _, ok := req.Payload["content"]; ok {
+		t.Fatalf("bridge payload unexpectedly included content: %#v", req.Payload)
 	}
 	if _, ok := req.Payload["position"]; !ok {
 		t.Fatalf("bridge payload missing position: %#v", req.Payload)
@@ -340,16 +512,20 @@ func TestDiagnosticsBridgeResponseWinsWhenDocumentIsOpen(t *testing.T) {
 	filePath := filepath.Join(workDir, "main.dart")
 	fs.files[filePath] = []byte("print('disk');\n")
 
-	ts, requests := newAPIEditorBridgeServer(t, fs, func(command string, payload map[string]any) any {
+	ts, requests := newAPIEditorBridgeServer(t, fs, func(command string, payload map[string]any, docs *vscode.DocumentSyncService) any {
 		switch command {
 		case "diagnostics":
+			snapshot, err := docs.DocumentBuffer(payload["path"].(string))
+			if err != nil {
+				t.Fatalf("runtime diagnostics snapshot: %v", err)
+			}
 			return map[string]any{
-				"path":    payload["path"],
-				"version": payload["version"],
+				"path":    snapshot.Path,
+				"version": snapshot.Version,
 				"diagnostics": []any{
 					map[string]any{
 						"severity": "warning",
-						"message":  "bridge diagnostics",
+						"message":  snapshot.Content,
 					},
 				},
 			}
@@ -404,15 +580,340 @@ func TestDiagnosticsBridgeResponseWinsWhenDocumentIsOpen(t *testing.T) {
 	if !ok {
 		t.Fatalf("diagnostic[0] = %#v, want object", diagnosticsList[0])
 	}
-	if got := first["message"]; got != "bridge diagnostics" {
-		t.Fatalf("diagnostic message = %#v, want bridge diagnostics", got)
+	if got := first["message"]; got != "print('draft') // unsaved;\n" {
+		t.Fatalf("diagnostic message = %#v, want runtime unsaved buffer", got)
 	}
 
 	req := <-requests
 	if req.Command != "diagnostics" {
 		t.Fatalf("bridge command = %q, want diagnostics", req.Command)
 	}
-	if got := req.Payload["content"]; got != "print('draft') // unsaved;\n" {
-		t.Fatalf("bridge diagnostics content = %#v, want unsaved buffer", got)
+	if _, ok := req.Payload["content"]; ok {
+		t.Fatalf("bridge diagnostics payload unexpectedly included content: %#v", req.Payload)
+	}
+}
+
+func TestBridgeEditorRuntimeEndpointsReturnStructuredResultsFromRuntimeModel(t *testing.T) {
+	fs := newMockFS()
+	workDir := t.TempDir()
+	filePath := filepath.Join(workDir, "main.dart")
+	otherPath := filepath.Join(workDir, "other.dart")
+	fs.files[filePath] = []byte("print('disk');\n")
+	fs.files[otherPath] = []byte("secondary\n")
+
+	ts, requests := newAPIEditorBridgeServer(t, fs, func(command string, payload map[string]any, docs *vscode.DocumentSyncService) any {
+		snapshot, err := docs.DocumentBuffer(payload["path"].(string))
+		if err != nil {
+			t.Fatalf("runtime snapshot for %s: %v", command, err)
+		}
+
+		rangeJSON := func(startLine, startChar, endLine, endChar int) map[string]any {
+			return map[string]any{
+				"start": map[string]any{"line": startLine, "character": startChar},
+				"end":   map[string]any{"line": endLine, "character": endChar},
+			}
+		}
+
+		switch command {
+		case "hover":
+			return map[string]any{
+				"contents": []any{
+					map[string]any{"kind": "markdown", "value": snapshot.Content},
+				},
+				"range": rangeJSON(0, 0, 0, 5),
+			}
+		case "definition":
+			return []any{
+				map[string]any{
+					"uri":   "file://" + filePath,
+					"path":  filePath,
+					"range": rangeJSON(0, 0, 0, 5),
+				},
+			}
+		case "references":
+			return []any{
+				map[string]any{
+					"uri":   "file://" + filePath,
+					"path":  filePath,
+					"range": rangeJSON(0, 0, 0, 5),
+				},
+				map[string]any{
+					"uri":   "file://" + otherPath,
+					"path":  otherPath,
+					"range": rangeJSON(0, 0, 0, 4),
+				},
+			}
+		case "signatureHelp":
+			return map[string]any{
+				"signatures": []any{
+					map[string]any{"label": "sig(" + snapshot.Content + ")"},
+				},
+				"activeSignature": 0,
+				"activeParameter": 0,
+			}
+		case "documentSymbols":
+			return []any{
+				map[string]any{
+					"name":           "main",
+					"kind":           12,
+					"range":          rangeJSON(0, 0, 0, 5),
+					"selectionRange": rangeJSON(0, 0, 0, 5),
+				},
+			}
+		case "formatting":
+			return []any{
+				map[string]any{
+					"range":   rangeJSON(0, 0, 0, 0),
+					"newText": "// formatted\n" + snapshot.Content,
+				},
+			}
+		case "codeActions":
+			return []any{
+				map[string]any{
+					"title": "Apply fix",
+					"kind":  "quickfix",
+					"edit": map[string]any{
+						"changes": map[string]any{
+							filePath: []any{
+								map[string]any{
+									"range":   rangeJSON(0, 0, 0, 5),
+									"newText": "fixed",
+								},
+							},
+						},
+					},
+				},
+			}
+		case "rename":
+			return map[string]any{
+				"changes": map[string]any{
+					filePath: []any{
+						map[string]any{
+							"range":   rangeJSON(0, 0, 0, 5),
+							"newText": "renamed",
+						},
+					},
+					otherPath: []any{
+						map[string]any{
+							"range":   rangeJSON(0, 0, 0, 4),
+							"newText": "renamed",
+						},
+					},
+				},
+			}
+		default:
+			t.Fatalf("unexpected command %q", command)
+			return nil
+		}
+	})
+
+	requireBridgeDocumentSuccess(t, ts.URL, "/bridge/doc/open", map[string]any{
+		"path":    filePath,
+		"version": 1,
+		"content": "print('draft');\n",
+	})
+	requireBridgeDocumentSuccess(t, ts.URL, "/bridge/doc/change", map[string]any{
+		"path":    filePath,
+		"version": 2,
+		"changes": []bridgeDocChange{{
+			Range: &bridgeDocRange{
+				Start: bridgeDocPosition{Line: 0, Character: 14},
+				End:   bridgeDocPosition{Line: 0, Character: 14},
+			},
+			Text: " // unsaved",
+		}},
+	})
+
+	position := map[string]any{"line": 0, "character": 7}
+	selectedRange := map[string]any{
+		"start": map[string]any{"line": 0, "character": 0},
+		"end":   map[string]any{"line": 0, "character": 5},
+	}
+
+	testCases := []struct {
+		name         string
+		endpoint     string
+		body         map[string]any
+		wantCommand  string
+		wantKeys     []string
+		absentKeys   []string
+		assertResult func(*testing.T, []byte)
+	}{
+		{
+			name:        "hover",
+			endpoint:    "/bridge/editor/hover",
+			body:        map[string]any{"path": filePath, "version": 2, "position": position, "workDir": workDir},
+			wantCommand: "hover",
+			wantKeys:    []string{"path", "version", "position"},
+			absentKeys:  []string{"range", "newName", "content"},
+			assertResult: func(t *testing.T, body []byte) {
+				t.Helper()
+				var payload map[string]any
+				if err := json.Unmarshal(body, &payload); err != nil {
+					t.Fatalf("decode hover body: %v; body=%s", err, string(body))
+				}
+				contents, ok := payload["contents"].([]any)
+				if !ok || len(contents) != 1 {
+					t.Fatalf("hover contents = %#v, want 1 entry", payload["contents"])
+				}
+			},
+		},
+		{
+			name:        "definition",
+			endpoint:    "/bridge/editor/definition",
+			body:        map[string]any{"path": filePath, "version": 2, "position": position, "workDir": workDir},
+			wantCommand: "definition",
+			wantKeys:    []string{"path", "version", "position"},
+			absentKeys:  []string{"range", "newName", "content"},
+			assertResult: func(t *testing.T, body []byte) {
+				t.Helper()
+				var payload []map[string]any
+				if err := json.Unmarshal(body, &payload); err != nil {
+					t.Fatalf("decode definition body: %v; body=%s", err, string(body))
+				}
+				if len(payload) != 1 {
+					t.Fatalf("definition payload = %#v, want 1 entry", payload)
+				}
+				if got, ok := payload[0]["uri"].(string); !ok || got == "" {
+					t.Fatalf("definition payload = %#v, want uri", payload)
+				}
+			},
+		},
+		{
+			name:        "references",
+			endpoint:    "/bridge/editor/references",
+			body:        map[string]any{"path": filePath, "version": 2, "position": position, "workDir": workDir},
+			wantCommand: "references",
+			wantKeys:    []string{"path", "version", "position"},
+			absentKeys:  []string{"range", "newName", "content"},
+			assertResult: func(t *testing.T, body []byte) {
+				t.Helper()
+				var payload []map[string]any
+				if err := json.Unmarshal(body, &payload); err != nil {
+					t.Fatalf("decode references body: %v; body=%s", err, string(body))
+				}
+				if len(payload) != 2 {
+					t.Fatalf("references payload = %#v, want 2 entries", payload)
+				}
+			},
+		},
+		{
+			name:        "signatureHelp",
+			endpoint:    "/bridge/editor/signature-help",
+			body:        map[string]any{"path": filePath, "version": 2, "position": position, "workDir": workDir},
+			wantCommand: "signatureHelp",
+			wantKeys:    []string{"path", "version", "position"},
+			absentKeys:  []string{"range", "newName", "content"},
+			assertResult: func(t *testing.T, body []byte) {
+				t.Helper()
+				var payload map[string]any
+				if err := json.Unmarshal(body, &payload); err != nil {
+					t.Fatalf("decode signature help body: %v; body=%s", err, string(body))
+				}
+				signatures, ok := payload["signatures"].([]any)
+				if !ok || len(signatures) != 1 {
+					t.Fatalf("signature help = %#v, want 1 signature", payload)
+				}
+			},
+		},
+		{
+			name:        "documentSymbols",
+			endpoint:    "/bridge/editor/document-symbols",
+			body:        map[string]any{"path": filePath, "version": 2, "workDir": workDir},
+			wantCommand: "documentSymbols",
+			wantKeys:    []string{"path", "version"},
+			absentKeys:  []string{"position", "range", "newName", "content"},
+			assertResult: func(t *testing.T, body []byte) {
+				t.Helper()
+				var payload []map[string]any
+				if err := json.Unmarshal(body, &payload); err != nil {
+					t.Fatalf("decode document symbols body: %v; body=%s", err, string(body))
+				}
+				if len(payload) != 1 || payload[0]["name"] != "main" {
+					t.Fatalf("document symbols payload = %#v, want main symbol", payload)
+				}
+			},
+		},
+		{
+			name:        "formatting",
+			endpoint:    "/bridge/editor/formatting",
+			body:        map[string]any{"path": filePath, "version": 2, "workDir": workDir},
+			wantCommand: "formatting",
+			wantKeys:    []string{"path", "version"},
+			absentKeys:  []string{"position", "range", "newName", "content"},
+			assertResult: func(t *testing.T, body []byte) {
+				t.Helper()
+				var payload []map[string]any
+				if err := json.Unmarshal(body, &payload); err != nil {
+					t.Fatalf("decode formatting body: %v; body=%s", err, string(body))
+				}
+				if len(payload) != 1 || payload[0]["newText"] == nil {
+					t.Fatalf("formatting payload = %#v, want one text edit", payload)
+				}
+			},
+		},
+		{
+			name:        "codeActions",
+			endpoint:    "/bridge/editor/code-actions",
+			body:        map[string]any{"path": filePath, "version": 2, "range": selectedRange, "workDir": workDir},
+			wantCommand: "codeActions",
+			wantKeys:    []string{"path", "version", "range"},
+			absentKeys:  []string{"position", "newName", "content"},
+			assertResult: func(t *testing.T, body []byte) {
+				t.Helper()
+				var payload []map[string]any
+				if err := json.Unmarshal(body, &payload); err != nil {
+					t.Fatalf("decode code actions body: %v; body=%s", err, string(body))
+				}
+				if len(payload) != 1 || payload[0]["title"] != "Apply fix" {
+					t.Fatalf("code actions payload = %#v, want quick fix", payload)
+				}
+			},
+		},
+		{
+			name:        "rename",
+			endpoint:    "/bridge/editor/rename",
+			body:        map[string]any{"path": filePath, "version": 2, "position": position, "newName": "renamed", "workDir": workDir},
+			wantCommand: "rename",
+			wantKeys:    []string{"path", "version", "position", "newName"},
+			absentKeys:  []string{"range", "content"},
+			assertResult: func(t *testing.T, body []byte) {
+				t.Helper()
+				var payload map[string]any
+				if err := json.Unmarshal(body, &payload); err != nil {
+					t.Fatalf("decode rename body: %v; body=%s", err, string(body))
+				}
+				changes, ok := payload["changes"].(map[string]any)
+				if !ok || len(changes) != 2 {
+					t.Fatalf("rename payload = %#v, want 2 changed files", payload)
+				}
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, body := postBridgeDocumentRequest(t, ts.URL, tc.endpoint, tc.body)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("%s status = %d, body=%s", tc.name, resp.StatusCode, string(body))
+			}
+			tc.assertResult(t, body)
+
+			req := <-requests
+			if req.Command != tc.wantCommand {
+				t.Fatalf("%s command = %q, want %q", tc.name, req.Command, tc.wantCommand)
+			}
+			for _, key := range tc.wantKeys {
+				if _, ok := req.Payload[key]; !ok {
+					t.Fatalf("%s payload missing %q: %#v", tc.name, key, req.Payload)
+				}
+			}
+			for _, key := range tc.absentKeys {
+				if _, ok := req.Payload[key]; ok {
+					t.Fatalf("%s payload unexpectedly included %q: %#v", tc.name, key, req.Payload)
+				}
+			}
+		})
 	}
 }

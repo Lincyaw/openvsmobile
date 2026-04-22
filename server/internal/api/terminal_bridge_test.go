@@ -330,7 +330,7 @@ func TestTerminalBridgeExitedSessionReattachReplaysBacklogAndExplicitCloseEmitsC
 		t.Fatalf("create status = %d, want %d body=%#v", createdResp.StatusCode, http.StatusOK, created)
 	}
 	sessionID, _ := created["id"].(string)
-	_ = waitForTerminalEventType(t, events, "terminal/session.created")
+	_ = waitForTerminalEventType(t, events, "terminal/sessionCreated")
 
 	conn := dialTerminalStream(t, ts.URL, sessionID)
 	ready := readTerminalEnvelope(t, conn)
@@ -383,7 +383,7 @@ func TestTerminalBridgeExitedSessionReattachReplaysBacklogAndExplicitCloseEmitsC
 		t.Fatalf("closed exitCode = %#v, want 9", closeBody["exitCode"])
 	}
 
-	closedEvent := waitForTerminalEventType(t, events, "terminal/session.closed")
+	closedEvent := waitForTerminalEventType(t, events, "terminal/sessionClosed")
 	if closedEvent.Payload["id"] != sessionID {
 		t.Fatalf("closed event id = %#v, want %q", closedEvent.Payload["id"], sessionID)
 	}
@@ -418,7 +418,7 @@ func TestTerminalBridgeLifecycleEventsFlowThroughUnifiedEventStreamWithoutBridge
 	}
 	sessionID, _ := created["id"].(string)
 
-	createdEvent := waitForTerminalEventType(t, conn, "terminal/session.created")
+	createdEvent := waitForTerminalEventType(t, conn, "terminal/sessionCreated")
 	if createdEvent.Payload["id"] != sessionID {
 		t.Fatalf("created event id = %#v, want %q", createdEvent.Payload["id"], sessionID)
 	}
@@ -429,7 +429,7 @@ func TestTerminalBridgeLifecycleEventsFlowThroughUnifiedEventStreamWithoutBridge
 		t.Fatalf("rename status = %d, want %d", renameResp.StatusCode, http.StatusOK)
 	}
 
-	updatedEvent := waitForTerminalEventType(t, conn, "terminal/session.updated")
+	updatedEvent := waitForTerminalEventType(t, conn, "terminal/sessionUpdated")
 	if updatedEvent.Payload["id"] != sessionID {
 		t.Fatalf("updated event id = %#v, want %q", updatedEvent.Payload["id"], sessionID)
 	}
@@ -443,7 +443,7 @@ func TestTerminalBridgeLifecycleEventsFlowThroughUnifiedEventStreamWithoutBridge
 		t.Fatalf("close status = %d, want %d", closeResp.StatusCode, http.StatusOK)
 	}
 
-	closedEvent := waitForTerminalEventType(t, conn, "terminal/session.closed")
+	closedEvent := waitForTerminalEventType(t, conn, "terminal/sessionClosed")
 	if closedEvent.Payload["id"] != sessionID {
 		t.Fatalf("closed event id = %#v, want %q", closedEvent.Payload["id"], sessionID)
 	}
