@@ -4,6 +4,7 @@ import 'package:highlight/highlight.dart' show Node, highlight;
 
 import '../models/diagnostic.dart';
 import '../models/editor_context.dart';
+import '../theme/monospace_text.dart';
 
 class _SyntaxTheme {
   final Map<String, TextStyle> styles;
@@ -505,8 +506,7 @@ class _CodeViewerState extends State<CodeViewer> {
                                         const SizedBox(width: 2),
                                       Text(
                                         '$lineNum',
-                                        style: TextStyle(
-                                          fontFamily: 'monospace',
+                                        style: monospaceTextStyle(
                                           fontSize: _fontSize,
                                           height: 1.5,
                                           color: diagnostic != null
@@ -561,8 +561,7 @@ class _CodeViewerState extends State<CodeViewer> {
                                     padding: const EdgeInsets.all(8),
                                     child: RichText(
                                       text: TextSpan(
-                                        style: TextStyle(
-                                          fontFamily: 'monospace',
+                                        style: monospaceTextStyle(
                                           fontSize: _fontSize,
                                           height: 1.5,
                                         ),

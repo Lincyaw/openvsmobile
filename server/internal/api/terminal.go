@@ -274,7 +274,7 @@ func (s *Server) handleWSBridgeTerminal(w http.ResponseWriter, r *http.Request) 
 			continue
 		}
 		if err := conn.WriteJSON(terminalWSMessage{
-			Type: "output",
+			Type: "replay",
 			Data: base64.StdEncoding.EncodeToString(chunk),
 		}); err != nil {
 			return
