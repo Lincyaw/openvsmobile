@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vscode_mobile/models/terminal_session.dart';
 import 'package:vscode_mobile/providers/terminal_provider.dart';
@@ -131,5 +133,133 @@ void main() {
         );
       },
     );
+
+    test(
+      'writes emulator-generated responses back to the terminal websocket',
+      () async {
+        await provider.ensureInitialized();
+
+        final socket = apiClient.socketFor('term-1');
+        socket.serverReady(apiClient.sessionsById['term-1']);
+        socket.serverOutput('\u001b[6n');
+        await pumpMicrotasks();
+
+        final payloads = socket.sink.sentMessages.cast<String>().toList(
+          growable: false,
+        );
+        final last = jsonDecode(payloads.last) as Map<String, dynamic>;
+        expect(last['type'], 'input');
+        expect(utf8.decode(base64Decode(last['data'] as String)), '\x1B[1;1R');
+      },
+    );
+
+    test(
+      'replay frames replace local emulator state without emitting responses',
+      () async {
+        await provider.ensureInitialized();
+
+        final socket = apiClient.socketFor('term-1');
+        socket.serverReady(apiClient.sessionsById['term-1']);
+        socket.serverOutput('stale-output\r\n');
+        await pumpMicrotasks();
+
+        final beforeReplayMessages = socket.sink.sentMessages.length;
+        socket.serverSend(<String, dynamic>{
+          'type': 'replay',
+          'data': base64Encode(utf8.encode('\u001b[6nrestored-state\r\n')),
+        });
+        await pumpMicrotasks();
+
+        expect(
+          provider.sessionFor('term-1')!.outputText,
+          contains('restored-state'),
+        );
+        expect(
+          provider.sessionFor('term-1')!.outputText,
+          isNot(contains('stale-output')),
+        );
+        expect(socket.sink.sentMessages.length, beforeReplayMessages);
+      },
+    );
+
+    test('alternate-screen replay requests a redraw after attach', () async {
+      await provider.ensureInitialized();
+
+      final socket = apiClient.socketFor('term-1');
+      socket.serverReady(apiClient.sessionsById['term-1']);
+      final beforeReplayMessages = socket.sink.sentMessages.length;
+      socket.serverSend(<String, dynamic>{
+        'type': 'replay',
+        'data': base64Encode(
+          utf8.encode('\u001b[?1049h\u001b[2J\u001b[Hrestored-tui'),
+        ),
+      });
+      await pumpMicrotasks();
+
+      expect(socket.sink.sentMessages.length, beforeReplayMessages + 1);
+      final redrawPayload = jsonDecode(
+        socket.sink.sentMessages.last as String,
+      ) as Map<String, dynamic>;
+      expect(redrawPayload['type'], 'input');
+      expect(
+        utf8.decode(base64Decode(redrawPayload['data'] as String)),
+        '\x0C',
+      );
+    });
+
+    test('resizing an alternate-screen session requests a redraw', () async {
+      await provider.ensureInitialized();
+
+      final socket = apiClient.socketFor('term-1');
+      socket.serverReady(apiClient.sessionsById['term-1']);
+      socket.serverSend(<String, dynamic>{
+        'type': 'replay',
+        'data': base64Encode(
+          utf8.encode('\u001b[?1049h\u001b[2J\u001b[Halt-screen'),
+        ),
+      });
+      await pumpMicrotasks();
+
+      final beforeResizeMessages = socket.sink.sentMessages.length;
+      await provider.resizeSession('term-1', 43, 52);
+
+      expect(provider.sessionFor('term-1')!.session.rows, 43);
+      expect(provider.sessionFor('term-1')!.session.cols, 52);
+      expect(socket.sink.sentMessages.length, beforeResizeMessages + 1);
+
+      final redrawPayload = jsonDecode(
+        socket.sink.sentMessages.last as String,
+      ) as Map<String, dynamic>;
+      expect(redrawPayload['type'], 'input');
+      expect(
+        utf8.decode(base64Decode(redrawPayload['data'] as String)),
+        '\x0C',
+      );
+    });
+
+    test('pinning a session moves it to the front of the list', () async {
+      await provider.ensureInitialized();
+
+      expect(provider.sessions.map((view) => view.session.id).toList(), [
+        'term-1',
+        'term-2',
+      ]);
+
+      provider.togglePinned('term-2');
+
+      expect(provider.sessions.map((view) => view.session.id).toList(), [
+        'term-2',
+        'term-1',
+      ]);
+      expect(provider.isPinned('term-2'), isTrue);
+
+      provider.togglePinned('term-2');
+
+      expect(provider.isPinned('term-2'), isFalse);
+      expect(provider.sessions.map((view) => view.session.id).toList(), [
+        'term-1',
+        'term-2',
+      ]);
+    });
   });
 }

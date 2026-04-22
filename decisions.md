@@ -1,0 +1,14 @@
+## Decisions
+
+### 2026-04-21
+
+- **Terminal emulator contract is pure Dart and renderer-agnostic** (L2/L4: codebase convention + north-star reasoning). `app/lib/terminal/` avoids Flutter `Color`/widget dependencies so parser, provider, renderer, and tests can evolve independently.
+- **TerminalProvider now uses the emulator as its session buffer backend** (L2: codebase research). This keeps the current text-based UI working while moving live terminal state onto the new cell-grid model.
+- **TerminalScreen is migrated to the provider/session architecture before full input-handler rewrite** (L4, flagged). This removes the current dual-implementation drift and lets emulator-backed sessions become the main terminal tab path.
+- **No new dependency for grapheme handling in the first pass** (L4, flagged). The emulator currently uses lightweight rune grouping with combining-mark/variation-selector support to keep the terminal core dependency-free; richer grapheme-cluster behavior can be tightened during renderer/parser follow-up.
+- **TerminalPane keeps both raw-key focus and a draft TextField** (L4, flagged). The terminal surface now owns hardware key events while the draft field remains for soft-keyboard command entry, which avoids a disruptive mobile UX regression while enabling zellij/tmux key handling.
+- **TerminalSnapshot now carries both visible lines and display lines** (L2). Visible lines preserve emulator-state semantics for tests and cursor math; display lines let the renderer show scrollback and alternate-buffer output from one contract.
+- **Terminal websocket backlog is now an explicit `replay` frame** (L4, flagged). Reconnect no longer relies on text `endsWith` dedupe; the client resets emulator state on replay and only treats later `output` frames as live data.
+- **The emulator now handles terminal queries and application cursor mode** (L3/L4). `DA`/`DSR` responses and `DECCKM` are supported because they are a small protocol surface with outsized impact on zellij/vim/tmux startup and navigation.
+- **A real zellij startup fixture is checked into `app/test/fixtures/terminal/zellij_startup.base64`** (L2/L3). This keeps at least one real-world alternate-screen capture in regression coverage instead of relying only on synthetic VT sequences.
+- **Narrow-screen terminal UX is now inbox-first instead of inline split fallback** (L4, flagged). Mobile opens with a session list, then drills into a dedicated terminal detail screen; swipe-to-close and long-press actions fit the chat-style interaction model better than trying to keep session management and PTY rendering on one cramped screen.

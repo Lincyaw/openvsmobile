@@ -140,7 +140,7 @@ func waitForTerminalOutput(t *testing.T, conn *websocket.Conn, wantSubstring str
 	for time.Now().Before(deadline) {
 		msg := readTerminalEnvelope(t, conn)
 		switch msg.Type {
-		case "output":
+		case "output", "replay":
 			payload := msg.Data
 			if decoded, err := base64.StdEncoding.DecodeString(payload); err == nil {
 				payload = string(decoded)
@@ -295,6 +295,17 @@ func TestTerminalBridgeWebSocketReadyInputOutputExitAndReconnect(t *testing.T) {
 	if ready.Type != "ready" {
 		t.Fatalf("reconnected stream envelope type = %q, want ready", ready.Type)
 	}
+	replay := readTerminalEnvelope(t, reconnected)
+	if replay.Type != "replay" {
+		t.Fatalf("reconnected replay envelope type = %q, want replay", replay.Type)
+	}
+	payload, err := base64.StdEncoding.DecodeString(replay.Data)
+	if err != nil {
+		t.Fatalf("decode replay payload: %v", err)
+	}
+	if !strings.Contains(string(payload), "bridge-terminal-test") {
+		t.Fatalf("replay payload = %q, want backlog to contain bridge-terminal-test", string(payload))
+	}
 
 	encodedExit := base64.StdEncoding.EncodeToString([]byte("exit\n"))
 	if err := reconnected.WriteJSON(map[string]any{"type": "input", "data": encodedExit}); err != nil {
@@ -368,7 +379,17 @@ func TestTerminalBridgeExitedSessionReattachReplaysBacklogAndExplicitCloseEmitsC
 	if ready.Session["state"] != "exited" {
 		t.Fatalf("ready session state = %#v, want exited", ready.Session["state"])
 	}
-	waitForTerminalOutput(t, reconnected, "exited-backlog")
+	replay := readTerminalEnvelope(t, reconnected)
+	if replay.Type != "replay" {
+		t.Fatalf("reattached replay envelope type = %q, want replay", replay.Type)
+	}
+	replayPayload, err := base64.StdEncoding.DecodeString(replay.Data)
+	if err != nil {
+		t.Fatalf("decode exited replay payload: %v", err)
+	}
+	if !strings.Contains(string(replayPayload), "exited-backlog") {
+		t.Fatalf("replay payload = %q, want backlog to contain exited-backlog", string(replayPayload))
+	}
 	_ = waitForTerminalExitEnvelope(t, reconnected)
 
 	closeResp, closeBody := postTerminalJSON(t, ts.URL, "/bridge/terminal/close", map[string]any{"id": sessionID})

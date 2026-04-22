@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/diagnostic.dart';
 import '../models/editor_context.dart';
+import '../theme/monospace_text.dart';
 
 class CodeEditor extends StatefulWidget {
   final String content;
@@ -362,8 +363,7 @@ class _CodeEditorState extends State<CodeEditor> {
                             if (diagnostic != null) const SizedBox(width: 2),
                             Text(
                               '$lineNumber',
-                              style: TextStyle(
-                                fontFamily: 'monospace',
+                              style: monospaceTextStyle(
                                 fontSize: _fontSize,
                                 height: 1.5,
                                 color: diagnostic != null
@@ -404,8 +404,7 @@ class _CodeEditorState extends State<CodeEditor> {
                           maxLines: null,
                           expands: false,
                           keyboardType: TextInputType.multiline,
-                          style: TextStyle(
-                            fontFamily: 'monospace',
+                          style: monospaceTextStyle(
                             fontSize: _fontSize,
                             height: 1.5,
                             color: isDark ? Colors.white : Colors.black87,

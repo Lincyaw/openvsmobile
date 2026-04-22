@@ -96,23 +96,32 @@ void main() {
     });
 
     testWidgets(
-      'degrades split layouts to a single visible pane on narrow screens',
+      'renders a mobile session inbox on narrow screens and opens detail view',
       (tester) async {
         await provider.ensureInitialized();
-        provider.setSplitViewEnabled(true);
-        await provider.activateSession('term-2', openInSecondary: true);
+        provider.sessionFor('term-1')!.buffer.append('alpha output\n');
+        provider.sessionFor('term-2')!.buffer.append('beta output\n');
+        provider.notifyListeners();
 
         await pumpScreen(tester, const Size(480, 900));
 
-        expect(
-          find.textContaining('falls back to one visible terminal pane'),
-          findsOneWidget,
-        );
-        expect(find.byType(TextField), findsOneWidget);
+        expect(find.text('Terminal Sessions'), findsOneWidget);
+        expect(find.text('Alpha'), findsOneWidget);
+        expect(find.text('Beta'), findsOneWidget);
+        expect(find.text('alpha output'), findsOneWidget);
         expect(
           find.byTooltip('Split view unavailable on narrow layouts'),
           findsOneWidget,
         );
+
+        await tester.tap(find.text('Alpha'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(find.byType(TextField), findsNothing);
+        expect(find.byIcon(Icons.keyboard), findsOneWidget);
+        expect(find.text('^C'), findsOneWidget);
+        expect(find.byTooltip('Pin session'), findsOneWidget);
       },
     );
   });

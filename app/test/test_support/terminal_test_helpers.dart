@@ -183,7 +183,18 @@ class FakeTerminalApiClient extends TerminalApiClient {
     if (session == null) {
       throw StateError('Unknown session $id');
     }
-    return session;
+    final updated = TerminalSession(
+      id: session.id,
+      name: session.name,
+      cwd: session.cwd,
+      profile: session.profile,
+      state: session.state,
+      exitCode: session.exitCode,
+      rows: rows,
+      cols: cols,
+    );
+    sessionsById[id] = updated;
+    return updated;
   }
 
   @override

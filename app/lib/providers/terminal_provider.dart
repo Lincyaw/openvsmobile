@@ -6,8 +6,9 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../models/terminal_session.dart';
 import '../services/terminal_api_client.dart';
+import '../terminal/terminal_emulator.dart';
+import '../terminal/terminal_snapshot.dart';
 
-const int _maxTerminalLines = 2000;
 const Duration _terminalReconnectDelay = Duration(seconds: 2);
 
 enum TerminalConnectionState {
@@ -20,16 +21,12 @@ enum TerminalConnectionState {
 }
 
 class TerminalSessionBuffer {
-  TerminalSessionBuffer();
+  TerminalSessionBuffer({int rows = 24, int cols = 80})
+    : emulator = TerminalEmulator(rows: rows, cols: cols);
 
-  final List<String> _lines = <String>[''];
-  final StringBuffer _currentLine = StringBuffer();
-  String? _cachedOutput;
+  final TerminalEmulator emulator;
 
-  String get text {
-    _cachedOutput ??= _lines.join('\n');
-    return _cachedOutput!;
-  }
+  String get text => emulator.plainText;
 
   bool endsWith(String value) {
     if (value.isEmpty) {
@@ -38,37 +35,24 @@ class TerminalSessionBuffer {
     return text.endsWith(value);
   }
 
-  bool get isEmpty => _lines.length == 1 && _lines.single.isEmpty;
+  bool get isEmpty => text.isEmpty;
 
   void clear() {
-    _lines
-      ..clear()
-      ..add('');
-    _currentLine.clear();
-    _cachedOutput = null;
+    emulator.reset();
   }
 
-  void append(String chunk) {
-    for (int i = 0; i < chunk.length; i++) {
-      final codeUnit = chunk.codeUnitAt(i);
-      if (codeUnit == 0x0A) {
-        _lines[_lines.length - 1] = _currentLine.toString();
-        _lines.add('');
-        _currentLine.clear();
-      } else if (codeUnit == 0x0D) {
-        if (i + 1 < chunk.length && chunk.codeUnitAt(i + 1) == 0x0A) {
-          continue;
-        }
-        _currentLine.clear();
-      } else {
-        _currentLine.writeCharCode(codeUnit);
-      }
-    }
-    _lines[_lines.length - 1] = _currentLine.toString();
-    if (_lines.length > _maxTerminalLines) {
-      _lines.removeRange(0, _lines.length - _maxTerminalLines);
-    }
-    _cachedOutput = null;
+  List<String> append(String chunk) {
+    return emulator.write(chunk);
+  }
+
+  void restore(String chunk) {
+    emulator.reset();
+    emulator.write(chunk);
+    emulator.drainResponses();
+  }
+
+  void resize({required int rows, required int cols}) {
+    emulator.resize(rows, cols);
   }
 }
 
@@ -86,6 +70,7 @@ class TerminalSessionView {
       session.isRunning && connectionState == TerminalConnectionState.ready;
 
   String get outputText => buffer.text;
+  TerminalSnapshot get snapshot => buffer.emulator.snapshot();
 
   String get statusLabel {
     switch (connectionState) {
@@ -167,6 +152,7 @@ class TerminalProvider extends ChangeNotifier {
       <String, TerminalSessionView>{};
   final Map<String, _TerminalSocketBinding> _bindings =
       <String, _TerminalSocketBinding>{};
+  final Set<String> _pinnedSessionIds = <String>{};
   List<String> _sessionOrder = <String>[];
 
   String? _activeSessionId;
@@ -197,6 +183,8 @@ class TerminalProvider extends ChangeNotifier {
   bool get hasSessions => _sessionOrder.isNotEmpty;
   bool get hasSecondarySession =>
       _secondarySessionId != null && _secondarySessionId != _activeSessionId;
+
+  bool isPinned(String sessionId) => _pinnedSessionIds.contains(sessionId);
 
   TerminalSessionView? sessionFor(String? sessionId) {
     if (sessionId == null) {
@@ -359,6 +347,19 @@ class TerminalProvider extends ChangeNotifier {
     }
   }
 
+  void togglePinned(String sessionId) {
+    if (!_sessionsById.containsKey(sessionId)) {
+      return;
+    }
+    if (_pinnedSessionIds.contains(sessionId)) {
+      _pinnedSessionIds.remove(sessionId);
+    } else {
+      _pinnedSessionIds.add(sessionId);
+    }
+    _sortSessions();
+    notifyListeners();
+  }
+
   Future<void> activateSession(
     String sessionId, {
     bool openInSecondary = false,
@@ -460,6 +461,9 @@ class TerminalProvider extends ChangeNotifier {
       final updated = await apiClient.resizeSession(sessionId, rows, cols);
       _upsertSession(updated);
       notifyListeners();
+      if (session.buffer.emulator.snapshot().isAlternateBuffer) {
+        await sendInput(sessionId, '\x0C');
+      }
     } catch (error) {
       _setSessionError(sessionId, error.toString());
     }
@@ -564,19 +568,23 @@ class TerminalProvider extends ChangeNotifier {
           notifyListeners();
           break;
         case 'output':
+        case 'replay':
           final encoded = decoded['data'] as String?;
           if (encoded == null) {
             return;
           }
           final text = utf8.decode(base64Decode(encoded), allowMalformed: true);
           final binding = _bindings[sessionId];
-          if (binding != null && binding.awaitingBacklogReplay) {
-            binding.awaitingBacklogReplay = false;
-            if (!entry.buffer.isEmpty && entry.buffer.endsWith(text)) {
-              return;
+          binding?.awaitingBacklogReplay = false;
+          if (type == 'replay') {
+            entry.buffer.restore(text);
+            if (entry.buffer.emulator.snapshot().isAlternateBuffer) {
+              _sendRawInput(binding, '\x0C');
             }
+          } else {
+            final responses = entry.buffer.append(text);
+            _sendEmulatorResponses(binding, responses);
           }
-          entry.buffer.append(text);
           if (!entry.session.isExited) {
             entry.connectionState = TerminalConnectionState.ready;
           }
@@ -654,6 +662,29 @@ class TerminalProvider extends ChangeNotifier {
       }
       unawaited(_ensureAttached(sessionId, reconnecting: true));
     });
+  }
+
+  void _sendEmulatorResponses(
+    _TerminalSocketBinding? binding,
+    List<String> responses,
+  ) {
+    if (binding?.channel == null || responses.isEmpty) {
+      return;
+    }
+    for (final response in responses) {
+      _sendRawInput(binding, response);
+    }
+  }
+
+  void _sendRawInput(_TerminalSocketBinding? binding, String input) {
+    if (binding?.channel == null || input.isEmpty) {
+      return;
+    }
+    final payload = jsonEncode(<String, String>{
+      'type': 'input',
+      'data': base64Encode(utf8.encode(input)),
+    });
+    binding!.channel!.sink.add(payload);
   }
 
   void _connectEventsStream() {
@@ -749,6 +780,9 @@ class TerminalProvider extends ChangeNotifier {
     final existing = _sessionsById[session.id];
     if (existing == null) {
       final created = TerminalSessionView(session: session);
+      if (session.rows != null && session.cols != null) {
+        created.buffer.resize(rows: session.rows!, cols: session.cols!);
+      }
       created.connectionState = session.isExited
           ? TerminalConnectionState.exited
           : TerminalConnectionState.idle;
@@ -760,6 +794,9 @@ class TerminalProvider extends ChangeNotifier {
       }
     } else {
       existing.session = session;
+      if (session.rows != null && session.cols != null) {
+        existing.buffer.resize(rows: session.rows!, cols: session.cols!);
+      }
       if (session.isExited) {
         existing.connectionState = TerminalConnectionState.exited;
       } else if (existing.connectionState == TerminalConnectionState.exited) {
@@ -778,6 +815,11 @@ class TerminalProvider extends ChangeNotifier {
     ids.sort((leftId, rightId) {
       final left = _sessionsById[leftId]!.session;
       final right = _sessionsById[rightId]!.session;
+      final leftPinned = _pinnedSessionIds.contains(leftId);
+      final rightPinned = _pinnedSessionIds.contains(rightId);
+      if (leftPinned != rightPinned) {
+        return leftPinned ? -1 : 1;
+      }
       if (left.isRunning != right.isRunning) {
         return left.isRunning ? -1 : 1;
       }
@@ -856,6 +898,7 @@ class TerminalProvider extends ChangeNotifier {
   Future<void> _removeSession(String sessionId, {bool notify = false}) async {
     final binding = _bindings.remove(sessionId);
     await binding?.dispose();
+    _pinnedSessionIds.remove(sessionId);
     _sessionsById.remove(sessionId);
     _sessionOrder = _sessionOrder.where((id) => id != sessionId).toList();
     if (_activeSessionId == sessionId) {
