@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -100,7 +102,12 @@ class _TerminalWorkspaceScreenState extends State<TerminalWorkspaceScreen> {
               sessionId: active.session.id,
               view: active,
               isActive: true,
-              onSubmit: (input) => provider.sendInput(active.session.id, input),
+              onSubmit: (input) {
+                unawaited(provider.sendInput(active.session.id, input));
+              },
+              onSendRaw: (input) {
+                unawaited(provider.sendInput(active.session.id, input));
+              },
               onDraftChanged: (value) =>
                   provider.setInputDraft(active.session.id, value),
               onResize: (rows, cols) =>
@@ -111,8 +118,12 @@ class _TerminalWorkspaceScreenState extends State<TerminalWorkspaceScreen> {
               sessionId: secondary.session.id,
               view: secondary,
               isActive: true,
-              onSubmit: (input) =>
-                  provider.sendInput(secondary.session.id, input),
+              onSubmit: (input) {
+                unawaited(provider.sendInput(secondary.session.id, input));
+              },
+              onSendRaw: (input) {
+                unawaited(provider.sendInput(secondary.session.id, input));
+              },
               onDraftChanged: (value) =>
                   provider.setInputDraft(secondary.session.id, value),
               onResize: (rows, cols) =>
