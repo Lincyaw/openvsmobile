@@ -3,7 +3,6 @@ import 'package:provider/provider.dart';
 
 import '../models/chat_message.dart';
 import '../models/editor_context.dart';
-import '../models/editor_models.dart';
 import '../providers/editor_provider.dart';
 import '../screens/code_screen.dart';
 
@@ -37,15 +36,6 @@ Future<void> openCodePath(
         child: const CodeScreen(),
       ),
     ),
-  );
-}
-
-Future<void> openCodeLocation(BuildContext context, EditorLocation location) {
-  return openCodePath(
-    context,
-    path: location.path,
-    selection: location.range.toSelection(),
-    cursor: location.range.start.toCursor(),
   );
 }
 

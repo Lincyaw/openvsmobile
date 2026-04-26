@@ -13,7 +13,6 @@ import (
 	"github.com/Lincyaw/vscode-mobile/server/internal/git"
 	gitauth "github.com/Lincyaw/vscode-mobile/server/internal/github"
 	"github.com/Lincyaw/vscode-mobile/server/internal/terminal"
-	"github.com/Lincyaw/vscode-mobile/server/internal/vscode"
 )
 
 // FileSystem defines the interface for file operations.
@@ -34,69 +33,34 @@ type Server struct {
 	processManager   *claude.ProcessManager
 	token            string
 	git              *git.Git
-	gitService       *vscode.GitService
-	editorService    *vscode.EditorService
-	terminalService  *vscode.TerminalService
-	workspaceService *vscode.WorkspaceService
 	termManager      *terminal.Manager
 	diagnosticRunner *diagnostics.Runner
 	githubAuth       *gitauth.Service
 	fileWatchHub     *FileWatchHub
-	bridgeManager    *vscode.BridgeManager
-	documentSync     *vscode.DocumentSyncService
 }
 
 // NewServer creates a new API server.
-func NewServer(fs FileSystem, sessionIndex *claude.SessionIndex, pm *claude.ProcessManager, token string, gitClient *git.Git, termMgr *terminal.Manager, diagRunner *diagnostics.Runner, githubAuth ...*gitauth.Service) *Server {
-	var authService *gitauth.Service
-	if len(githubAuth) > 0 {
-		authService = githubAuth[0]
-	}
+func NewServer(
+	fs FileSystem,
+	sessionIndex *claude.SessionIndex,
+	pm *claude.ProcessManager,
+	token string,
+	gitClient *git.Git,
+	termMgr *terminal.Manager,
+	diagRunner *diagnostics.Runner,
+	githubAuth *gitauth.Service,
+) *Server {
 	return &Server{
 		fs:               fs,
 		sessionIndex:     sessionIndex,
 		processManager:   pm,
 		token:            token,
 		git:              gitClient,
-		gitService:       nil,
 		termManager:      termMgr,
-		terminalService:  nil,
-		workspaceService: nil,
 		diagnosticRunner: diagRunner,
-		githubAuth:       authService,
+		githubAuth:       githubAuth,
 		fileWatchHub:     NewFileWatchHub(),
-		documentSync:     newDocumentSyncService(fs),
 	}
-}
-
-// SetBridgeManager injects the bridge lifecycle manager after server construction.
-func (s *Server) SetBridgeManager(manager *vscode.BridgeManager) {
-	s.bridgeManager = manager
-}
-
-// SetGitService injects the bridge-backed Git service after server construction.
-func (s *Server) SetGitService(service *vscode.GitService) {
-	s.gitService = service
-}
-
-// SetDocumentSync injects the bridge-backed document sync service.
-func (s *Server) SetDocumentSync(service *vscode.DocumentSyncService) {
-	s.documentSync = service
-}
-
-// SetEditorService injects the bridge-backed editor intelligence service.
-func (s *Server) SetEditorService(service *vscode.EditorService) {
-	s.editorService = service
-}
-
-// SetTerminalService injects the bridge-backed terminal service.
-func (s *Server) SetTerminalService(service *vscode.TerminalService) {
-	s.terminalService = service
-}
-
-// SetWorkspaceService injects the bridge-backed workspace service.
-func (s *Server) SetWorkspaceService(service *vscode.WorkspaceService) {
-	s.workspaceService = service
 }
 
 // Handler returns the top-level HTTP handler with all routes.
@@ -113,7 +77,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sessions/{id}/subagents/{agentId}/messages", s.handleSubagentMessages)
 	mux.HandleFunc("GET /api/sessions/{id}/subagents/{agentId}/meta", s.handleSubagentMeta)
 
-	// Bridge-backed Git endpoints.
+	// Git endpoints (backed by the local git CLI).
 	mux.HandleFunc("GET /bridge/git/repository", s.handleGitRepository)
 	mux.HandleFunc("GET /bridge/git/diff", s.handleGitDiff)
 	mux.HandleFunc("POST /bridge/git/stage", s.handleGitStage)
@@ -133,21 +97,8 @@ func (s *Server) Handler() http.Handler {
 
 	// Diagnostics endpoint.
 	mux.HandleFunc("GET /api/diagnostics", s.handleDiagnostics)
-	mux.HandleFunc("GET /bridge/capabilities", s.handleBridgeCapabilities)
-	mux.HandleFunc("POST /bridge/editor/diagnostics", s.handleBridgeEditorDiagnostics)
-	mux.HandleFunc("POST /bridge/editor/completion", s.handleBridgeEditorCompletion)
-	mux.HandleFunc("POST /bridge/editor/hover", s.handleBridgeEditorHover)
-	mux.HandleFunc("POST /bridge/editor/definition", s.handleBridgeEditorDefinition)
-	mux.HandleFunc("POST /bridge/editor/references", s.handleBridgeEditorReferences)
-	mux.HandleFunc("POST /bridge/editor/signature-help", s.handleBridgeEditorSignatureHelp)
-	mux.HandleFunc("POST /bridge/editor/formatting", s.handleBridgeEditorFormatting)
-	mux.HandleFunc("POST /bridge/editor/code-actions", s.handleBridgeEditorCodeActions)
-	mux.HandleFunc("POST /bridge/editor/rename", s.handleBridgeEditorRename)
-	mux.HandleFunc("POST /bridge/editor/document-symbols", s.handleBridgeEditorDocumentSymbols)
-	mux.HandleFunc("POST /bridge/doc/open", s.handleBridgeDocumentOpen)
-	mux.HandleFunc("POST /bridge/doc/change", s.handleBridgeDocumentChange)
-	mux.HandleFunc("POST /bridge/doc/save", s.handleBridgeDocumentSave)
-	mux.HandleFunc("POST /bridge/doc/close", s.handleBridgeDocumentClose)
+
+	// Terminal endpoints (backed by the local PTY manager).
 	mux.HandleFunc("GET /bridge/terminal/sessions", s.handleTerminalSessions)
 	mux.HandleFunc("POST /bridge/terminal/create", s.handleTerminalCreate)
 	mux.HandleFunc("POST /bridge/terminal/attach", s.handleTerminalAttach)
@@ -155,26 +106,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /bridge/terminal/close", s.handleTerminalClose)
 	mux.HandleFunc("POST /bridge/terminal/rename", s.handleTerminalRename)
 	mux.HandleFunc("POST /bridge/terminal/split", s.handleTerminalSplit)
-	mux.HandleFunc("GET /bridge/workspace/folders", s.handleBridgeWorkspaceFolders)
-	mux.HandleFunc("POST /bridge/workspace/symbols", s.handleBridgeWorkspaceSymbols)
-	mux.HandleFunc("POST /bridge/workspace/search/files", s.handleBridgeWorkspaceSearchFiles)
-	mux.HandleFunc("POST /bridge/workspace/search/text", s.handleBridgeWorkspaceSearchText)
-	mux.HandleFunc("POST /bridge/workspace/problems", s.handleBridgeWorkspaceProblems)
 
-	// GitHub repo context endpoints.
-	s.registerGitHubRepoContextRoutes(mux)
-
-	// GitHub collaboration endpoints.
-	s.registerGitHubCollaborationRoutes(mux)
-
-	// GitHub auth endpoints.
+	// GitHub auth endpoints (device flow + token storage for workbuddy).
 	s.registerGitHubAuthRoutes(mux)
 
 	// WebSocket endpoints.
 	mux.HandleFunc("/ws/chat", s.handleWSChat)
 	mux.HandleFunc("/ws/files", s.handleWSFiles)
 	mux.HandleFunc("GET /bridge/ws/terminal/{id}", s.handleWSBridgeTerminal)
-	mux.HandleFunc("/bridge/ws/events", s.handleWSBridgeEvents)
 
 	// Health-check endpoint (unauthenticated for connectivity tests).
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
@@ -246,23 +185,4 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 func (s *Server) githubAuthService() *gitauth.Service {
 	return s.githubAuth
-}
-
-func newDocumentSyncService(fs FileSystem) *vscode.DocumentSyncService {
-	if fs == nil {
-		return vscode.NewDocumentSyncService(nil)
-	}
-	return vscode.NewDocumentSyncService(fileSystemDocumentStore{fs: fs})
-}
-
-type fileSystemDocumentStore struct {
-	fs FileSystem
-}
-
-func (s fileSystemDocumentStore) ReadFile(path string) ([]byte, error) {
-	return s.fs.ReadFile(path)
-}
-
-func (s fileSystemDocumentStore) WriteFile(path string, content []byte) error {
-	return s.fs.WriteFile(path, content)
 }

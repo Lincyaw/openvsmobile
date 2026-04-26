@@ -95,7 +95,7 @@ func newTestServer(t *testing.T, token string) (*httptest.Server, *mockFS, strin
 	termMgr := terminal.NewManager()
 	diagRunner := diagnostics.NewRunner(10 * time.Second)
 
-	srv := NewServer(fs, sessionIndex, pm, token, nil, termMgr, diagRunner)
+	srv := NewServer(fs, sessionIndex, pm, token, nil, termMgr, diagRunner, nil)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
@@ -357,7 +357,7 @@ func TestSessionsList_WithSessions(t *testing.T) {
 
 	pm := claude.NewProcessManager("/nonexistent", ".")
 	diagRunner := diagnostics.NewRunner(10 * time.Second)
-	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), diagRunner)
+	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), diagRunner, nil)
 	ts2 := httptest.NewServer(srv.Handler())
 	defer ts2.Close()
 
@@ -394,7 +394,7 @@ func TestSessionsSearch_ByQuery(t *testing.T) {
 
 	pm := claude.NewProcessManager("/nonexistent", ".")
 	diagRunner := diagnostics.NewRunner(10 * time.Second)
-	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), diagRunner)
+	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), diagRunner, nil)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -454,7 +454,7 @@ func TestSessionsSearch_ProjectUsesExactWorkspaceRoot(t *testing.T) {
 
 	pm := claude.NewProcessManager("/nonexistent", ".")
 	diagRunner := diagnostics.NewRunner(10 * time.Second)
-	srv := NewServer(nil, sessIndex, pm, "", git.NewGit("."), terminal.NewManager(), diagRunner)
+	srv := NewServer(nil, sessIndex, pm, "", git.NewGit("."), terminal.NewManager(), diagRunner, nil)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -497,7 +497,7 @@ func TestSessionMessages_E2E(t *testing.T) {
 
 	pm := claude.NewProcessManager("/nonexistent", ".")
 	diagRunner := diagnostics.NewRunner(10 * time.Second)
-	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), diagRunner)
+	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), diagRunner, nil)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -553,7 +553,7 @@ func TestDiagnostics_NoRunner(t *testing.T) {
 	// Server with nil diagnostics runner.
 	sessIndex := claude.NewSessionIndex(t.TempDir())
 	pm := claude.NewProcessManager("/nonexistent", ".")
-	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), nil)
+	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), nil, nil)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -624,30 +624,3 @@ func TestHandler_LegacyTerminalWebSocketRouteRemoved(t *testing.T) {
 	}
 }
 
-func TestGitHubResolveLocalFile_EndToEndFromNestedWorkspace(t *testing.T) {
-	rcs := newRepoContextServer(t, "git@github.com:acme/rocket.git", func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v3/repos/acme/rocket":
-			_ = json.NewEncoder(w).Encode(map[string]any{"name": "rocket", "full_name": "acme/rocket", "owner": map[string]any{"login": "acme"}})
-		case "/api/v3/repos/acme/rocket/installation":
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": 321})
-		default:
-			t.Fatalf("unexpected backend path %s", r.URL.Path)
-		}
-	})
-
-	resp, payload := repoContextResolveLocalFile(t, rcs.server.URL, "/api", rcs.nestedDir, "pkg/repo_context_test.txt")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d payload=%#v", resp.StatusCode, payload)
-	}
-	resolved := asString(payload["local_path"])
-	if resolved == "<nil>" || resolved == "" {
-		resolved = asString(payload["path"])
-	}
-	if resolved != rcs.filePath {
-		t.Fatalf("resolved path = %q, want %q payload=%#v", resolved, rcs.filePath, payload)
-	}
-	if payload["exists"] != true {
-		t.Fatalf("exists = %#v payload=%#v", payload["exists"], payload)
-	}
-}

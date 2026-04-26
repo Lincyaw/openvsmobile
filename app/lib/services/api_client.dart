@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/diagnostic.dart';
 import '../models/file_entry.dart';
-import '../models/search_result.dart';
 import 'settings_service.dart';
 
 class ApiClient {
@@ -127,48 +126,6 @@ class ApiClient {
     return jsonList
         .map((e) => Diagnostic.fromJson(e as Map<String, dynamic>))
         .toList();
-  }
-
-  /// Search file contents for [query] under [path].
-  Future<List<ContentSearchResult>> searchContent(
-    String query,
-    String path,
-  ) async {
-    final uri = _buildUri(
-      '/api/search',
-      extraParams: {'q': query, 'path': path},
-    );
-    final response = await _client.get(uri, headers: _headers);
-    if (response.statusCode != 200) {
-      throw ApiException(
-        'Failed to search content: ${response.statusCode}',
-        response.statusCode,
-      );
-    }
-    final List<dynamic> jsonList = (jsonDecode(response.body) as List<dynamic>?) ?? [];
-    return jsonList
-        .map((e) => ContentSearchResult.fromJson(e as Map<String, dynamic>))
-        .toList();
-  }
-
-  /// Search for files by name under [path].
-  Future<List<Map<String, dynamic>>> searchFiles(
-    String query,
-    String path,
-  ) async {
-    final uri = _buildUri(
-      '/api/search/files',
-      extraParams: {'q': query, 'path': path},
-    );
-    final response = await _client.get(uri, headers: _headers);
-    if (response.statusCode != 200) {
-      throw ApiException(
-        'Failed to search files: ${response.statusCode}',
-        response.statusCode,
-      );
-    }
-    return ((jsonDecode(response.body) as List<dynamic>?) ?? [])
-        .cast<Map<String, dynamic>>();
   }
 
   void dispose() {

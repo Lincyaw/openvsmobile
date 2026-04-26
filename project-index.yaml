@@ -166,15 +166,12 @@ requirements:
   - id: REQ-008
     title: Simple code editing
     description: >
-      Flutter CodeEditor widget extending CodeViewer. Edit mode activated
-      by toolbar button. Shows cursor, soft keyboard, basic operations:
-      insert, delete, select-and-replace. Save button triggers PUT
-      /api/files/<path> through Go server to OpenVSCode Server.
-      No advanced features (no multi-cursor, snippets, bracket matching).
+      DROPPED 2026-04-26. On-device source editing is out of scope — the
+      mobile app is a chat surface, AI does the editing. CodeEditor widget
+      and edit mode UI removed.
     priority: P0
-    status: implemented
-    code:
-      - app/lib/widgets/code_editor.dart
+    status: dropped
+    code: []
     tests: []
     depends_on: [REQ-007]
 
@@ -233,15 +230,16 @@ requirements:
   - id: REQ-011
     title: Git status view
     description: >
-      Flutter view showing bridge-backed repository state sourced from the
-      VS Code Source Control model as the single truth source. The repository
-      document exposes current branch, upstream, ahead/behind counts, remotes,
-      and grouped file collections for staged, unstaged, untracked,
-      conflicts, and mergeChanges via GET /bridge/git/repository.
+      Flutter view showing repository state — current branch, upstream,
+      ahead/behind, remotes, and grouped file collections (staged, unstaged,
+      untracked, conflicts) via GET /bridge/git/repository. Backed by the
+      local `git` CLI in internal/git/. (Future: migrate to read from the
+      openvsmobile-bridge VSCode extension's HTTP runtime so repository state
+      mirrors the VS Code Source Control model exactly.)
     priority: P1
     status: implemented
     code:
-      - server/internal/vscode/git.go
+      - server/internal/git/git.go
       - server/internal/api/git.go
       - server/internal/api/router.go
       - app/lib/screens/git_screen.dart
@@ -249,8 +247,7 @@ requirements:
       - app/lib/services/git_api_client.dart
       - app/lib/models/git_models.dart
     tests:
-      - server/internal/api/git_bridge_test.go
-      - server/internal/vscode/ipc_git_test.go
+      - server/internal/git/git_test.go
       - app/test/services/git_api_client_test.dart
       - app/test/providers/git_provider_test.dart
     depends_on: [REQ-003]
@@ -289,28 +286,28 @@ requirements:
     depends_on: [REQ-001, REQ-003, REQ-007]
 
   - id: REQ-014
-    title: Bridge terminal session backend
+    title: Local-PTY terminal session backend
     description: >
-      Go server exposes bridge terminal endpoints around a unified session
-      model instead of the legacy /ws/terminal byte stream. REST endpoints:
-      GET /bridge/terminal/sessions plus POST /bridge/terminal/create,
-      /attach, /resize, /rename, /close, and /split. WebSocket endpoint:
-      /bridge/ws/terminal/:id for attach/re-attach streaming with ready,
-      output, error, and exit messages. Session lifecycle updates are also
-      rebroadcast on /bridge/ws/events so the mobile client can refresh
-      terminal state without a dedicated VS Code terminal adapter.
+      Go server exposes terminal endpoints around a unified session model.
+      REST endpoints: GET /bridge/terminal/sessions plus POST
+      /bridge/terminal/create, /attach, /resize, /rename, /close, /split.
+      WebSocket endpoint /bridge/ws/terminal/:id for attach/re-attach
+      streaming with ready, output, error, and exit messages. Backed by the
+      local PTY manager in internal/terminal/. URL prefix kept as `/bridge/`
+      for client compatibility but no VS Code IPC dependency. (Future:
+      migrate to OpenVSCode's `remoteterminal` channel via the
+      openvsmobile-bridge extension.)
     priority: P1
     status: implemented
     code:
       - server/internal/terminal/terminal.go
       - server/internal/api/terminal.go
       - server/internal/api/router.go
-      - server/internal/api/bridge.go
       - server/cmd/server/main.go
     tests:
       - server/internal/terminal/terminal_test.go
       - server/internal/api/handler_test.go
-    depends_on: [REQ-003, REQ-025]
+    depends_on: [REQ-003]
 
   # ============================================================
   # Iteration 3: Nice-to-have
@@ -424,46 +421,38 @@ requirements:
   - id: REQ-021
     title: Content search (grep) across files
     description: >
-      Add server endpoint GET /api/search?q=<pattern>&path=<dir> that
-      runs grep/ripgrep on the server and returns matching file paths
-      with line numbers and context. Flutter SearchScreen gets a toggle
-      between "File name" and "File content" search modes. Content
-      results show file path, line number, and matching line preview.
-      Search is scoped to current workspace via WorkspaceProvider.
-      Tap navigates to code viewer at the matched line.
+      DROPPED 2026-04-26 (UI surface). Server endpoint GET /api/search
+      remains available for future programmatic use, but no Flutter UI
+      consumes it. Users ask Claude to find things instead of using a
+      dedicated search tab.
     priority: P1
-    status: implemented
+    status: dropped
     code:
       - server/internal/api/search.go
       - server/internal/api/router.go
-      - app/lib/screens/search_screen.dart
-      - app/lib/providers/search_provider.dart
-      - app/lib/services/api_client.dart
     tests: []
     depends_on: [REQ-003]
 
   - id: REQ-022
     title: Git stage, unstage, and commit operations
     description: >
-      Add bridge-backed git command endpoints for stage, unstage, commit,
-      checkout, fetch, pull, push, discard, stash, and stash/apply through
-      /bridge/git/*. Command responses return the refreshed repository state
-      and repositoryChanged events flow over the unified bridge websocket so
-      the Flutter Git screen updates without manual polling.
+      Git command endpoints for stage, unstage, commit, checkout, fetch,
+      pull, push, discard, stash, and stash/apply through /bridge/git/*.
+      Backed by the local `git` CLI in internal/git/. Command responses
+      return the refreshed repository state. (Future: migrate to the
+      openvsmobile-bridge extension to receive vscode.git
+      onDidChangeRepository events instead of relying on polling.)
     priority: P1
     status: implemented
     code:
-      - server/internal/vscode/git.go
+      - server/internal/git/git.go
       - server/internal/api/git.go
       - server/internal/api/router.go
-      - server/internal/vscode/bridge.go
       - app/lib/screens/git_screen.dart
       - app/lib/providers/git_provider.dart
       - app/lib/services/git_api_client.dart
     tests:
-      - server/internal/api/git_bridge_test.go
-      - server/internal/api/bridge_test.go
-      - server/internal/vscode/bridge_integration_test.go
+      - server/internal/git/git_test.go
       - app/test/services/git_api_client_test.dart
       - app/test/providers/git_provider_test.dart
     depends_on: [REQ-011]
@@ -471,137 +460,79 @@ requirements:
   - id: REQ-023
     title: Mobile runtime bridge lifecycle manager
     description: >
-      Go server tracks a built-in mobile runtime bridge discovery contract,
-      monitors ready/not-ready state, detects generation changes as bridge
-      restarts, and resets state cleanly when the VS Code transport drops or
-      the server shuts down. The bridge manager owns the discovery file poll
-      loop and lifecycle event broadcast foundation without any fallback path.
+      DROPPED 2026-04-26. Replaced by the simpler openvsmobile-bridge VSCode
+      extension (extensions/openvsmobile-bridge/main.js) which writes runtime
+      info to ~/.config/openvscode-mobile/git-runtime.json on activation.
+      Discovery is now a one-shot file read instead of a poll loop.
     priority: P0
-    status: implemented
-    code:
-      - server/internal/vscode/bridge.go
-      - server/internal/vscode/client.go
-      - server/cmd/server/main.go
-      - openvscode-server/extensions/mobile-runtime-bridge/src/extension.ts
-    tests:
-      - server/internal/vscode/bridge_test.go
-      - server/internal/vscode/bridge_integration_test.go
+    status: dropped
+    code: []
+    tests: []
     depends_on: [REQ-001]
 
   - id: REQ-024
     title: Bridge capabilities discovery API
     description: >
-      Go server exposes GET /bridge/capabilities with an RFC-shaped capability
-      document once the runtime bridge is ready. Before readiness, the endpoint
-      fails explicitly with structured bridge_not_ready / capability_unavailable
-      errors rather than silently falling back to legacy APIs.
+      DROPPED 2026-04-26. The capabilities-handshake design assumed a complex
+      bridge with versioned feature flags. The replacement openvsmobile-bridge
+      extension exposes a flat HTTP surface; clients probe for endpoints
+      directly. /bridge/capabilities endpoint removed.
     priority: P0
-    status: implemented
-    code:
-      - server/internal/api/bridge.go
-      - server/internal/api/router.go
-      - server/internal/vscode/bridge.go
-      - server/cmd/server/main.go
-      - openvscode-server/extensions/mobile-runtime-bridge/src/extension.ts
-    tests:
-      - server/internal/api/bridge_test.go
-      - server/internal/vscode/bridge_test.go
+    status: dropped
+    code: []
+    tests: []
     depends_on: [REQ-023]
 
   - id: REQ-025
     title: Bridge lifecycle event stream
     description: >
-      Go server exposes WS /bridge/ws/events with a stable {type, payload}
-      envelope and emits bridge/ready plus bridge/restarted lifecycle events.
-      The built-in extension publishes generation-tagged discovery metadata so
-      the server can rebroadcast restart -> ready transitions to clients.
+      DROPPED 2026-04-26. The /bridge/ws/events WebSocket relayed bridge
+      ready/restarted events. With the in-tree extension model, bridge
+      lifetime equals VSCode lifetime and there is no separate "bridge
+      restart" notion to surface. Endpoint removed.
     priority: P0
-    status: implemented
-    code:
-      - server/internal/api/bridge.go
-      - server/internal/api/router.go
-      - server/internal/vscode/bridge.go
-      - openvscode-server/extensions/mobile-runtime-bridge/package.json
-      - openvscode-server/extensions/mobile-runtime-bridge/tsconfig.json
-      - openvscode-server/extensions/mobile-runtime-bridge/extension.webpack.config.js
-      - openvscode-server/extensions/mobile-runtime-bridge/src/extension.ts
-      - openvscode-server/build/gulpfile.extensions.ts
-      - openvscode-server/build/npm/dirs.ts
-    tests:
-      - server/internal/api/bridge_test.go
-      - server/internal/vscode/bridge_test.go
-      - server/internal/vscode/bridge_integration_test.go
+    status: dropped
+    code: []
+    tests: []
     depends_on: [REQ-023, REQ-024]
 
   - id: REQ-026
     title: Bridge document sync protocol
     description: >
-      Ticket ASE-42 / GitHub issue #3 adds a VS Code TextDocument-shaped
-      document sync contract for the mobile runtime bridge. The Go server
-      exposes POST /bridge/doc/open, /bridge/doc/change, /bridge/doc/save,
-      and /bridge/doc/close; tracks per-file in-memory buffers with monotonic
-      versions; validates range/position edits with VS Code-compatible
-      character semantics; returns structured document_not_open,
-      version_conflict, and invalid_position errors; and keeps the latest
-      unsaved buffer available to future workspace edit, diagnostics, and
-      completion features without falling back to legacy git/terminal paths.
+      DROPPED 2026-04-26. Document sync existed to support on-device editing
+      with LSP completion/diagnostics. With editing scope removed (REQ-008
+      dropped) there is no consumer. /bridge/doc/* endpoints removed.
     priority: P0
-    status: implemented
-    code:
-      - server/internal/vscode/bridge.go
-      - server/internal/api/bridge.go
-      - server/internal/api/router.go
-      - server/cmd/server/main.go
-    tests:
-      - server/internal/vscode/document_sync_test.go
-      - server/internal/api/bridge_documents_test.go
+    status: dropped
+    code: []
+    tests: []
     depends_on: [REQ-003, REQ-023]
 
   - id: REQ-029
     title: Flutter bridge-backed editor experience
     description: >
-      Ticket ASE-44 upgrades the mobile editor from a local text field wrapper
-      into a bridge-backed document experience. Open documents track synced
-      content, version, dirty state, cursor/selection, and bridge lifecycle
-      events; editor RPCs respect `/bridge/capabilities`; definitions,
-      references, diagnostics, content search hits, and chat/session file
-      annotations share one open-and-locate flow with reveal state and jump
-      history; and diagnostics are visible both inline and through a
-      problems-style surface.
+      DROPPED 2026-04-26. The bridge-backed editor (LSP RPC, document sync,
+      problems panel, jump history) targeted a mobile-IDE experience that is
+      out of scope. EditorProvider was slimmed from 1221 lines to 254 lines —
+      it now only carries selection state for the chat-context flow.
+      Surviving capability: code viewer + selection → "Ask AI" handoff.
     priority: P0
-    status: implemented
+    status: dropped
     code:
-      - project-index.yaml
-      - app/lib/main.dart
-      - app/lib/models/chat_message.dart
-      - app/lib/models/diagnostic.dart
-      - app/lib/models/editor_models.dart
-      - app/lib/navigation/editor_navigation.dart
       - app/lib/providers/editor_provider.dart
-      - app/lib/screens/chat_screen.dart
+      - app/lib/models/editor_models.dart
       - app/lib/screens/code_screen.dart
-      - app/lib/screens/files_screen.dart
-      - app/lib/screens/search_screen.dart
-      - app/lib/screens/session_detail_screen.dart
-      - app/lib/services/editor_api_client.dart
-      - app/lib/widgets/chat_bubble.dart
-      - app/lib/widgets/code_editor.dart
       - app/lib/widgets/code_viewer.dart
-      - app/lib/widgets/tool_use_card.dart
     tests:
-      - app/test/services/editor_api_client_test.dart
-      - app/test/providers/editor_provider_test.dart
-      - app/test/widgets/code_screen_test.dart
       - app/test/widgets/code_viewer_test.dart
-      - app/test/widgets/search_screen_test.dart
       - app/test/widgets/contextual_chat_test.dart
-    depends_on: [REQ-007, REQ-008, REQ-010, REQ-013, REQ-024, REQ-025, REQ-026]
+    depends_on: [REQ-007, REQ-010, REQ-013]
 
   # ============================================================
   # Iteration 5: Bug fixes from code review audit
   # ============================================================
 
-  - id: REQ-023
+  - id: REQ-031
     title: GitHub App device-flow auth foundation
     description: >
       Go server provides host-aware GitHub App device-flow authentication
@@ -610,7 +541,8 @@ requirements:
       metadata using an atomic JSON store. GitHub API calls that require a
       user token go through refresh preflight so expired or revoked refresh
       tokens surface a structured reauthorization error instead of leaking
-      partial state.
+      partial state. Token is consumed primarily by workbuddy.
+      (Renumbered from REQ-023 on 2026-04-26 to resolve duplicate ID.)
     priority: P1
     status: implemented
     code:
@@ -627,32 +559,18 @@ requirements:
       - server/internal/api/github_auth_test.go
     depends_on: [REQ-003]
 
-  - id: REQ-024
+  - id: REQ-032
     title: GitHub repo-context binding endpoints
     description: >
-      Go server derives the current workspace GitHub repository from the
-      workspace git remote, reports whether the authenticated GitHub account
-      can access that repository and whether the GitHub App is installed for
-      it, and resolves PR/review relative file paths back to local workspace
-      files without allowing path traversal outside the repo root.
+      DROPPED 2026-04-26. The mobile app no longer surfaces PR/review file
+      navigation, so the repo-context resolver is unused. Workbuddy and the
+      main Claude Code chat handle GitHub orchestration.
+      (Renumbered from REQ-024 on 2026-04-26 to resolve duplicate ID.)
     priority: P1
-    status: implemented
-    code:
-      - server/internal/git/repo_context.go
-      - server/internal/github/client.go
-      - server/internal/github/repo_context.go
-      - server/internal/github/service.go
-      - server/internal/github/types.go
-      - server/internal/api/router.go
-      - server/internal/api/github_repo_context.go
-      - server/cmd/server/main.go
-      - docs/github-auth-backend.md
-    tests:
-      - server/internal/git/git_test.go
-      - server/internal/github/service_test.go
-      - server/internal/api/github_repo_context_test.go
-      - server/internal/api/handler_test.go
-    depends_on: [REQ-003, REQ-023]
+    status: dropped
+    code: []
+    tests: []
+    depends_on: [REQ-003, REQ-031]
 
   - id: FIX-001
     title: Search API path sanitization
@@ -671,14 +589,10 @@ requirements:
   - id: FIX-002
     title: Search input debounce
     description: >
-      SearchScreen fires a search on every keystroke (onChanged) with no
-      debounce. File name search triggers recursive API calls per directory,
-      content search triggers a full server-side file walk. Add a 300ms
-      debounce timer to both search modes.
+      DROPPED 2026-04-26 with REQ-021 (search UI removed).
     priority: P1
-    status: implemented
-    code:
-      - app/lib/screens/search_screen.dart
+    status: dropped
+    code: []
     tests: []
     depends_on: [REQ-021]
 
@@ -757,36 +671,32 @@ requirements:
     depends_on: [REQ-020]
 
   - id: FIX-008
-    title: File browser and search scoped to workspace
+    title: File browser scoped to workspace
     description: >
-      File browser started at '/' and search searched the entire filesystem.
-      Added WorkspaceProvider to manage current workspace path (persisted
-      via SharedPreferences with recent list). File browser and search
-      now scoped to workspace. Workspace picker accessible from Files
-      tab title bar.
+      File browser started at '/'. Added WorkspaceProvider to manage current
+      workspace path (persisted via SharedPreferences with recent list).
+      File browser scoped to workspace. Workspace picker accessible from
+      Files tab title bar. (Search portion dropped with REQ-021.)
     priority: P1
     status: implemented
     code:
       - app/lib/providers/workspace_provider.dart
       - app/lib/screens/files_screen.dart
-      - app/lib/screens/search_screen.dart
       - app/lib/main.dart
     tests: []
-    depends_on: [REQ-006, REQ-021]
+    depends_on: [REQ-006]
 
   - id: FIX-009
     title: Terminal promoted to bottom navigation tab
     description: >
-      Terminal was buried in More screen, now a first-class bottom nav
-      tab (position 3 of 5: Files, Search, Terminal, Chat, More).
-      Connection deferred until tab is first viewed to avoid eager
-      WebSocket/PTY creation.
+      Terminal is a first-class bottom nav tab. Current tabs (4 total):
+      Files, Terminal, Chat, Git. Connection deferred until tab is first
+      viewed to avoid eager WebSocket/PTY creation.
     priority: P1
     status: implemented
     code:
       - app/lib/app.dart
       - app/lib/screens/terminal_screen.dart
-      - app/lib/screens/more_screen.dart
     tests: []
     depends_on: [REQ-014, REQ-020]
 
@@ -794,13 +704,15 @@ requirements:
     title: Mobile terminal session manager UX
     description: >
       Upgrade the Flutter terminal tab from a single PTY stream into a
-      session-centered terminal manager. The UI lists current bridge terminal
+      session-centered terminal manager. The UI lists current terminal
       sessions, supports create/switch/rename/close actions, preserves per-
-      session output history and input focus state, re-attaches to existing
-      sessions after refresh via `/bridge/terminal/sessions`, `/bridge/terminal/attach`,
-      and `/bridge/ws/events`, keeps exited sessions visible until explicitly
-      closed, and shows responsive split panes on wide layouts with a clear
-      single-pane fallback on narrow screens.
+      session output history and input focus state, and re-attaches to
+      existing sessions after refresh via `/bridge/terminal/sessions` and
+      `/bridge/terminal/attach`. Keeps exited sessions visible until
+      explicitly closed and shows responsive split panes on wide layouts
+      with a clear single-pane fallback on narrow screens. (URL prefix
+      `/bridge/` retained for client compatibility; backed by local PTY,
+      see REQ-014.)
     priority: P1
     status: implemented
     code:
@@ -820,80 +732,38 @@ requirements:
   - id: REQ-027
     title: GitHub current repository context backend
     description: >
-      Ticket ASE-51 adds workspace-derived GitHub repository context APIs.
-      The Go server resolves the active repository owner/name from the current
-      git remote for SSH and HTTPS remotes, probes GitHub auth/install access
-      with explicit `not_authenticated`, `reauth_required`,
-      `repo_access_unavailable`, and `app_not_installed_for_repo` states, and
-      exposes `/github/repos/current` plus `/github/resolve-local-file` with
-      `/api` aliases. Local file resolution is constrained to the repo root,
-      rejects traversal, and returns `exists: false` for missing files.
+      DROPPED 2026-04-26. With PR/issue UI removed, the current-repo probe
+      and local-file resolver no longer have a consumer in the mobile app.
     priority: P1
-    status: implemented
-    code:
-      - project-index.yaml
-      - server/internal/git/repo_context.go
-      - server/internal/github/repo_context.go
-      - server/internal/github/types.go
-      - server/internal/github/client.go
-      - server/internal/github/service.go
-      - server/internal/api/router.go
-      - server/internal/api/github_repo_context.go
-      - docs/github-auth-backend.md
-    tests:
-      - server/internal/github/service_test.go
-      - server/internal/api/github_repo_context_test.go
-    depends_on: [REQ-023]
+    status: dropped
+    code: []
+    tests: []
+    depends_on: [REQ-031]
 
-  - id: REQ-028
+  - id: REQ-033
     title: GitHub collaboration backend endpoints
     description: >
-      Ticket ASE-52 adds repo-scoped GitHub collaboration APIs on the Go
-      server for account lookup, issue listing/detail/commenting, and pull
-      request listing/detail/files/comments/reviews using the current
-      workspace repository context. The backend refreshes user tokens before
-      repo calls, translates GitHub auth/access/request failures into stable
-      JSON error codes, keeps response contracts snake_case, and aggregates
-      PR checks/status summaries onto the pull request detail response.
+      DROPPED 2026-04-26. The repo-scoped issue/PR/review HTTP surface had
+      no remaining consumer after the GitHub collaboration screens were
+      removed. Workbuddy interacts with GitHub directly via `gh` CLI.
+      (Renumbered from REQ-028 on 2026-04-26 to resolve duplicate ID.)
     priority: P1
-    status: implemented
-    code:
-      - project-index.yaml
-      - server/internal/github/types.go
-      - server/internal/github/client.go
-      - server/internal/github/service.go
-      - server/internal/github/collaboration.go
-      - server/internal/api/router.go
-      - server/internal/api/github_collaboration.go
-      - docs/github-auth-backend.md
-    tests:
-      - server/internal/github/service_test.go
-      - server/internal/api/github_collaboration_test.go
-    depends_on: [REQ-023, REQ-027]
+    status: dropped
+    code: []
+    tests: []
+    depends_on: [REQ-031, REQ-027]
 
   - id: REQ-030
     title: GitHub detail screens AI chat handoff
     description: >
-      Ticket ASE-55 adds explicit AI entry points on GitHub issue and pull
-      request detail screens. The Flutter chat provider keeps default
-      workspace plus active editor context intact, supports a one-shot minimal
-      GitHub attachment for the next send only, and the chat UI previews both
-      IDE context and pending GitHub context before sending.
+      DROPPED 2026-04-26. The "from GitHub screen, ask AI" handoff was
+      attached to the GitHub collaboration screens, which are gone. The
+      one-shot `pendingGitHubAttachment` shell remains in chat_provider for
+      potential future use.
     priority: P1
-    status: implemented
-    code:
-      - project-index.yaml
-      - app/lib/models/chat_context_attachment.dart
-      - app/lib/providers/chat_provider.dart
-      - app/lib/navigation/github_chat_navigation.dart
-      - app/lib/screens/chat_screen.dart
-      - app/lib/screens/github_issue_detail_screen.dart
-      - app/lib/screens/github_pull_request_detail_screen.dart
-      - app/lib/widgets/chat_context_summary.dart
-      - app/lib/widgets/contextual_chat.dart
+    status: dropped
+    code: []
     tests:
       - app/test/providers/chat_provider_test.dart
       - app/test/widgets/contextual_chat_test.dart
-      - app/test/widgets/github_issue_detail_screen_test.dart
-      - app/test/widgets/github_pull_request_detail_screen_test.dart
-    depends_on: [REQ-010, REQ-028, REQ-029]
+    depends_on: [REQ-010, REQ-033]

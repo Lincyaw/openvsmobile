@@ -8,7 +8,6 @@ import 'package:vscode_mobile/providers/workspace_provider.dart';
 import 'package:vscode_mobile/screens/terminal_workspace_screen.dart';
 import 'package:vscode_mobile/services/settings_service.dart';
 
-import '../test_support/editor_test_helpers.dart';
 import '../test_support/terminal_test_helpers.dart';
 
 void main() {
@@ -17,7 +16,6 @@ void main() {
     late TerminalProvider terminalProvider;
     late WorkspaceProvider workspaceProvider;
     late SettingsService settingsService;
-    late FakeEditorApiClient editorApiClient;
 
     setUp(() async {
       SharedPreferences.setMockInitialValues(<String, Object>{});
@@ -28,8 +26,7 @@ void main() {
         ],
       );
       terminalProvider = TerminalProvider(apiClient: apiClient);
-      editorApiClient = FakeEditorApiClient();
-      workspaceProvider = WorkspaceProvider(editorApiClient: editorApiClient);
+      workspaceProvider = WorkspaceProvider();
       settingsService = SettingsService();
       await workspaceProvider.load();
       await workspaceProvider.setWorkspace('/workspace');
@@ -40,7 +37,6 @@ void main() {
       terminalProvider.dispose();
       workspaceProvider.dispose();
       settingsService.dispose();
-      await editorApiClient.disposeFakes();
       await apiClient.disposeFakes();
     });
 

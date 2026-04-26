@@ -11,7 +11,6 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/Lincyaw/vscode-mobile/server/internal/terminal"
-	"github.com/Lincyaw/vscode-mobile/server/internal/vscode"
 )
 
 type terminalCreateRequest struct {
@@ -49,15 +48,6 @@ type terminalWSMessage struct {
 }
 
 func (s *Server) handleTerminalSessions(w http.ResponseWriter, r *http.Request) {
-	if s.terminalService != nil {
-		sessions, err := s.terminalService.List()
-		if err != nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "terminal_list_failed", err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, sessions)
-		return
-	}
 	writeJSON(w, http.StatusOK, s.termManager.List())
 }
 
@@ -83,22 +73,6 @@ func (s *Server) handleTerminalCreate(w http.ResponseWriter, r *http.Request) {
 		req.Cwd = cleaned
 	}
 
-	if s.terminalService != nil {
-		session, err := s.terminalService.CreateSession(terminal.CreateOptions{
-			Name:    req.Name,
-			WorkDir: req.Cwd,
-			Profile: normalizeProfile(req.Profile),
-			Rows:    req.Rows,
-			Cols:    req.Cols,
-		})
-		if err != nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "terminal_create_failed", err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, session)
-		return
-	}
-
 	session, err := s.termManager.CreateSession(terminal.CreateOptions{
 		Name:    req.Name,
 		Shell:   profileShell(req.Profile),
@@ -120,15 +94,6 @@ func (s *Server) handleTerminalAttach(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_terminal_request", err.Error())
 		return
 	}
-	if s.terminalService != nil {
-		session, _, err := s.terminalService.AttachSession(req.ID)
-		if err != nil {
-			writeJSONError(w, terminalStatus(err), "terminal_not_found", err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, session)
-		return
-	}
 	term, ok := s.termManager.Get(req.ID)
 	if !ok {
 		writeJSONError(w, http.StatusNotFound, "terminal_not_found", "terminal session not found")
@@ -143,15 +108,7 @@ func (s *Server) handleTerminalResize(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_terminal_request", err.Error())
 		return
 	}
-	var (
-		session terminal.Session
-		err     error
-	)
-	if s.terminalService != nil {
-		session, err = s.terminalService.ResizeSession(req.ID, req.Rows, req.Cols)
-	} else {
-		session, err = s.termManager.ResizeSession(req.ID, req.Rows, req.Cols)
-	}
+	session, err := s.termManager.ResizeSession(req.ID, req.Rows, req.Cols)
 	if err != nil {
 		writeJSONError(w, terminalStatus(err), "terminal_resize_failed", err.Error())
 		return
@@ -165,15 +122,7 @@ func (s *Server) handleTerminalClose(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_terminal_request", err.Error())
 		return
 	}
-	var (
-		session terminal.Session
-		err     error
-	)
-	if s.terminalService != nil {
-		session, err = s.terminalService.CloseSession(req.ID)
-	} else {
-		session, err = s.termManager.CloseSession(req.ID)
-	}
+	session, err := s.termManager.CloseSession(req.ID)
 	if err != nil {
 		writeJSONError(w, terminalStatus(err), "terminal_close_failed", err.Error())
 		return
@@ -191,15 +140,7 @@ func (s *Server) handleTerminalRename(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_terminal_name", "name is required")
 		return
 	}
-	var (
-		session terminal.Session
-		err     error
-	)
-	if s.terminalService != nil {
-		session, err = s.terminalService.Rename(req.ID, req.Name)
-	} else {
-		session, err = s.termManager.Rename(req.ID, req.Name)
-	}
+	session, err := s.termManager.Rename(req.ID, req.Name)
 	if err != nil {
 		writeJSONError(w, terminalStatus(err), "terminal_rename_failed", err.Error())
 		return
@@ -213,15 +154,7 @@ func (s *Server) handleTerminalSplit(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_terminal_request", err.Error())
 		return
 	}
-	var (
-		session terminal.Session
-		err     error
-	)
-	if s.terminalService != nil {
-		session, err = s.terminalService.Split(req.ParentID, req.Name)
-	} else {
-		session, err = s.termManager.Split(req.ParentID, req.Name)
-	}
+	session, err := s.termManager.Split(req.ParentID, req.Name)
 	if err != nil {
 		writeJSONError(w, terminalStatus(err), "terminal_split_failed", err.Error())
 		return
@@ -238,29 +171,17 @@ func (s *Server) handleWSBridgeTerminal(w http.ResponseWriter, r *http.Request) 
 	}
 	defer conn.Close()
 
-	var (
-		attachment *terminal.Attachment
-		session    terminal.Session
-	)
-	if s.terminalService != nil {
-		attachment, session, err = s.terminalService.Attach(sessionID)
-		if err != nil {
-			http.Error(w, err.Error(), terminalStatus(err))
-			return
-		}
-	} else {
-		term, ok := s.termManager.Get(sessionID)
-		if !ok {
-			http.Error(w, "terminal session not found", http.StatusNotFound)
-			return
-		}
-		attachment, err = s.termManager.Attach(sessionID)
-		if err != nil {
-			http.Error(w, err.Error(), terminalStatus(err))
-			return
-		}
-		session = term.Snapshot()
+	term, ok := s.termManager.Get(sessionID)
+	if !ok {
+		http.Error(w, "terminal session not found", http.StatusNotFound)
+		return
 	}
+	attachment, err := s.termManager.Attach(sessionID)
+	if err != nil {
+		http.Error(w, err.Error(), terminalStatus(err))
+		return
+	}
+	session := term.Snapshot()
 	defer attachment.Close()
 
 	if err := conn.WriteJSON(map[string]any{
@@ -337,21 +258,14 @@ func (s *Server) handleWSBridgeTerminal(w http.ResponseWriter, r *http.Request) 
 				_ = conn.WriteJSON(terminalWSMessage{Type: "error", Error: err.Error()})
 				continue
 			}
-			if s.terminalService != nil {
-				if err := s.terminalService.Input(sessionID, input); err != nil {
-					writeTerminalStreamError(conn, err)
-					return
-				}
-			} else {
-				term, ok := s.termManager.Get(sessionID)
-				if !ok {
-					writeTerminalStreamError(conn, errors.New("terminal session not found"))
-					return
-				}
-				if _, err := term.Write(input); err != nil {
-					writeTerminalStreamError(conn, err)
-					return
-				}
+			term, ok := s.termManager.Get(sessionID)
+			if !ok {
+				writeTerminalStreamError(conn, errors.New("terminal session not found"))
+				return
+			}
+			if _, err := term.Write(input); err != nil {
+				writeTerminalStreamError(conn, err)
+				return
 			}
 		}
 	}
@@ -416,15 +330,6 @@ func profileShell(profile string) string {
 func terminalStatus(err error) int {
 	if err == nil {
 		return http.StatusOK
-	}
-	var bridgeErr *vscode.BridgeError
-	if errors.As(err, &bridgeErr) {
-		switch bridgeErr.Code {
-		case "bridge_not_ready", "terminal_subscription_failed":
-			return http.StatusServiceUnavailable
-		case "terminal_command_failed":
-			return http.StatusBadGateway
-		}
 	}
 	if errors.Is(err, websocket.ErrBadHandshake) {
 		return http.StatusBadRequest

@@ -5,15 +5,12 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
-
-	"github.com/Lincyaw/vscode-mobile/server/internal/diagnostics"
-	"github.com/Lincyaw/vscode-mobile/server/internal/vscode"
 )
 
 // handleDiagnostics handles GET /api/diagnostics?path=<file>&workDir=<dir>.
 // Returns structured diagnostic findings for the given file or directory.
 func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
-	if s.diagnosticRunner == nil && s.editorService == nil {
+	if s.diagnosticRunner == nil {
 		http.Error(w, "diagnostics not configured", http.StatusServiceUnavailable)
 		return
 	}
@@ -56,65 +53,18 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 		results interface{}
 		runErr  error
 	)
-
-	if s.editorService != nil && filePath != "" {
-		if s.documentSync == nil {
-			writeBridgeError(w, http.StatusServiceUnavailable, "bridge_not_ready", "document sync is not configured")
-			return
-		}
-		snapshot, err := s.documentSync.DocumentBuffer(filePath)
-		if err != nil {
-			writeEditorBridgeError(w, err)
-			return
-		}
-		doc, err := s.editorService.Diagnostics(vscode.EditorRequest{
-			Path:    filePath,
-			Version: snapshot.Version,
-			WorkDir: workDir,
-		})
-		if err != nil {
-			writeEditorBridgeError(w, err)
-			return
-		}
-		if strings.EqualFold(r.URL.Query().Get("format"), "lsp") {
-			version := doc.Version
-			writeJSON(w, http.StatusOK, diagnosticsDocumentToReport(doc, &version))
-		} else {
-			writeJSON(w, http.StatusOK, doc.Diagnostics)
-		}
-		return
-	}
-
-	if s.diagnosticRunner == nil {
-		http.Error(w, "diagnostics not configured", http.StatusServiceUnavailable)
-		return
-	}
-
 	if filePath != "" {
 		results, runErr = s.diagnosticRunner.RunForFile(filePath, workDir)
 	} else {
 		results, runErr = s.diagnosticRunner.RunForDirectory(workDir)
 	}
-	err = runErr
 
-	if err != nil {
-		log.Printf("[Diagnostics] error for path=%s workDir=%s: %v", filePath, workDir, err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if runErr != nil {
+		log.Printf("[Diagnostics] error for path=%s workDir=%s: %v", filePath, workDir, runErr)
+		http.Error(w, runErr.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	log.Printf("[Diagnostics] path=%s workDir=%s", filePath, workDir)
-	if strings.EqualFold(r.URL.Query().Get("format"), "lsp") && filePath != "" {
-		var version *int
-		if s.documentSync != nil {
-			if snapshot, err := s.documentSync.DocumentBuffer(filePath); err == nil {
-				version = &snapshot.Version
-			}
-		}
-		if entries, ok := results.([]diagnostics.Diagnostic); ok {
-			writeJSON(w, http.StatusOK, diagnosticsToLSPReport(filePath, version, entries))
-			return
-		}
-	}
 	writeJSON(w, http.StatusOK, results)
 }

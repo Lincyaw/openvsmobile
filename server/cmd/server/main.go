@@ -69,14 +69,6 @@ func main() {
 
 	var fs api.FileSystem
 	var vsClient *vscode.Client
-	var bridgeManager *vscode.BridgeManager
-	var gitService *vscode.GitService
-	var documentSync *vscode.DocumentSyncService
-	var editorService *vscode.EditorService
-	var terminalService *vscode.TerminalService
-	var workspaceService *vscode.WorkspaceService
-	bridgeCtx, cancelBridge := context.WithCancel(context.Background())
-	defer cancelBridge()
 	if vsCodeURL != "" {
 		vsClient = vscode.NewClient()
 		if err := vsClient.Connect(context.Background(), vsCodeURL, vsCodeTok); err != nil {
@@ -84,27 +76,6 @@ func main() {
 		}
 		fsp := vscode.NewFileSystemProxy(vsClient.IPC(), "vscode-remote")
 		fs = api.NewVSCodeFSAdapter(fsp)
-		bridgeManager = vscode.NewBridgeManager(vscode.BridgeManagerOptions{
-			Client:          vsClient,
-			ServerURL:       vsCodeURL,
-			ConnectionToken: vsCodeTok,
-		})
-		bridgeManager.Start(bridgeCtx)
-		gitService = vscode.NewGitService(vsClient, bridgeManager)
-		gitService.Start(bridgeCtx)
-		terminalService = vscode.NewTerminalService(vsClient, bridgeManager)
-		if err := terminalService.Start(bridgeCtx); err != nil {
-			log.Fatalf("failed to start terminal bridge service: %v", err)
-		}
-		workspaceService = vscode.NewWorkspaceService(vsClient, bridgeManager)
-		workspaceService.Start(bridgeCtx)
-		documentSync = vscode.NewRuntimeDocumentSyncService(vsClient, bridgeManager, fs)
-		editorService = vscode.NewEditorService(vsClient, bridgeManager, documentSync)
-		editorService.Start(bridgeCtx)
-		log.Printf("mobile runtime bridge discovery watching %s", bridgeManager.MetadataPath())
-	}
-	if documentSync == nil {
-		documentSync = vscode.NewDocumentSyncService(fs)
 	}
 
 	termMgr := terminal.NewManager()
@@ -138,12 +109,6 @@ func main() {
 	}()
 
 	srv := api.NewServer(fs, sessionIndex, pm, token, git.NewGit(workDir), termMgr, diagRunner, githubAuth)
-	srv.SetBridgeManager(bridgeManager)
-	srv.SetGitService(gitService)
-	srv.SetDocumentSync(documentSync)
-	srv.SetEditorService(editorService)
-	srv.SetTerminalService(terminalService)
-	srv.SetWorkspaceService(workspaceService)
 
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
@@ -173,23 +138,6 @@ func main() {
 	termMgr.CloseAll()
 	pm.Shutdown()
 
-	// Close VS Code connection.
-	cancelBridge()
-	if gitService != nil {
-		gitService.Close()
-	}
-	if editorService != nil {
-		editorService.Close()
-	}
-	if terminalService != nil {
-		terminalService.Close()
-	}
-	if workspaceService != nil {
-		workspaceService.Close()
-	}
-	if bridgeManager != nil {
-		bridgeManager.Close()
-	}
 	if vsClient != nil {
 		if err := vsClient.Close(); err != nil {
 			log.Printf("vscode client close error: %v", err)

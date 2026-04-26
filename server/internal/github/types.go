@@ -3,6 +3,7 @@ package github
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -456,4 +457,22 @@ func IsAPIStatus(err error, statusCode int) bool {
 		return IsAPIStatus(hostErr.Err, statusCode)
 	}
 	return false
+}
+
+// APIError represents a non-2xx response from the GitHub REST API.
+type APIError struct {
+	Host       string
+	StatusCode int
+	Message    string
+}
+
+func (e *APIError) Error() string {
+	host := e.Host
+	if host == "" {
+		host = DefaultHost
+	}
+	if e.Message == "" {
+		return fmt.Sprintf("github api error: host=%s status=%d", host, e.StatusCode)
+	}
+	return fmt.Sprintf("github api error: host=%s status=%d message=%s", host, e.StatusCode, e.Message)
 }

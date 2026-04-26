@@ -1,5 +1,3 @@
-import 'github_collaboration_models.dart';
-
 enum ChatContextAttachmentSource { github }
 
 enum GitHubAttachmentKind {
@@ -10,6 +8,10 @@ enum GitHubAttachmentKind {
   pullRequestFile,
 }
 
+/// A reference to external context (currently only GitHub items) that the
+/// chat surfaces attach to the next message sent to Claude. The mobile app
+/// no longer constructs these from in-app browsers; instead Claude /
+/// workbuddy surface GitHub state through the chat itself.
 class ChatContextAttachment {
   final ChatContextAttachmentSource source;
   final GitHubAttachmentKind kind;
@@ -101,101 +103,4 @@ class GitHubChatAttachment extends ChatContextAttachment {
     super.authorLogin,
     super.url,
   }) : super(source: ChatContextAttachmentSource.github);
-
-  factory GitHubChatAttachment.issueBody({
-    required GitHubRepositoryContext repository,
-    required GitHubIssue issue,
-    required String action,
-  }) {
-    return GitHubChatAttachment(
-      kind: GitHubAttachmentKind.issue,
-      actionLabel: _actionLabel(action, fallback: 'Summarize issue'),
-      reference: 'Issue #${issue.number}',
-      title: issue.title,
-      body: ChatContextAttachment.excerpt(issue.body),
-      repositoryFullName: repository.fullName,
-      authorLogin: issue.author?.login,
-      url: issue.htmlUrl,
-    );
-  }
-
-  factory GitHubChatAttachment.issueComment({
-    required GitHubRepositoryContext repository,
-    required GitHubIssue issue,
-    required GitHubIssueComment comment,
-  }) {
-    return GitHubChatAttachment(
-      kind: GitHubAttachmentKind.issueComment,
-      actionLabel: 'Check comment',
-      reference: 'Issue #${issue.number}',
-      title: issue.title,
-      body: ChatContextAttachment.excerpt(comment.body),
-      repositoryFullName: repository.fullName,
-      authorLogin: comment.author?.login,
-      url: comment.htmlUrl.isNotEmpty ? comment.htmlUrl : issue.htmlUrl,
-    );
-  }
-
-  factory GitHubChatAttachment.pullRequestBody({
-    required GitHubRepositoryContext repository,
-    required GitHubPullRequest pullRequest,
-    required String action,
-  }) {
-    return GitHubChatAttachment(
-      kind: GitHubAttachmentKind.pullRequest,
-      actionLabel: _actionLabel(action, fallback: 'Summarize PR'),
-      reference: 'PR #${pullRequest.number}',
-      title: pullRequest.title,
-      body: ChatContextAttachment.excerpt(pullRequest.body),
-      repositoryFullName: repository.fullName,
-      authorLogin: pullRequest.author?.login,
-      url: pullRequest.htmlUrl,
-    );
-  }
-
-  factory GitHubChatAttachment.pullRequestComment({
-    required GitHubRepositoryContext repository,
-    required GitHubPullRequest pullRequest,
-    required GitHubPullRequestComment comment,
-  }) {
-    return GitHubChatAttachment(
-      kind: GitHubAttachmentKind.pullRequestComment,
-      actionLabel: 'Check comment',
-      reference: 'PR #${pullRequest.number}',
-      title: pullRequest.title,
-      body: ChatContextAttachment.excerpt(comment.body),
-      repositoryFullName: repository.fullName,
-      path: comment.path,
-      authorLogin: comment.author?.login,
-      url: comment.htmlUrl.isNotEmpty ? comment.htmlUrl : pullRequest.htmlUrl,
-    );
-  }
-
-  factory GitHubChatAttachment.pullRequestFile({
-    required GitHubRepositoryContext repository,
-    required GitHubPullRequest pullRequest,
-    required GitHubPullRequestFile file,
-  }) {
-    return GitHubChatAttachment(
-      kind: GitHubAttachmentKind.pullRequestFile,
-      actionLabel: 'Review file',
-      reference: 'PR #${pullRequest.number}',
-      title: pullRequest.title,
-      body: ChatContextAttachment.excerpt(file.patch),
-      repositoryFullName: repository.fullName,
-      path: file.filename,
-      url: pullRequest.htmlUrl,
-    );
-  }
-
-  static String _actionLabel(String action, {required String fallback}) {
-    switch (action) {
-      case 'issue_reply':
-        return 'Draft reply';
-      case 'pull_request_review':
-        return 'AI review';
-      default:
-        return fallback;
-    }
-  }
 }

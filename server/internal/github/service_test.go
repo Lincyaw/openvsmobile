@@ -159,30 +159,6 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
-func TestParseRepositoryRemoteSupportsHTTPSAndSSH(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		remoteURL string
-		host      string
-		owner     string
-		repo      string
-	}{
-		{name: "https", remoteURL: "https://github.com/acme/rocket.git", host: "github.com", owner: "acme", repo: "rocket"},
-		{name: "ssh", remoteURL: "git@github.com:acme/rocket.git", host: "github.com", owner: "acme", repo: "rocket"},
-		{name: "enterprise https", remoteURL: "https://github.enterprise.local/acme/rocket.git", host: "github.enterprise.local", owner: "acme", repo: "rocket"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			repo, err := ParseRepositoryRemote("origin", tc.remoteURL, "/tmp/work")
-			if err != nil {
-				t.Fatalf("ParseRepositoryRemote() error = %v", err)
-			}
-			if repo.GitHubHost != tc.host || repo.Owner != tc.owner || repo.Name != tc.repo {
-				t.Fatalf("parsed repo = %#v", repo)
-			}
-		})
-	}
-}
-
 func TestGetRepoEscapesOwnerAndRepoSegments(t *testing.T) {
 	var gotPath string
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

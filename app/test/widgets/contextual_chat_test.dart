@@ -9,7 +9,6 @@ import 'package:vscode_mobile/screens/chat_screen.dart';
 import 'package:vscode_mobile/widgets/contextual_chat.dart';
 
 import '../test_support/chat_test_helpers.dart';
-import '../test_support/editor_test_helpers.dart';
 
 Widget _wrapWithProviders({
   required ChatProvider chatProvider,
@@ -32,7 +31,6 @@ void main() {
     late RecordingWebSocketChannel channel;
     late ChatProvider chatProvider;
     late WorkspaceProvider workspaceProvider;
-    late FakeEditorApiClient editorApi;
 
     setUp(() {
       SharedPreferences.setMockInitialValues(<String, Object>{});
@@ -40,13 +38,11 @@ void main() {
       chatProvider = ChatProvider(
         apiClient: FakeChatApiClient(channel: channel),
       );
-      editorApi = FakeEditorApiClient();
-      workspaceProvider = WorkspaceProvider(editorApiClient: editorApi);
+      workspaceProvider = WorkspaceProvider();
     });
 
     tearDown(() async {
       chatProvider.dispose();
-      await editorApi.disposeFakes();
       await channel.dispose();
     });
 

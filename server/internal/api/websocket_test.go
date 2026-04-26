@@ -42,7 +42,7 @@ func newWebsocketTestServer(t *testing.T, claudeBin, defaultDir string) *httptes
 	sessionIndex := claude.NewSessionIndex(t.TempDir())
 	pm := claude.NewProcessManager(claudeBin, defaultDir)
 	diagRunner := diagnostics.NewRunner(10 * time.Second)
-	srv := NewServer(newMockFS(), sessionIndex, pm, "", git.NewGit(t.TempDir()), terminal.NewManager(), diagRunner)
+	srv := NewServer(newMockFS(), sessionIndex, pm, "", git.NewGit(t.TempDir()), terminal.NewManager(), diagRunner, nil)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts
