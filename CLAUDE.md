@@ -4,23 +4,23 @@ This file provides guidance to Claude Code when working with this repository.
 
 ## What this project is
 
-A Flutter Android client for talking to a workspace-bound "main Claude Code" instance, paired with a Go server that wraps the Claude Code CLI and forwards file/terminal/git operations to OpenVSCode Server. The user's working model is: chat with the main Claude Code on the phone → it publishes GitHub issues / merges PRs → [workbuddy](https://github.com/Lincyaw/workbuddy) worker nodes execute the actual coding work. The mobile app is a chat + observability surface, **not** a mobile IDE.
+A Flutter Android client for talking to a workspace-bound "main Claude Code" instance, paired with a Go server that wraps the Claude Code CLI and forwards file/git/diagnostics/workspace operations to OpenVSCode Server. The user's working model is: chat with the main Claude Code on the phone → it publishes GitHub issues / merges PRs → [workbuddy](https://github.com/Lincyaw/workbuddy) worker nodes execute the actual coding work. The mobile app is a chat + observability surface, **not** a mobile IDE.
 
 ## Architecture
 
 ```
 app/              — Flutter Android client (chat + read views)
-server/           — Go server (Claude CLI wrapper + thin OpenVSCode forwarder)
+server/           — Go server (Claude CLI wrapper + thin OpenVSCode forwarder
+                    + local PTY for terminal)
 openvscode-server/ — Git submodule: forked OpenVSCode Server
   └── extensions/openvsmobile-bridge/ — VSCode extension exposing runtime
-                                        APIs (currently vscode.git) over local
-                                        HTTP. Future channels (terminal, LSP,
-                                        workspace) iterate inside this extension.
+                                        APIs (git, diagnostics, workspace,
+                                        SSE event stream) over local HTTP.
 ```
 
 ### Design principle: forward, don't reimplement
 
-If OpenVSCode Server already provides a feature (LSP, search, git, terminal, file watching), the mobile stack should **forward** to it rather than reimplement. Custom code is justified only for AI/Claude integration and workbuddy-specific orchestration. The fork's role is to host the `openvsmobile-bridge` extension; **do not add new code to OpenVSCode core** — extend the extension instead.
+If OpenVSCode Server already provides a feature **and exposes it through an API we can call**, forward to it rather than reimplement. Custom code is justified only for AI/Claude integration, workbuddy-specific orchestration, **and the terminal** (see decisions.md 2026-04-26: vscode.window.Terminal has no public stdout reader, so going through extension would mean reimplementing PTY in JS rather than forwarding — local PTY in Go is the right answer). The fork's role is to host the `openvsmobile-bridge` extension; **do not add new code to OpenVSCode core** — extend the extension instead.
 
 ### OpenVSCode Server submodule
 - Origin: https://github.com/Lincyaw/openvscode-server.git (fork)
@@ -29,7 +29,7 @@ If OpenVSCode Server already provides a feature (LSP, search, git, terminal, fil
 - Native IPC channels the Go server consumes:
   - `REMOTE_FILE_SYSTEM_CHANNEL_NAME` — file read/write/watch
 - `extensions/openvsmobile-bridge/` is a zero-deps Node extension that activates on startup, binds an HTTP server on `127.0.0.1:0`, and writes runtime info to `~/.config/openvscode-mobile/bridge-runtime.json` (override env: `OPENVSCODE_MOBILE_BRIDGE_INFO_PATH`). All routes require `Authorization: Bearer <token>`. Endpoints: `/git/*` (delegates to `git.bridge.*` VS Code commands in `extensions/git/src/bridgeApi.ts`), `/diagnostics`, `/workspace/{folders,findFiles,findText}`, `/healthz`. The Go server reads the runtime info file on startup and forwards.
-- Terminal is **not yet** forwarded to the extension — `vscode.window.Terminal` has no public stdout reader, and the alternatives (`onDidWriteData` proposed API, bundling node-pty with native build pipeline) violate the zero-deps constraint. Local PTY (`server/internal/terminal/`) remains.
+- Terminal is **deliberately not** forwarded to the extension. See decisions.md 2026-04-26.
 
 ### Flutter client (app/)
 - Bottom navigation: **Files, Terminal, Chat, Git** (4 tabs)
@@ -48,7 +48,7 @@ If OpenVSCode Server already provides a feature (LSP, search, git, terminal, fil
 - Git: forwarded to bridge → `git.bridge.*` commands. URL paths kept as `/bridge/git/*` for Flutter compatibility.
 - Diagnostics: forwarded to bridge → `vscode.languages.getDiagnostics()`. Endpoint: `/api/diagnostics`.
 - Workspace: forwarded to bridge → workspace folders/findFiles/findText. Endpoints: `/api/workspace/{folders,findFiles,findText}`.
-- Terminal: still **local** PTY (`internal/terminal/`). Flutter URL contract `/bridge/terminal/*` and `/bridge/ws/terminal/{id}` is preserved.
+- Terminal: **local** PTY (`internal/terminal/`) — by design, not a TODO. Flutter URL contract `/bridge/terminal/*` and `/bridge/ws/terminal/{id}` is preserved.
 - GitHub auth: device-flow only (workbuddy needs the token; UI for issues/PRs lives in workbuddy itself or the main Claude Code chat). The repo-context probe in `internal/github/repo_context.go` shells out to `git` for the local-remote URL parse — this is auth-flow only and unrelated to the bridge surface.
 - REST + WebSocket API for the Flutter client
 

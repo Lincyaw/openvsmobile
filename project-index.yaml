@@ -297,11 +297,11 @@ requirements:
       REST endpoints: GET /bridge/terminal/sessions plus POST
       /bridge/terminal/create, /attach, /resize, /rename, /close, /split.
       WebSocket endpoint /bridge/ws/terminal/:id for attach/re-attach
-      streaming with ready, output, error, and exit messages. Backed by the
-      local PTY manager in internal/terminal/. URL prefix kept as `/bridge/`
-      for client compatibility but no VS Code IPC dependency. (Future:
-      migrate to OpenVSCode's `remoteterminal` channel via the
-      openvsmobile-bridge extension.)
+      streaming with ready, output, error, and exit messages. Backed by
+      the local PTY manager in internal/terminal/ (creack/pty). URL
+      prefix `/bridge/` retained for client compatibility but no VS Code
+      IPC dependency. **Local PTY is the chosen design, not a fallback** —
+      see decisions.md 2026-04-26.
     priority: P1
     status: implemented
     code:
