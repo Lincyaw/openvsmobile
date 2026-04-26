@@ -162,7 +162,7 @@ func (s *Server) handleTerminalSplit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, session)
 }
 
-func (s *Server) handleWSBridgeTerminal(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleWSTerminal(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("id")
 
 	conn, err := upgrader.Upgrade(w, r, nil)

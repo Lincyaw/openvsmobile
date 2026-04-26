@@ -79,7 +79,6 @@ class _CodeScreenState extends State<CodeScreen> {
                     CodeViewer(
                       content: file.content,
                       fileName: file.name,
-                      diagnostics: const [],
                       revealSelection: editorProvider.revealSelection,
                       revealNonce: editorProvider.revealNonce,
                       onSelectionChanged: (selection) {

@@ -1,8 +1,4 @@
-import 'dart:async';
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../models/git_models.dart';
 import '../services/git_api_client.dart';
@@ -41,8 +37,6 @@ class GitProvider extends ChangeNotifier {
   bool _isLoading = false;
   String? _error;
   String _workDir = '/';
-  WebSocketChannel? _eventsChannel;
-  StreamSubscription<dynamic>? _eventsSubscription;
   final Set<GitOperationType> _runningOperations = <GitOperationType>{};
   GitOperationFeedback? _feedback;
   int _feedbackNonce = 0;
@@ -96,7 +90,6 @@ class GitProvider extends ChangeNotifier {
     _error = null;
     _feedback = null;
     _runningOperations.clear();
-    _connectEvents();
     notifyListeners();
   }
 
@@ -200,7 +193,6 @@ class GitProvider extends ChangeNotifier {
     try {
       await action();
       _error = null;
-      _connectEvents();
       if (emitSuccessFeedback) {
         _setFeedback(
           GitOperationFeedback(
@@ -250,104 +242,5 @@ class GitProvider extends ChangeNotifier {
       _error = null;
     }
     notifyListeners();
-  }
-
-  void _connectEvents() {
-    if (_workDir.isEmpty) {
-      return;
-    }
-
-    _eventsSubscription?.cancel();
-    _eventsChannel?.sink.close();
-
-    _eventsChannel = apiClient.connectEventsWebSocket();
-    _eventsSubscription = _eventsChannel!.stream.listen(
-      _onEvent,
-      onError: (_) {},
-      onDone: () {},
-    );
-  }
-
-  void _onEvent(dynamic raw) {
-    if (raw is! String) {
-      return;
-    }
-
-    try {
-      final decoded = jsonDecode(raw);
-      if (decoded is! Map<String, dynamic>) {
-        return;
-      }
-      _applyRepositoryEvent(decoded);
-    } catch (_) {
-      // Ignore malformed bridge events; the next refresh or event will recover.
-    }
-  }
-
-  Future<void> applyBridgeEvent(Map<String, dynamic> event) async {
-    final hadRepository = _applyRepositoryEvent(event);
-    if (event['type'] != 'git/repositoryChanged' &&
-        event['type'] != 'bridge/git/repositoryChanged') {
-      return;
-    }
-    final payload = event['payload'];
-    if (payload is! Map) {
-      return;
-    }
-    if (hadRepository) {
-      return;
-    }
-    final changedPath =
-        (payload['path'] as String?) ??
-        (payload['repository'] is Map
-            ? (payload['repository'] as Map)['path'] as String?
-            : null);
-    if (changedPath == _workDir) {
-      await refreshRepository();
-    }
-  }
-
-  @override
-  void dispose() {
-    _eventsSubscription?.cancel();
-    _eventsChannel?.sink.close();
-    super.dispose();
-  }
-
-  bool _applyRepositoryEvent(Map<String, dynamic> decoded) {
-    final event = BridgeEventEnvelope.fromJson(decoded);
-    if (event.type != 'git/repositoryChanged' &&
-        event.type != 'bridge/git/repositoryChanged') {
-      return false;
-    }
-    if (event.payload is! Map) {
-      return false;
-    }
-
-    final payload = Map<String, dynamic>.from(event.payload as Map);
-    final repositoryPayload = payload['repository'];
-    final source = repositoryPayload is Map
-        ? Map<String, dynamic>.from(repositoryPayload)
-        : payload;
-    if (!source.containsKey('path') && payload['path'] is String) {
-      source['path'] = payload['path'];
-    }
-    if (!source.containsKey('branch') &&
-        !source.containsKey('staged') &&
-        !source.containsKey('unstaged') &&
-        !source.containsKey('untracked') &&
-        !source.containsKey('conflicts') &&
-        !source.containsKey('mergeChanges')) {
-      return false;
-    }
-
-    final repository = GitRepositoryState.fromJson(source);
-    if (repository.path != _workDir) {
-      return false;
-    }
-    _repository = repository;
-    _error = null;
-    notifyListeners();
-    return true;
   }
 }

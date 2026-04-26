@@ -20,14 +20,14 @@ var upgrader = websocket.Upgrader{
 
 // ChatMessage is the message format for the /ws/chat WebSocket.
 type ChatMessage struct {
-	Type          string                  `json:"type"`                    // "send", "resume", "start"
-	Message       string                  `json:"message,omitempty"`       // For "send" type.
-	SessionID     string                  `json:"sessionId,omitempty"`     // For "resume" type.
-	WorkspaceRoot string                  `json:"workspaceRoot,omitempty"` // For workspace-bound chat.
-	WorkDir       string                  `json:"workDir,omitempty"`       // Legacy alias for workspaceRoot.
-	ActiveFile    string                  `json:"activeFile,omitempty"`
-	Cursor        *claude.CursorPosition  `json:"cursor,omitempty"`
-	Selection     *claude.SelectionRange  `json:"selection,omitempty"`
+	Type          string                      `json:"type"`                    // "send", "resume", "start"
+	Message       string                      `json:"message,omitempty"`       // For "send" type.
+	SessionID     string                      `json:"sessionId,omitempty"`     // For "resume" type.
+	WorkspaceRoot string                      `json:"workspaceRoot,omitempty"` // For workspace-bound chat.
+	WorkDir       string                      `json:"workDir,omitempty"`       // Legacy alias for workspaceRoot.
+	ActiveFile    string                      `json:"activeFile,omitempty"`
+	Cursor        *claude.CursorPosition      `json:"cursor,omitempty"`
+	Selection     *claude.SelectionRange      `json:"selection,omitempty"`
 	Context       *claude.ConversationContext `json:"context,omitempty"`
 }
 
@@ -197,82 +197,6 @@ func (s *Server) streamOutput(conn *websocket.Conn, conv *claude.Conversation) {
 	writeWSJSON(conn, map[string]string{"type": "closed"})
 	conv.Close()
 	s.processManager.RemoveConversation(conv.ID)
-}
-
-// FileWatchClient represents a connected file watch client.
-type FileWatchClient struct {
-	conn *websocket.Conn
-	mu   sync.Mutex
-}
-
-// FileWatchHub manages file watch WebSocket connections.
-type FileWatchHub struct {
-	mu      sync.RWMutex
-	clients map[*FileWatchClient]struct{}
-}
-
-// NewFileWatchHub creates a new FileWatchHub.
-func NewFileWatchHub() *FileWatchHub {
-	return &FileWatchHub{
-		clients: make(map[*FileWatchClient]struct{}),
-	}
-}
-
-// Broadcast sends a file event to all connected clients.
-// Clients that fail to receive the message are removed and closed.
-func (h *FileWatchHub) Broadcast(event interface{}) {
-	h.mu.RLock()
-	var dead []*FileWatchClient
-	for client := range h.clients {
-		client.mu.Lock()
-		err := client.conn.WriteJSON(event)
-		client.mu.Unlock()
-		if err != nil {
-			log.Printf("file watch broadcast error: %v", err)
-			dead = append(dead, client)
-		}
-	}
-	h.mu.RUnlock()
-
-	// Remove dead clients outside the read lock to avoid lock inversion.
-	for _, client := range dead {
-		h.removeClient(client)
-		client.conn.Close()
-	}
-}
-
-func (h *FileWatchHub) addClient(client *FileWatchClient) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.clients[client] = struct{}{}
-}
-
-func (h *FileWatchHub) removeClient(client *FileWatchClient) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	delete(h.clients, client)
-}
-
-// handleWSFiles handles the /ws/files WebSocket endpoint for file watch events.
-func (s *Server) handleWSFiles(w http.ResponseWriter, r *http.Request) {
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Printf("websocket upgrade error: %v", err)
-		return
-	}
-	defer conn.Close()
-
-	client := &FileWatchClient{conn: conn}
-	s.fileWatchHub.addClient(client)
-	defer s.fileWatchHub.removeClient(client)
-
-	// Keep the connection open; read messages to detect close.
-	for {
-		_, _, err := conn.ReadMessage()
-		if err != nil {
-			break
-		}
-	}
 }
 
 func writeWSError(conn *websocket.Conn, msg string) {

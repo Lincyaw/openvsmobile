@@ -35,17 +35,17 @@ type Server struct {
 	bridgeEvents   *bridge.EventStream
 	termManager    *terminal.Manager
 	githubAuth     *gitauth.Service
-	fileWatchHub   *FileWatchHub
 }
 
 // NewServer creates a new API server.
 //
-// `bridgeClient` forwards git, diagnostics, and workspace queries to the
+// `bridgeClient` forwards git and workspace queries to the
 // openvsmobile-bridge VS Code extension. Pass nil to disable those endpoints
 // (they will return 503 bridge_unavailable). `termMgr` is the local PTY
-// manager that powers the /bridge/terminal/* endpoints; terminal output is
-// not yet served over the extension bridge because the public VS Code API
-// does not expose terminal stdout.
+// manager that powers the /api/terminal/* endpoints; the terminal stays on
+// the local PTY by design (decisions.md 2026-04-26) — exposing terminal
+// stdout through the extension would require either node-pty or proposed
+// VS Code APIs that aren't available without a build pipeline.
 func NewServer(
 	fs FileSystem,
 	sessionIndex *claude.SessionIndex,
@@ -63,7 +63,6 @@ func NewServer(
 		bridge:         bridgeClient,
 		termManager:    termMgr,
 		githubAuth:     githubAuth,
-		fileWatchHub:   NewFileWatchHub(),
 	}
 }
 
@@ -102,38 +101,30 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /bridge/git/stash", s.handleGitStash)
 	mux.HandleFunc("POST /bridge/git/stash/apply", s.handleGitStashApply)
 
-	// Search endpoints.
-	mux.HandleFunc("GET /api/search", s.handleSearch)
-	mux.HandleFunc("GET /api/search/files", s.handleSearchFiles)
-
-	// Diagnostics endpoint (forwarded to the openvsmobile-bridge extension).
-	mux.HandleFunc("GET /api/diagnostics", s.handleDiagnostics)
-
 	// Workspace endpoints (forwarded to the openvsmobile-bridge extension).
 	mux.HandleFunc("GET /api/workspace/folders", s.handleWorkspaceFolders)
 	mux.HandleFunc("GET /api/workspace/findFiles", s.handleWorkspaceFindFiles)
 	mux.HandleFunc("GET /api/workspace/findText", s.handleWorkspaceFindText)
 
-	// Terminal endpoints (still backed by the local PTY manager — see
-	// internal/terminal. Forwarding terminal output through the extension
-	// requires either node-pty or proposed VS Code APIs that are not
-	// available without a build pipeline; tracked separately).
-	mux.HandleFunc("GET /bridge/terminal/sessions", s.handleTerminalSessions)
-	mux.HandleFunc("POST /bridge/terminal/create", s.handleTerminalCreate)
-	mux.HandleFunc("POST /bridge/terminal/attach", s.handleTerminalAttach)
-	mux.HandleFunc("POST /bridge/terminal/resize", s.handleTerminalResize)
-	mux.HandleFunc("POST /bridge/terminal/close", s.handleTerminalClose)
-	mux.HandleFunc("POST /bridge/terminal/rename", s.handleTerminalRename)
-	mux.HandleFunc("POST /bridge/terminal/split", s.handleTerminalSplit)
+	// Terminal endpoints (local PTY by design — see decisions.md 2026-04-26).
+	// Terminal output cannot reasonably be forwarded through the extension
+	// bridge: the public VS Code API does not expose terminal stdout, and
+	// node-pty / proposed APIs would require a build pipeline.
+	mux.HandleFunc("GET /api/terminal/sessions", s.handleTerminalSessions)
+	mux.HandleFunc("POST /api/terminal/create", s.handleTerminalCreate)
+	mux.HandleFunc("POST /api/terminal/attach", s.handleTerminalAttach)
+	mux.HandleFunc("POST /api/terminal/resize", s.handleTerminalResize)
+	mux.HandleFunc("POST /api/terminal/close", s.handleTerminalClose)
+	mux.HandleFunc("POST /api/terminal/rename", s.handleTerminalRename)
+	mux.HandleFunc("POST /api/terminal/split", s.handleTerminalSplit)
 
 	// GitHub auth endpoints (device flow + token storage for workbuddy).
 	s.registerGitHubAuthRoutes(mux)
 
 	// WebSocket endpoints.
 	mux.HandleFunc("/ws/chat", s.handleWSChat)
-	mux.HandleFunc("/ws/files", s.handleWSFiles)
 	mux.HandleFunc("/bridge/ws/events", s.handleWSBridgeEvents)
-	mux.HandleFunc("GET /bridge/ws/terminal/{id}", s.handleWSBridgeTerminal)
+	mux.HandleFunc("GET /ws/terminal/{id}", s.handleWSTerminal)
 
 	// Health-check endpoint (unauthenticated for connectivity tests).
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {

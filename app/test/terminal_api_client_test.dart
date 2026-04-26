@@ -11,7 +11,7 @@ void main() {
   test('listSessions parses bridge terminal metadata', () async {
     final client = MockClient((http.Request request) async {
       expect(request.method, 'GET');
-      expect(request.url.path, '/bridge/terminal/sessions');
+      expect(request.url.path, '/api/terminal/sessions');
       expect(request.headers['Authorization'], 'Bearer secret');
       return http.Response(
         jsonEncode([
@@ -43,7 +43,7 @@ void main() {
   test('createSession accepts nested session envelopes', () async {
     final client = MockClient((http.Request request) async {
       expect(request.method, 'POST');
-      expect(request.url.path, '/bridge/terminal/create');
+      expect(request.url.path, '/api/terminal/create');
 
       final body = jsonDecode(request.body) as Map<String, dynamic>;
       expect(body['cwd'], '/repo');
@@ -82,7 +82,7 @@ void main() {
   test('renameSession posts to the bridge rename endpoint', () async {
     final client = MockClient((http.Request request) async {
       expect(request.method, 'POST');
-      expect(request.url.path, '/bridge/terminal/rename');
+      expect(request.url.path, '/api/terminal/rename');
       expect(jsonDecode(request.body), {'id': 'term-1', 'name': 'Renamed'});
       return http.Response(
         jsonEncode({
@@ -113,7 +113,7 @@ void main() {
   test('splitSession accepts wrapped envelopes', () async {
     final client = MockClient((http.Request request) async {
       expect(request.method, 'POST');
-      expect(request.url.path, '/bridge/terminal/split');
+      expect(request.url.path, '/api/terminal/split');
       expect(jsonDecode(request.body), {'parentId': 'term-1', 'name': 'Split'});
       return http.Response(
         jsonEncode({
@@ -157,7 +157,7 @@ void main() {
     );
     expect(
       captured.toString(),
-      'wss://example.com/api/bridge/ws/terminal/term-9?token=secret',
+      'wss://example.com/api/ws/terminal/term-9?token=secret',
     );
   });
 

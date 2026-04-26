@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-import '../models/diagnostic.dart';
 import '../models/file_entry.dart';
 import 'settings_service.dart';
 
@@ -102,30 +101,6 @@ class ApiClient {
         response.statusCode,
       );
     }
-  }
-
-  /// Fetch diagnostics for a file or directory.
-  Future<List<Diagnostic>> getDiagnostics({
-    String? filePath,
-    String workDir = '/',
-  }) async {
-    final params = <String, String>{'workDir': workDir};
-    if (filePath != null) params['path'] = filePath;
-
-    final uri = _buildUri('/api/diagnostics', extraParams: params);
-    final response = await _client.get(uri, headers: _headers);
-    if (response.statusCode != 200) {
-      throw ApiException(
-        'Failed to fetch diagnostics: ${response.statusCode}',
-        response.statusCode,
-      );
-    }
-    final decoded = jsonDecode(response.body);
-    if (decoded == null) return [];
-    final List<dynamic> jsonList = (decoded as List<dynamic>?) ?? [];
-    return jsonList
-        .map((e) => Diagnostic.fromJson(e as Map<String, dynamic>))
-        .toList();
   }
 
   void dispose() {

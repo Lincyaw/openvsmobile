@@ -1,7 +1,6 @@
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
-import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../models/git_models.dart';
 import 'api_client.dart' show ApiException;
@@ -172,17 +171,6 @@ class GitApiClient {
       if (stash != null && stash.isNotEmpty) 'stash': stash,
       'pop': pop,
     }, errorPrefix: 'Failed to apply stash');
-  }
-
-  WebSocketChannel connectEventsWebSocket() {
-    final wsBase = baseUrl
-        .replaceFirst('https://', 'wss://')
-        .replaceFirst('http://', 'ws://');
-    final base = wsBase.endsWith('/')
-        ? wsBase.substring(0, wsBase.length - 1)
-        : wsBase;
-    final uri = Uri.parse('$base/bridge/ws/events?token=$token');
-    return WebSocketChannel.connect(uri);
   }
 
   Future<GitRepositoryState> _postRepository(

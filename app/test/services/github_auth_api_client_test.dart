@@ -82,7 +82,7 @@ void main() {
     expect(response.isAuthorized, isTrue);
   });
 
-  test('fetchStatus includes query string and maps success body', () async {
+  test('getStatus includes query string and maps success body', () async {
     final client = MockClient((http.Request request) async {
       expect(request.method, 'GET');
       expect(request.url.path, '/api/github/auth/status');
@@ -103,7 +103,7 @@ void main() {
     });
 
     final apiClient = GitHubAuthApiClient(settings: settings, client: client);
-    final response = await apiClient.fetchStatus(githubHost: 'github.com');
+    final response = await apiClient.getStatus(githubHost: 'github.com');
 
     expect(response.authenticated, isTrue);
     expect(response.needsRefresh, isTrue);
@@ -147,7 +147,7 @@ void main() {
     final apiClient = GitHubAuthApiClient(settings: settings, client: client);
 
     await expectLater(
-      () => apiClient.fetchStatus(githubHost: 'github.com'),
+      () => apiClient.getStatus(githubHost: 'github.com'),
       throwsA(
         isA<GitHubAuthApiException>()
             .having((e) => e.errorCode, 'errorCode', 'not_authenticated')

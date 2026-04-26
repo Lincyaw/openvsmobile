@@ -288,20 +288,6 @@ class GitChangeGroup {
   });
 }
 
-class BridgeEventEnvelope {
-  final String type;
-  final dynamic payload;
-
-  const BridgeEventEnvelope({required this.type, required this.payload});
-
-  factory BridgeEventEnvelope.fromJson(Map<String, dynamic> json) {
-    return BridgeEventEnvelope(
-      type: json['type'] as String? ?? '',
-      payload: json['payload'],
-    );
-  }
-}
-
 class GitDiffDocument {
   final String path;
   final String diff;

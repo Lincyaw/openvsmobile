@@ -77,10 +77,6 @@ class GitHubAuthApiClient {
     return _parseResponse(response, GitHubAuthStatus.fromJson);
   }
 
-  Future<GitHubAuthStatus> fetchStatus({String githubHost = 'github.com'}) {
-    return getStatus(githubHost: githubHost);
-  }
-
   Future<GitHubDisconnectResponse> disconnect({
     String githubHost = 'github.com',
   }) async {

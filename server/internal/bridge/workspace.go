@@ -6,6 +6,18 @@ import (
 	"strconv"
 )
 
+// Range mirrors the JSON range emitted by the extension (used by TextMatch).
+type Range struct {
+	Start Position `json:"start"`
+	End   Position `json:"end"`
+}
+
+// Position is a 0-based line/character pair.
+type Position struct {
+	Line      int `json:"line"`
+	Character int `json:"character"`
+}
+
 // WorkspaceFolder describes a single VS Code workspace folder.
 type WorkspaceFolder struct {
 	URI    string `json:"uri"`

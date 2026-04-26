@@ -540,27 +540,6 @@ func TestSessionMessages_NotFound(t *testing.T) {
 	}
 }
 
-// --- Diagnostics handler test ---
-
-func TestDiagnostics_NoBridge(t *testing.T) {
-	// Server with no bridge client wired up.
-	sessIndex := claude.NewSessionIndex(t.TempDir())
-	pm := claude.NewProcessManager("/nonexistent", ".")
-	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), nil)
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-
-	resp, err := http.Get(ts.URL + "/api/diagnostics?workDir=/tmp")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503 when bridge is unavailable, got %d", resp.StatusCode)
-	}
-}
-
 func TestGitLegacyAPIEndpointsAreNotRegistered(t *testing.T) {
 	ts, _, _ := newTestServer(t, "")
 
@@ -589,16 +568,38 @@ func TestGitLegacyAPIEndpointsAreNotRegistered(t *testing.T) {
 func TestHandler_LegacyTerminalWebSocketRouteRemoved(t *testing.T) {
 	ts, _, _ := newTestServer(t, "")
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/terminal"
-	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	// /bridge/ws/terminal/{id} was renamed to /ws/terminal/{id} alongside the
+	// REST path moves (decisions.md 2026-04-26). Confirm the legacy bridge URL
+	// is no longer registered, while the new path upgrades successfully.
+	legacyURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/bridge/ws/terminal/some-id"
+	conn, resp, err := websocket.DefaultDialer.Dial(legacyURL, nil)
 	if conn != nil {
 		_ = conn.Close()
 	}
 	if err == nil {
-		t.Fatal("expected legacy /ws/terminal route to be removed")
+		t.Fatal("expected legacy /bridge/ws/terminal/{id} route to be removed")
 	}
 	if resp != nil && resp.StatusCode == http.StatusSwitchingProtocols {
-		t.Fatalf("legacy /ws/terminal unexpectedly upgraded with status %d", resp.StatusCode)
+		t.Fatalf("legacy /bridge/ws/terminal unexpectedly upgraded with status %d", resp.StatusCode)
+	}
+
+	// The new /ws/terminal/{id} should still upgrade — even if the session
+	// id is unknown, the dial itself completes; the handler closes the
+	// connection after writing an error.
+	newURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/terminal/some-id"
+	conn2, resp2, err := websocket.DefaultDialer.Dial(newURL, nil)
+	if conn2 != nil {
+		_ = conn2.Close()
+	}
+	if err != nil {
+		t.Fatalf("expected /ws/terminal/{id} route to be registered, got dial error: %v", err)
+	}
+	if resp2 == nil || resp2.StatusCode != http.StatusSwitchingProtocols {
+		status := 0
+		if resp2 != nil {
+			status = resp2.StatusCode
+		}
+		t.Fatalf("/ws/terminal/{id} should upgrade, got status %d", status)
 	}
 }
 

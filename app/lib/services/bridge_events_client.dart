@@ -32,7 +32,7 @@ typedef BridgeEventHandler = void Function(BridgeEvent event);
 ///
 /// Connects on [connect], reconnects on disconnect with exponential backoff
 /// (1s..30s), and dispatches incoming events to handlers registered via
-/// [on]. Mirrors the lifecycle conventions of [FileWatchClient].
+/// [on]. The MainShell owns one of these and routes events into providers.
 class BridgeEventsClient {
   static const _initialBackoff = Duration(seconds: 1);
   static const _maxBackoff = Duration(seconds: 30);

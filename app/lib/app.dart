@@ -3,12 +3,13 @@ import 'package:provider/provider.dart';
 import 'providers/workspace_provider.dart';
 import 'providers/file_provider.dart';
 import 'providers/git_provider.dart';
+import 'providers/terminal_provider.dart';
 import 'screens/files_screen.dart';
 import 'screens/chat_screen.dart';
 import 'screens/terminal_workspace_screen.dart';
 import 'screens/git_screen.dart';
+import 'screens/more_screen.dart';
 import 'services/bridge_events_client.dart';
-import 'services/file_watch_client.dart';
 import 'services/settings_service.dart';
 
 class VSCodeMobileApp extends StatelessWidget {
@@ -44,7 +45,6 @@ class MainShell extends StatefulWidget {
 
 class _MainShellState extends State<MainShell> {
   int _currentIndex = 0;
-  final FileWatchClient _fileWatch = FileWatchClient();
   final BridgeEventsClient _bridgeEvents = BridgeEventsClient();
   String? _bridgeEventsBaseUrl;
   String? _bridgeEventsToken;
@@ -52,8 +52,8 @@ class _MainShellState extends State<MainShell> {
   @override
   void initState() {
     super.initState();
-    // Push-based events from the VS Code extension. Wired once and reused
-    // across rebuilds; the underlying client owns reconnect logic.
+    // Single push-based events socket, fanned out to providers via handlers.
+    // Providers no longer own their own /bridge/ws/events connections.
     _bridgeEvents.on('git.repositoryChanged', (_) {
       if (!mounted) return;
       context.read<GitProvider>().refreshRepository();
@@ -67,31 +67,35 @@ class _MainShellState extends State<MainShell> {
       // editor screen. Keeping the subscription so we can hook
       // EditorProvider here once it gains a refresh API.
     });
+    // Terminal session lifecycle events arrive on the same socket. Refreshing
+    // the inventory is the simplest correct response — TerminalProvider knows
+    // how to merge new/updated/closed sessions in one pass.
+    _bridgeEvents.on('terminal.session.created', (_) {
+      if (!mounted) return;
+      context.read<TerminalProvider>().refreshSessions();
+    });
+    _bridgeEvents.on('terminal.session.updated', (_) {
+      if (!mounted) return;
+      context.read<TerminalProvider>().refreshSessions();
+    });
+    _bridgeEvents.on('terminal.session.closed', (_) {
+      if (!mounted) return;
+      context.read<TerminalProvider>().refreshSessions();
+    });
   }
 
   @override
   void dispose() {
-    _fileWatch.dispose();
     _bridgeEvents.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final wsPath = context.watch<WorkspaceProvider>().currentPath;
     final settings = context.watch<SettingsService>();
-
-    // Sync file watcher to current workspace.
-    _fileWatch.connect(
-      settings.serverUrl,
-      settings.authToken,
-      wsPath,
-      () {
-        if (!mounted) return;
-        context.read<FileProvider>().refresh();
-        context.read<GitProvider>().refreshRepository();
-      },
-    );
+    // We watch WorkspaceProvider so the shell rebuilds on workspace switches,
+    // which keeps tabs scoped to the active project.
+    context.watch<WorkspaceProvider>();
 
     // (Re)connect the bridge events stream whenever server settings change.
     if (_bridgeEventsBaseUrl != settings.serverUrl ||
@@ -106,6 +110,7 @@ class _MainShellState extends State<MainShell> {
       TerminalWorkspaceScreen(isActive: _currentIndex == 1),
       const ChatScreen(),
       const GitScreen(),
+      const MoreScreen(),
     ];
 
     return Scaffold(
@@ -135,6 +140,11 @@ class _MainShellState extends State<MainShell> {
             icon: Icon(Icons.commit_outlined),
             selectedIcon: Icon(Icons.commit),
             label: 'Git',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.more_horiz_outlined),
+            selectedIcon: Icon(Icons.more_horiz),
+            label: 'More',
           ),
         ],
       ),

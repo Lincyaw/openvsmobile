@@ -3,8 +3,6 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:stream_channel/stream_channel.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:vscode_mobile/models/git_models.dart';
 import 'package:vscode_mobile/providers/git_provider.dart';
 import 'package:vscode_mobile/services/api_client.dart';
@@ -110,34 +108,6 @@ void main() {
   );
 
   test(
-    'GitProvider decodes repositoryChanged websocket payloads without forcing a refresh',
-    () async {
-      final settings = await _createSettings();
-      final client = _RecordingGitApiClient(settings)
-        ..repositoryResponses.add(_repo(_initialRepositoryDocument));
-
-      final provider = GitProvider(apiClient: client)
-        ..setWorkDir('/workspace/repo');
-      await provider.refreshRepository();
-
-      client.emitEvent(<String, dynamic>{
-        'type': 'git/repositoryChanged',
-        'payload': _updatedRepositoryDocument,
-      });
-      await Future<void>.delayed(Duration.zero);
-
-      expect(provider.repository?.ahead, 1);
-      expect(provider.repository?.staged.single.path, 'lib/feature.dart');
-      expect(provider.repository?.conflicts.single.path, 'lib/conflicted.dart');
-      expect(
-        provider.repository?.mergeChanges.single.path,
-        'lib/merge_only.dart',
-      );
-      expect(client.repositoryFetches, 1);
-    },
-  );
-
-  test(
     'GitProvider exposes running state and success feedback for repository operations',
     () async {
       final settings = await _createSettings();
@@ -207,11 +177,8 @@ GitRepositoryState _repo(Map<String, dynamic> json) {
 }
 
 class _RecordingGitApiClient extends GitApiClient {
-  _RecordingGitApiClient(SettingsService settings)
-    : channel = _FakeWebSocketChannel(),
-      super(settings: settings);
+  _RecordingGitApiClient(SettingsService settings) : super(settings: settings);
 
-  final _FakeWebSocketChannel channel;
   final List<GitRepositoryState> repositoryResponses = <GitRepositoryState>[];
   final List<GitRepositoryState> stageResponses = <GitRepositoryState>[];
   final List<GitRepositoryState> unstageResponses = <GitRepositoryState>[];
@@ -219,13 +186,6 @@ class _RecordingGitApiClient extends GitApiClient {
   Future<GitRepositoryState>? fetchFuture;
   Object? pushError;
   final List<String> commitMessages = <String>[];
-
-  void emitEvent(Map<String, dynamic> event) {
-    channel.controller.add(jsonEncode(event));
-  }
-
-  @override
-  WebSocketChannel connectEventsWebSocket() => channel;
 
   @override
   Future<GitRepositoryState> getRepository(String path) async {
@@ -269,66 +229,4 @@ class _RecordingGitApiClient extends GitApiClient {
     commitMessages.add(message);
     return _repo(_updatedRepositoryDocument);
   }
-}
-
-class _FakeWebSocketChannel
-    with StreamChannelMixin<dynamic>
-    implements WebSocketChannel {
-  _FakeWebSocketChannel()
-    : controller = StreamController<dynamic>.broadcast(sync: true),
-      _sinkController = StreamController<dynamic>(sync: true),
-      _ready = Completer<void>() {
-    _ready.complete();
-    _sink = _FakeWebSocketSink(_sinkController.sink);
-  }
-
-  final StreamController<dynamic> controller;
-  final StreamController<dynamic> _sinkController;
-  final Completer<void> _ready;
-  late final _FakeWebSocketSink _sink;
-
-  @override
-  int? get closeCode => null;
-
-  @override
-  String? get closeReason => null;
-
-  @override
-  String? get protocol => null;
-
-  @override
-  Future<void> get ready => _ready.future;
-
-  @override
-  Stream<dynamic> get stream => controller.stream;
-
-  @override
-  WebSocketSink get sink => _sink;
-}
-
-class _FakeWebSocketSink implements WebSocketSink {
-  _FakeWebSocketSink(this._sink);
-
-  bool closed = false;
-  final StreamSink<dynamic> _sink;
-
-  @override
-  void add(dynamic event) => _sink.add(event);
-
-  @override
-  void addError(Object error, [StackTrace? stackTrace]) {
-    _sink.addError(error, stackTrace);
-  }
-
-  @override
-  Future<void> addStream(Stream<dynamic> stream) => _sink.addStream(stream);
-
-  @override
-  Future<void> close([int? closeCode, String? closeReason]) async {
-    closed = true;
-    await _sink.close();
-  }
-
-  @override
-  Future<void> get done => _sink.done;
 }

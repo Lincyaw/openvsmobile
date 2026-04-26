@@ -50,8 +50,7 @@ NODE22 ?= $(shell bash -c '. "$$HOME/.nvm/nvm.sh" && nvm which 22' 2>/dev/null)
 .PHONY: all build build-server build-android \
 	run-server run-server-dev deps install-android \
 	test verify verify-app lint clean help \
-	go-prereq flutter-prereq \
-	verify-bridge-extension verify-bridge-foundation
+	go-prereq flutter-prereq
 
 # -----------------------------------------------------------------------------
 # Build
@@ -189,12 +188,6 @@ flutter-prereq:
 	fi
 	@echo "==> Using Flutter SDK: $(FLUTTER_BIN)"
 
-verify-bridge-extension:
-	@./scripts/verify_bridge_foundation.sh --extension-only
-
-verify-bridge-foundation:
-	@./scripts/verify_bridge_foundation.sh
-
 # -----------------------------------------------------------------------------
 # Clean
 # -----------------------------------------------------------------------------
@@ -229,7 +222,5 @@ help:
 	@echo "  lint                    - Run go vet + flutter analyze"
 	@echo "  go-prereq               - Show the resolved Go toolchain or fail with setup guidance"
 	@echo "  flutter-prereq          - Show the resolved Flutter SDK or fail with setup guidance"
-	@echo "  verify-bridge-extension - Compile the built-in mobile bridge extension from openvscode-server/"
-	@echo "  verify-bridge-foundation- Run the bridge extension compile + targeted Go bridge checks"
 	@echo "  clean                   - Remove server_bin and Flutter build artifacts"
 	@echo "  help                    - Show this help message"

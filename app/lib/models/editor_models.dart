@@ -1,20 +1,5 @@
 import 'editor_context.dart';
 
-/// Envelope for events streamed over the bridge events WebSocket.
-class BridgeEventEnvelope {
-  final String type;
-  final dynamic payload;
-
-  const BridgeEventEnvelope({required this.type, required this.payload});
-
-  factory BridgeEventEnvelope.fromJson(Map<String, dynamic> json) {
-    return BridgeEventEnvelope(
-      type: json['type'] as String? ?? '',
-      payload: json['payload'],
-    );
-  }
-}
-
 /// Zero-based document position used by the diagnostics and selection models.
 class DocumentPosition {
   final int line;

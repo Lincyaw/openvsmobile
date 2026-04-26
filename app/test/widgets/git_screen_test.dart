@@ -1,11 +1,9 @@
-import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:stream_channel/stream_channel.dart';
 import 'package:vscode_mobile/models/git_models.dart';
 import 'package:vscode_mobile/providers/git_provider.dart';
 import 'package:vscode_mobile/providers/workspace_provider.dart';
@@ -13,7 +11,6 @@ import 'package:vscode_mobile/screens/git_screen.dart';
 import 'package:vscode_mobile/services/api_client.dart';
 import 'package:vscode_mobile/services/git_api_client.dart';
 import 'package:vscode_mobile/services/settings_service.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
 
 const Map<String, dynamic> _repositoryDocument = <String, dynamic>{
   'path': '/workspace/repo',
@@ -214,11 +211,8 @@ GitRepositoryState _repo(Map<String, dynamic> json) {
 }
 
 class _FakeGitApiClient extends GitApiClient {
-  _FakeGitApiClient(SettingsService settings)
-    : channel = _FakeWebSocketChannel(),
-      super(settings: settings);
+  _FakeGitApiClient(SettingsService settings) : super(settings: settings);
 
-  final _FakeWebSocketChannel channel;
   late GitRepositoryState repository;
   GitDiffDocument diffDocument = const GitDiffDocument(
     path: 'lib/feature.dart',
@@ -227,9 +221,6 @@ class _FakeGitApiClient extends GitApiClient {
   );
   final List<String> commitMessages = <String>[];
   Object? pushError;
-
-  @override
-  WebSocketChannel connectEventsWebSocket() => channel;
 
   @override
   Future<GitRepositoryState> getRepository(String path) async => repository;
@@ -286,50 +277,3 @@ class _FakeGitApiClient extends GitApiClient {
   }
 }
 
-class _FakeWebSocketChannel extends StreamChannelMixin<dynamic>
-    implements WebSocketChannel {
-  _FakeWebSocketChannel();
-
-  final StreamController<dynamic> controller =
-      StreamController<dynamic>.broadcast();
-  final _FakeWebSocketSink _sink = _FakeWebSocketSink();
-
-  @override
-  int? get closeCode => null;
-
-  @override
-  String? get closeReason => null;
-
-  @override
-  String? get protocol => null;
-
-  @override
-  Future<void> get ready => Future<void>.value();
-
-  @override
-  Stream<dynamic> get stream => controller.stream;
-
-  @override
-  WebSocketSink get sink => _sink;
-}
-
-class _FakeWebSocketSink implements WebSocketSink {
-  bool closed = false;
-
-  @override
-  void add(dynamic event) {}
-
-  @override
-  void addError(Object error, [StackTrace? stackTrace]) {}
-
-  @override
-  Future<void> addStream(Stream<dynamic> stream) async {}
-
-  @override
-  Future<void> close([int? closeCode, String? closeReason]) async {
-    closed = true;
-  }
-
-  @override
-  Future<void> get done => Future<void>.value();
-}

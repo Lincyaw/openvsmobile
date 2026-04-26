@@ -62,8 +62,12 @@ func (c *Client) RefreshToken(ctx context.Context, host, clientID, refreshToken 
 	return c.exchangeToken(ctx, host, values)
 }
 
-func (c *Client) GetUser(ctx context.Context, host, accessToken string) (*User, error) {
-	var user User
+// getUser fetches the authenticated user. Used internally by the device-flow
+// poll handler to associate the freshly-issued token with an account login.
+// No external callers — the public Service surface intentionally does not
+// expose user lookups.
+func (c *Client) getUser(ctx context.Context, host, accessToken string) (*authenticatedUser, error) {
+	var user authenticatedUser
 	if err := c.getJSON(ctx, c.apiBaseURL(host)+"/user", accessToken, &user); err != nil {
 		if apiErr, ok := err.(*APIError); ok {
 			return nil, &HostError{Host: NormalizeHost(host), Err: apiErr}
@@ -71,52 +75,6 @@ func (c *Client) GetUser(ctx context.Context, host, accessToken string) (*User, 
 		return nil, err
 	}
 	return &user, nil
-}
-
-func (c *Client) GetAccount(ctx context.Context, host, accessToken string) (*Account, error) {
-	var payload accountWire
-	if err := c.getJSON(ctx, c.apiBaseURL(host)+"/user", accessToken, &payload); err != nil {
-		if apiErr, ok := err.(*APIError); ok {
-			return nil, &HostError{Host: NormalizeHost(host), Err: apiErr}
-		}
-		return nil, err
-	}
-	account := mapAccount(payload)
-	return &account, nil
-}
-
-func (c *Client) GetRepo(ctx context.Context, host, owner, repo, accessToken string) (*Repository, error) {
-	var repository Repository
-	endpoint := c.apiBaseURL(host) + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo)
-	if err := c.getJSON(ctx, endpoint, accessToken, &repository); err != nil {
-		return nil, err
-	}
-	repository.GitHubHost = NormalizeHost(host)
-	if repository.Owner == "" {
-		repository.Owner = owner
-	}
-	if repository.Name == "" {
-		repository.Name = repo
-	}
-	if repository.FullName == "" && repository.Owner != "" && repository.Name != "" {
-		repository.FullName = repository.Owner + "/" + repository.Name
-	}
-	return &repository, nil
-}
-
-func (c *Client) GetRepoInstallation(ctx context.Context, host, owner, repo, accessToken string) (*AppInstallation, error) {
-	var installation AppInstallation
-	endpoint := c.apiBaseURL(host) + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/installation"
-	if err := c.getJSON(ctx, endpoint, accessToken, &installation); err != nil {
-		if IsAPIStatus(err, http.StatusNotFound) {
-			return nil, &HostError{Host: NormalizeHost(host), Err: ErrAppNotInstalledForRepo}
-		}
-		if IsAPIStatus(err, http.StatusForbidden) {
-			return nil, &HostError{Host: NormalizeHost(host), Err: ErrRepoAccessUnavailable}
-		}
-		return nil, err
-	}
-	return &installation, nil
 }
 
 func (c *Client) exchangeToken(ctx context.Context, host string, values url.Values) (*TokenResponse, error) {
@@ -244,14 +202,10 @@ func hostFromURL(raw string) string {
 	return parsed.Host
 }
 
-type accountWire struct {
-	Login     string `json:"login"`
-	ID        int64  `json:"id"`
-	Name      string `json:"name"`
-	AvatarURL string `json:"avatar_url"`
-	HTMLURL   string `json:"html_url"`
-}
-
-func mapAccount(in accountWire) Account {
-	return Account{Login: in.Login, ID: in.ID, Name: in.Name, AvatarURL: in.AvatarURL, HTMLURL: in.HTMLURL}
+// authenticatedUser is the minimal view of the /user response that the
+// device-flow handler needs to populate AuthRecord. Kept private to the
+// package: the public surface no longer exposes user objects.
+type authenticatedUser struct {
+	Login string `json:"login"`
+	ID    int64  `json:"id"`
 }

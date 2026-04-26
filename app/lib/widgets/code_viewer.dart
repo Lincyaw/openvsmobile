@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:highlight/highlight.dart' show Node, highlight;
 
-import '../models/diagnostic.dart';
 import '../models/editor_context.dart';
 import '../theme/monospace_text.dart';
 
@@ -85,10 +84,6 @@ class CodeViewer extends StatefulWidget {
   final String fileName;
   final VoidCallback? onAskAi;
   final void Function(EditorSelection? selection)? onSelectionChanged;
-  final VoidCallback? onEditRequested;
-  final List<Diagnostic> diagnostics;
-  final VoidCallback? onLongPressHover;
-  final VoidCallback? onDefinitionRequested;
   final EditorSelection? revealSelection;
   final int revealNonce;
 
@@ -98,10 +93,6 @@ class CodeViewer extends StatefulWidget {
     required this.fileName,
     this.onAskAi,
     this.onSelectionChanged,
-    this.onEditRequested,
-    this.diagnostics = const <Diagnostic>[],
-    this.onLongPressHover,
-    this.onDefinitionRequested,
     this.revealSelection,
     this.revealNonce = 0,
   });
@@ -120,8 +111,6 @@ class _CodeViewerState extends State<CodeViewer> {
   late ScrollController _viewerScrollController;
   bool _isSyncing = false;
 
-  Map<int, Diagnostic>? _cachedDiagnosticsByLine;
-  List<Diagnostic>? _cachedDiagnosticsSource;
   List<TextSpan>? _cachedHighlightedSpans;
   String? _cachedContent;
   String? _cachedFileName;
@@ -193,62 +182,6 @@ class _CodeViewerState extends State<CodeViewer> {
       duration: const Duration(milliseconds: 180),
       curve: Curves.easeOut,
     );
-  }
-
-  Map<int, Diagnostic> get _diagnosticsByLine {
-    if (_cachedDiagnosticsSource != widget.diagnostics) {
-      _cachedDiagnosticsSource = widget.diagnostics;
-      final map = <int, Diagnostic>{};
-      for (final diagnostic in widget.diagnostics) {
-        final existing = map[diagnostic.line];
-        if (existing == null ||
-            _severityRank(diagnostic.severity) >
-                _severityRank(existing.severity)) {
-          map[diagnostic.line] = diagnostic;
-        }
-      }
-      _cachedDiagnosticsByLine = map;
-    }
-    return _cachedDiagnosticsByLine ?? <int, Diagnostic>{};
-  }
-
-  int _severityRank(String severity) {
-    switch (severity) {
-      case 'error':
-        return 3;
-      case 'warning':
-        return 2;
-      case 'info':
-        return 1;
-      default:
-        return 0;
-    }
-  }
-
-  Color _severityColor(String severity) {
-    switch (severity) {
-      case 'error':
-        return const Color(0xFFFF4444);
-      case 'warning':
-        return const Color(0xFFFF8800);
-      case 'info':
-        return const Color(0xFF4488FF);
-      default:
-        return const Color(0xFF888888);
-    }
-  }
-
-  IconData _severityIcon(String severity) {
-    switch (severity) {
-      case 'error':
-        return Icons.error;
-      case 'warning':
-        return Icons.warning;
-      case 'info':
-        return Icons.info_outline;
-      default:
-        return Icons.circle;
-    }
   }
 
   String get _language {
@@ -419,7 +352,6 @@ class _CodeViewerState extends State<CodeViewer> {
       children: [
         Expanded(
           child: GestureDetector(
-            onLongPress: widget.onLongPressHover,
             onScaleStart: (_) {
               _baseScaleFontSize = _fontSize;
             },
@@ -462,9 +394,7 @@ class _CodeViewerState extends State<CodeViewer> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Container(
-                      width:
-                          lineNumberWidth +
-                          (widget.diagnostics.isNotEmpty ? 20.0 : 0.0),
+                      width: lineNumberWidth,
                       color: isDark
                           ? const Color(0xFF1E1E1E)
                           : const Color(0xFFF5F5F5),
@@ -480,46 +410,22 @@ class _CodeViewerState extends State<CodeViewer> {
                               crossAxisAlignment: CrossAxisAlignment.end,
                               children: List.generate(lines.length, (index) {
                                 final lineNum = index + 1;
-                                final diagnostic = _diagnosticsByLine[lineNum];
                                 return Container(
                                   height: _lineHeight,
                                   color: _isLineHighlighted(lineNum)
                                       ? highlightColor
                                       : null,
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    mainAxisAlignment: MainAxisAlignment.end,
-                                    children: [
-                                      if (diagnostic != null)
-                                        Tooltip(
-                                          message:
-                                              '${diagnostic.severity}: ${diagnostic.message}',
-                                          child: Icon(
-                                            _severityIcon(diagnostic.severity),
-                                            size: _fontSize,
-                                            color: _severityColor(
-                                              diagnostic.severity,
-                                            ),
-                                          ),
-                                        ),
-                                      if (diagnostic != null)
-                                        const SizedBox(width: 2),
-                                      Text(
-                                        '$lineNum',
-                                        style: monospaceTextStyle(
-                                          fontSize: _fontSize,
-                                          height: 1.5,
-                                          color: diagnostic != null
-                                              ? _severityColor(
-                                                  diagnostic.severity,
-                                                )
-                                              : (isDark
-                                                    ? Colors.grey.shade600
-                                                    : Colors.grey.shade400),
-                                        ),
-                                        textAlign: TextAlign.right,
-                                      ),
-                                    ],
+                                  alignment: Alignment.centerRight,
+                                  child: Text(
+                                    '$lineNum',
+                                    style: monospaceTextStyle(
+                                      fontSize: _fontSize,
+                                      height: 1.5,
+                                      color: isDark
+                                          ? Colors.grey.shade600
+                                          : Colors.grey.shade400,
+                                    ),
+                                    textAlign: TextAlign.right,
                                   ),
                                 );
                               }),
@@ -593,18 +499,6 @@ class _CodeViewerState extends State<CodeViewer> {
                     setState(() => _showToolbar = false);
                   }
                 : null,
-            onEdit: widget.onEditRequested != null
-                ? () {
-                    widget.onEditRequested!();
-                    setState(() => _showToolbar = false);
-                  }
-                : null,
-            onDefinition: widget.onDefinitionRequested != null
-                ? () {
-                    widget.onDefinitionRequested!();
-                    setState(() => _showToolbar = false);
-                  }
-                : null,
             onCopy: () async {
               await Clipboard.setData(ClipboardData(text: _selectedText!));
               setState(() => _showToolbar = false);
@@ -625,14 +519,10 @@ class _CodeViewerState extends State<CodeViewer> {
 
 class _SelectionToolbar extends StatelessWidget {
   final VoidCallback? onAskAi;
-  final VoidCallback? onEdit;
-  final VoidCallback? onDefinition;
   final VoidCallback onCopy;
 
   const _SelectionToolbar({
     this.onAskAi,
-    this.onEdit,
-    this.onDefinition,
     required this.onCopy,
   });
 
@@ -656,18 +546,6 @@ class _SelectionToolbar extends StatelessWidget {
               onPressed: onAskAi,
               icon: const Icon(Icons.smart_toy, size: 20),
               label: const Text('Ask AI'),
-            ),
-          if (onDefinition != null)
-            TextButton.icon(
-              onPressed: onDefinition,
-              icon: const Icon(Icons.my_location, size: 20),
-              label: const Text('Go to'),
-            ),
-          if (onEdit != null)
-            TextButton.icon(
-              onPressed: onEdit,
-              icon: const Icon(Icons.edit, size: 20),
-              label: const Text('Edit'),
             ),
           TextButton.icon(
             onPressed: onCopy,

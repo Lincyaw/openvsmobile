@@ -270,38 +270,32 @@ requirements:
   - id: REQ-013
     title: LSP diagnostics via OpenVSCode
     description: >
-      Diagnostics are forwarded from the openvsmobile-bridge extension's
-      vscode.languages.getDiagnostics() over HTTP to GET /api/diagnostics.
-      Push updates flow over the SSE event stream as `diagnostics.changed`
-      events (REQ-035). Local CLI fallback (go vet / dart analyze) was
-      removed on 2026-04-26 — diagnostics depend entirely on the language
-      servers running in the extension host.
+      DROPPED 2026-04-26 (REST surface). The extension still exposes a
+      /diagnostics HTTP endpoint and emits `diagnostics.changed` SSE
+      events, but no Flutter UI renders diagnostics — Diagnostic model,
+      CodeViewer gutter rendering, and the Go /api/diagnostics REST proxy
+      were all deleted with no consumers. The push pipeline survives in
+      case a future feature wants to consume it without a redesign.
     priority: P1
-    status: implemented
+    status: dropped
     code:
-      - server/internal/bridge/client.go
-      - server/internal/bridge/diagnostics.go
-      - server/internal/api/diagnostics.go
       - openvscode-server/extensions/openvsmobile-bridge/main.js
-      - app/lib/models/diagnostic.dart
-      - app/lib/widgets/code_viewer.dart
-      - app/lib/services/api_client.dart
-    tests:
-      - server/internal/bridge/client_test.go
+    tests: []
     depends_on: [REQ-001, REQ-003, REQ-007, REQ-034]
 
   - id: REQ-014
     title: Local-PTY terminal session backend
     description: >
       Go server exposes terminal endpoints around a unified session model.
-      REST endpoints: GET /bridge/terminal/sessions plus POST
-      /bridge/terminal/create, /attach, /resize, /rename, /close, /split.
-      WebSocket endpoint /bridge/ws/terminal/:id for attach/re-attach
-      streaming with ready, output, error, and exit messages. Backed by
-      the local PTY manager in internal/terminal/ (creack/pty). URL
-      prefix `/bridge/` retained for client compatibility but no VS Code
-      IPC dependency. **Local PTY is the chosen design, not a fallback** —
-      see decisions.md 2026-04-26.
+      REST endpoints: GET /api/terminal/sessions plus POST
+      /api/terminal/{create,attach,resize,close,rename,split}. WebSocket
+      endpoint /ws/terminal/{id} for attach/re-attach streaming with
+      ready, output, error, and exit messages. Session lifecycle changes
+      (terminal.session.{created,updated,closed}) are pushed through the
+      shared /bridge/ws/events bridge events stream (REQ-035). Backed by
+      the local PTY manager in internal/terminal/ (creack/pty).
+      **Local PTY is the chosen design, not a fallback** — see
+      decisions.md 2026-04-26.
     priority: P1
     status: implemented
     code:
@@ -426,15 +420,14 @@ requirements:
   - id: REQ-021
     title: Content search (grep) across files
     description: >
-      DROPPED 2026-04-26 (UI surface). Server endpoint GET /api/search
-      remains available for future programmatic use, but no Flutter UI
-      consumes it. Users ask Claude to find things instead of using a
-      dedicated search tab.
+      DROPPED 2026-04-26 (fully). Both UI (SearchScreen / SearchProvider)
+      and server endpoint (/api/search, /api/search/files) deleted in the
+      cleanup pass. Users ask Claude / workbuddy to find things; the
+      bridge `/api/workspace/findFiles` and `findText` endpoints cover
+      the programmatic case via the openvsmobile-bridge extension.
     priority: P1
     status: dropped
-    code:
-      - server/internal/api/search.go
-      - server/internal/api/router.go
+    code: []
     tests: []
     depends_on: [REQ-003]
 
@@ -581,14 +574,10 @@ requirements:
   - id: FIX-001
     title: Search API path sanitization
     description: >
-      handleSearch in search.go uses the path parameter directly without
-      calling sanitizePath(), unlike all other API handlers. This allows
-      directory traversal attacks. Add sanitizePath() call consistent
-      with git and files handlers.
+      DROPPED 2026-04-26 with REQ-021 (search endpoint deleted).
     priority: P0
-    status: implemented
-    code:
-      - server/internal/api/search.go
+    status: dropped
+    code: []
     tests: []
     depends_on: [REQ-021]
 
@@ -819,15 +808,19 @@ requirements:
       diagnostics.changed with affected URIs, debounced 200ms). 15s
       keepalive, initial `ready` event. Process-wide event broker fans
       out to all open SSE connections.
-      Go server: internal/bridge/events.go runs a long-lived consumer with
-      exponential backoff reconnect (1s..30s) and mtime-triggered
+      Go server: internal/bridge/events.go runs a long-lived consumer
+      with exponential backoff reconnect (1s..30s) and mtime-triggered
       reconnect when bridge restarts. /bridge/ws/events WebSocket route
-      fans events out to Flutter clients with envelope {type, payload, ts}.
-      Flutter: BridgeEventsClient + FileWatchClient extracted from
-      app.dart into services/. MainShell subscribes to
+      fans events out to Flutter clients with envelope {type, payload,
+      ts}. Local terminal events (terminal.session.{created,updated,
+      closed}) are also relayed through the same WS so terminal session
+      lifecycle propagates without polling.
+      Flutter: ONE BridgeEventsClient owned by MainShell, providers
+      register handlers via .on(eventType, ...). Wired:
       git.repositoryChanged → GitProvider.refreshRepository() +
-      FileProvider.refresh(). diagnostics.changed handler plumbed but
-      currently no-op until EditorProvider exposes a refresh hook.
+      FileProvider.refresh(); terminal.session.* →
+      TerminalProvider.refreshSessions(); diagnostics.changed → no-op
+      placeholder.
     priority: P0
     status: implemented
     code:
@@ -837,7 +830,6 @@ requirements:
       - server/internal/api/router.go
       - server/cmd/server/main.go
       - app/lib/services/bridge_events_client.dart
-      - app/lib/services/file_watch_client.dart
       - app/lib/app.dart
     tests:
       - server/internal/bridge/events_test.go

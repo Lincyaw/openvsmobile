@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 )
@@ -72,7 +71,7 @@ func (s *Service) PollDeviceFlow(ctx context.Context, host, deviceCode string) (
 		return &PollResult{Status: "error", ErrorCode: ErrorCode(err), Message: err.Error()}, nil
 	}
 
-	user, err := s.client.GetUser(ctx, host, record.AccessToken)
+	user, err := s.client.getUser(ctx, host, record.AccessToken)
 	if err != nil {
 		return nil, err
 	}
@@ -143,170 +142,6 @@ func (s *Service) EnsureFreshToken(ctx context.Context, host string) (*AuthRecor
 		return nil, err
 	}
 	return &next, nil
-}
-
-func (s *Service) GetUser(ctx context.Context, host string) (*User, error) {
-	record, err := s.EnsureFreshToken(ctx, host)
-	if err != nil {
-		return nil, err
-	}
-	return s.client.GetUser(ctx, record.GitHubHost, record.AccessToken)
-}
-
-func (s *Service) ProbeCurrentRepo(ctx context.Context, locator RepoLocator, path string) (*CurrentRepoContext, error) {
-	if locator == nil {
-		locator = LocalRepoLocator{}
-	}
-
-	repoContext, err := locator.ResolveRepoContext(path)
-	if err != nil {
-		repository := &Repository{}
-		if repoContext != nil {
-			repository.RepoRoot = repoContext.RepoRoot
-		}
-		switch {
-		case errors.Is(err, ErrNotRepository), errors.Is(err, ErrNoRemote), errors.Is(err, ErrRepoNotGitHub):
-			return &CurrentRepoContext{
-				Status:     RepoStatusRepoNotGitHub,
-				ErrorCode:  RepoStatusRepoNotGitHub,
-				Repository: repository,
-				Message:    err.Error(),
-			}, nil
-		default:
-			return nil, err
-		}
-	}
-	return s.ProbeRepository(ctx, &Repository{
-		GitHubHost: repoContext.GitHubHost,
-		Owner:      repoContext.Owner,
-		Name:       repoContext.Name,
-		FullName:   repoContext.FullName,
-		RemoteName: repoContext.RemoteName,
-		RemoteURL:  repoContext.RemoteURL,
-		RepoRoot:   repoContext.RepoRoot,
-	})
-}
-
-func (s *Service) ProbeRepository(ctx context.Context, repository *Repository) (*CurrentRepoContext, error) {
-	if repository == nil {
-		return nil, fmt.Errorf("repository is required")
-	}
-
-	result := &CurrentRepoContext{
-		Status:     RepoStatusNotAuthenticated,
-		ErrorCode:  RepoStatusNotAuthenticated,
-		Repository: repository,
-		Auth: &AuthStatus{
-			Authenticated: false,
-			GitHubHost:    repository.GitHubHost,
-		},
-	}
-	if !strings.Contains(repository.GitHubHost, "github") {
-		result.Status = RepoStatusRepoNotGitHub
-		result.ErrorCode = RepoStatusRepoNotGitHub
-		result.Message = "remote host is not GitHub"
-		return result, nil
-	}
-	if s == nil {
-		return result, nil
-	}
-
-	status, err := s.GetStatus(ctx, repository.GitHubHost)
-	if err != nil {
-		return nil, err
-	}
-	status.GitHubHost = repository.GitHubHost
-	result.Auth = status
-
-	record, err := s.EnsureFreshToken(ctx, repository.GitHubHost)
-	switch {
-	case errors.Is(err, ErrNotAuthenticated):
-		result.ErrorCode = RepoStatusNotAuthenticated
-		return result, nil
-	case errors.Is(err, ErrReauthRequired):
-		result.Status = RepoStatusReauthRequired
-		result.ErrorCode = RepoStatusReauthRequired
-		if result.Auth != nil {
-			result.Auth.NeedsReauth = true
-		}
-		return result, nil
-	case err != nil:
-		return nil, err
-	}
-
-	freshStatus := BuildAuthStatus(record, s.now().UTC(), s.refreshThreshold)
-	freshStatus.GitHubHost = repository.GitHubHost
-	result.Auth = &freshStatus
-
-	repoDetails, err := s.client.GetRepo(ctx, repository.GitHubHost, repository.Owner, repository.Name, record.AccessToken)
-	if err != nil {
-		switch {
-		case IsAPIStatus(err, http.StatusNotFound), IsAPIStatus(err, http.StatusForbidden), errors.Is(err, ErrRepoAccessUnavailable):
-			result.Status = RepoStatusRepoAccessUnavailable
-			result.ErrorCode = RepoStatusRepoAccessUnavailable
-			result.Message = "repository access is unavailable for the authenticated account"
-			return result, nil
-		}
-		var apiErr *APIError
-		if errors.As(err, &apiErr) {
-			result.Status = RepoStatusRepoAccessUnavailable
-			result.ErrorCode = RepoStatusRepoAccessUnavailable
-			result.Message = apiErr.Message
-			return result, nil
-		}
-		return nil, err
-	}
-
-	if _, err := s.client.GetRepoInstallation(ctx, repository.GitHubHost, repository.Owner, repository.Name, record.AccessToken); err != nil {
-		switch {
-		case errors.Is(err, ErrAppNotInstalledForRepo):
-			result.Status = RepoStatusAppNotInstalled
-			result.ErrorCode = RepoStatusAppNotInstalled
-			result.Repository = mergeRepositoryContext(repository, repoDetails)
-			result.Message = "GitHub App is not installed for this repository"
-			return result, nil
-		case errors.Is(err, ErrRepoAccessUnavailable), IsAPIStatus(err, http.StatusForbidden):
-			result.Status = RepoStatusRepoAccessUnavailable
-			result.ErrorCode = RepoStatusRepoAccessUnavailable
-			result.Repository = mergeRepositoryContext(repository, repoDetails)
-			result.Message = "repository access is unavailable for the authenticated account"
-			return result, nil
-		default:
-			return nil, err
-		}
-	}
-
-	result.Status = RepoStatusOK
-	result.ErrorCode = ""
-	result.Repository = mergeRepositoryContext(repository, repoDetails)
-	return result, nil
-}
-
-func mergeRepositoryContext(base, details *Repository) *Repository {
-	if base == nil && details == nil {
-		return nil
-	}
-	if base == nil {
-		return details
-	}
-	if details == nil {
-		return base
-	}
-	merged := *base
-	if details.GitHubHost != "" {
-		merged.GitHubHost = details.GitHubHost
-	}
-	if details.Owner != "" {
-		merged.Owner = details.Owner
-	}
-	if details.Name != "" {
-		merged.Name = details.Name
-	}
-	if details.FullName != "" {
-		merged.FullName = details.FullName
-	}
-	merged.Private = details.Private
-	return &merged
 }
 
 func (s *Service) host(host string) string {

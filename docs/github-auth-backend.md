@@ -1,105 +1,22 @@
 # GitHub Auth Backend
 
-This project ships a Go-server auth foundation for GitHub App device flow plus
-workspace-aware repository context endpoints. The server owns the GitHub user
-tokens; the Flutter client only receives non-secret status metadata plus the
-short-lived device flow values needed to complete authorization.
+This project ships a Go-server auth foundation for GitHub App device flow. The
+server owns the GitHub user tokens; the Flutter client only receives non-secret
+status metadata plus the short-lived device flow values needed to complete
+authorization.
+
+The token is consumed primarily by [workbuddy](https://github.com/Lincyaw/workbuddy);
+the mobile app surfaces the device-flow UI so the user can authorize on their
+phone.
 
 ## Endpoints
 
 All routes are available with or without the `/api` prefix:
 
-- `GET /github/repos/current`
-- `POST /github/resolve-local-file`
 - `POST /github/auth/device/start`
 - `POST /github/auth/device/poll`
 - `GET /github/auth/status`
 - `POST /github/auth/disconnect`
-- `GET /github/account`
-- `GET /github/issues`
-- `GET /github/issues/{number}`
-- `POST /github/issues/{number}/comments`
-- `GET /github/pulls`
-- `GET /github/pulls/{number}`
-- `GET /github/pulls/{number}/files`
-- `GET /github/pulls/{number}/comments`
-- `POST /github/pulls/{number}/comments`
-- `POST /github/pulls/{number}/reviews`
-
-### `GET /github/repos/current`
-
-Derives the current repository identity from the server workspace git remote.
-The backend prefers `origin` when multiple remotes exist and supports both
-HTTPS and SSH remote formats.
-
-Example response for an authenticated, accessible repo:
-
-```json
-{
-  "status": "ok",
-  "repository": {
-    "github_host": "github.com",
-    "owner": "octo-org",
-    "name": "mobile-app",
-    "full_name": "octo-org/mobile-app",
-    "remote_name": "origin",
-    "remote_url": "git@github.com:octo-org/mobile-app.git",
-    "repo_root": "/workspace/mobile-app",
-    "private": true
-  },
-  "auth": {
-    "authenticated": true,
-    "github_host": "github.com",
-    "account_login": "octocat",
-    "account_id": 9,
-    "access_token_expires_at": "2026-04-20T12:05:00Z",
-    "refresh_token_expires_at": "2026-04-20T13:00:00Z",
-    "needs_refresh": false,
-    "needs_reauth": false
-  }
-}
-```
-
-Possible `status` values:
-
-- `ok`: repo identity was derived and the authenticated account can probe it
-- `repo_not_github`: the workspace is not a git repo, has no remote, or the preferred remote is not GitHub
-- `not_authenticated`: repo identity was derived but no GitHub auth session is available
-- `reauth_required`: a stored session exists but refresh is required before repo probing
-- `repo_access_unavailable`: the repo identity was derived but GitHub rejected repo access
-- `app_not_installed_for_repo`: the current repo resolved locally but the GitHub App is not installed for it
-
-`repository` is still returned for all of the statuses above when local git
-resolution succeeds, so the client can continue showing owner/name metadata.
-
-### `POST /github/resolve-local-file`
-
-Request body:
-
-```json
-{
-  "workspace_path": "/workspace/mobile-app",
-  "path": "docs/notes.md"
-}
-```
-
-`workspace_path` is optional and defaults to the server work dir. `path` may
-also be sent as `relative_path`.
-
-This endpoint resolves a local workspace path against the current repository
-root. It rejects traversal attempts, never escapes the repo root, and returns
-`exists: false` instead of an error when the target path is missing.
-
-Example response:
-
-```json
-{
-  "repo_root": "/workspace/mobile-app",
-  "relative_path": "docs/notes.md",
-  "local_path": "/workspace/mobile-app/docs/notes.md",
-  "exists": false
-}
-```
 
 ### `POST /github/auth/device/start`
 
@@ -171,8 +88,6 @@ Response body:
 
 The response never includes `access_token` or `refresh_token`.
 
-Current contract note: the status payload does not yet expose avatar URLs, GitHub App installation state, or per-workspace repository accessibility metadata. Flutter clients must present those as unavailable/unsupported instead of guessing.
-
 ### `POST /github/auth/disconnect`
 
 Request body:
@@ -233,201 +148,9 @@ preflight. If refresh succeeds, the record is replaced atomically. If refresh
 fails because the refresh token is invalid or expired, callers receive a
 structured `reauth_required` error so the client can restart device flow.
 
+## Out of scope
 
-## Collaboration endpoints
-
-All collaboration routes derive the current repository from the same workspace
-`path`/repo-context logic as `GET /github/repos/current`. `path` is optional on
-all `GET` endpoints and defaults to the server work dir. `workspace_path` is the
-matching optional field for `POST` requests.
-
-### `GET /github/account`
-
-Returns the authenticated GitHub account for the current repository host.
-
-Example response:
-
-```json
-{
-  "repository": {
-    "github_host": "github.com",
-    "owner": "octo-org",
-    "name": "mobile-app",
-    "full_name": "octo-org/mobile-app",
-    "remote_name": "origin",
-    "remote_url": "git@github.com:octo-org/mobile-app.git",
-    "repo_root": "/workspace/mobile-app"
-  },
-  "account": {
-    "login": "octocat",
-    "id": 9,
-    "name": "The Octocat",
-    "avatar_url": "https://avatars.githubusercontent.com/u/9?v=4",
-    "html_url": "https://github.com/octocat"
-  }
-}
-```
-
-### `GET /github/issues`
-
-Supported query params: `state`, `assigned_to_me`, `created_by_me`,
-`mentioned`, `page`, and `per_page`. The backend normalizes these into
-repo-scoped list or search requests, and pull-request-backed issue records are
-filtered out from this list.
-
-Example response:
-
-```json
-{
-  "issues": [
-    {
-      "number": 42,
-      "title": "Fix flaky mobile reconnect",
-      "state": "open",
-      "body": "Reconnect can stall after sleep...",
-      "html_url": "https://github.com/octo-org/mobile-app/issues/42",
-      "comments_count": 3,
-      "locked": false,
-      "author": {
-        "login": "octocat",
-        "id": 9
-      },
-      "labels": [
-        {
-          "name": "bug",
-          "color": "d73a4a"
-        }
-      ],
-      "created_at": "2026-04-19T10:00:00Z",
-      "updated_at": "2026-04-20T08:30:00Z"
-    }
-  ]
-}
-```
-
-### `GET /github/issues/{number}`
-
-Returns the normalized issue detail payload plus `comments` for the current
-repository.
-
-### `POST /github/issues/{number}/comments`
-
-Request body:
-
-```json
-{
-  "workspace_path": "/workspace/mobile-app",
-  "body": "I can take this one."
-}
-```
-
-Response body:
-
-```json
-{
-  "comment": {
-    "id": 1001,
-    "body": "I can take this one.",
-    "html_url": "https://github.com/octo-org/mobile-app/issues/42#issuecomment-1001",
-    "author": {
-      "login": "octocat",
-      "id": 9
-    },
-    "created_at": "2026-04-20T09:00:00Z"
-  }
-}
-```
-
-### `GET /github/pulls`
-
-Supported query params: `state`, `assigned_to_me`, `created_by_me`, `mentioned`,
-`needs_review`, `page`, and `per_page`.
-Current-user PR filters use a repo-scoped search query so `assigned_to_me`,
-`created_by_me`, `mentioned`, and `needs_review` can be combined with state and
-pagination while still returning normalized PR payloads. `head`, `base`,
-`sort`, and `direction` are not currently supported on this endpoint.
-
-### `GET /github/pulls/{number}`
-
-Returns the normalized pull request detail plus `files`, `comments`, and
-`reviews`. Aggregated commit status/check summary is included under
-`pull_request.checks`.
-
-Example `checks` payload:
-
-```json
-{
-  "state": "pending",
-  "total_count": 3,
-  "success_count": 1,
-  "pending_count": 1,
-  "failure_count": 1,
-  "checks": [
-    {
-      "name": "ci / unit-tests",
-      "status": "completed",
-      "conclusion": "success",
-      "details_url": "https://github.com/octo-org/mobile-app/actions/runs/1"
-    },
-    {
-      "name": "buildkite/mobile",
-      "status": "pending",
-      "details_url": "https://buildkite.example/run/2"
-    }
-  ]
-}
-```
-
-### `GET /github/pulls/{number}/files`
-
-Returns normalized changed-file entries with `filename`, `status`, `additions`,
-`deletions`, `changes`, optional `patch`, and optional `previous_filename`.
-
-### `GET /github/pulls/{number}/comments`
-
-Returns normalized review-thread comment entries plus `reviews` for the pull
-request.
-Supported query params: `sort`, `direction`, `since`, `page`, and `per_page`.
-
-### `POST /github/pulls/{number}/comments`
-
-Creates a PR review comment. For inline comments provide `body`, `path`,
-`commit_id`, and `line`; for replies provide `body` plus `in_reply_to`.
-Optional multi-line anchors use `side`, `start_line`, and `start_side`.
-
-### `POST /github/pulls/{number}/reviews`
-
-Creates a pull-request review. `event` should be one of `COMMENT`, `APPROVE`,
-or `REQUEST_CHANGES`. Draft review comments use normalized snake_case fields.
-
-Example request:
-
-```json
-{
-  "workspace_path": "/workspace/mobile-app",
-  "event": "REQUEST_CHANGES",
-  "body": "Please tighten the retry bounds.",
-  "comments": [
-    {
-      "body": "This branch can loop forever.",
-      "path": "server/internal/github/service.go",
-      "line": 142,
-      "side": "RIGHT"
-    }
-  ]
-}
-```
-
-## Collaboration error contract
-
-These endpoints return JSON errors via the same `error_code`/`message` envelope
-used by auth routes. Expected collaboration error codes include:
-
-- `repo_not_github`: the workspace path does not resolve to a GitHub-backed repository
-- `invalid_request`: missing/invalid route params, query params, or request body
-- `not_authenticated`: no stored GitHub auth session exists for the repo host
-- `reauth_required`: refresh failed or the access token is no longer usable
-- `app_not_installed_for_repo`: the repo resolves locally but the configured GitHub App is not installed for it
-- `repo_access_unavailable`: GitHub rejected repository access for the account
-- `not_found`: the repo-scoped issue, pull request, or nested resource was not found
-- `github_auth_error`: upstream GitHub request failed in an unexpected way
+Repository / issue / pull-request browsing endpoints are intentionally absent
+from this backend — workbuddy interacts with GitHub directly via `gh`, and the
+mobile app surfaces project state through the Claude chat surface and the
+in-tree git viewer rather than a dedicated GitHub UI.

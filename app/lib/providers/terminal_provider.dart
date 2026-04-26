@@ -162,9 +162,6 @@ class TerminalProvider extends ChangeNotifier {
   bool _hasLoaded = false;
   String? _inventoryError;
 
-  WebSocketChannel? _eventsChannel;
-  StreamSubscription<dynamic>? _eventsSubscription;
-  Timer? _eventsReconnectTimer;
   bool _disposed = false;
 
   List<TerminalSessionView> get sessions => _sessionOrder
@@ -251,8 +248,6 @@ class TerminalProvider extends ChangeNotifier {
       _isLoading = false;
       _inventoryError = null;
       notifyListeners();
-
-      _connectEventsStream();
 
       if (_sessionOrder.isEmpty && ensureSession) {
         await createSession();
@@ -687,82 +682,6 @@ class TerminalProvider extends ChangeNotifier {
     binding!.channel!.sink.add(payload);
   }
 
-  void _connectEventsStream() {
-    final apiClient = _apiClient;
-    if (apiClient == null || _eventsChannel != null) {
-      return;
-    }
-
-    _eventsReconnectTimer?.cancel();
-    final channel = apiClient.connectEventsWebSocket();
-    _eventsChannel = channel;
-    _eventsSubscription = channel.stream.listen(
-      _handleEventsMessage,
-      onError: (_) => _scheduleEventsReconnect(),
-      onDone: _scheduleEventsReconnect,
-    );
-  }
-
-  void _handleEventsMessage(dynamic raw) {
-    if (_disposed) {
-      return;
-    }
-    if (raw is! String) {
-      return;
-    }
-
-    try {
-      final decoded = jsonDecode(raw);
-      if (decoded is! Map<String, dynamic>) {
-        return;
-      }
-      final type = decoded['type'] as String? ?? '';
-      final payload = decoded['payload'];
-      if (payload is! Map) {
-        return;
-      }
-      final session = TerminalSession.fromJson(
-        Map<String, dynamic>.from(payload),
-      );
-      switch (type) {
-        case 'terminal/sessionCreated':
-        case 'terminal/session.created':
-        case 'terminal/sessionUpdated':
-        case 'terminal/session.updated':
-          _upsertSession(session);
-          notifyListeners();
-          if ((type == 'terminal/sessionCreated' ||
-                  type == 'terminal/session.created') &&
-              _activeSessionId == null) {
-            unawaited(activateSession(session.id));
-          }
-          break;
-        case 'terminal/sessionClosed':
-        case 'terminal/session.closed':
-          unawaited(_removeSession(session.id, notify: true));
-          break;
-      }
-    } catch (_) {
-      // Ignore malformed bridge events; inventory refresh will self-heal.
-    }
-  }
-
-  void _scheduleEventsReconnect() {
-    _eventsSubscription?.cancel();
-    _eventsSubscription = null;
-    _eventsChannel?.sink.close();
-    _eventsChannel = null;
-
-    _eventsReconnectTimer?.cancel();
-    _eventsReconnectTimer = Timer(_terminalReconnectDelay, () {
-      if (_disposed || _apiClient == null) {
-        return;
-      }
-      _connectEventsStream();
-      unawaited(refreshSessions());
-    });
-  }
-
   void _mergeSessions(List<TerminalSession> sessions) {
     final seen = <String>{};
     for (final session in sessions) {
@@ -919,12 +838,6 @@ class TerminalProvider extends ChangeNotifier {
   }
 
   Future<void> _resetConnections() async {
-    _eventsReconnectTimer?.cancel();
-    await _eventsSubscription?.cancel();
-    _eventsSubscription = null;
-    await _eventsChannel?.sink.close();
-    _eventsChannel = null;
-
     final bindings = _bindings.values.toList(growable: false);
     _bindings.clear();
     for (final binding in bindings) {
@@ -935,7 +848,6 @@ class TerminalProvider extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
-    _eventsReconnectTimer?.cancel();
     unawaited(_resetConnections());
     super.dispose();
   }

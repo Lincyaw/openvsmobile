@@ -31,7 +31,7 @@ void main() {
       await apiClient.disposeFakes();
     });
 
-    test('bootstraps sessions and connects bridge events', () async {
+    test('bootstraps sessions for the active workspace', () async {
       await provider.ensureInitialized();
 
       expect(provider.hasLoaded, isTrue);
@@ -40,7 +40,6 @@ void main() {
         'term-2',
       ]);
       expect(provider.activeSessionId, 'term-1');
-      expect(apiClient.connectEventsCalls, 1);
       expect(apiClient.attachCalls, ['term-1']);
     });
 
@@ -87,18 +86,17 @@ void main() {
         expect(splitId, isNotNull);
         expect(provider.splitViewEnabled, isTrue);
 
-        apiClient.emitEvent(
-          'terminal/sessionUpdated',
-          sessionToJson(
-            terminalSession(
-              id: splitId!,
-              name: 'Primary split',
-              state: 'exited',
-              exitCode: 9,
-            ),
-          ),
+        // The provider no longer owns the bridge events socket; app.dart now
+        // routes terminal.session.* events through refreshSessions(). Simulate
+        // the server reporting an exited split by mutating the fake inventory
+        // and asking the provider to re-sync.
+        apiClient.sessionsById[splitId!] = terminalSession(
+          id: splitId,
+          name: 'Primary split',
+          state: 'exited',
+          exitCode: 9,
         );
-        await pumpMicrotasks();
+        await provider.refreshSessions();
 
         final exited = provider.sessionFor(splitId)!;
         expect(exited.session.isExited, isTrue);

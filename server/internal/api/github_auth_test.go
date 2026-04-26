@@ -48,7 +48,7 @@ func newFakeGitHubBackend(t *testing.T) *fakeGitHubBackend {
 			}
 			_ = json.NewEncoder(w).Encode(gitauth.TokenResponse{AccessToken: "access-2", RefreshToken: "refresh-2", ExpiresIn: 300, RefreshTokenExpiresIn: 7200})
 		case "/api/v3/user":
-			_ = json.NewEncoder(w).Encode(gitauth.User{Login: "octocat", ID: 9})
+			_ = json.NewEncoder(w).Encode(map[string]any{"login": "octocat", "id": 9})
 		default:
 			t.Fatalf("unexpected backend path %s", r.URL.Path)
 		}
@@ -183,8 +183,8 @@ func TestGitHubAuthReauthErrorPayload(t *testing.T) {
 	service := gitauth.NewService(client, store, "client-id", gitauth.DefaultHost, time.Minute)
 	service.SetNow(func() time.Time { return now })
 
-	if _, err := service.GetUser(context.Background(), gitauth.DefaultHost); !errors.Is(err, gitauth.ErrReauthRequired) {
-		t.Fatalf("GetUser() error = %v", err)
+	if _, err := service.EnsureFreshToken(context.Background(), gitauth.DefaultHost); !errors.Is(err, gitauth.ErrReauthRequired) {
+		t.Fatalf("EnsureFreshToken() error = %v", err)
 	}
 	w := httptest.NewRecorder()
 	writeGitHubAuthError(w, gitauth.ErrReauthRequired)

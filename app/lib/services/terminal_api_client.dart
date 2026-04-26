@@ -45,7 +45,7 @@ class TerminalApiClient {
 
   Future<List<TerminalSession>> listSessions() async {
     final response = await _client.get(
-      _httpUri('/bridge/terminal/sessions'),
+      _httpUri('/api/terminal/sessions'),
       headers: _headers,
     );
     _ensureSuccess(response, 'list terminal sessions');
@@ -80,15 +80,15 @@ class TerminalApiClient {
       'rows': ?rows,
       'cols': ?cols,
     };
-    return _postForSession('/bridge/terminal/create', payload);
+    return _postForSession('/api/terminal/create', payload);
   }
 
   Future<TerminalSession> attachSession(String id) {
-    return _postForSession('/bridge/terminal/attach', {'id': id});
+    return _postForSession('/api/terminal/attach', {'id': id});
   }
 
   Future<TerminalSession> resizeSession(String id, int rows, int cols) {
-    return _postForSession('/bridge/terminal/resize', {
+    return _postForSession('/api/terminal/resize', {
       'id': id,
       'rows': rows,
       'cols': cols,
@@ -96,22 +96,22 @@ class TerminalApiClient {
   }
 
   Future<TerminalSession> closeSession(String id) {
-    return _postForSession('/bridge/terminal/close', {'id': id});
+    return _postForSession('/api/terminal/close', {'id': id});
   }
 
   Future<TerminalSession> renameSession(String id, String name) {
-    return _postForSession('/bridge/terminal/rename', {'id': id, 'name': name});
+    return _postForSession('/api/terminal/rename', {'id': id, 'name': name});
   }
 
   Future<TerminalSession> splitSession(String parentId, {String? name}) {
-    return _postForSession('/bridge/terminal/split', {
+    return _postForSession('/api/terminal/split', {
       'parentId': parentId,
       if (name != null && name.isNotEmpty) 'name': name,
     });
   }
 
   WebSocketChannel connectTerminalWebSocket(String id) {
-    return _channelFactory(_wsUri('/bridge/ws/terminal/$id'));
+    return _channelFactory(_wsUri('/ws/terminal/$id'));
   }
 
   WebSocketChannel connectEventsWebSocket() {
