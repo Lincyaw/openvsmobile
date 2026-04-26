@@ -3,6 +3,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vscode_mobile/terminal/terminal_input_handler.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('TerminalInputHandler', () {
     test('maps navigation and function keys to xterm sequences', () {
       expect(
@@ -76,6 +78,28 @@ void main() {
         TerminalInputHandler.translateKey(LogicalKeyboardKey.shiftLeft),
         isNull,
       );
+    });
+
+    test('collapses repeated printable payloads to a single character', () {
+      final event = KeyDownEvent(
+        physicalKey: PhysicalKeyboardKey.keyP,
+        logicalKey: LogicalKeyboardKey.keyP,
+        character: 'pppppp',
+        timeStamp: Duration.zero,
+      );
+
+      expect(TerminalInputHandler.translate(event), 'p');
+    });
+
+    test('ignores key repeat events for raw terminal input', () {
+      final event = KeyRepeatEvent(
+        physicalKey: PhysicalKeyboardKey.keyP,
+        logicalKey: LogicalKeyboardKey.keyP,
+        character: 'p',
+        timeStamp: Duration.zero,
+      );
+
+      expect(TerminalInputHandler.translate(event), isNull);
     });
   });
 }

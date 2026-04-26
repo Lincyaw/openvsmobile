@@ -61,6 +61,20 @@ void main() {
       expect(rawInputs, contains('\x1B[A'));
     });
 
+    testWidgets('ignores key-up events so a key press is not sent twice', (
+      tester,
+    ) async {
+      await pumpPane(tester);
+
+      await tester.tap(find.byKey(const ValueKey<String>('terminal-surface')));
+      await tester.pump();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyA);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyA);
+      await tester.pump();
+
+      expect(rawInputs.where((value) => value == 'a').length, 1);
+    });
+
     testWidgets('keeps command text entry and toolbar affordances available', (
       tester,
     ) async {
@@ -100,6 +114,39 @@ void main() {
       await tester.pump();
 
       expect(submitted, <String>['ls\r']);
+    });
+
+    testWidgets('reports resize only when the terminal dimensions change', (
+      tester,
+    ) async {
+      final resizeCalls = <String>[];
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 600,
+              height: 220,
+              child: TerminalPane(
+                sessionId: 'term-1',
+                view: view,
+                isActive: true,
+                onSubmit: (_) {},
+                onDraftChanged: (_) {},
+                onResize: (rows, cols) => resizeCalls.add('$rows:$cols'),
+                onSendRaw: rawInputs.add,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(resizeCalls.length, 1);
+
+      await tester.enterText(find.byType(TextField), 'ls');
+      await tester.pump();
+
+      expect(resizeCalls.length, 1);
     });
 
     testWidgets('compact mode hides the redundant session header', (
@@ -249,7 +296,10 @@ void main() {
       await pumpPane(tester);
 
       final updated = tester.state<ScrollableState>(terminalScrollable);
-      expect(updated.position.pixels, lessThan(updated.position.maxScrollExtent));
+      expect(
+        updated.position.pixels,
+        lessThan(updated.position.maxScrollExtent),
+      );
     });
   });
 }

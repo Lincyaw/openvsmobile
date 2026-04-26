@@ -117,7 +117,7 @@ void main() {
       expect(find.text('Exited (7)'), findsWidgets);
     });
 
-    testWidgets('keeps sessions visible on compact layouts', (tester) async {
+    testWidgets('shows a session inbox on compact layouts', (tester) async {
       await terminalProvider.ensureInitialized();
       terminalProvider.setSplitViewEnabled(true);
       await terminalProvider.activateSession('term-2', openInSecondary: true);
@@ -126,7 +126,27 @@ void main() {
 
       expect(find.text('Alpha'), findsWidgets);
       expect(find.text('Beta'), findsWidgets);
-      expect(find.byType(TextField), findsNWidgets(2));
+      expect(find.byType(TextField), findsNothing);
+      expect(find.text('Split view'), findsNothing);
+      expect(find.text('Split current'), findsNothing);
+    });
+
+    testWidgets('opens a dedicated terminal screen from the compact inbox', (
+      tester,
+    ) async {
+      await terminalProvider.ensureInitialized();
+
+      await pumpScreen(tester, const Size(480, 900));
+
+      await tester.tap(find.text('Alpha').first);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Alpha'), findsWidgets);
+      expect(
+        find.byKey(const ValueKey<String>('terminal-surface')),
+        findsOneWidget,
+      );
+      expect(find.byIcon(Icons.keyboard), findsOneWidget);
     });
   });
 }

@@ -15,7 +15,8 @@ class TerminalWorkspaceScreen extends StatefulWidget {
   final bool isActive;
 
   @override
-  State<TerminalWorkspaceScreen> createState() => _TerminalWorkspaceScreenState();
+  State<TerminalWorkspaceScreen> createState() =>
+      _TerminalWorkspaceScreenState();
 }
 
 class _TerminalWorkspaceScreenState extends State<TerminalWorkspaceScreen> {
@@ -85,17 +86,103 @@ class _TerminalWorkspaceScreenState extends State<TerminalWorkspaceScreen> {
     onConfirm(value.trim());
   }
 
+  Future<void> _openCompactSession(
+    BuildContext context,
+    TerminalProvider provider,
+    String sessionId,
+  ) async {
+    final navigator = Navigator.of(context);
+    await provider.activateSession(sessionId);
+    if (!mounted) {
+      return;
+    }
+    await navigator.push(
+      MaterialPageRoute<void>(
+        builder: (_) => _TerminalSessionDetailScreen(sessionId: sessionId),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<TerminalProvider>();
     final workspace = context.watch<WorkspaceProvider>();
 
     final active = provider.activeSession;
-    final secondary = provider.hasSecondarySession ? provider.secondarySession : null;
+    final secondary = provider.hasSecondarySession
+        ? provider.secondarySession
+        : null;
 
     return LayoutBuilder(
       builder: (context, constraints) {
         final isCompact = constraints.maxWidth < 900;
+        if (isCompact) {
+          return Scaffold(
+            body: SafeArea(
+              child: Column(
+                children: [
+                  _TerminalToolbar(
+                    workspaceName: workspace.displayName,
+                    isLoading: provider.isLoading,
+                    splitViewEnabled: provider.splitViewEnabled,
+                    canSplitCurrent: provider.activeSession != null,
+                    canSwap: provider.hasSecondarySession,
+                    compact: true,
+                    onCreate: () => _showNameDialog(
+                      title: 'New terminal',
+                      onConfirm: (value) => provider.createSession(name: value),
+                    ),
+                    onCreateUntitled: () {
+                      provider.createSession();
+                    },
+                    onRefresh: () {
+                      provider.refreshSessions();
+                    },
+                    onToggleSplit: () => provider.setSplitViewEnabled(
+                      !provider.splitViewEnabled,
+                    ),
+                    onSplitActive: () {
+                      final activeSessionId = provider.activeSessionId;
+                      if (activeSessionId == null) {
+                        return;
+                      }
+                      provider.splitSession(activeSessionId);
+                    },
+                    onSwap: provider.swapSplitSessions,
+                  ),
+                  if (provider.inventoryError != null)
+                    MaterialBanner(
+                      content: Text(provider.inventoryError!),
+                      actions: [
+                        TextButton(
+                          onPressed: provider.refreshSessions,
+                          child: const Text('Retry'),
+                        ),
+                      ],
+                    ),
+                  Expanded(
+                    child: _CompactTerminalSessionInbox(
+                      provider: provider,
+                      onOpenSession: (sessionId) =>
+                          _openCompactSession(context, provider, sessionId),
+                      onRename: (sessionId) {
+                        final current = provider.sessionFor(sessionId);
+                        return _showNameDialog(
+                          title: 'Rename terminal',
+                          initialValue: current?.session.displayName,
+                          onConfirm: (value) =>
+                              provider.renameSession(sessionId, value),
+                        );
+                      },
+                      onClose: provider.closeSession,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
+
         final panes = <Widget>[
           if (active != null)
             TerminalPane(
@@ -190,45 +277,25 @@ class _TerminalWorkspaceScreenState extends State<TerminalWorkspaceScreen> {
                     ],
                   ),
                 Expanded(
-                  child: isCompact
-                      ? Column(
-                          children: [
-                            SizedBox(height: 220, child: list),
-                            const Divider(height: 1),
-                            Expanded(
-                              child: panes.isEmpty
-                                  ? const _EmptyTerminalState()
-                                  : panes.length == 1
-                                      ? panes.first
-                                      : Column(
-                                          children: [
-                                            Expanded(child: panes.first),
-                                            const SizedBox(height: 8),
-                                            Expanded(child: panes.last),
-                                          ],
-                                        ),
-                            ),
-                          ],
-                        )
-                      : Row(
-                          children: [
-                            SizedBox(width: 300, child: list),
-                            const VerticalDivider(width: 1),
-                            Expanded(
-                              child: panes.isEmpty
-                                  ? const _EmptyTerminalState()
-                                  : panes.length == 1
-                                      ? panes.first
-                                      : Row(
-                                          children: [
-                                            Expanded(child: panes.first),
-                                            const SizedBox(width: 8),
-                                            Expanded(child: panes.last),
-                                          ],
-                                        ),
-                            ),
-                          ],
-                        ),
+                  child: Row(
+                    children: [
+                      SizedBox(width: 300, child: list),
+                      const VerticalDivider(width: 1),
+                      Expanded(
+                        child: panes.isEmpty
+                            ? const _EmptyTerminalState()
+                            : panes.length == 1
+                            ? panes.first
+                            : Row(
+                                children: [
+                                  Expanded(child: panes.first),
+                                  const SizedBox(width: 8),
+                                  Expanded(child: panes.last),
+                                ],
+                              ),
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -246,6 +313,7 @@ class _TerminalToolbar extends StatelessWidget {
     required this.splitViewEnabled,
     required this.canSplitCurrent,
     required this.canSwap,
+    this.compact = false,
     required this.onCreate,
     required this.onCreateUntitled,
     required this.onRefresh,
@@ -259,6 +327,7 @@ class _TerminalToolbar extends StatelessWidget {
   final bool splitViewEnabled;
   final bool canSplitCurrent;
   final bool canSwap;
+  final bool compact;
   final VoidCallback onCreate;
   final VoidCallback onCreateUntitled;
   final VoidCallback onRefresh;
@@ -294,23 +363,146 @@ class _TerminalToolbar extends StatelessWidget {
             icon: Icon(isLoading ? Icons.sync : Icons.refresh),
             label: const Text('Refresh'),
           ),
-          FilterChip(
-            selected: splitViewEnabled,
-            onSelected: (_) => onToggleSplit(),
-            label: const Text('Split view'),
-          ),
-          OutlinedButton.icon(
-            onPressed: canSplitCurrent ? onSplitActive : null,
-            icon: const Icon(Icons.call_split),
-            label: const Text('Split current'),
-          ),
-          OutlinedButton.icon(
-            onPressed: canSwap ? onSwap : null,
-            icon: const Icon(Icons.swap_horiz),
-            label: const Text('Swap'),
-          ),
+          if (!compact) ...[
+            FilterChip(
+              selected: splitViewEnabled,
+              onSelected: (_) => onToggleSplit(),
+              label: const Text('Split view'),
+            ),
+            OutlinedButton.icon(
+              onPressed: canSplitCurrent ? onSplitActive : null,
+              icon: const Icon(Icons.call_split),
+              label: const Text('Split current'),
+            ),
+            OutlinedButton.icon(
+              onPressed: canSwap ? onSwap : null,
+              icon: const Icon(Icons.swap_horiz),
+              label: const Text('Swap'),
+            ),
+          ],
         ],
       ),
+    );
+  }
+}
+
+class _CompactTerminalSessionInbox extends StatelessWidget {
+  const _CompactTerminalSessionInbox({
+    required this.provider,
+    required this.onOpenSession,
+    required this.onRename,
+    required this.onClose,
+  });
+
+  final TerminalProvider provider;
+  final Future<void> Function(String sessionId) onOpenSession;
+  final Future<void> Function(String sessionId) onRename;
+  final Future<void> Function(String sessionId) onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    if (provider.isLoading && !provider.hasSessions) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (!provider.hasSessions) {
+      return const _EmptyTerminalState();
+    }
+
+    return TerminalSessionList(
+      sessions: provider.sessions,
+      activeSessionId: provider.activeSessionId,
+      secondarySessionId: provider.secondarySessionId,
+      allowSecondarySelection: false,
+      onSelect: (sessionId) {
+        unawaited(onOpenSession(sessionId));
+      },
+      onRename: (sessionId) {
+        unawaited(onRename(sessionId));
+      },
+      onClose: (sessionId) {
+        unawaited(onClose(sessionId));
+      },
+    );
+  }
+}
+
+class _TerminalSessionDetailScreen extends StatelessWidget {
+  const _TerminalSessionDetailScreen({required this.sessionId});
+
+  final String sessionId;
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<TerminalProvider>(
+      builder: (context, provider, _) {
+        final view = provider.sessionFor(sessionId);
+        final sessionName = view?.session.displayName ?? 'Session';
+
+        return Scaffold(
+          appBar: AppBar(
+            title: Text(
+              sessionName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            actions: [
+              if (view != null)
+                PopupMenuButton<String>(
+                  onSelected: (value) async {
+                    if (value == 'rename') {
+                      await _showRenameDialog(
+                        context,
+                        provider,
+                        sessionId,
+                        initialValue: view.session.displayName,
+                      );
+                    } else if (value == 'close') {
+                      await provider.closeSession(sessionId);
+                      if (context.mounted) {
+                        Navigator.of(context).pop();
+                      }
+                    }
+                  },
+                  itemBuilder: (context) => const [
+                    PopupMenuItem<String>(
+                      value: 'rename',
+                      child: Text('Rename'),
+                    ),
+                    PopupMenuItem<String>(value: 'close', child: Text('Close')),
+                  ],
+                ),
+            ],
+          ),
+          body: view == null
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text(
+                      'This terminal session is no longer available.',
+                      style: Theme.of(context).textTheme.bodyLarge,
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                )
+              : TerminalPane(
+                  sessionId: view.session.id,
+                  view: view,
+                  isActive: true,
+                  compact: true,
+                  onSubmit: (input) {
+                    unawaited(provider.sendInput(view.session.id, input));
+                  },
+                  onSendRaw: (input) {
+                    unawaited(provider.sendInput(view.session.id, input));
+                  },
+                  onDraftChanged: (value) =>
+                      provider.setInputDraft(view.session.id, value),
+                  onResize: (rows, cols) =>
+                      provider.resizeSession(view.session.id, rows, cols),
+                ),
+        );
+      },
     );
   }
 }
@@ -324,4 +516,43 @@ class _EmptyTerminalState extends StatelessWidget {
       child: Text('Create or select a terminal session to begin.'),
     );
   }
+}
+
+Future<void> _showRenameDialog(
+  BuildContext context,
+  TerminalProvider provider,
+  String sessionId, {
+  String? initialValue,
+}) async {
+  final controller = TextEditingController(text: initialValue ?? '');
+  final value = await showDialog<String>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Rename terminal'),
+      content: TextField(
+        controller: controller,
+        autofocus: true,
+        decoration: const InputDecoration(
+          hintText: 'Session name',
+          border: OutlineInputBorder(),
+        ),
+        onSubmitted: (value) => Navigator.of(context).pop(value),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(controller.text),
+          child: const Text('Save'),
+        ),
+      ],
+    ),
+  );
+  controller.dispose();
+  if (value == null || value.trim().isEmpty) {
+    return;
+  }
+  await provider.renameSession(sessionId, value.trim());
 }

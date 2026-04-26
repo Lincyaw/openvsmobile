@@ -43,6 +43,8 @@ class _TerminalPaneState extends State<TerminalPane> {
   late final FocusNode _terminalFocusNode;
   late final FocusNode _inputFocusNode;
   int _lastFocusToken = 0;
+  int? _lastReportedRows;
+  int? _lastReportedCols;
   bool _ctrlMode = false;
   bool _followOutput = true;
   bool _showCompactComposer = false;
@@ -65,6 +67,8 @@ class _TerminalPaneState extends State<TerminalPane> {
     if (oldWidget.sessionId != widget.sessionId) {
       _followOutput = true;
       _showCompactComposer = false;
+      _lastReportedRows = null;
+      _lastReportedCols = null;
     }
     if (_inputController.text != widget.view.inputDraft) {
       _inputController.value = TextEditingValue(
@@ -135,12 +139,8 @@ class _TerminalPaneState extends State<TerminalPane> {
     if (!widget.view.isInteractive) {
       return KeyEventResult.ignored;
     }
-    final encoded = TerminalInputHandler.translateKey(
-      event.logicalKey,
-      character: event.character,
-      ctrlPressed: HardwareKeyboard.instance.isControlPressed,
-      altPressed: HardwareKeyboard.instance.isAltPressed,
-      shiftPressed: HardwareKeyboard.instance.isShiftPressed,
+    final encoded = TerminalInputHandler.translate(
+      event,
       applicationCursorKeys: widget.view.snapshot.applicationCursorKeys,
     );
     if (encoded == null) {
@@ -184,6 +184,20 @@ class _TerminalPaneState extends State<TerminalPane> {
       } else {
         _terminalFocusNode.requestFocus();
       }
+    });
+  }
+
+  void _reportResizeIfNeeded(int rows, int cols) {
+    if (_lastReportedRows == rows && _lastReportedCols == cols) {
+      return;
+    }
+    _lastReportedRows = rows;
+    _lastReportedCols = cols;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      widget.onResize(rows, cols);
     });
   }
 
@@ -234,9 +248,7 @@ class _TerminalPaneState extends State<TerminalPane> {
               final rows = (constraints.maxHeight / (_fontSize * _lineHeight))
                   .floor()
                   .clamp(5, 100);
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                widget.onResize(rows, cols);
-              });
+              _reportResizeIfNeeded(rows, cols);
 
               return Focus(
                 focusNode: _terminalFocusNode,
@@ -278,7 +290,9 @@ class _TerminalPaneState extends State<TerminalPane> {
                   setState(() => _ctrlMode = !_ctrlMode);
                   _terminalFocusNode.requestFocus();
                 },
-                onToggleComposer: widget.compact ? _toggleCompactComposer : null,
+                onToggleComposer: widget.compact
+                    ? _toggleCompactComposer
+                    : null,
                 onSendRaw: _sendToolbarRaw,
                 onInsert: _insertAtCursor,
               ),
@@ -287,13 +301,13 @@ class _TerminalPaneState extends State<TerminalPane> {
                   padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
                   child: Row(
                     children: [
-                    Text(
-                      r'$ ',
-                      style: monospaceTextStyle(
-                        color: theme.colorScheme.primary,
-                        fontSize: 14,
+                      Text(
+                        r'$ ',
+                        style: monospaceTextStyle(
+                          color: theme.colorScheme.primary,
+                          fontSize: 14,
+                        ),
                       ),
-                    ),
                       Expanded(
                         child: TextField(
                           controller: _inputController,
@@ -304,9 +318,7 @@ class _TerminalPaneState extends State<TerminalPane> {
                             hintText: 'Enter command...',
                             isDense: true,
                           ),
-                          style: monospaceTextStyle(
-                            fontSize: 13,
-                          ),
+                          style: monospaceTextStyle(fontSize: 13),
                           onChanged: widget.onDraftChanged,
                           onSubmitted: (_) => _submit(),
                           textInputAction: TextInputAction.send,
@@ -381,10 +393,10 @@ class _TerminalKeyToolbar extends StatelessWidget {
               child: Center(
                 child: Text(
                   label,
-                    style: monospaceTextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: active
+                  style: monospaceTextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: active
                         ? colorScheme.primary
                         : enabled
                         ? colorScheme.onSurface
@@ -442,9 +454,17 @@ class _TerminalKeyToolbar extends StatelessWidget {
               const SizedBox(width: 4),
               keyButton(label: '^C', width: 38, onTap: () => onSendRaw('\x03')),
               keyButton(label: '^D', width: 38, onTap: () => onSendRaw('\x04')),
-              keyButton(label: 'Esc', width: 38, onTap: () => onSendRaw('\x1B')),
+              keyButton(
+                label: 'Esc',
+                width: 38,
+                onTap: () => onSendRaw('\x1B'),
+              ),
               keyButton(label: 'Tab', width: 38, onTap: () => onSendRaw('\t')),
-              keyButton(label: 'Enter', width: 48, onTap: () => onSendRaw('\r')),
+              keyButton(
+                label: 'Enter',
+                width: 48,
+                onTap: () => onSendRaw('\r'),
+              ),
               const SizedBox(width: 4),
               iconKeyButton(
                 icon: Icons.arrow_upward,

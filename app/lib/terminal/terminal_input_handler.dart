@@ -3,13 +3,16 @@ import 'package:flutter/services.dart';
 class TerminalInputHandler {
   const TerminalInputHandler._();
 
-  static String? translate(KeyEvent event) {
-    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+  static String? translate(
+    KeyEvent event, {
+    bool applicationCursorKeys = false,
+  }) {
+    if (event is! KeyDownEvent) {
       return null;
     }
 
     final key = event.logicalKey;
-    final character = event.character;
+    final character = _normalizePrintableCharacter(event.character);
     final hardwareKeyboard = HardwareKeyboard.instance;
     return translateKey(
       key,
@@ -17,6 +20,7 @@ class TerminalInputHandler {
       ctrlPressed: hardwareKeyboard.isControlPressed,
       altPressed: hardwareKeyboard.isAltPressed,
       shiftPressed: hardwareKeyboard.isShiftPressed,
+      applicationCursorKeys: applicationCursorKeys,
     );
   }
 
@@ -56,6 +60,22 @@ class TerminalInputHandler {
     }
 
     return character;
+  }
+
+  static String? _normalizePrintableCharacter(String? value) {
+    if (value == null || value.isEmpty) {
+      return null;
+    }
+    final runes = value.runes.toList(growable: false);
+    if (runes.length <= 1) {
+      return value;
+    }
+    final first = runes.first;
+    final allSame = runes.every((rune) => rune == first);
+    if (allSame) {
+      return String.fromCharCode(first);
+    }
+    return value;
   }
 
   static String? ctrlCharacter(String value) {
