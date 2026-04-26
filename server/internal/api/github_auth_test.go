@@ -87,7 +87,7 @@ func TestGitHubAuthHTTPFlow(t *testing.T) {
 	service := gitauth.NewService(client, store, "client-id", "github.enterprise.local", time.Minute)
 	service.SetNow(func() time.Time { return time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC) })
 
-	srv := NewServer(newMockFS(), nil, nil, "", nil, nil, nil, service)
+	srv := NewServer(newMockFS(), nil, nil, "", nil, nil, service)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 

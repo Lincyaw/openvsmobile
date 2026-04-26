@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	gitctx "github.com/Lincyaw/vscode-mobile/server/internal/git"
 )
 
 type Service struct {
@@ -155,19 +153,19 @@ func (s *Service) GetUser(ctx context.Context, host string) (*User, error) {
 	return s.client.GetUser(ctx, record.GitHubHost, record.AccessToken)
 }
 
-func (s *Service) ProbeCurrentRepo(ctx context.Context, gitClient *gitctx.Git, path string) (*CurrentRepoContext, error) {
-	if gitClient == nil {
-		return nil, fmt.Errorf("git client is not configured")
+func (s *Service) ProbeCurrentRepo(ctx context.Context, locator RepoLocator, path string) (*CurrentRepoContext, error) {
+	if locator == nil {
+		locator = LocalRepoLocator{}
 	}
 
-	repoContext, err := gitClient.ResolveRepoContext(path)
+	repoContext, err := locator.ResolveRepoContext(path)
 	if err != nil {
 		repository := &Repository{}
 		if repoContext != nil {
 			repository.RepoRoot = repoContext.RepoRoot
 		}
 		switch {
-		case errors.Is(err, gitctx.ErrNotRepository), errors.Is(err, gitctx.ErrNoRemote), errors.Is(err, gitctx.ErrRepoNotGitHub):
+		case errors.Is(err, ErrNotRepository), errors.Is(err, ErrNoRemote), errors.Is(err, ErrRepoNotGitHub):
 			return &CurrentRepoContext{
 				Status:     RepoStatusRepoNotGitHub,
 				ErrorCode:  RepoStatusRepoNotGitHub,

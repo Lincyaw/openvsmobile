@@ -233,24 +233,26 @@ requirements:
       Flutter view showing repository state — current branch, upstream,
       ahead/behind, remotes, and grouped file collections (staged, unstaged,
       untracked, conflicts) via GET /bridge/git/repository. Backed by the
-      local `git` CLI in internal/git/. (Future: migrate to read from the
-      openvsmobile-bridge VSCode extension's HTTP runtime so repository state
-      mirrors the VS Code Source Control model exactly.)
+      openvsmobile-bridge extension's `git.bridge.getRepositoryState`
+      command (extension host owns the truth, mirrors VS Code Source Control
+      state). State changes are polled by the client — no push events yet.
     priority: P1
     status: implemented
     code:
-      - server/internal/git/git.go
+      - server/internal/bridge/client.go
+      - server/internal/bridge/git.go
       - server/internal/api/git.go
       - server/internal/api/router.go
+      - openvscode-server/extensions/openvsmobile-bridge/main.js
       - app/lib/screens/git_screen.dart
       - app/lib/providers/git_provider.dart
       - app/lib/services/git_api_client.dart
       - app/lib/models/git_models.dart
     tests:
-      - server/internal/git/git_test.go
+      - server/internal/bridge/client_test.go
       - app/test/services/git_api_client_test.dart
       - app/test/providers/git_provider_test.dart
-    depends_on: [REQ-003]
+    depends_on: [REQ-003, REQ-034]
 
   - id: REQ-012
     title: Diff viewer
@@ -266,24 +268,27 @@ requirements:
     depends_on: [REQ-011, REQ-007]
 
   - id: REQ-013
-    title: LSP diagnostics integration
+    title: LSP diagnostics via OpenVSCode
     description: >
-      Run language-specific diagnostic commands (go vet, dart analyze, eslint,
-      pylint) via the Go server, parse output into structured diagnostics,
-      and display inline in the code viewer with gutter icons and severity
-      coloring. Pragmatic approach using CLI tools instead of full LSP proxy.
+      Diagnostics are forwarded from the openvsmobile-bridge extension's
+      vscode.languages.getDiagnostics() over HTTP to GET /api/diagnostics.
+      Push updates flow over the SSE event stream as `diagnostics.changed`
+      events (REQ-035). Local CLI fallback (go vet / dart analyze) was
+      removed on 2026-04-26 — diagnostics depend entirely on the language
+      servers running in the extension host.
     priority: P1
     status: implemented
     code:
-      - server/internal/diagnostics/diagnostics.go
+      - server/internal/bridge/client.go
+      - server/internal/bridge/diagnostics.go
       - server/internal/api/diagnostics.go
+      - openvscode-server/extensions/openvsmobile-bridge/main.js
       - app/lib/models/diagnostic.dart
       - app/lib/widgets/code_viewer.dart
-      - app/lib/providers/editor_provider.dart
       - app/lib/services/api_client.dart
     tests:
-      - server/internal/diagnostics/diagnostics_test.go
-    depends_on: [REQ-001, REQ-003, REQ-007]
+      - server/internal/bridge/client_test.go
+    depends_on: [REQ-001, REQ-003, REQ-007, REQ-034]
 
   - id: REQ-014
     title: Local-PTY terminal session backend
@@ -438,24 +443,25 @@ requirements:
     description: >
       Git command endpoints for stage, unstage, commit, checkout, fetch,
       pull, push, discard, stash, and stash/apply through /bridge/git/*.
-      Backed by the local `git` CLI in internal/git/. Command responses
-      return the refreshed repository state. (Future: migrate to the
-      openvsmobile-bridge extension to receive vscode.git
-      onDidChangeRepository events instead of relying on polling.)
+      Forwarded to the openvsmobile-bridge extension's `git.bridge.*`
+      VS Code commands. Repository changes are pushed back via the SSE
+      event stream as `git.repositoryChanged` (REQ-035) — Flutter
+      GitProvider refreshes immediately, no polling.
     priority: P1
     status: implemented
     code:
-      - server/internal/git/git.go
+      - server/internal/bridge/git.go
       - server/internal/api/git.go
       - server/internal/api/router.go
+      - openvscode-server/extensions/openvsmobile-bridge/main.js
       - app/lib/screens/git_screen.dart
       - app/lib/providers/git_provider.dart
       - app/lib/services/git_api_client.dart
     tests:
-      - server/internal/git/git_test.go
+      - server/internal/bridge/client_test.go
       - app/test/services/git_api_client_test.dart
       - app/test/providers/git_provider_test.dart
-    depends_on: [REQ-011]
+    depends_on: [REQ-011, REQ-034, REQ-035]
 
   - id: REQ-023
     title: Mobile runtime bridge lifecycle manager
@@ -767,3 +773,72 @@ requirements:
       - app/test/providers/chat_provider_test.dart
       - app/test/widgets/contextual_chat_test.dart
     depends_on: [REQ-010, REQ-033]
+
+  # ============================================================
+  # Iteration 6: forward to OpenVSCode (2026-04-26)
+  # ============================================================
+
+  - id: REQ-034
+    title: openvsmobile-bridge extension HTTP runtime
+    description: >
+      Zero-deps Node extension at openvscode-server/extensions/openvsmobile-bridge/
+      activates on startup, binds an HTTP server on 127.0.0.1:0, writes
+      runtime info {host, port, token, pid, startedAt, version} to
+      ~/.config/openvscode-mobile/bridge-runtime.json (override env
+      OPENVSCODE_MOBILE_BRIDGE_INFO_PATH). All routes require Bearer
+      token. Endpoints: /healthz, /git/* (delegates to git.bridge.*
+      VS Code commands), /diagnostics, /workspace/{folders,findFiles,
+      findText}. Go server side: internal/bridge/ package reads runtime
+      info (mtime-aware cache, auto-invalidates on connection error),
+      typed request wrappers, returns ErrBridgeUnavailable as 503
+      bridge_unavailable when extension is offline. No local fallback.
+    priority: P0
+    status: implemented
+    code:
+      - openvscode-server/extensions/openvsmobile-bridge/main.js
+      - openvscode-server/extensions/openvsmobile-bridge/extension.js
+      - openvscode-server/extensions/openvsmobile-bridge/package.json
+      - server/internal/bridge/runtime_info.go
+      - server/internal/bridge/client.go
+      - server/internal/bridge/git.go
+      - server/internal/bridge/diagnostics.go
+      - server/internal/bridge/workspace.go
+      - server/internal/api/workspace.go
+      - server/internal/api/router.go
+      - server/cmd/server/main.go
+    tests:
+      - server/internal/bridge/client_test.go
+    depends_on: [REQ-001]
+
+  - id: REQ-035
+    title: Bridge SSE event stream → Flutter live updates
+    description: >
+      Extension exposes GET /events as SSE stream. Subscribes to
+      vscode.git per-repository onDidChange (emits git.repositoryChanged
+      with rootPath) and vscode.languages.onDidChangeDiagnostics (emits
+      diagnostics.changed with affected URIs, debounced 200ms). 15s
+      keepalive, initial `ready` event. Process-wide event broker fans
+      out to all open SSE connections.
+      Go server: internal/bridge/events.go runs a long-lived consumer with
+      exponential backoff reconnect (1s..30s) and mtime-triggered
+      reconnect when bridge restarts. /bridge/ws/events WebSocket route
+      fans events out to Flutter clients with envelope {type, payload, ts}.
+      Flutter: BridgeEventsClient + FileWatchClient extracted from
+      app.dart into services/. MainShell subscribes to
+      git.repositoryChanged → GitProvider.refreshRepository() +
+      FileProvider.refresh(). diagnostics.changed handler plumbed but
+      currently no-op until EditorProvider exposes a refresh hook.
+    priority: P0
+    status: implemented
+    code:
+      - openvscode-server/extensions/openvsmobile-bridge/main.js
+      - server/internal/bridge/events.go
+      - server/internal/api/bridge_events.go
+      - server/internal/api/router.go
+      - server/cmd/server/main.go
+      - app/lib/services/bridge_events_client.dart
+      - app/lib/services/file_watch_client.dart
+      - app/lib/app.dart
+    tests:
+      - server/internal/bridge/events_test.go
+    depends_on: [REQ-034]

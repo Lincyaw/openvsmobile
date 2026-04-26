@@ -8,9 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Lincyaw/vscode-mobile/server/internal/bridge"
 	"github.com/Lincyaw/vscode-mobile/server/internal/claude"
-	"github.com/Lincyaw/vscode-mobile/server/internal/diagnostics"
-	"github.com/Lincyaw/vscode-mobile/server/internal/git"
 	gitauth "github.com/Lincyaw/vscode-mobile/server/internal/github"
 	"github.com/Lincyaw/vscode-mobile/server/internal/terminal"
 )
@@ -28,39 +27,51 @@ type FileSystem interface {
 
 // Server holds the dependencies for the API handlers.
 type Server struct {
-	fs               FileSystem
-	sessionIndex     *claude.SessionIndex
-	processManager   *claude.ProcessManager
-	token            string
-	git              *git.Git
-	termManager      *terminal.Manager
-	diagnosticRunner *diagnostics.Runner
-	githubAuth       *gitauth.Service
-	fileWatchHub     *FileWatchHub
+	fs             FileSystem
+	sessionIndex   *claude.SessionIndex
+	processManager *claude.ProcessManager
+	token          string
+	bridge         *bridge.Client
+	bridgeEvents   *bridge.EventStream
+	termManager    *terminal.Manager
+	githubAuth     *gitauth.Service
+	fileWatchHub   *FileWatchHub
 }
 
 // NewServer creates a new API server.
+//
+// `bridgeClient` forwards git, diagnostics, and workspace queries to the
+// openvsmobile-bridge VS Code extension. Pass nil to disable those endpoints
+// (they will return 503 bridge_unavailable). `termMgr` is the local PTY
+// manager that powers the /bridge/terminal/* endpoints; terminal output is
+// not yet served over the extension bridge because the public VS Code API
+// does not expose terminal stdout.
 func NewServer(
 	fs FileSystem,
 	sessionIndex *claude.SessionIndex,
 	pm *claude.ProcessManager,
 	token string,
-	gitClient *git.Git,
+	bridgeClient *bridge.Client,
 	termMgr *terminal.Manager,
-	diagRunner *diagnostics.Runner,
 	githubAuth *gitauth.Service,
 ) *Server {
 	return &Server{
-		fs:               fs,
-		sessionIndex:     sessionIndex,
-		processManager:   pm,
-		token:            token,
-		git:              gitClient,
-		termManager:      termMgr,
-		diagnosticRunner: diagRunner,
-		githubAuth:       githubAuth,
-		fileWatchHub:     NewFileWatchHub(),
+		fs:             fs,
+		sessionIndex:   sessionIndex,
+		processManager: pm,
+		token:          token,
+		bridge:         bridgeClient,
+		termManager:    termMgr,
+		githubAuth:     githubAuth,
+		fileWatchHub:   NewFileWatchHub(),
 	}
+}
+
+// SetBridgeEvents wires the bridge SSE consumer into the server so that the
+// /bridge/ws/events WebSocket can fan-out events to subscribers. Optional —
+// if nil, the WebSocket endpoint returns 503.
+func (s *Server) SetBridgeEvents(stream *bridge.EventStream) {
+	s.bridgeEvents = stream
 }
 
 // Handler returns the top-level HTTP handler with all routes.
@@ -77,7 +88,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sessions/{id}/subagents/{agentId}/messages", s.handleSubagentMessages)
 	mux.HandleFunc("GET /api/sessions/{id}/subagents/{agentId}/meta", s.handleSubagentMeta)
 
-	// Git endpoints (backed by the local git CLI).
+	// Git endpoints (forwarded to the openvsmobile-bridge extension).
 	mux.HandleFunc("GET /bridge/git/repository", s.handleGitRepository)
 	mux.HandleFunc("GET /bridge/git/diff", s.handleGitDiff)
 	mux.HandleFunc("POST /bridge/git/stage", s.handleGitStage)
@@ -95,10 +106,18 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/search", s.handleSearch)
 	mux.HandleFunc("GET /api/search/files", s.handleSearchFiles)
 
-	// Diagnostics endpoint.
+	// Diagnostics endpoint (forwarded to the openvsmobile-bridge extension).
 	mux.HandleFunc("GET /api/diagnostics", s.handleDiagnostics)
 
-	// Terminal endpoints (backed by the local PTY manager).
+	// Workspace endpoints (forwarded to the openvsmobile-bridge extension).
+	mux.HandleFunc("GET /api/workspace/folders", s.handleWorkspaceFolders)
+	mux.HandleFunc("GET /api/workspace/findFiles", s.handleWorkspaceFindFiles)
+	mux.HandleFunc("GET /api/workspace/findText", s.handleWorkspaceFindText)
+
+	// Terminal endpoints (still backed by the local PTY manager — see
+	// internal/terminal. Forwarding terminal output through the extension
+	// requires either node-pty or proposed VS Code APIs that are not
+	// available without a build pipeline; tracked separately).
 	mux.HandleFunc("GET /bridge/terminal/sessions", s.handleTerminalSessions)
 	mux.HandleFunc("POST /bridge/terminal/create", s.handleTerminalCreate)
 	mux.HandleFunc("POST /bridge/terminal/attach", s.handleTerminalAttach)
@@ -113,6 +132,7 @@ func (s *Server) Handler() http.Handler {
 	// WebSocket endpoints.
 	mux.HandleFunc("/ws/chat", s.handleWSChat)
 	mux.HandleFunc("/ws/files", s.handleWSFiles)
+	mux.HandleFunc("/bridge/ws/events", s.handleWSBridgeEvents)
 	mux.HandleFunc("GET /bridge/ws/terminal/{id}", s.handleWSBridgeTerminal)
 
 	// Health-check endpoint (unauthenticated for connectivity tests).

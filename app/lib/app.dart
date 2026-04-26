@@ -1,9 +1,5 @@
-import 'dart:async';
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
 import 'providers/workspace_provider.dart';
 import 'providers/file_provider.dart';
 import 'providers/git_provider.dart';
@@ -11,6 +7,8 @@ import 'screens/files_screen.dart';
 import 'screens/chat_screen.dart';
 import 'screens/terminal_workspace_screen.dart';
 import 'screens/git_screen.dart';
+import 'services/bridge_events_client.dart';
+import 'services/file_watch_client.dart';
 import 'services/settings_service.dart';
 
 class VSCodeMobileApp extends StatelessWidget {
@@ -46,11 +44,35 @@ class MainShell extends StatefulWidget {
 
 class _MainShellState extends State<MainShell> {
   int _currentIndex = 0;
-  final _fileWatch = _FileWatchClient();
+  final FileWatchClient _fileWatch = FileWatchClient();
+  final BridgeEventsClient _bridgeEvents = BridgeEventsClient();
+  String? _bridgeEventsBaseUrl;
+  String? _bridgeEventsToken;
+
+  @override
+  void initState() {
+    super.initState();
+    // Push-based events from the VS Code extension. Wired once and reused
+    // across rebuilds; the underlying client owns reconnect logic.
+    _bridgeEvents.on('git.repositoryChanged', (_) {
+      if (!mounted) return;
+      context.read<GitProvider>().refreshRepository();
+      // File-tree may need to refresh too because git operations
+      // (checkout/stash/pull) frequently mutate the working tree.
+      context.read<FileProvider>().refresh();
+    });
+    _bridgeEvents.on('diagnostics.changed', (_) {
+      if (!mounted) return;
+      // No consumer wired yet — diagnostics are pulled on demand by the
+      // editor screen. Keeping the subscription so we can hook
+      // EditorProvider here once it gains a refresh API.
+    });
+  }
 
   @override
   void dispose() {
     _fileWatch.dispose();
+    _bridgeEvents.dispose();
     super.dispose();
   }
 
@@ -70,6 +92,14 @@ class _MainShellState extends State<MainShell> {
         context.read<GitProvider>().refreshRepository();
       },
     );
+
+    // (Re)connect the bridge events stream whenever server settings change.
+    if (_bridgeEventsBaseUrl != settings.serverUrl ||
+        _bridgeEventsToken != settings.authToken) {
+      _bridgeEventsBaseUrl = settings.serverUrl;
+      _bridgeEventsToken = settings.authToken;
+      _bridgeEvents.connect(settings.serverUrl, settings.authToken);
+    }
 
     final tabs = <Widget>[
       const FilesScreen(),
@@ -109,59 +139,5 @@ class _MainShellState extends State<MainShell> {
         ],
       ),
     );
-  }
-}
-
-/// Lightweight WebSocket client for /ws/files that watches the current workspace.
-class _FileWatchClient {
-  WebSocketChannel? _channel;
-  StreamSubscription<dynamic>? _subscription;
-  String? _lastPath;
-  Timer? _debounceTimer;
-
-  void connect(
-    String baseUrl,
-    String token,
-    String path,
-    VoidCallback onRefresh,
-  ) {
-    if (_lastPath == path && _channel != null) return;
-    _lastPath = path;
-
-    _subscription?.cancel();
-    _channel?.sink.close();
-
-    final wsBase = baseUrl
-        .replaceFirst('https://', 'wss://')
-        .replaceFirst('http://', 'ws://');
-    final base = wsBase.endsWith('/')
-        ? wsBase.substring(0, wsBase.length - 1)
-        : wsBase;
-    final uri = Uri.parse('$base/ws/files?token=$token');
-
-    try {
-      _channel = WebSocketChannel.connect(uri);
-      _subscription = _channel!.stream.listen(
-        (data) {
-          final msg = jsonDecode(data as String) as Map<String, dynamic>;
-          final type = msg['type'] as String?;
-          if (type == 'file_changed') {
-            _debounceTimer?.cancel();
-            _debounceTimer = Timer(const Duration(milliseconds: 500), () {
-              onRefresh();
-            });
-          }
-        },
-        onError: (_) {},
-        onDone: () {},
-      );
-      _channel!.sink.add(jsonEncode({'type': 'watch', 'path': path}));
-    } catch (_) {}
-  }
-
-  void dispose() {
-    _debounceTimer?.cancel();
-    _subscription?.cancel();
-    _channel?.sink.close();
   }
 }

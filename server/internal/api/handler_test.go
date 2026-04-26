@@ -15,8 +15,6 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/Lincyaw/vscode-mobile/server/internal/claude"
-	"github.com/Lincyaw/vscode-mobile/server/internal/diagnostics"
-	"github.com/Lincyaw/vscode-mobile/server/internal/git"
 	"github.com/Lincyaw/vscode-mobile/server/internal/terminal"
 )
 
@@ -93,9 +91,8 @@ func newTestServer(t *testing.T, token string) (*httptest.Server, *mockFS, strin
 	pm := claude.NewProcessManager("/nonexistent/claude", ".")
 	fs := newMockFS()
 	termMgr := terminal.NewManager()
-	diagRunner := diagnostics.NewRunner(10 * time.Second)
 
-	srv := NewServer(fs, sessionIndex, pm, token, nil, termMgr, diagRunner, nil)
+	srv := NewServer(fs, sessionIndex, pm, token, nil, termMgr, nil)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
@@ -356,8 +353,7 @@ func TestSessionsList_WithSessions(t *testing.T) {
 	}
 
 	pm := claude.NewProcessManager("/nonexistent", ".")
-	diagRunner := diagnostics.NewRunner(10 * time.Second)
-	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), diagRunner, nil)
+	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), nil)
 	ts2 := httptest.NewServer(srv.Handler())
 	defer ts2.Close()
 
@@ -393,8 +389,7 @@ func TestSessionsSearch_ByQuery(t *testing.T) {
 	sessIndex.ScanSessions()
 
 	pm := claude.NewProcessManager("/nonexistent", ".")
-	diagRunner := diagnostics.NewRunner(10 * time.Second)
-	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), diagRunner, nil)
+	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), nil)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -453,8 +448,7 @@ func TestSessionsSearch_ProjectUsesExactWorkspaceRoot(t *testing.T) {
 	}
 
 	pm := claude.NewProcessManager("/nonexistent", ".")
-	diagRunner := diagnostics.NewRunner(10 * time.Second)
-	srv := NewServer(nil, sessIndex, pm, "", git.NewGit("."), terminal.NewManager(), diagRunner, nil)
+	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), nil)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -496,8 +490,7 @@ func TestSessionMessages_E2E(t *testing.T) {
 	sessIndex.ScanSessions()
 
 	pm := claude.NewProcessManager("/nonexistent", ".")
-	diagRunner := diagnostics.NewRunner(10 * time.Second)
-	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), diagRunner, nil)
+	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), nil)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -549,11 +542,11 @@ func TestSessionMessages_NotFound(t *testing.T) {
 
 // --- Diagnostics handler test ---
 
-func TestDiagnostics_NoRunner(t *testing.T) {
-	// Server with nil diagnostics runner.
+func TestDiagnostics_NoBridge(t *testing.T) {
+	// Server with no bridge client wired up.
 	sessIndex := claude.NewSessionIndex(t.TempDir())
 	pm := claude.NewProcessManager("/nonexistent", ".")
-	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), nil, nil)
+	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), nil)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -564,22 +557,7 @@ func TestDiagnostics_NoRunner(t *testing.T) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503 for nil runner, got %d", resp.StatusCode)
-	}
-}
-
-func TestDiagnostics_UnknownExtension(t *testing.T) {
-	ts, _, _ := newTestServer(t, "")
-
-	// Request diagnostics for a file with no known linter.
-	resp, err := http.Get(ts.URL + "/api/diagnostics?path=/tmp/foo.xyz&workDir=/tmp")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 (empty results), got %d", resp.StatusCode)
+		t.Fatalf("expected 503 when bridge is unavailable, got %d", resp.StatusCode)
 	}
 }
 

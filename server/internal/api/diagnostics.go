@@ -8,63 +8,63 @@ import (
 )
 
 // handleDiagnostics handles GET /api/diagnostics?path=<file>&workDir=<dir>.
-// Returns structured diagnostic findings for the given file or directory.
+// Diagnostics are sourced from the live VS Code language servers via the
+// openvsmobile-bridge extension. This endpoint no longer shells out to
+// `go vet` / `dart analyze`; if the bridge is unreachable it returns 503.
 func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
-	if s.diagnosticRunner == nil {
-		http.Error(w, "diagnostics not configured", http.StatusServiceUnavailable)
+	if !s.requireBridge(w) {
 		return
 	}
 
 	rawWorkDir := r.URL.Query().Get("workDir")
-	if rawWorkDir == "" {
-		rawWorkDir = "/"
-	}
-	workDir, err := sanitizePath(rawWorkDir, true)
-	if err != nil {
-		http.Error(w, "invalid workDir: "+err.Error(), http.StatusBadRequest)
-		return
+	var workDir string
+	if rawWorkDir != "" {
+		cleaned, err := sanitizePath(rawWorkDir, true)
+		if err != nil {
+			writeBridgeError(w, http.StatusBadRequest, "invalid_workdir", err.Error())
+			return
+		}
+		workDir = cleaned
 	}
 
 	rawFilePath := r.URL.Query().Get("path")
 	var filePath string
 	if rawFilePath != "" {
+		var err error
 		if filepath.IsAbs(rawFilePath) {
-			// Absolute path: sanitize and verify it's under workDir.
 			filePath, err = sanitizePath(rawFilePath, false)
 			if err != nil {
-				http.Error(w, "invalid path: "+err.Error(), http.StatusBadRequest)
+				writeBridgeError(w, http.StatusBadRequest, "invalid_path", err.Error())
 				return
 			}
-			if !strings.HasPrefix(filePath, workDir+string(filepath.Separator)) && filePath != workDir {
-				http.Error(w, "path must be within workDir", http.StatusBadRequest)
+			if workDir != "" && !strings.HasPrefix(filePath, workDir+string(filepath.Separator)) && filePath != workDir {
+				writeBridgeError(w, http.StatusBadRequest, "invalid_path", "path must be within workDir")
 				return
 			}
 		} else {
-			// Relative path: validate it doesn't escape workDir.
-			filePath, err = sanitizeRelativePath(rawFilePath, workDir)
-			if err != nil {
-				http.Error(w, "invalid path: "+err.Error(), http.StatusBadRequest)
+			base := workDir
+			if base == "" {
+				writeBridgeError(w, http.StatusBadRequest, "invalid_path", "relative path requires workDir")
 				return
+			}
+			filePath, err = sanitizeRelativePath(rawFilePath, base)
+			if err != nil {
+				writeBridgeError(w, http.StatusBadRequest, "invalid_path", err.Error())
+				return
+			}
+			if filePath != "" {
+				filePath = filepath.Join(base, filePath)
 			}
 		}
 	}
 
-	var (
-		results interface{}
-		runErr  error
-	)
-	if filePath != "" {
-		results, runErr = s.diagnosticRunner.RunForFile(filePath, workDir)
-	} else {
-		results, runErr = s.diagnosticRunner.RunForDirectory(workDir)
-	}
-
-	if runErr != nil {
-		log.Printf("[Diagnostics] error for path=%s workDir=%s: %v", filePath, workDir, runErr)
-		http.Error(w, runErr.Error(), http.StatusInternalServerError)
+	results, err := s.bridge.DiagnosticsList(r.Context(), filePath, workDir)
+	if err != nil {
+		log.Printf("[Diagnostics] bridge error path=%s workDir=%s: %v", filePath, workDir, err)
+		writeBridgeFailure(w, err)
 		return
 	}
 
-	log.Printf("[Diagnostics] path=%s workDir=%s", filePath, workDir)
+	log.Printf("[Diagnostics] path=%s workDir=%s count=%d", filePath, workDir, len(results))
 	writeJSON(w, http.StatusOK, results)
 }

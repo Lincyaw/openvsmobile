@@ -13,9 +13,8 @@ import (
 	"time"
 
 	"github.com/Lincyaw/vscode-mobile/server/internal/api"
+	"github.com/Lincyaw/vscode-mobile/server/internal/bridge"
 	"github.com/Lincyaw/vscode-mobile/server/internal/claude"
-	"github.com/Lincyaw/vscode-mobile/server/internal/diagnostics"
-	"github.com/Lincyaw/vscode-mobile/server/internal/git"
 	gitauth "github.com/Lincyaw/vscode-mobile/server/internal/github"
 	"github.com/Lincyaw/vscode-mobile/server/internal/terminal"
 	"github.com/Lincyaw/vscode-mobile/server/internal/vscode"
@@ -30,6 +29,7 @@ func main() {
 		claudeBin              string
 		token                  string
 		workDir                string
+		bridgeInfoPath         string
 		githubClientID         string
 		githubHost             string
 		githubAuthStorePath    string
@@ -43,6 +43,7 @@ func main() {
 	flag.StringVar(&claudeBin, "claude-bin", "claude", "Claude CLI binary path")
 	flag.StringVar(&token, "token", "", "Connection token for API authentication")
 	flag.StringVar(&workDir, "work-dir", ".", "Working directory for Claude processes")
+	flag.StringVar(&bridgeInfoPath, "bridge-info-path", "", "Override path to the openvsmobile-bridge runtime-info JSON file")
 	flag.StringVar(&githubClientID, "github-client-id", "", "GitHub App device-flow client ID")
 	flag.StringVar(&githubHost, "github-host", gitauth.DefaultHost, "Default GitHub host for auth")
 	flag.StringVar(&githubAuthStorePath, "github-auth-store", "", "Path to the GitHub auth token store JSON file")
@@ -79,7 +80,19 @@ func main() {
 	}
 
 	termMgr := terminal.NewManager()
-	diagRunner := diagnostics.NewRunner(30 * time.Second)
+	bridgeClient := bridge.NewClientWithPath(bridgeInfoPath)
+	if info, err := bridgeClient.RuntimeInfo(); err != nil {
+		log.Printf("warning: openvsmobile-bridge runtime info not available yet: %v", err)
+	} else {
+		log.Printf("openvsmobile-bridge runtime info loaded: %s (pid=%d)", info.BaseURL(), info.PID)
+	}
+
+	// Long-lived SSE consumer that pushes git/diagnostics events from the
+	// extension into the per-connection /bridge/ws/events fan-out.
+	bridgeEventsCtx, stopBridgeEvents := context.WithCancel(context.Background())
+	defer stopBridgeEvents()
+	bridgeEvents := bridge.NewEventStream(bridgeClient)
+	bridgeEvents.Start(bridgeEventsCtx)
 
 	var githubAuth *gitauth.Service
 	if githubClientID != "" {
@@ -108,7 +121,8 @@ func main() {
 		}
 	}()
 
-	srv := api.NewServer(fs, sessionIndex, pm, token, git.NewGit(workDir), termMgr, diagRunner, githubAuth)
+	srv := api.NewServer(fs, sessionIndex, pm, token, bridgeClient, termMgr, githubAuth)
+	srv.SetBridgeEvents(bridgeEvents)
 
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
@@ -128,6 +142,7 @@ func main() {
 	<-sigCh
 	log.Println("shutting down...")
 	close(stopRefresh)
+	stopBridgeEvents()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

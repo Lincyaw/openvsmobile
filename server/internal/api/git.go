@@ -2,22 +2,18 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
-	"os/exec"
 	"strings"
+
+	"github.com/Lincyaw/vscode-mobile/server/internal/bridge"
 )
 
 type gitPathFilesRequest struct {
 	Path  string   `json:"path"`
 	File  string   `json:"file"`
 	Files []string `json:"files"`
-}
-
-type gitDiffResponse struct {
-	Path   string `json:"path"`
-	Diff   string `json:"diff"`
-	Staged bool   `json:"staged"`
 }
 
 type gitCommitRequest struct {
@@ -51,22 +47,29 @@ type gitStashApplyRequest struct {
 	Pop   bool   `json:"pop"`
 }
 
+func (s *Server) requireBridge(w http.ResponseWriter) bool {
+	if s.bridge == nil {
+		writeBridgeError(w, http.StatusServiceUnavailable, "bridge_unavailable", "openvsmobile-bridge extension is not configured")
+		return false
+	}
+	return true
+}
+
 func (s *Server) handleGitRepository(w http.ResponseWriter, r *http.Request) {
 	repoPath, err := sanitizeRequiredRepoPath(r.URL.Query().Get("path"))
 	if err != nil {
 		writeBridgeError(w, http.StatusBadRequest, "invalid_path", err.Error())
 		return
 	}
-	if s.git == nil {
-		writeBridgeError(w, http.StatusServiceUnavailable, "git_unavailable", "git is not configured")
+	if !s.requireBridge(w) {
 		return
 	}
-	repo, err := s.git.GetRepository(repoPath)
+	state, err := s.bridge.GitGetRepository(r.Context(), repoPath)
 	if err != nil {
-		writeBridgeError(w, http.StatusBadGateway, "git_command_failed", err.Error())
+		writeBridgeFailure(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, repo)
+	writeJSON(w, http.StatusOK, state)
 }
 
 func (s *Server) handleGitDiff(w http.ResponseWriter, r *http.Request) {
@@ -82,49 +85,38 @@ func (s *Server) handleGitDiff(w http.ResponseWriter, r *http.Request) {
 	}
 	staged := strings.EqualFold(r.URL.Query().Get("staged"), "true")
 
-	if s.git == nil {
-		writeBridgeError(w, http.StatusServiceUnavailable, "git_unavailable", "git is not configured")
+	if !s.requireBridge(w) {
 		return
 	}
 
-	diff, err := s.git.Diff(repoPath, file, staged)
+	diff, err := s.bridge.GitDiff(r.Context(), repoPath, file, staged)
 	if err != nil {
-		writeBridgeError(w, http.StatusBadGateway, "git_command_failed", err.Error())
+		writeBridgeFailure(w, err)
 		return
 	}
-
-	writeJSON(w, http.StatusOK, gitDiffResponse{
-		Path:   file,
-		Diff:   diff,
-		Staged: staged,
-	})
+	writeJSON(w, http.StatusOK, diff)
 }
 
 func (s *Server) handleGitStage(w http.ResponseWriter, r *http.Request) {
-	s.handleGitFileCommand(w, r, func(repoPath string, files []string) error {
-		for _, f := range files {
-			if err := s.git.Stage(repoPath, f); err != nil {
-				return err
-			}
-		}
-		return nil
+	s.handleGitFileCommand(w, r, func(req bridge.FileCommandRequest) (bridge.RepositoryState, error) {
+		return s.bridge.GitStage(r.Context(), req)
 	})
 }
 
 func (s *Server) handleGitUnstage(w http.ResponseWriter, r *http.Request) {
-	s.handleGitFileCommand(w, r, func(repoPath string, files []string) error {
-		for _, f := range files {
-			if err := s.git.Unstage(repoPath, f); err != nil {
-				return err
-			}
-		}
-		return nil
+	s.handleGitFileCommand(w, r, func(req bridge.FileCommandRequest) (bridge.RepositoryState, error) {
+		return s.bridge.GitUnstage(r.Context(), req)
+	})
+}
+
+func (s *Server) handleGitDiscard(w http.ResponseWriter, r *http.Request) {
+	s.handleGitFileCommand(w, r, func(req bridge.FileCommandRequest) (bridge.RepositoryState, error) {
+		return s.bridge.GitDiscard(r.Context(), req)
 	})
 }
 
 func (s *Server) handleGitCommit(w http.ResponseWriter, r *http.Request) {
-	if s.git == nil {
-		writeBridgeError(w, http.StatusServiceUnavailable, "git_unavailable", "git is not configured")
+	if !s.requireBridge(w) {
 		return
 	}
 	var req gitCommitRequest
@@ -140,16 +132,16 @@ func (s *Server) handleGitCommit(w http.ResponseWriter, r *http.Request) {
 		writeBridgeError(w, http.StatusBadRequest, "invalid_request", "commit message must not be empty")
 		return
 	}
-	if err := s.git.Commit(repoPath, req.Message); err != nil {
-		writeBridgeError(w, http.StatusBadGateway, "git_command_failed", err.Error())
+	state, err := s.bridge.GitCommit(r.Context(), bridge.CommitRequest{Path: repoPath, Message: req.Message})
+	if err != nil {
+		writeBridgeFailure(w, err)
 		return
 	}
-	s.writeRepoState(w, repoPath)
+	writeJSON(w, http.StatusOK, state)
 }
 
 func (s *Server) handleGitCheckout(w http.ResponseWriter, r *http.Request) {
-	if s.git == nil {
-		writeBridgeError(w, http.StatusServiceUnavailable, "git_unavailable", "git is not configured")
+	if !s.requireBridge(w) {
 		return
 	}
 	var req gitCheckoutRequest
@@ -169,74 +161,34 @@ func (s *Server) handleGitCheckout(w http.ResponseWriter, r *http.Request) {
 		writeBridgeError(w, http.StatusBadRequest, "invalid_request", "checkout requires 'ref' or 'branch'")
 		return
 	}
-	// The local Git.Checkout only checks out an existing branch; the bridge
-	// supported a `create` flag. Preserve that behaviour by running an
-	// explicit `git checkout -b <ref>` when the caller asks to create.
-	if req.Create {
-		// Local Git has no Checkout(create=true); fall back to running raw.
-		if err := s.gitCheckoutCreate(repoPath, ref); err != nil {
-			writeBridgeError(w, http.StatusBadGateway, "git_command_failed", err.Error())
-			return
-		}
-	} else {
-		if err := s.git.Checkout(repoPath, ref); err != nil {
-			writeBridgeError(w, http.StatusBadGateway, "git_command_failed", err.Error())
-			return
-		}
-	}
-	s.writeRepoState(w, repoPath)
-}
-
-// gitCheckoutCreate performs `git checkout -b <ref>` against the repo at path.
-// Implemented inline because the local Git type does not expose a public hook
-// for the create flag; the underlying `run` method is unexported.
-func (s *Server) gitCheckoutCreate(repoPath, ref string) error {
-	// Best effort: stage the create by attempting plain checkout first; if it
-	// fails, fall back to creating. This keeps behaviour idempotent without
-	// exposing run() externally.
-	if err := s.git.Checkout(repoPath, ref); err == nil {
-		return nil
-	}
-	cmd := exec.Command("git", "-C", repoPath, "checkout", "-b", ref)
-	out, err := cmd.CombinedOutput()
+	state, err := s.bridge.GitCheckout(r.Context(), bridge.CheckoutRequest{Path: repoPath, Ref: ref, Create: req.Create})
 	if err != nil {
-		return fmt.Errorf("git checkout -b %s: %w: %s", ref, err, strings.TrimSpace(string(out)))
+		writeBridgeFailure(w, err)
+		return
 	}
-	return nil
+	writeJSON(w, http.StatusOK, state)
 }
 
 func (s *Server) handleGitFetch(w http.ResponseWriter, r *http.Request) {
-	s.handleGitRemoteCommand(w, r, func(path string, req gitRemoteCommandRequest) error {
-		return s.git.Fetch(path, req.Remote)
+	s.handleGitRemoteCommand(w, r, func(req bridge.RemoteCommandRequest) (bridge.RepositoryState, error) {
+		return s.bridge.GitFetch(r.Context(), req)
 	})
 }
 
 func (s *Server) handleGitPull(w http.ResponseWriter, r *http.Request) {
-	s.handleGitRemoteCommand(w, r, func(path string, req gitRemoteCommandRequest) error {
-		return s.git.Pull(path, req.Remote, req.Branch)
+	s.handleGitRemoteCommand(w, r, func(req bridge.RemoteCommandRequest) (bridge.RepositoryState, error) {
+		return s.bridge.GitPull(r.Context(), req)
 	})
 }
 
 func (s *Server) handleGitPush(w http.ResponseWriter, r *http.Request) {
-	s.handleGitRemoteCommand(w, r, func(path string, req gitRemoteCommandRequest) error {
-		return s.git.Push(path, req.Remote, req.Branch, req.SetUpstream)
-	})
-}
-
-func (s *Server) handleGitDiscard(w http.ResponseWriter, r *http.Request) {
-	s.handleGitFileCommand(w, r, func(repoPath string, files []string) error {
-		for _, f := range files {
-			if err := s.git.Discard(repoPath, f); err != nil {
-				return err
-			}
-		}
-		return nil
+	s.handleGitRemoteCommand(w, r, func(req bridge.RemoteCommandRequest) (bridge.RepositoryState, error) {
+		return s.bridge.GitPush(r.Context(), req)
 	})
 }
 
 func (s *Server) handleGitStash(w http.ResponseWriter, r *http.Request) {
-	if s.git == nil {
-		writeBridgeError(w, http.StatusServiceUnavailable, "git_unavailable", "git is not configured")
+	if !s.requireBridge(w) {
 		return
 	}
 	var req gitStashRequest
@@ -248,16 +200,20 @@ func (s *Server) handleGitStash(w http.ResponseWriter, r *http.Request) {
 		writeBridgeError(w, http.StatusBadRequest, "invalid_path", err.Error())
 		return
 	}
-	if err := s.git.Stash(repoPath, req.Message, req.IncludeUntracked); err != nil {
-		writeBridgeError(w, http.StatusBadGateway, "git_command_failed", err.Error())
+	state, err := s.bridge.GitStash(r.Context(), bridge.StashRequest{
+		Path:             repoPath,
+		Message:          req.Message,
+		IncludeUntracked: req.IncludeUntracked,
+	})
+	if err != nil {
+		writeBridgeFailure(w, err)
 		return
 	}
-	s.writeRepoState(w, repoPath)
+	writeJSON(w, http.StatusOK, state)
 }
 
 func (s *Server) handleGitStashApply(w http.ResponseWriter, r *http.Request) {
-	if s.git == nil {
-		writeBridgeError(w, http.StatusServiceUnavailable, "git_unavailable", "git is not configured")
+	if !s.requireBridge(w) {
 		return
 	}
 	var req gitStashApplyRequest
@@ -269,16 +225,20 @@ func (s *Server) handleGitStashApply(w http.ResponseWriter, r *http.Request) {
 		writeBridgeError(w, http.StatusBadRequest, "invalid_path", err.Error())
 		return
 	}
-	if err := s.git.StashApply(repoPath, req.Stash, req.Pop); err != nil {
-		writeBridgeError(w, http.StatusBadGateway, "git_command_failed", err.Error())
+	state, err := s.bridge.GitStashApply(r.Context(), bridge.StashApplyRequest{
+		Path:  repoPath,
+		Stash: req.Stash,
+		Pop:   req.Pop,
+	})
+	if err != nil {
+		writeBridgeFailure(w, err)
 		return
 	}
-	s.writeRepoState(w, repoPath)
+	writeJSON(w, http.StatusOK, state)
 }
 
-func (s *Server) handleGitFileCommand(w http.ResponseWriter, r *http.Request, command func(string, []string) error) {
-	if s.git == nil {
-		writeBridgeError(w, http.StatusServiceUnavailable, "git_unavailable", "git is not configured")
+func (s *Server) handleGitFileCommand(w http.ResponseWriter, r *http.Request, command func(bridge.FileCommandRequest) (bridge.RepositoryState, error)) {
+	if !s.requireBridge(w) {
 		return
 	}
 	var req gitPathFilesRequest
@@ -289,16 +249,16 @@ func (s *Server) handleGitFileCommand(w http.ResponseWriter, r *http.Request, co
 	if !ok {
 		return
 	}
-	if err := command(repoPath, files); err != nil {
-		writeBridgeError(w, http.StatusBadGateway, "git_command_failed", err.Error())
+	state, err := command(bridge.FileCommandRequest{Path: repoPath, Files: files})
+	if err != nil {
+		writeBridgeFailure(w, err)
 		return
 	}
-	s.writeRepoState(w, repoPath)
+	writeJSON(w, http.StatusOK, state)
 }
 
-func (s *Server) handleGitRemoteCommand(w http.ResponseWriter, r *http.Request, command func(string, gitRemoteCommandRequest) error) {
-	if s.git == nil {
-		writeBridgeError(w, http.StatusServiceUnavailable, "git_unavailable", "git is not configured")
+func (s *Server) handleGitRemoteCommand(w http.ResponseWriter, r *http.Request, command func(bridge.RemoteCommandRequest) (bridge.RepositoryState, error)) {
+	if !s.requireBridge(w) {
 		return
 	}
 	var req gitRemoteCommandRequest
@@ -310,24 +270,17 @@ func (s *Server) handleGitRemoteCommand(w http.ResponseWriter, r *http.Request, 
 		writeBridgeError(w, http.StatusBadRequest, "invalid_path", err.Error())
 		return
 	}
-	if err := command(repoPath, req); err != nil {
-		writeBridgeError(w, http.StatusBadGateway, "git_command_failed", err.Error())
-		return
-	}
-	s.writeRepoState(w, repoPath)
-}
-
-func (s *Server) writeRepoState(w http.ResponseWriter, repoPath string) {
-	if s.git == nil {
-		writeBridgeError(w, http.StatusServiceUnavailable, "git_unavailable", "git is not configured")
-		return
-	}
-	repo, err := s.git.GetRepository(repoPath)
+	state, err := command(bridge.RemoteCommandRequest{
+		Path:        repoPath,
+		Remote:      req.Remote,
+		Branch:      req.Branch,
+		SetUpstream: req.SetUpstream,
+	})
 	if err != nil {
-		writeBridgeError(w, http.StatusBadGateway, "git_command_failed", err.Error())
+		writeBridgeFailure(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, repo)
+	writeJSON(w, http.StatusOK, state)
 }
 
 func (s *Server) parseFileCommandRequest(w http.ResponseWriter, req gitPathFilesRequest, requireFiles bool) (string, []string, bool) {
@@ -403,4 +356,31 @@ func writeBridgeError(w http.ResponseWriter, status int, code, message string) {
 		Code    string `json:"code"`
 		Message string `json:"message"`
 	}{Code: code, Message: message})
+}
+
+// writeBridgeFailure forwards an error from the bridge client to the HTTP
+// response, mapping bridge-side error metadata onto the response when present.
+func writeBridgeFailure(w http.ResponseWriter, err error) {
+	if errors.Is(err, bridge.ErrBridgeUnavailable) {
+		writeBridgeError(w, http.StatusServiceUnavailable, "bridge_unavailable", err.Error())
+		return
+	}
+	var bridgeErr *bridge.Error
+	if errors.As(err, &bridgeErr) {
+		status := bridgeErr.Status
+		if status == 0 {
+			status = http.StatusBadGateway
+		}
+		code := bridgeErr.Code
+		if code == "" {
+			code = "bridge_request_failed"
+		}
+		message := bridgeErr.Detail
+		if message == "" {
+			message = bridgeErr.Error()
+		}
+		writeBridgeError(w, status, code, message)
+		return
+	}
+	writeBridgeError(w, http.StatusBadGateway, "bridge_request_failed", err.Error())
 }
