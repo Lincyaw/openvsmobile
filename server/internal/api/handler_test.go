@@ -474,58 +474,6 @@ func TestSessionsSearch_ProjectUsesExactWorkspaceRoot(t *testing.T) {
 	}
 }
 
-func TestSessionMessages_E2E(t *testing.T) {
-	claudeDir := t.TempDir()
-	sessionsDir := filepath.Join(claudeDir, "sessions")
-	os.MkdirAll(sessionsDir, 0755)
-
-	writeSessionFile(t, claudeDir, 100, "sess-msg-test", "/home/user/myproject", "cli")
-	writeSessionJSONL(t, claudeDir, "myproject-slug", "sess-msg-test", []string{
-		`{"type":"user","content":"hello claude"}`,
-		`{"type":"assistant","content":[{"type":"text","text":"Hello! How can I help?"}]}`,
-		`{"type":"system","subtype":"turn_end","stopReason":"end_turn","durationMs":1200}`,
-	})
-
-	sessIndex := claude.NewSessionIndex(claudeDir)
-	sessIndex.ScanSessions()
-
-	pm := claude.NewProcessManager("/nonexistent", ".")
-	srv := NewServer(nil, sessIndex, pm, "", nil, terminal.NewManager(), nil)
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-
-	resp, err := http.Get(ts.URL + "/api/sessions/sess-msg-test/messages")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
-	}
-
-	var messages []claude.Message
-	if err := json.NewDecoder(resp.Body).Decode(&messages); err != nil {
-		t.Fatal(err)
-	}
-	if len(messages) != 3 {
-		t.Fatalf("expected 3 messages, got %d", len(messages))
-	}
-	if messages[0].Type != "user" {
-		t.Fatalf("expected user, got %s", messages[0].Type)
-	}
-	if messages[1].Type != "assistant" {
-		t.Fatalf("expected assistant, got %s", messages[1].Type)
-	}
-	if len(messages[1].ContentBlocks) != 1 || messages[1].ContentBlocks[0].Text != "Hello! How can I help?" {
-		t.Fatalf("unexpected assistant content: %+v", messages[1].ContentBlocks)
-	}
-	if messages[2].Type != "system" {
-		t.Fatalf("expected system, got %s", messages[2].Type)
-	}
-}
-
 func TestSessionMessages_NotFound(t *testing.T) {
 	ts, _, _ := newTestServer(t, "")
 

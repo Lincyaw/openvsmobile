@@ -521,8 +521,14 @@ class TerminalProvider extends ChangeNotifier {
       }
       notifyListeners();
     } catch (error) {
+      final msg = error.toString();
+      if (msg.contains('404') && msg.contains('not found')) {
+        await _removeSession(sessionId);
+        notifyListeners();
+        return;
+      }
       session.connectionState = TerminalConnectionState.error;
-      session.error = error.toString();
+      session.error = msg;
       notifyListeners();
       _scheduleReconnect(sessionId);
     }

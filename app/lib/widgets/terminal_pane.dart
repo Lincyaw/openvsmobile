@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../providers/terminal_provider.dart';
 import '../theme/monospace_text.dart';

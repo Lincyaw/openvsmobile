@@ -1,0 +1,26 @@
+# Build stage
+FROM golang:1.24 AS builder
+
+WORKDIR /build
+COPY server/go.mod server/go.sum ./
+ENV GOPROXY=https://goproxy.cn,direct
+RUN go mod download
+COPY server/ ./
+RUN CGO_ENABLED=0 go build -o server_bin ./cmd/server
+
+# Runtime stage
+FROM debian:bookworm-slim
+
+WORKDIR /app
+
+# Install git and ca-certificates (git may be used by bridge or fallback)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy compiled binary
+COPY --from=builder /build/server_bin .
+
+EXPOSE 8080
+
+CMD ["./server_bin", "-vscode-url", "http://openvscode-server:3003", "-vscode-token", "test", "-token", "test", "-port", "8080", "-work-dir", "/workspace"]
