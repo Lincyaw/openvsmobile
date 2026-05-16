@@ -1,6 +1,8 @@
 // App entrypoint. Boots the BackendClient + AppState, loads saved settings,
-// and either drops the user into the home shell or prompts for settings.
+// wires connectivity + app-lifecycle to the always-on reconnect loop, and
+// drops the user into either the home shell or the first-run settings prompt.
 
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 
 import 'app_state.dart';
@@ -13,6 +15,29 @@ void main() {
   runApp(const OpenVsMobileApp());
 }
 
+/// Production probe backed by `connectivity_plus`. Maps the list of active
+/// link types to a single boolean — we don't care which link, only whether
+/// at least one is up.
+class _ConnectivityPlusProbe implements ConnectivityProbe {
+  final Connectivity _impl = Connectivity();
+
+  @override
+  Stream<bool> get changes => _impl.onConnectivityChanged.map(_anyOnline);
+
+  @override
+  Future<bool> isOnline() async {
+    try {
+      return _anyOnline(await _impl.checkConnectivity());
+    } catch (_) {
+      // Plugin not implemented on this platform (e.g. desktop) → assume yes.
+      return true;
+    }
+  }
+
+  bool _anyOnline(List<ConnectivityResult> rs) =>
+      rs.any((r) => r != ConnectivityResult.none);
+}
+
 class OpenVsMobileApp extends StatefulWidget {
   const OpenVsMobileApp({super.key});
 
@@ -20,9 +45,11 @@ class OpenVsMobileApp extends StatefulWidget {
   State<OpenVsMobileApp> createState() => _OpenVsMobileAppState();
 }
 
-class _OpenVsMobileAppState extends State<OpenVsMobileApp> {
+class _OpenVsMobileAppState extends State<OpenVsMobileApp>
+    with WidgetsBindingObserver {
   final SettingsStore _settingsStore = SettingsStore();
-  final BackendClient _client = BackendClient();
+  late final BackendClient _client =
+      BackendClient(probe: _ConnectivityPlusProbe());
   late final AppState _appState = AppState(client: _client);
 
   Settings? _settings;
@@ -31,31 +58,46 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _bootstrap();
   }
 
   Future<void> _bootstrap() async {
     final s = await _settingsStore.load();
+    if (!mounted) return;
     setState(() {
       _settings = s;
       _loadingSettings = false;
     });
     if (s.isComplete) {
-      await _client.connect(host: s.host, port: s.port, token: s.token);
+      _client.configure(host: s.host, port: s.port, token: s.token);
+      await _client.start();
     }
   }
 
   Future<void> _onSettingsSaved(Settings s) async {
     await _settingsStore.save(s);
+    if (!mounted) return;
     setState(() => _settings = s);
-    await _client.disconnect();
+    await _client.userDisconnect();
     if (s.isComplete) {
-      await _client.connect(host: s.host, port: s.port, token: s.token);
+      _client.configure(host: s.host, port: s.port, token: s.token);
+      await _client.start();
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // When the user yanks the app back from background, fast-path the
+    // reconnect instead of letting the backoff timer finish.
+    if (state == AppLifecycleState.resumed) {
+      _client.requestReconnectNow();
     }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _appState.dispose();
     _client.dispose();
     super.dispose();

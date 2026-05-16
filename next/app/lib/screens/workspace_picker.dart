@@ -2,8 +2,6 @@
 // Uses fs.listDir({ path, picker: true }) so it can traverse outside any
 // active workspace.
 
-import 'dart:io' show Platform;
-
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
@@ -26,8 +24,11 @@ class _WorkspacePickerScreenState extends State<WorkspacePickerScreen> {
   @override
   void initState() {
     super.initState();
-    final home = Platform.environment['HOME'];
-    _path = (home != null && home.isNotEmpty) ? home : '/';
+    // Start at the BACKEND's $HOME, not the phone's. The phone's $HOME on
+    // Android is something useless like `/data/user/0/...` — the picker
+    // would crash or list a placeholder dir. The handshake response carries
+    // the server-side default cwd; fall back to "/" if missing.
+    _path = widget.appState.backendDefaultCwd;
     _load(_path);
   }
 

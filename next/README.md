@@ -120,14 +120,15 @@ Frontend → Backend:
 
 | Method                | Notes |
 |-----------------------|-------|
-| `auth.handshake`      | `{ token, protocolVersion, client }` → `{ ok, serverVersion, protocolVersion }`. Closes the socket on bad token. |
+| `auth.handshake`      | `{ token, protocolVersion, client }` → `{ ok, serverVersion, protocolVersion, defaultCwd }`. Closes the socket on bad token. |
+| `system.ping`         | `{}` → `{ now }`. Heartbeat used by the client to detect silent NAT drops. |
 | `workspace.list`      | `{} → { active: Workspace[], recents: string[] }` |
-| `workspace.open`      | `{ root }` → `{ workspace }`. Adds root to recents, sets current. |
+| `workspace.open`      | `{ root, activate?: boolean = true }` → `{ workspace }`. Adds root to recents. With `activate:true` (default) sets the new workspace as current; with `activate:false` the existing focus is preserved and the new workspace is staged in the background. |
 | `workspace.activate`  | `{ id }` → `{ workspace }`. Focus only — no filesystem touch. |
 | `workspace.close`     | `{ id }` → `{}`. Kills all PTYs in the workspace, updates current. |
 | `workspace.current`   | `{} → { workspace \| null }` |
-| `fs.listDir`          | `{ workspaceId, path }` → `{ entries }`, or `{ path, picker: true }` for the workspace-less picker. Dirs first, then files, alphabetical. |
-| `fs.readFile`         | `{ workspaceId, path }` → `{ contentBase64, encoding: "utf8"\|"binary" }`. 2 MiB cap; refused outside workspace. |
+| `fs.listDir`          | `{ workspaceId, path }` → `{ entries }`, or `{ path, picker: true }` for the workspace-less picker. Dirs first, then files, alphabetical. The workspace-scoped form realpath-resolves the target before any read, so symlinks cannot escape the workspace boundary. |
+| `fs.readFile`         | `{ workspaceId, path }` → `{ contentBase64, encoding: "utf8"\|"binary" }`. 2 MiB cap; refused outside workspace. Scope is asserted before any IO, and out-of-scope vs. not-found errors are intentionally indistinguishable on the wire. |
 | `terminal.create`     | `{ workspaceId, cols, rows, cwd? }` → `{ sessionId, workspaceId }` |
 | `terminal.write`      | `{ sessionId, dataBase64 }` → `{}` |
 | `terminal.resize`     | `{ sessionId, cols, rows }` → `{}` |
@@ -144,6 +145,24 @@ Backend → Frontend (notifications):
 
 JSON-RPC error code `-32001` ("capability denied") is reserved for the
 future plugin host and unused in this iteration.
+
+### Protocol notes
+
+- **`defaultCwd`** — returned in the `auth.handshake` response. The
+  client uses this as the starting directory for the workspace picker
+  so it doesn't try to navigate to the phone's `$HOME` (which has no
+  meaning on the backend). Older backends without this field cause the
+  client to fall back to `/`.
+- **`workspace.open` activation semantics** — by default opening a
+  workspace also focuses it. Pass `activate: false` to add it without
+  changing the user's current focus. Useful when the client wants to
+  pre-stage a recently-opened workspace before the user explicitly
+  switches to it.
+- **`system.ping`** — application-layer heartbeat. The Flutter client
+  sends one every 25 s while connected; a missing pong within 10 s
+  triggers a force-close and the always-on reconnect path. Servers may
+  treat `now` as opaque (it's a timestamp for debugging, not used for
+  drift correction).
 
 ## What's deferred (out of scope for this PR)
 
@@ -191,7 +210,18 @@ The acceptance steps from the brief have been exercised:
 - **`fs.listDir` symlinks.** Currently treated as `file` so they
   surface in the picker but don't drill in. If we want first-class
   symlink-to-directory behavior we'd need to follow + cycle-detect.
-- **Reconnection.** The client connects once on settings save. It does
-  not auto-reconnect on transient socket drops; the user retriggers
-  by saving the same settings again. Fine for v0; a simple retry
-  loop is worth adding when the first non-developer uses this.
+- **Reconnection model.** The client maintains a persistent socket
+  with a "WeChat-style" always-on behaviour:
+  - Auto-reconnect with exponential backoff `[1, 2, 4, 8, 16, 30, …]` s
+    capped at 30 s; reset on a successful handshake.
+  - Authentication failures (`-32002`) move to the terminal `failed`
+    state — the user must update settings to recover.
+  - The OS connectivity state is observed via `connectivity_plus`:
+    losing all links parks the client in `waitingForNetwork`;
+    regaining a link triggers an immediate reconnect.
+  - On `AppLifecycleState.resumed` we short-circuit the backoff.
+  - Application-layer heartbeat (`system.ping` every 25 s, 10 s
+    timeout) catches silent NAT/carrier drops.
+  - Requests issued during a transient state are queued for up to
+    15 s; terminal writes are dropped instead of queued because a
+    stale sessionId after reconnect wouldn't make sense.

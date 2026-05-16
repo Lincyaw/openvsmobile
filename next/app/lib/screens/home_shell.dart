@@ -1,6 +1,8 @@
 // Top-level scaffold: app bar with workspace switcher + gear, bottom nav,
 // connection-state banner.
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
@@ -110,7 +112,11 @@ class _HomeShellState extends State<HomeShell> {
       ),
       body: Column(
         children: [
-          _ConnectionBanner(state: connState, client: widget.appState.client),
+          _ConnectionBanner(
+            state: connState,
+            client: widget.appState.client,
+            onOpenSettings: _openSettings,
+          ),
           Expanded(
             child: IndexedStack(
               index: _tab,
@@ -142,43 +148,116 @@ class _HomeShellState extends State<HomeShell> {
   }
 }
 
-class _ConnectionBanner extends StatelessWidget {
+/// Connection banner. The brief calls out "WeChat-style":
+///   * Hide entirely when connected.
+///   * Short pre-show delay on connecting/reconnecting to avoid flicker on
+///     sub-500 ms hiccups.
+///   * Subtle, neutral/amber styling for transient states. Red is reserved
+///     for `failed` (auth error / unrecoverable), which gets a Settings
+///     shortcut so the user can fix the only thing that actually broke.
+class _ConnectionBanner extends StatefulWidget {
   final BackendConnectionState state;
   final BackendClient client;
-  const _ConnectionBanner({required this.state, required this.client});
+  final VoidCallback onOpenSettings;
+  const _ConnectionBanner({
+    required this.state,
+    required this.client,
+    required this.onOpenSettings,
+  });
+
+  @override
+  State<_ConnectionBanner> createState() => _ConnectionBannerState();
+}
+
+class _ConnectionBannerState extends State<_ConnectionBanner> {
+  Timer? _showTimer;
+  bool _shouldShow = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _evaluate();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ConnectionBanner old) {
+    super.didUpdateWidget(old);
+    if (old.state != widget.state) _evaluate();
+  }
+
+  void _evaluate() {
+    _showTimer?.cancel();
+    _showTimer = null;
+    final s = widget.state;
+    if (s == BackendConnectionState.connected) {
+      _shouldShow = false;
+      return;
+    }
+    if (s == BackendConnectionState.failed) {
+      // Show immediately; the user has to act.
+      _shouldShow = true;
+      return;
+    }
+    if (s == BackendConnectionState.waitingForNetwork) {
+      // Show immediately; flicker doesn't matter here — the OS state will
+      // remain "no network" until it changes, which is by definition not a
+      // sub-second event.
+      _shouldShow = true;
+      return;
+    }
+    // connecting/reconnecting/disconnected: hide for 500 ms, then show.
+    _shouldShow = false;
+    _showTimer = Timer(const Duration(milliseconds: 500), () {
+      if (!mounted) return;
+      if (widget.state == BackendConnectionState.connected) return;
+      setState(() => _shouldShow = true);
+    });
+  }
+
+  @override
+  void dispose() {
+    _showTimer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    if (state == BackendConnectionState.connected) {
-      return const SizedBox.shrink();
-    }
+    if (!_shouldShow) return const SizedBox.shrink();
     final theme = Theme.of(context);
-    final (msg, color, withSpinner) = switch (state) {
-      BackendConnectionState.disconnected => (
-          'Disconnected',
-          theme.colorScheme.errorContainer,
-          false
+    final s = widget.state;
+    if (s == BackendConnectionState.failed) {
+      return Container(
+        width: double.infinity,
+        color: theme.colorScheme.errorContainer,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                widget.client.lastError.value ?? 'Connection failed.',
+                style: TextStyle(color: theme.colorScheme.onErrorContainer),
+              ),
+            ),
+            TextButton(
+              onPressed: widget.onOpenSettings,
+              child: const Text('Settings'),
+            ),
+          ],
         ),
-      BackendConnectionState.connecting => (
-          'Connecting…',
-          theme.colorScheme.secondaryContainer,
-          true
-        ),
-      BackendConnectionState.handshaking => (
-          'Handshaking…',
-          theme.colorScheme.secondaryContainer,
-          true
-        ),
-      BackendConnectionState.failed => (
-          'Connection failed: ${client.lastError.value ?? ""}',
-          theme.colorScheme.errorContainer,
-          false
-        ),
-      BackendConnectionState.connected => ('', Colors.transparent, false),
+      );
+    }
+    final (msg, withSpinner) = switch (s) {
+      BackendConnectionState.connecting => ('Connecting…', true),
+      BackendConnectionState.reconnecting => ('Connecting…', true),
+      BackendConnectionState.waitingForNetwork => ('Waiting for network.', true),
+      BackendConnectionState.disconnected => ('Disconnected.', false),
+      BackendConnectionState.connected => ('', false),
+      BackendConnectionState.failed => ('', false), // handled above
     };
+    if (msg.isEmpty) return const SizedBox.shrink();
     return Container(
       width: double.infinity,
-      color: color,
+      color: theme.colorScheme.secondaryContainer,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       child: Row(
         children: [
@@ -189,7 +268,12 @@ class _ConnectionBanner extends StatelessWidget {
               child: CircularProgressIndicator(strokeWidth: 2),
             ),
           if (withSpinner) const SizedBox(width: 8),
-          Expanded(child: Text(msg)),
+          Expanded(
+            child: Text(
+              msg,
+              style: TextStyle(color: theme.colorScheme.onSecondaryContainer),
+            ),
+          ),
         ],
       ),
     );

@@ -51,6 +51,13 @@ class AppState extends ChangeNotifier {
   List<String> get recentRoots => List.unmodifiable(_recents);
   Workspace? get currentWorkspace => _current;
 
+  /// Backend-reported $HOME (or "/" on older backends). The picker starts
+  /// here instead of the phone's $HOME, which has no meaning to the backend.
+  String get backendDefaultCwd {
+    final c = client.defaultCwd;
+    return c.isEmpty ? '/' : c;
+  }
+
   /// Terminal sessions belonging to the currently-focused workspace.
   List<TerminalSession> get currentTerminals {
     final w = _current;
@@ -93,19 +100,33 @@ class AppState extends ChangeNotifier {
   // ---- Lifecycle / notifications ----
 
   void _onConnState() {
-    if (client.state.value == BackendConnectionState.connected) {
+    final s = client.state.value;
+    if (s == BackendConnectionState.connected) {
       // Re-fetch workspace state on (re)connect; the backend doesn't
       // remember our previous focus across connections.
       unawaited(refreshWorkspaces());
-    } else if (client.state.value == BackendConnectionState.disconnected ||
-        client.state.value == BackendConnectionState.failed) {
-      _active = const [];
-      _current = null;
-      _termsByWorkspace.clear();
-      _focusedTermBySpace.clear();
-      // Keep recents — they're useful when reconnecting.
-      notifyListeners();
+      return;
     }
+    // Any non-connected state (disconnected/failed/reconnecting/waiting/
+    // connecting after a real drop) means the backend's sessionIds and
+    // workspace IDs are stale. Tear down the local mirror — including the
+    // xterm + backlog maps, which otherwise leak a 5000-line Terminal +
+    // up-to-256 KiB BytesBuilder per old session across every reconnect.
+    //
+    // Intentional disposeTerminal paths already remove their own entry
+    // before the state transition, so they never get to the bulk clear.
+    if (s == BackendConnectionState.connecting) {
+      // The very first connect (no prior session). Nothing to clear.
+      return;
+    }
+    _active = const [];
+    _current = null;
+    _termsByWorkspace.clear();
+    _focusedTermBySpace.clear();
+    _xterms.clear();
+    _backlog.clear();
+    // Keep recents — they're useful when reconnecting.
+    notifyListeners();
   }
 
   Future<void> _onNotification(BackendNotification n) async {

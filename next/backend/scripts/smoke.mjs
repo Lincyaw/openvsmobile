@@ -16,7 +16,13 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  writeFileSync,
+  mkdirSync,
+  symlinkSync,
+  realpathSync,
+} from "node:fs";
 
 const PORT = Number(process.env.PORT ?? 7860);
 const HOST = process.env.HOST ?? "127.0.0.1";
@@ -110,7 +116,14 @@ async function main() {
   });
   assert(hs.ok === true, "handshake ok");
   assert(typeof hs.serverVersion === "string", "serverVersion present");
-  console.log("[ok] auth.handshake");
+  assert(typeof hs.defaultCwd === "string" && hs.defaultCwd.length > 0,
+    `defaultCwd present, got ${hs.defaultCwd}`);
+  console.log("[ok] auth.handshake (defaultCwd=%s)", hs.defaultCwd);
+
+  // 1b. system.ping
+  const ping = await c.call("system.ping", {});
+  assert(typeof ping.now === "number" && ping.now > 0, "ping returns numeric now");
+  console.log("[ok] system.ping");
 
   // 2. workspace.list (empty)
   const empty = await c.call("workspace.list", {});
@@ -119,7 +132,7 @@ async function main() {
   console.log("[ok] workspace.list (active=%d, recents=%d)", empty.active.length, empty.recents.length);
 
   // 3. Open a fresh scratch dir so we don't depend on /tmp ownership.
-  const scratch = mkdtempSync(join(tmpdir(), "openvsmobile-smoke-"));
+  const scratch = realpathSync(mkdtempSync(join(tmpdir(), "openvsmobile-smoke-")));
   writeFileSync(join(scratch, "hello.txt"), "hello world\n");
   writeFileSync(join(scratch, "tiny.bin"), Buffer.from([0, 1, 2, 0, 3]));
 
@@ -179,8 +192,55 @@ async function main() {
   assert(bin.encoding === "binary", `binary encoding is binary, got ${bin.encoding}`);
   console.log("[ok] fs.readFile binary");
 
+  // 9b. Symlink escape: a symlink INSIDE the workspace that points OUTSIDE
+  //     must not allow reading the target.
+  const outside = realpathSync(mkdtempSync(join(tmpdir(), "openvsmobile-outside-")));
+  writeFileSync(join(outside, "secret.txt"), "should not be readable\n");
+  symlinkSync(outside, join(scratch, "escape"));
+  let symEscaped = false;
+  try {
+    await c.call("fs.readFile", {
+      workspaceId: opened.workspace.id,
+      path: join(scratch, "escape", "secret.txt"),
+    });
+  } catch (e) {
+    symEscaped = true;
+    assert(e.code === -32602, `symlink-escape code is invalidParams, got ${e.code}`);
+  }
+  assert(symEscaped, "fs.readFile through symlink-out is refused");
+  console.log("[ok] symlink escape refused");
+
+  // 9c. Workspace root that is itself a symlink to a real dir — normal
+  //     in-scope reads still work because the boundary realpaths on open.
+  const realDir = realpathSync(mkdtempSync(join(tmpdir(), "openvsmobile-real-")));
+  writeFileSync(join(realDir, "inside.txt"), "hi from real\n");
+  const symRoot = join(tmpdir(), `openvsmobile-symroot-${Date.now()}`);
+  symlinkSync(realDir, symRoot);
+  const symOpened = await c.call("workspace.open", { root: symRoot });
+  assert(symOpened.workspace.root === realDir,
+    `workspace root is realpath'd, got ${symOpened.workspace.root}`);
+  const symRead = await c.call("fs.readFile", {
+    workspaceId: symOpened.workspace.id,
+    path: join(realDir, "inside.txt"),
+  });
+  assert(Buffer.from(symRead.contentBase64, "base64").toString() === "hi from real\n",
+    "read through symlink'd root works");
+  // Reading via the symlink form also works (realpath happens on each call).
+  const symRead2 = await c.call("fs.readFile", {
+    workspaceId: symOpened.workspace.id,
+    path: join(symRoot, "inside.txt"),
+  });
+  assert(Buffer.from(symRead2.contentBase64, "base64").toString() === "hi from real\n",
+    "read via symlink alias of root works");
+  await c.call("workspace.close", { id: symOpened.workspace.id });
+  await c.waitNotif((n) =>
+    n.method === "workspace.closed" && n.params.id === symOpened.workspace.id);
+  // Make sure `opened` is the current focus again before later assertions.
+  await c.call("workspace.activate", { id: opened.workspace.id });
+  console.log("[ok] symlinked workspace root resolves on open");
+
   // 10. Second workspace + activate
-  const scratch2 = mkdtempSync(join(tmpdir(), "openvsmobile-smoke2-"));
+  const scratch2 = realpathSync(mkdtempSync(join(tmpdir(), "openvsmobile-smoke2-")));
   const opened2 = await c.call("workspace.open", { root: scratch2 });
   assert(opened2.workspace.id !== opened.workspace.id, "second workspace id differs");
   const list2 = await c.call("workspace.list", {});
@@ -190,6 +250,24 @@ async function main() {
   const act = await c.call("workspace.activate", { id: opened.workspace.id });
   assert(act.workspace.id === opened.workspace.id, "activated workspace 1");
   console.log("[ok] workspace.activate");
+
+  // 10b. workspace.open with activate:false — currentId must NOT change.
+  const beforeCur = await c.call("workspace.current", {});
+  const beforeId = beforeCur.workspace?.id;
+  const scratch3 = realpathSync(mkdtempSync(join(tmpdir(), "openvsmobile-smoke3-")));
+  const opened3 = await c.call("workspace.open", {
+    root: scratch3,
+    activate: false,
+  });
+  assert(opened3.workspace?.id, "third workspace has id");
+  const afterCur = await c.call("workspace.current", {});
+  assert(afterCur.workspace?.id === beforeId,
+    `current unchanged with activate:false; before=${beforeId} after=${afterCur.workspace?.id}`);
+  // Cleanup — close the inactive one so the rest of the script's invariants hold.
+  await c.call("workspace.close", { id: opened3.workspace.id });
+  await c.waitNotif((n) =>
+    n.method === "workspace.closed" && n.params.id === opened3.workspace.id);
+  console.log("[ok] workspace.open { activate: false } leaves current unchanged");
 
   // 11. Terminal: create, write, wait for echo, dispose
   const term = await c.call("terminal.create", {

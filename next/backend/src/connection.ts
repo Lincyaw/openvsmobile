@@ -38,17 +38,11 @@ export class Connection {
     private readonly ws: WebSocket,
     private readonly deps: ConnectionDeps,
   ) {
-    // The data/exit sinks need workspace ids on the wire. We capture the
-    // workspace id inside the per-workspace TerminalRegistry by giving each
-    // workspace a closure that already knows its own id.
-    //
-    // The WorkspaceRegistry below builds those closures lazily, but the
-    // registry itself only needs raw "(sessionId, data) -> void" sinks
-    // *with* workspaceId baked in. Easiest path: have the registry accept a
-    // factory it can call per-workspace.
-    //
-    // Rather than reshape the registry contract, we go via a thin lookup —
-    // when output arrives we ask which workspace owns this sessionId.
+    // Notification sinks need workspaceId on the wire, but the
+    // TerminalRegistry is workspace-agnostic by design. The owning workspace
+    // is looked up per output chunk via `workspaceIdForTerminal`. The cost
+    // is O(active-workspaces) per chunk — fine in practice since the user
+    // rarely has more than a handful of workspaces open at once.
     this.workspaces = new WorkspaceRegistry(
       (sessionId, data) => {
         const wsId = this.workspaceIdForTerminal(sessionId);
@@ -88,7 +82,8 @@ export class Connection {
       const ws = this.workspaces.get(info.id);
       if (ws.terminals.has(sessionId)) return ws.id;
     }
-    // Terminal already removed from its registry — still report best-effort.
+    // Terminal already removed from its registry (e.g. exit fired during
+    // workspace close) — report null so callers can render best-effort.
     return null;
   }
 
@@ -96,14 +91,31 @@ export class Connection {
     // ---- Auth ----
     this.methods.set("auth.handshake", (params) => this.onHandshake(params));
 
+    // ---- System ----
+    // Heartbeat used by the client to detect silent NAT/carrier drops.
+    // Cheap by design — no allocations beyond the response object.
+    this.methods.set("system.ping", () => ({ now: Date.now() }));
+
     // ---- Workspace ----
     this.methods.set("workspace.list", () => ({
       active: this.workspaces.listActive(),
       recents: this.workspaces.listRecents(),
     }));
     this.methods.set("workspace.open", async (params) => {
-      const root = (params as { root?: unknown } | undefined)?.root;
-      const ws = await this.workspaces.open(root);
+      const p = (params as
+        | { root?: unknown; activate?: unknown }
+        | undefined) ?? {};
+      let activate = true;
+      if (p.activate !== undefined) {
+        if (typeof p.activate !== "boolean") {
+          throw new RpcError(
+            RPC_ERR.invalidParams,
+            "activate must be a boolean when provided",
+          );
+        }
+        activate = p.activate;
+      }
+      const ws = await this.workspaces.open(p.root, { activate });
       return { workspace: ws.info() };
     });
     this.methods.set("workspace.activate", (params) => {
@@ -132,17 +144,19 @@ export class Connection {
     // fs.listDir has two shapes:
     //   { workspaceId, path }       — path must be inside that workspace
     //   { path, picker: true }      — workspace-less, OS-scoped (picker only)
+    //
+    // Scope is asserted BEFORE any filesystem read, so requests outside a
+    // workspace fail without leaking existence info or paying for IO.
     this.methods.set("fs.listDir", async (params) => {
       const p = (params as
         | { workspaceId?: unknown; path?: unknown; picker?: unknown }
         | undefined) ?? {};
       if (p.picker === true) {
-        const { entries } = await listDirAt(p.path);
+        const { entries } = await listDirAt(p.path, null);
         return { entries };
       }
       const ws = this.workspaces.requireById(p.workspaceId);
-      const { resolved, entries } = await listDirAt(p.path);
-      ws.assertContains(resolved);
+      const { entries } = await listDirAt(p.path, ws);
       return { entries };
     });
     this.methods.set("fs.readFile", async (params) => {
@@ -150,8 +164,7 @@ export class Connection {
         | { workspaceId?: unknown; path?: unknown }
         | undefined) ?? {};
       const ws = this.workspaces.requireById(p.workspaceId);
-      const { resolved, contentBase64, encoding } = await readFileAt(p.path);
-      ws.assertContains(resolved);
+      const { contentBase64, encoding } = await readFileAt(p.path, ws);
       return { contentBase64, encoding };
     });
 
@@ -301,6 +314,9 @@ export class Connection {
       ok: true,
       serverVersion: SERVER_VERSION,
       protocolVersion: PROTOCOL_VERSION,
+      // The Flutter picker uses this as the initial directory. The phone's
+      // own $HOME is meaningless on the backend, so the client must use ours.
+      defaultCwd: process.env.HOME ?? "/",
     };
   }
 }

@@ -1,12 +1,23 @@
-// WebSocket JSON-RPC client. Single persistent connection.
+// WebSocket JSON-RPC client with WeChat-style always-on connection.
 //
-// Public surface:
-//   - connect()/disconnect() lifecycle
-//   - call(method, params) → Future<dynamic>
-//   - notifications: a broadcast Stream<({String method, dynamic params})>
-//   - state: a ChangeNotifier-friendly enum + ValueNotifier
+// Lifecycle:
+//   configure(host, port, token) — remember settings.
+//   start()                      — open + keep reopening until userDisconnect().
+//   userDisconnect()             — stop and never auto-reconnect.
+//   call(method, params)         — JSON-RPC request; queued during reconnect.
 //
-// Correlation is by JSON-RPC id (monotonic int per connection).
+// Resilience model:
+//   * Auto-reconnect with exponential backoff [1, 2, 4, 8, 16, 30, 30, …] s,
+//     reset on successful handshake.
+//   * Connectivity-aware: stay in `waitingForNetwork` while the OS reports
+//     no link; reconnect immediately on link restore.
+//   * App-lifecycle aware: external code can call [requestReconnectNow] when
+//     the app comes back to the foreground.
+//   * Heartbeat: `system.ping` every 25 s; force-close after 10 s of silence.
+//   * Outbound queue: requests issued while transitioning queue for 15 s.
+//
+// The state machine is intentionally explicit so the UI can render the
+// "Connecting…" banner without false-positive red errors on transient drops.
 
 import 'dart:async';
 import 'dart:convert';
@@ -16,10 +27,24 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as ws_status;
 
 enum BackendConnectionState {
+  /// No socket; either never started or [userDisconnect] was called.
   disconnected,
+
+  /// First connect attempt is in flight (TCP + handshake).
   connecting,
-  handshaking,
+
+  /// Handshake succeeded; live and serviceable.
   connected,
+
+  /// Lost a previously-good connection; backoff retry loop is running.
+  reconnecting,
+
+  /// OS reports no connectivity. Backoff is paused; we will retry the moment
+  /// connectivity returns.
+  waitingForNetwork,
+
+  /// Permanent error (e.g. unauthorized). Stays here until [configure] +
+  /// [start] are called again.
   failed,
 }
 
@@ -38,13 +63,70 @@ class BackendRpcException implements Exception {
   String toString() => 'BackendRpcException($code): $message';
 }
 
+/// Implementation contract for the OS-connectivity probe. The default
+/// implementation in `main.dart` wires this to `connectivity_plus`; tests
+/// can substitute a fake.
+abstract class ConnectivityProbe {
+  /// Emits `true` when there's at least one usable link (wifi/mobile/etc).
+  Stream<bool> get changes;
+
+  /// One-shot current state.
+  Future<bool> isOnline();
+}
+
+/// A `ConnectivityProbe` that always reports "online". Used when the host
+/// platform doesn't surface connectivity info — degrades gracefully to "just
+/// rely on the socket + heartbeat".
+class AlwaysOnlineProbe implements ConnectivityProbe {
+  @override
+  Stream<bool> get changes => const Stream.empty();
+  @override
+  Future<bool> isOnline() async => true;
+}
+
+// Backoff schedule used after a connected → drop transition. Capped at 30 s.
+const List<Duration> _kBackoff = [
+  Duration(seconds: 1),
+  Duration(seconds: 2),
+  Duration(seconds: 4),
+  Duration(seconds: 8),
+  Duration(seconds: 16),
+  Duration(seconds: 30),
+];
+
+// Heartbeat parameters. 25 s interval is short enough to detect a silently
+// dropped NAT entry well before the typical 60–120 s carrier idle timeout,
+// but cheap enough that always-on is acceptable.
+const Duration _kHeartbeatInterval = Duration(seconds: 25);
+const Duration _kHeartbeatTimeout = Duration(seconds: 10);
+
+// How long we hold a queued call hoping for a reconnect. After this we reject
+// the future with a clear "connection unavailable" message.
+const Duration _kQueueBudget = Duration(seconds: 15);
+
 class BackendClient {
+  BackendClient({ConnectivityProbe? probe})
+      : _probe = probe ?? AlwaysOnlineProbe();
+
+  final ConnectivityProbe _probe;
+  StreamSubscription<bool>? _connectivitySub;
+
+  /// Current connection state. Listenable for UI.
   final ValueNotifier<BackendConnectionState> state =
       ValueNotifier(BackendConnectionState.disconnected);
 
-  /// Last failure message; cleared on successful reconnect.
+  /// Last failure message; cleared on successful handshake.
   final ValueNotifier<String?> lastError = ValueNotifier(null);
 
+  /// Server-provided default cwd from handshake. Empty until first connect.
+  String defaultCwd = '';
+
+  // --- Configured settings (set by configure()) ---
+  String? _host;
+  int? _port;
+  String? _token;
+
+  // --- Socket / RPC plumbing ---
   WebSocketChannel? _channel;
   StreamSubscription<dynamic>? _sub;
   int _nextId = 1;
@@ -52,28 +134,130 @@ class BackendClient {
   final StreamController<BackendNotification> _notifs =
       StreamController.broadcast();
 
-  Stream<BackendNotification> get notifications => _notifs.stream;
+  // --- Reconnect state ---
+  bool _userStop = true; // true until start() is called
+  int _backoffStep = 0;
+  Timer? _reconnectTimer;
+  bool _online = true;
 
+  // --- Heartbeat state ---
+  Timer? _heartbeatTimer;
+  Timer? _heartbeatTimeout;
+
+  // --- Outbound queue ---
+  final List<_QueuedCall> _queue = [];
+
+  Stream<BackendNotification> get notifications => _notifs.stream;
   bool get isConnected => state.value == BackendConnectionState.connected;
 
-  Future<void> connect({
+  /// Set the target endpoint. Does not initiate a connection — call
+  /// [start] when ready.
+  void configure({
     required String host,
     required int port,
     required String token,
-  }) async {
-    await disconnect();
-    state.value = BackendConnectionState.connecting;
+  }) {
+    _host = host;
+    _port = port;
+    _token = token;
+  }
+
+  /// Begin (or restart) the auto-reconnect loop. Idempotent.
+  Future<void> start() async {
+    _userStop = false;
+    _backoffStep = 0;
+    // Subscribe to connectivity once.
+    _connectivitySub ??= _probe.changes.listen(_onConnectivity);
+    try {
+      _online = await _probe.isOnline();
+    } catch (_) {
+      _online = true; // fail open
+    }
+    if (!_online) {
+      state.value = BackendConnectionState.waitingForNetwork;
+      return;
+    }
+    await _attemptConnect(reset: true);
+  }
+
+  /// Permanent stop. Cancels timers, drops queued calls, closes the socket.
+  /// The caller is expected to call [configure] + [start] again to come back.
+  Future<void> userDisconnect() async {
+    _userStop = true;
+    _cancelReconnect();
+    _stopHeartbeat();
+    _drainQueue('user disconnected');
+    await _closeSocket();
+    state.value = BackendConnectionState.disconnected;
     lastError.value = null;
+  }
+
+  /// Force an immediate reconnect attempt. Used by the app-lifecycle observer
+  /// on `resumed` to short-circuit the backoff timer.
+  void requestReconnectNow() {
+    if (_userStop) return;
+    if (state.value == BackendConnectionState.connected ||
+        state.value == BackendConnectionState.connecting) {
+      return;
+    }
+    if (!_online) {
+      // Pointless — we'll reconnect when connectivity returns.
+      return;
+    }
+    _cancelReconnect();
+    _backoffStep = 0;
+    unawaited(_attemptConnect(reset: true));
+  }
+
+  void _onConnectivity(bool online) {
+    _online = online;
+    if (_userStop) return;
+    if (!online) {
+      // Lose link → park in waitingForNetwork until it comes back.
+      _cancelReconnect();
+      _stopHeartbeat();
+      // Don't fail pending calls yet — within their budget they may survive
+      // a quick blip.
+      if (state.value != BackendConnectionState.failed) {
+        state.value = BackendConnectionState.waitingForNetwork;
+      }
+      return;
+    }
+    // Online again. If we're not already connected/connecting, reconnect ASAP.
+    if (state.value == BackendConnectionState.waitingForNetwork ||
+        state.value == BackendConnectionState.reconnecting) {
+      _backoffStep = 0;
+      _cancelReconnect();
+      unawaited(_attemptConnect(reset: true));
+    }
+  }
+
+  Future<void> _attemptConnect({required bool reset}) async {
+    if (_userStop) return;
+    final host = _host, port = _port, token = _token;
+    if (host == null || port == null || token == null) {
+      state.value = BackendConnectionState.failed;
+      lastError.value = 'no settings configured';
+      return;
+    }
+    if (reset) {
+      // First attempt in a (re)start sequence.
+      state.value = state.value == BackendConnectionState.disconnected ||
+              state.value == BackendConnectionState.waitingForNetwork
+          ? BackendConnectionState.connecting
+          : (state.value == BackendConnectionState.connected
+              ? BackendConnectionState.reconnecting
+              : state.value);
+    }
 
     final uri = Uri.parse('ws://$host:$port/rpc');
     WebSocketChannel ch;
     try {
       ch = WebSocketChannel.connect(uri);
-      // Wait for the channel to actually open (or fail).
       await ch.ready;
     } catch (e) {
-      state.value = BackendConnectionState.failed;
       lastError.value = 'connect failed: $e';
+      _scheduleReconnect();
       return;
     }
 
@@ -82,68 +266,179 @@ class BackendClient {
       _onMessage,
       onError: (Object e) {
         lastError.value = 'socket error: $e';
-        _teardown(BackendConnectionState.failed);
+        _onSocketGone();
       },
       onDone: () {
-        // If we tore down deliberately, state is already disconnected.
-        if (state.value == BackendConnectionState.connecting ||
-            state.value == BackendConnectionState.handshaking ||
-            state.value == BackendConnectionState.connected) {
-          lastError.value ??= 'connection closed';
-          _teardown(BackendConnectionState.disconnected);
-        }
+        _onSocketGone();
       },
+      cancelOnError: true,
     );
 
-    state.value = BackendConnectionState.handshaking;
     try {
-      await call('auth.handshake', {
+      final hsResult = await _rawCall('auth.handshake', {
         'token': token,
         'protocolVersion': '1.0',
         'client': {'name': 'openvsmobile-flutter', 'version': '0.1.0'},
-      });
+      }) as Map<String, dynamic>;
+      final cwd = hsResult['defaultCwd'];
+      defaultCwd = cwd is String ? cwd : '/';
+    } on BackendRpcException catch (e) {
+      // Auth failure is permanent — user has to fix settings.
+      if (e.code == -32002) {
+        lastError.value = 'auth failed: ${e.message}';
+        await _closeSocket();
+        state.value = BackendConnectionState.failed;
+        return;
+      }
+      lastError.value = 'handshake error: ${e.message}';
+      await _closeSocket();
+      _scheduleReconnect();
+      return;
     } catch (e) {
       lastError.value = 'handshake failed: $e';
-      await disconnect();
-      state.value = BackendConnectionState.failed;
+      await _closeSocket();
+      _scheduleReconnect();
       return;
     }
+
+    // Success.
+    _backoffStep = 0;
+    lastError.value = null;
     state.value = BackendConnectionState.connected;
+    _startHeartbeat();
+    _flushQueue();
   }
 
-  Future<void> disconnect() async {
-    await _sub?.cancel();
-    _sub = null;
-    try {
-      await _channel?.sink.close(ws_status.normalClosure);
-    } catch (_) {
-      // Ignore — we're tearing down anyway.
-    }
-    _channel = null;
-    _failPending('disconnected');
-    if (state.value != BackendConnectionState.failed) {
-      state.value = BackendConnectionState.disconnected;
-    }
-  }
-
-  void _teardown(BackendConnectionState newState) {
+  void _onSocketGone() {
+    _stopHeartbeat();
+    final hadChannel = _channel != null;
     _sub?.cancel();
     _sub = null;
     _channel = null;
-    _failPending('connection closed');
-    state.value = newState;
+    // Fail pending requests that aren't in the resumable queue.
+    _failPending('connection dropped');
+    if (_userStop) {
+      state.value = BackendConnectionState.disconnected;
+      return;
+    }
+    if (state.value == BackendConnectionState.failed) {
+      return;
+    }
+    if (!hadChannel) return;
+    if (!_online) {
+      state.value = BackendConnectionState.waitingForNetwork;
+      return;
+    }
+    state.value = BackendConnectionState.reconnecting;
+    _scheduleReconnect();
   }
 
-  void _failPending(String reason) {
-    for (final c in _pending.values) {
-      if (!c.isCompleted) {
-        c.completeError(BackendRpcException(-1, reason));
+  void _scheduleReconnect() {
+    if (_userStop) return;
+    if (!_online) {
+      state.value = BackendConnectionState.waitingForNetwork;
+      return;
+    }
+    _cancelReconnect();
+    final delay = _kBackoff[
+        _backoffStep.clamp(0, _kBackoff.length - 1)];
+    _backoffStep++;
+    state.value = BackendConnectionState.reconnecting;
+    _reconnectTimer = Timer(delay, () {
+      unawaited(_attemptConnect(reset: false));
+    });
+  }
+
+  void _cancelReconnect() {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+  }
+
+  // ---- Heartbeat ----
+
+  void _startHeartbeat() {
+    _stopHeartbeat();
+    _heartbeatTimer = Timer.periodic(_kHeartbeatInterval, (_) {
+      if (state.value != BackendConnectionState.connected) return;
+      _heartbeatTimeout = Timer(_kHeartbeatTimeout, () {
+        // No pong → force-close. _onSocketGone runs and starts backoff.
+        lastError.value = 'heartbeat timeout';
+        unawaited(_closeSocket());
+      });
+      _rawCall('system.ping', const {}).then((_) {
+        _heartbeatTimeout?.cancel();
+        _heartbeatTimeout = null;
+      }).catchError((Object _) {
+        _heartbeatTimeout?.cancel();
+        _heartbeatTimeout = null;
+        // Failure here triggers reconnect via socket close path.
+      });
+    });
+  }
+
+  void _stopHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+    _heartbeatTimeout?.cancel();
+    _heartbeatTimeout = null;
+  }
+
+  // ---- Outbound queue ----
+
+  /// JSON-RPC call. Behaviour by state:
+  ///   connected             — sent immediately.
+  ///   connecting/reconnecting/waitingForNetwork — queued up to 15 s.
+  ///   disconnected/failed   — rejected synchronously.
+  Future<dynamic> call(String method, [Map<String, dynamic>? params]) {
+    final s = state.value;
+    if (s == BackendConnectionState.connected) {
+      return _rawCall(method, params);
+    }
+    if (s == BackendConnectionState.disconnected ||
+        s == BackendConnectionState.failed) {
+      return Future.error(BackendRpcException(-1, 'not connected'));
+    }
+    // In a transitional state — queue.
+    final completer = Completer<dynamic>();
+    final entry = _QueuedCall(method: method, params: params, completer: completer);
+    entry.timer = Timer(_kQueueBudget, () {
+      if (_queue.remove(entry) && !completer.isCompleted) {
+        completer.completeError(
+          BackendRpcException(-1, 'connection unavailable'),
+        );
+      }
+    });
+    _queue.add(entry);
+    return completer.future;
+  }
+
+  void _flushQueue() {
+    final drained = List<_QueuedCall>.from(_queue);
+    _queue.clear();
+    for (final q in drained) {
+      q.timer?.cancel();
+      if (q.completer.isCompleted) continue;
+      _rawCall(q.method, q.params).then(
+        q.completer.complete,
+        onError: q.completer.completeError,
+      );
+    }
+  }
+
+  void _drainQueue(String reason) {
+    final drained = List<_QueuedCall>.from(_queue);
+    _queue.clear();
+    for (final q in drained) {
+      q.timer?.cancel();
+      if (!q.completer.isCompleted) {
+        q.completer.completeError(BackendRpcException(-1, reason));
       }
     }
-    _pending.clear();
   }
 
-  Future<dynamic> call(String method, [Map<String, dynamic>? params]) {
+  // ---- Wire send/recv ----
+
+  Future<dynamic> _rawCall(String method, [Map<String, dynamic>? params]) {
     final ch = _channel;
     if (ch == null) {
       return Future.error(BackendRpcException(-1, 'not connected'));
@@ -164,6 +459,27 @@ class BackendClient {
       return Future.error(BackendRpcException(-1, 'send failed: $e'));
     }
     return completer.future;
+  }
+
+  Future<void> _closeSocket() async {
+    try {
+      await _sub?.cancel();
+    } catch (_) {/* ignore */}
+    _sub = null;
+    try {
+      await _channel?.sink.close(ws_status.normalClosure);
+    } catch (_) {/* ignore */}
+    _channel = null;
+    _failPending('socket closed');
+  }
+
+  void _failPending(String reason) {
+    for (final c in _pending.values) {
+      if (!c.isCompleted) {
+        c.completeError(BackendRpcException(-1, reason));
+      }
+    }
+    _pending.clear();
   }
 
   void _onMessage(dynamic raw) {
@@ -205,9 +521,19 @@ class BackendClient {
   }
 
   Future<void> dispose() async {
-    await disconnect();
+    await userDisconnect();
+    await _connectivitySub?.cancel();
+    _connectivitySub = null;
     await _notifs.close();
     state.dispose();
     lastError.dispose();
   }
+}
+
+class _QueuedCall {
+  final String method;
+  final Map<String, dynamic>? params;
+  final Completer<dynamic> completer;
+  Timer? timer;
+  _QueuedCall({required this.method, required this.params, required this.completer});
 }

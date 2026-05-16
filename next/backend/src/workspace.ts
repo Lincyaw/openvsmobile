@@ -107,11 +107,19 @@ export class WorkspaceRegistry {
     return w;
   }
 
-  public async open(rawRoot: unknown): Promise<ActiveWorkspace> {
+  public async open(
+    rawRoot: unknown,
+    options: { activate?: boolean } = {},
+  ): Promise<ActiveWorkspace> {
     const root = await validatedRoot(rawRoot);
     const ws = new ActiveWorkspace(root, this.onTerminalData, this.onTerminalExit);
     this.active.set(ws.id, ws);
-    this.currentId = ws.id;
+    const activate = options.activate ?? true;
+    if (activate) {
+      this.currentId = ws.id;
+    }
+    // When activate === false, currentId is intentionally left as-is — even
+    // if it was null. Caller chose to pre-stage a workspace without focusing.
     this.recents = pushRecent(this.recents, root);
     saveRecents(this.recents);
     return ws;
@@ -175,7 +183,19 @@ async function validatedRoot(rawRoot: unknown): Promise<string> {
   if (!isAbsolute(rawRoot)) {
     throw new RpcError(RPC_ERR.invalidParams, "root must be an absolute path");
   }
-  const root = normalize(rawRoot);
+  const normalized = normalize(rawRoot);
+  // Resolve symlinks to canonical form. `assertContains` is a lexical
+  // prefix check, so the root we store has to already be the post-symlink
+  // canonical path or symlinked roots silently bypass containment.
+  let root: string;
+  try {
+    root = await fs.realpath(normalized);
+  } catch (err) {
+    throw new RpcError(
+      RPC_ERR.invalidParams,
+      `cannot access ${normalized}: ${(err as Error).message}`,
+    );
+  }
   let stat;
   try {
     stat = await fs.stat(root);
@@ -196,16 +216,50 @@ async function validatedRoot(rawRoot: unknown): Promise<string> {
   return root;
 }
 
-export async function listDirAt(
+// Validate + canonicalize a caller-supplied absolute path. Realpath-resolves
+// the target so a downstream lexical `assertContains` cannot be bypassed by
+// a symlink. Returns the same opaque "outside workspace" error for both
+// not-found and out-of-scope when `scope` is supplied — preventing a client
+// from probing filesystem layout via differential error messages.
+async function resolveCallerPath(
   rawPath: unknown,
-): Promise<{ resolved: string; entries: DirEntry[] }> {
+  scope: ActiveWorkspace | null,
+): Promise<string> {
   if (typeof rawPath !== "string" || rawPath.length === 0) {
     throw new RpcError(RPC_ERR.invalidParams, "path must be a non-empty string");
   }
   if (!isAbsolute(rawPath)) {
     throw new RpcError(RPC_ERR.invalidParams, "path must be absolute");
   }
-  const target = normalize(rawPath);
+  const normalized = normalize(rawPath);
+  let resolved: string;
+  try {
+    resolved = await fs.realpath(normalized);
+  } catch (err) {
+    if (scope !== null) {
+      // Collapse "not found" into "outside workspace" so the existence of a
+      // file outside the workspace can't be probed by error string.
+      throw new RpcError(
+        RPC_ERR.invalidParams,
+        `path is outside workspace ${scope.root}`,
+      );
+    }
+    throw new RpcError(
+      RPC_ERR.invalidParams,
+      `cannot access ${normalized}: ${(err as Error).message}`,
+    );
+  }
+  if (scope !== null) {
+    scope.assertContains(resolved);
+  }
+  return resolved;
+}
+
+export async function listDirAt(
+  rawPath: unknown,
+  scope: ActiveWorkspace | null,
+): Promise<{ resolved: string; entries: DirEntry[] }> {
+  const target = await resolveCallerPath(rawPath, scope);
   let dirents;
   try {
     dirents = await fs.readdir(target, { withFileTypes: true });
@@ -241,18 +295,17 @@ export async function listDirAt(
 
 export async function readFileAt(
   rawPath: unknown,
+  scope: ActiveWorkspace,
 ): Promise<{
   resolved: string;
   contentBase64: string;
   encoding: "utf8" | "binary";
 }> {
-  if (typeof rawPath !== "string" || rawPath.length === 0) {
-    throw new RpcError(RPC_ERR.invalidParams, "path must be a non-empty string");
-  }
-  if (!isAbsolute(rawPath)) {
-    throw new RpcError(RPC_ERR.invalidParams, "path must be absolute");
-  }
-  const target = normalize(rawPath);
+  // Order matters: scope check happens INSIDE resolveCallerPath, before
+  // we stat/read. Doing IO first would (a) waste cycles on doomed reads
+  // and (b) leak the difference between "outside workspace" and
+  // "doesn't exist" through error messages.
+  const target = await resolveCallerPath(rawPath, scope);
   let stat;
   try {
     stat = await fs.stat(target);
