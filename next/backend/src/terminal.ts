@@ -179,6 +179,14 @@ export class TerminalRegistry {
 
     pty.onData((d) => {
       const chunk = Buffer.from(d, "utf8");
+      if (chunk.length === 0) {
+        // node-pty very rarely produces empty data events; if it does,
+        // ScrollbackBuffer.append is a no-op and seqEnd stays put. Don't
+        // emit a wire notification — clients document seqEnd as strictly
+        // monotonic on terminal.data, and an unchanged value would break
+        // the dedupe contract.
+        return;
+      }
       // Buffer first, then fan out. Order matters: if a brand-new subscriber
       // calls terminal.history concurrently with this data callback, they
       // must not see a chunk in the live stream that isn't yet in scrollback.

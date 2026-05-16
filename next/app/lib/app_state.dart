@@ -339,6 +339,13 @@ class AppState extends ChangeNotifier {
         for (final s in sessions) {
           await _replayHistory(s.id);
         }
+        // Restore focus so the Terminal tab shows a session immediately on
+        // reconnect instead of the "Creating terminal…" placeholder. The
+        // disconnect path clears _focusedTermBySpace; without this step the
+        // user would have to tap a chip after every drop.
+        if (sessions.isNotEmpty) {
+          _focusedTermBySpace[w.id] ??= sessions.first.id;
+        }
       }
       notifyListeners();
     } catch (_) {
