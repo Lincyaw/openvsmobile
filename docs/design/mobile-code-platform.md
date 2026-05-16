@@ -493,6 +493,71 @@ grow the vocabulary, not punt to a WebView.
 - Pairing: QR code emits `{ host, port, token }`; Flutter stores it.
   Token is rotatable. No multi-user / multi-tenant story in v0.
 
+### 5.1 Session persistence (process-level state)
+
+Backend state is **process-global**, not per-connection. A `Connection`
+object is an authenticated subscriber to the shared registries; it does
+not own them. Implications:
+
+- **Workspaces survive client disconnects.** Closing the WebSocket does
+  not implicitly close any workspace. Workspaces only end on explicit
+  `workspace.close` or on backend process exit.
+- **PTYs survive client disconnects.** Each terminal session is owned
+  by its workspace, not its originating connection. When no client is
+  attached, the PTY keeps running and its output accrues into a
+  **per-session circular scrollback buffer** (default ~1 MB / ~8 000
+  lines, configurable).
+- **Reattach on reconnect.** After `auth.handshake`, the client calls
+  `workspace.list` to see what's already running. For each session it
+  cares about, it calls `terminal.history({ sessionId, maxBytes? })`
+  to drain the scrollback, then subscribes to live `terminal.data`
+  notifications. The history call returns
+  `{ scrollbackBase64, bytesDropped }` so the client knows whether the
+  buffer overflowed.
+- **Multi-client by accident.** Two clients connecting concurrently
+  see the same workspaces and terminals. PTY input from either client
+  is serialized at the kernel; output streams to both. This is closer
+  to VSCode Live Share than to "one user, one window" — a feature for
+  "I left my phone open and now my laptop wants to follow along",
+  not a bug.
+- **Process restart is not persistence.** When the backend process
+  itself dies, workspaces and PTYs go with it. Persisting full PTY
+  state across process restarts is tmux-grade work and is **not** a
+  v0 goal — users who need that run `tmux` inside our terminal.
+
+### 5.2 Deployment / installation roadmap
+
+The phone is a thin client; the backend lives on a paired machine.
+Getting the backend onto that machine is the friction we're optimizing.
+
+- **v0**: manual install via the repo (`git clone`, `pnpm install`,
+  `pnpm run dev`). Acceptable for the author's own use; hostile to
+  anyone else.
+- **v0.5 — install one-liner.** Ship a static `install.sh` that:
+  1. Detects platform via `uname -a` (`linux-x64`, `linux-arm64`,
+     `macos-arm64`, `macos-x64`).
+  2. Downloads the matching backend tarball from a hosted location
+     (GitHub Releases is the obvious choice). The tarball bundles a
+     compiled Node runtime (`bun build --compile` or `pkg`) plus the
+     `node-pty` prebuilt for that platform.
+  3. Unpacks to `~/.openvsmobile-next/`, writes a `config.json` with
+     a generated token, optionally drops a systemd-user unit / launchd
+     plist for autostart.
+  4. Prints `host:port:token` (and a QR code form) for the user to
+     paste into the Flutter app.
+  Cost: a release pipeline that fans out per-platform tarballs, plus
+  hosting. No SSH client on the phone, no Live-Share-grade tunnelling.
+  This is the next major deployment step after the post-P1 hardening
+  passes. See §8.
+- **v1+ — full Remote-SSH-style bootstrap (deferred).** Embed an SSH
+  client in the Flutter app, let the user enter `user@host`, app
+  SSHes in, runs the install script if needed, opens an SSH local
+  forward, and connects to the backend through the tunnel.
+  Cost: real SSH client in Dart (`dartssh2`-class), platform-specific
+  key storage, known_hosts management, port forwarding, and a
+  permanent maintenance debt for the release pipeline. See §9 for the
+  open question; this is not in v0 and not in v0.5.
+
 ## 6. Borrowed VSCode data formats (and what we don't borrow)
 
 We are not consuming VSCode extensions as code, but VSCode normalized
@@ -555,18 +620,41 @@ shape should be rewritten, not retrofitted.
 
 Phases, not deadlines. Each phase is small enough to be a single PR.
 
-- **P0 — Doc ratification.** Land this document. Rewrite `CLAUDE.md`
-  and `decisions.md` to match. Mark legacy `project-index.yaml`
-  requirements as `dropped`. No code changes yet.
-- **P1 — Node backend skeleton.** New `backend/` directory. Auth +
-  workspace + file read + terminal (node-pty). No plugin host yet.
-  Flutter app gains a `BackendClient` (WebSocket JSON-RPC) and points
-  at the new backend. Legacy Go server stays alive for fallback during
-  transition but is not extended.
-- **P2 — Flutter rewrite of core.** Strip chat/session UI; rebuild
-  navigation around Files / Terminal / Git / Plugins / Settings.
-  Reuse the existing viewer/terminal widgets where they don't fight
-  the new surface.
+- **P0 — Doc ratification.** ✅ landed at `a4f9677`. Design doc
+  committed; `CLAUDE.md` and `project-index.yaml` rewrite still
+  deferred to a later doc-hygiene pass.
+- **P1 — Node backend skeleton + Flutter core.** ✅ landed at
+  `2d54792` (a single commit; backend and client co-developed). Auth,
+  workspace-as-window registry, scoped `fs.*`, multi-PTY per
+  workspace, WebSocket JSON-RPC, app-bar workspace switcher with
+  step-by-step picker, Files tree + read-only viewer, Terminal tab
+  chip strip backed by `xterm.dart`. Legacy `server/`, `app/`, and
+  `openvscode-server/` are untouched.
+- **P1.5 — Hardening pass.** Reviewer-flagged correctness items
+  (symlink-safe `fs.*`, ID lifecycle nits) and WeChat-style network
+  resilience (state machine, exponential backoff, `connectivity_plus`
+  awareness, `AppLifecycleState.resumed` reconnect, `system.ping`
+  heartbeat, request queueing during reconnect). Banner stays neutral
+  until terminal failure.
+- **P1.6 — Terminal session persistence.** Lift `WorkspaceRegistry`
+  to process-global; add per-session circular scrollback buffer
+  (~1 MB / 8 000 lines); add `terminal.history({sessionId, maxBytes?})`
+  RPC; client replays history on reconnect/focus. After this lands,
+  closing the app or losing the network no longer kills running
+  `claude`/`tmux`/`vim` sessions on the backend. Multi-client view
+  of the same registry falls out for free. See §5.1.
+- **P1.7 — Install one-liner + release tarballs.** Compile a static
+  Node binary per `(linux x64, linux arm64, macos arm64, macos x64)`
+  including the `node-pty` native binding; host on GitHub Releases;
+  ship `install.sh` that detects platform, downloads, unpacks to
+  `~/.openvsmobile-next/`, writes config + token, prints
+  `host:port:token` for the Flutter app. See §5.2. **No SSH from the
+  phone in this phase**; the user runs the one-liner via their own
+  terminal.
+- **P2 — Flutter UX hardening + Plugins tab placeholder.** A pass
+  focused on real device testing (the P1 build was structurally
+  verified but not device-tested), add the Settings/Plugins tabs as
+  placeholders, polish gestures and key-bar on small screens.
 - **P3 — Plugin host.** JSON-RPC over stdio, capability gating,
   declarative-only contributions first (commands, status items).
 - **P4 — UI tree protocol.** Implement `ui.render` and `ui.event`
@@ -609,6 +697,20 @@ Phases, not deadlines. Each phase is small enough to be a single PR.
   terminal?** If the answer is "not much," the plugin doesn't need to
   exist and the platform's first showcase plugin should be something
   else (e.g., a code-review feed driven by workbuddy).
+- **SSH-driven auto-bootstrap from the phone (Remote-SSH parity).**
+  Deferred to v1+. Trigger to reopen: the install one-liner from
+  §5.2 / P1.7 becomes a friction point users complain about (e.g.,
+  onboarding new machines weekly, or shipping the app to non-devs).
+  Open sub-questions when it does: SSH library on Dart for Android
+  and iOS, secure key storage on the phone, known_hosts handling,
+  jump-host / proxy-jump support, the binary-distribution maintenance
+  matrix that goes with it. Not in v0, not in v0.5.
+- **Cross-process-restart terminal persistence.** §5.1 calls out that
+  P1.6 terminal persistence covers client disconnect, not backend
+  restart. If users want `claude`/`tmux` to survive backend restarts,
+  the answer for now is "run `tmux` yourself inside our terminal".
+  Reopen if users push back; persisting full PTY state to disk is
+  tmux-grade work and we don't want to build it speculatively.
 
 ## 10. Document follow-ups (once §1–§9 are ratified)
 
