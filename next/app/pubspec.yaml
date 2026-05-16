@@ -38,6 +38,7 @@ dependencies:
   shared_preferences: ^2.3.2
   xterm: ^4.0.0
   connectivity_plus: ^6.0.5
+  dartssh2: ^2.13.0
 
 dev_dependencies:
   flutter_test:
@@ -60,6 +61,13 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  # install.sh is a symlink to ../../backend/pkg/install.sh — keeping a
+  # single source of truth instead of copying. Flutter's asset bundler
+  # resolves the symlink at build time, so the packaged APK ships the
+  # actual script contents. See lib/services/ssh_bootstrap.dart.
+  assets:
+    - assets/install.sh
 
   # To add assets to your application, add an assets section, like this:
   # assets:

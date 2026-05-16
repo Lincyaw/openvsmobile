@@ -10,6 +10,7 @@ import '../backend_client.dart';
 import '../models.dart';
 import '../settings_store.dart';
 import 'files_tab.dart';
+import 'more_tab.dart';
 import 'settings_screen.dart';
 import 'terminal_tab.dart';
 import 'workspace_picker.dart';
@@ -123,6 +124,10 @@ class _HomeShellState extends State<HomeShell> {
               children: [
                 FilesTab(appState: widget.appState),
                 TerminalTab(appState: widget.appState),
+                MoreTab(
+                  currentSettings: widget.currentSettings,
+                  onSettingsSaved: widget.onSettingsSaved,
+                ),
               ],
             ),
           ),
@@ -141,6 +146,11 @@ class _HomeShellState extends State<HomeShell> {
             icon: Icon(Icons.terminal_outlined),
             selectedIcon: Icon(Icons.terminal),
             label: 'Terminal',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.more_horiz_outlined),
+            selectedIcon: Icon(Icons.more_horiz),
+            label: 'More',
           ),
         ],
       ),
