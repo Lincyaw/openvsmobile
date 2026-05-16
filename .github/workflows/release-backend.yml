@@ -1,0 +1,157 @@
+# Release workflow for the openvsmobile-next backend tarballs.
+#
+# Tag naming convention:
+#   backend-v<semver>   e.g. backend-v0.1.0, backend-v0.2.0-rc1
+#
+# The `backend-` prefix leaves room for a future `app-v*` tag to drive an
+# APK release workflow without collisions. Pre-release detection looks for
+# `-rc`, `-beta`, or `-alpha` in the tag and flips `prerelease=true`.
+#
+# Why native runners per arch (no qemu cross-compile):
+#   node-pty's node-gyp rebuild needs the target arch's real toolchain.
+#   GitHub-hosted arm64 runners (`ubuntu-24.04-arm`) became GA in 2025;
+#   if they're ever unavailable we'll revisit, but don't preemptively
+#   add qemu — the rebuild path is too fragile under emulation.
+
+name: release-backend
+
+on:
+  push:
+    tags:
+      - 'backend-v*'
+  workflow_dispatch:
+
+# Default everything to read; the release job opts into `contents: write`.
+permissions:
+  contents: read
+
+# Never cancel an in-flight release — half-published GitHub Releases are
+# worse than waiting for the previous run to finish.
+concurrency:
+  group: release-backend-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: next/backend/pnpm-lock.yaml
+
+      - name: Install dependencies (incl. devDeps for typecheck)
+        working-directory: next/backend
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck (fail fast before producing a tarball)
+        working-directory: next/backend
+        run: pnpm typecheck
+
+      - name: Build tarball for linux-${{ matrix.arch }}
+        working-directory: next/backend
+        run: pkg/build-tarball.sh ${{ matrix.arch }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-${{ matrix.arch }}
+          path: |
+            next/backend/dist-pkg/openvsmobile-backend-linux-${{ matrix.arch }}.tar.gz
+            next/backend/dist-pkg/openvsmobile-backend-linux-${{ matrix.arch }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    # Only publish a release on actual tag pushes; workflow_dispatch runs
+    # the build matrix as a smoke test but stops short of releasing.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/backend-v')
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout (for install.sh)
+        uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Stage install.sh alongside tarballs
+        run: cp next/backend/pkg/install.sh artifacts/install.sh
+
+      - name: List staged release assets
+        run: ls -la artifacts/
+
+      - name: Compose release body from sha256 files
+        id: body
+        run: |
+          set -euo pipefail
+          {
+            echo 'body<<RELEASE_BODY_EOF'
+            echo "## openvsmobile backend ${GITHUB_REF_NAME}"
+            echo
+            echo '### Artifacts'
+            echo
+            echo '| File | SHA-256 |'
+            echo '| --- | --- |'
+            for sha_file in artifacts/*.sha256; do
+              [ -f "$sha_file" ] || continue
+              # sha256sum output: "<hex>  <filename>"
+              sum="$(awk '{print $1}' "$sha_file")"
+              fname="$(awk '{print $2}' "$sha_file")"
+              echo "| \`${fname}\` | \`${sum}\` |"
+            done
+            echo
+            echo '### Install'
+            echo
+            echo 'See `install.sh` in the assets below for an SSH-bootstrappable installer.'
+            echo 'RELEASE_BODY_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Detect prerelease from tag
+        id: prerelease
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if [[ "$tag" == *-rc* || "$tag" == *-beta* || "$tag" == *-alpha* ]]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: openvsmobile backend ${{ github.ref_name }}
+          body: ${{ steps.body.outputs.body }}
+          draft: false
+          prerelease: ${{ steps.prerelease.outputs.value == 'true' }}
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/openvsmobile-backend-linux-*.tar.gz
+            artifacts/openvsmobile-backend-linux-*.tar.gz.sha256
+            artifacts/install.sh
