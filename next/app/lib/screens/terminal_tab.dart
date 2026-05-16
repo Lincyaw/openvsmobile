@@ -199,11 +199,142 @@ class _TerminalViewState extends State<_TerminalView> {
 
   @override
   Widget build(BuildContext context) {
-    return TerminalView(
-      widget.terminal,
-      controller: _ctrl,
-      autofocus: true,
-      backgroundOpacity: 1.0,
+    return Column(
+      children: [
+        Expanded(
+          child: TerminalView(
+            widget.terminal,
+            controller: _ctrl,
+            autofocus: true,
+            backgroundOpacity: 1.0,
+          ),
+        ),
+        _KeyToolbar(terminal: widget.terminal),
+      ],
+    );
+  }
+}
+
+/// Soft-keyboard companion: a horizontally scrollable strip of keys the
+/// Android soft keyboard doesn't surface easily — Esc, Tab, arrows, Home,
+/// End — plus a Ctrl popover that sends `Ctrl+<letter>` on selection.
+class _KeyToolbar extends StatelessWidget {
+  final Terminal terminal;
+  const _KeyToolbar({required this.terminal});
+
+  void _send(TerminalKey key) {
+    terminal.keyInput(key);
+  }
+
+  Future<void> _pickCtrl(BuildContext context) async {
+    final code = await showModalBottomSheet<int>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => const _CtrlPicker(),
+    );
+    if (code != null) {
+      terminal.charInput(code, ctrl: true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      elevation: 2,
+      child: SafeArea(
+        top: false,
+        child: SizedBox(
+          height: 44,
+          child: ListView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+            children: [
+              _KeyBtn(label: 'Esc', onTap: () => _send(TerminalKey.escape)),
+              _KeyBtn(label: 'Tab', onTap: () => _send(TerminalKey.tab)),
+              _KeyBtn(label: 'Ctrl', onTap: () => _pickCtrl(context)),
+              _KeyBtn(label: '←', onTap: () => _send(TerminalKey.arrowLeft)),
+              _KeyBtn(label: '→', onTap: () => _send(TerminalKey.arrowRight)),
+              _KeyBtn(label: '↑', onTap: () => _send(TerminalKey.arrowUp)),
+              _KeyBtn(label: '↓', onTap: () => _send(TerminalKey.arrowDown)),
+              _KeyBtn(label: 'Home', onTap: () => _send(TerminalKey.home)),
+              _KeyBtn(label: 'End', onTap: () => _send(TerminalKey.end)),
+              _KeyBtn(label: 'PgUp', onTap: () => _send(TerminalKey.pageUp)),
+              _KeyBtn(label: 'PgDn', onTap: () => _send(TerminalKey.pageDown)),
+              _KeyBtn(label: 'Del', onTap: () => _send(TerminalKey.delete)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _KeyBtn extends StatelessWidget {
+  final String label;
+  final VoidCallback onTap;
+  const _KeyBtn({required this.label, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 3),
+      child: OutlinedButton(
+        onPressed: onTap,
+        style: OutlinedButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          visualDensity: VisualDensity.compact,
+          minimumSize: const Size(40, 36),
+        ),
+        child: Text(label, style: const TextStyle(fontSize: 13)),
+      ),
+    );
+  }
+}
+
+/// Ctrl modifier picker. xterm.dart's charInput maps lowercase a-z to
+/// control bytes 0x01-0x1a, and [/\\/]/^/_ to 0x1b-0x1f. We display
+/// uppercase letters and the symbol set; pop the code point back.
+class _CtrlPicker extends StatelessWidget {
+  const _CtrlPicker();
+
+  @override
+  Widget build(BuildContext context) {
+    final letters = [
+      for (var c = 0x61; c <= 0x7a; c++) c,
+    ];
+    final symbols = <int>[0x5b, 0x5c, 0x5d, 0x5e, 0x5f]; // [ \ ] ^ _
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Padding(
+              padding: EdgeInsets.only(bottom: 8),
+              child: Text('Send Ctrl + …',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+            ),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final code in letters)
+                  ActionChip(
+                    label: Text(String.fromCharCode(code - 0x20)),
+                    onPressed: () => Navigator.of(context).pop(code),
+                  ),
+                for (final code in symbols)
+                  ActionChip(
+                    label: Text(String.fromCharCode(code)),
+                    onPressed: () => Navigator.of(context).pop(code),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
