@@ -118,7 +118,11 @@ class _TerminalTabState extends State<TerminalTab> {
           child: focusedId == null
               ? const Center(child: Text('Creating terminal…'))
               : _TerminalView(
-                  key: ValueKey(focusedId),
+                  // Generation bumps when the underlying Terminal is
+                  // replaced (e.g. after a reconnect history replay), so
+                  // including it in the key forces a fresh TerminalView.
+                  key: ValueKey(
+                      '$focusedId#${widget.appState.terminalGenerationFor(focusedId)}'),
                   terminal: widget.appState.terminalFor(focusedId),
                 ),
         ),

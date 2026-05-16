@@ -134,14 +134,15 @@ Frontend → Backend:
 | `terminal.resize`     | `{ sessionId, cols, rows }` → `{}` |
 | `terminal.dispose`    | `{ sessionId }` → `{}` |
 | `terminal.list`       | `{ workspaceId? }` → `{ sessions }` |
+| `terminal.history`    | `{ sessionId, maxBytes? }` → `{ sessionId, scrollbackBase64, scrollbackOffsetEnd, bytesDropped, lengthBytes }`. Returns the most-recent up-to-`maxBytes` bytes from the per-session scrollback (default cap 1 MiB, override via `OPENVSMOBILE_SCROLLBACK_BYTES`). `scrollbackOffsetEnd` is the running `seqEnd` at the moment the snapshot was assembled; the returned bytes cover `[scrollbackOffsetEnd - lengthBytes, scrollbackOffsetEnd)`. `bytesDropped` is non-zero once the buffer has wrapped. |
 
 Backend → Frontend (notifications):
 
 | Method              | Params |
 |---------------------|--------|
-| `terminal.data`     | `{ sessionId, workspaceId, dataBase64 }` (workspaceId may be null when the workspace was already closed) |
+| `terminal.data`     | `{ sessionId, workspaceId, dataBase64, seqEnd }`. `seqEnd` is a per-session monotonic byte offset at the *end* of this chunk; clients use it to drop duplicates after a `terminal.history` replay. |
 | `terminal.exit`     | `{ sessionId, workspaceId, exitCode }` |
-| `workspace.closed`  | `{ id }` — echoed for user-initiated close, used for server-initiated closes on shutdown. |
+| `workspace.closed`  | `{ id }` — broadcast to every subscriber when a workspace is closed (user-initiated or on backend shutdown). |
 
 JSON-RPC error code `-32001` ("capability denied") is reserved for the
 future plugin host and unused in this iteration.
@@ -163,6 +164,17 @@ future plugin host and unused in this iteration.
   triggers a force-close and the always-on reconnect path. Servers may
   treat `now` as opaque (it's a timestamp for debugging, not used for
   drift correction).
+- **Session persistence (process-level state).** Backend state is
+  process-global. Workspaces and PTYs survive client disconnects;
+  closing the WebSocket detaches the subscriber but disposes nothing.
+  On reconnect the client calls `workspace.list` → `terminal.list` →
+  `terminal.history` for each session before writing live data, so the
+  terminal view picks up exactly where the user left off. Scrollback is
+  bounded at 1 MiB per session by default (override with
+  `OPENVSMOBILE_SCROLLBACK_BYTES`). See
+  [`docs/design/mobile-code-platform.md`](../docs/design/mobile-code-platform.md)
+  §5.1. Cross-process-restart persistence is explicitly **not** a goal
+  — users who need that run `tmux` inside the terminal.
 
 ## What's deferred (out of scope for this PR)
 

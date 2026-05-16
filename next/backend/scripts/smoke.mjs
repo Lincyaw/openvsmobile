@@ -280,18 +280,120 @@ async function main() {
   console.log("[ok] terminal.create -> %s", term.sessionId);
 
   // Wait for any data so we know the PTY actually started (shell prompt, etc).
-  await c.waitNotif(
+  const firstData = await c.waitNotif(
     (n) => n.method === "terminal.data" && n.params.sessionId === term.sessionId,
   );
-  console.log("[ok] terminal.data notification received");
+  assert(typeof firstData.params.seqEnd === "number" && firstData.params.seqEnd > 0,
+    `terminal.data carries seqEnd > 0, got ${firstData.params.seqEnd}`);
+  console.log("[ok] terminal.data notification received (seqEnd=%d)", firstData.params.seqEnd);
 
+  // 11b. seqEnd ordering: write a marker, capture two more data chunks, and
+  // verify seqEnd is monotonically increasing.
   await c.call("terminal.write", {
+    sessionId: term.sessionId,
+    dataBase64: Buffer.from("echo first-marker\n").toString("base64"),
+  });
+  const second = await c.waitNotif(
+    (n) =>
+      n.method === "terminal.data" &&
+      n.params.sessionId === term.sessionId &&
+      n.params.seqEnd > firstData.params.seqEnd,
+    3000,
+  );
+  assert(second.params.seqEnd > firstData.params.seqEnd,
+    `second seqEnd (${second.params.seqEnd}) must exceed first (${firstData.params.seqEnd})`);
+  await c.call("terminal.write", {
+    sessionId: term.sessionId,
+    dataBase64: Buffer.from("echo second-marker\n").toString("base64"),
+  });
+  const third = await c.waitNotif(
+    (n) =>
+      n.method === "terminal.data" &&
+      n.params.sessionId === term.sessionId &&
+      n.params.seqEnd > second.params.seqEnd,
+    3000,
+  );
+  assert(third.params.seqEnd > second.params.seqEnd,
+    `third seqEnd must exceed second`);
+  console.log("[ok] terminal.data seqEnd is monotonic (%d → %d → %d)",
+    firstData.params.seqEnd, second.params.seqEnd, third.params.seqEnd);
+
+  // 11c. terminal.history shape on the live session.
+  const hist = await c.call("terminal.history", { sessionId: term.sessionId });
+  assert(typeof hist.scrollbackBase64 === "string", "history has scrollbackBase64");
+  assert(typeof hist.scrollbackOffsetEnd === "number", "history has scrollbackOffsetEnd");
+  assert(typeof hist.bytesDropped === "number", "history has bytesDropped");
+  assert(typeof hist.lengthBytes === "number", "history has lengthBytes");
+  assert(hist.lengthBytes === hist.scrollbackOffsetEnd - hist.bytesDropped,
+    `history invariant: lengthBytes (${hist.lengthBytes}) === scrollbackOffsetEnd (${hist.scrollbackOffsetEnd}) - bytesDropped (${hist.bytesDropped})`);
+  const histBytes = Buffer.from(hist.scrollbackBase64, "base64");
+  assert(histBytes.length === hist.lengthBytes,
+    `history bytes length matches lengthBytes`);
+  assert(histBytes.includes("first-marker") || histBytes.toString().includes("first-marker"),
+    "history contains first-marker");
+  console.log("[ok] terminal.history (lengthBytes=%d, bytesDropped=%d, offsetEnd=%d)",
+    hist.lengthBytes, hist.bytesDropped, hist.scrollbackOffsetEnd);
+
+  // 11d. terminal.history unknown sessionId → -32602.
+  let histErr = null;
+  try {
+    await c.call("terminal.history", { sessionId: "00000000-0000-0000-0000-000000000000" });
+  } catch (e) {
+    histErr = e;
+  }
+  assert(histErr && histErr.code === -32602,
+    `unknown sessionId for history yields -32602, got ${histErr?.code}`);
+  console.log("[ok] terminal.history rejects unknown sessionId");
+
+  // 11e. Persistence across reconnect: close the socket, reconnect with a
+  // fresh WebSocket using the same token, and verify the workspace + session
+  // are still alive with their scrollback intact.
+  c.close();
+  await new Promise((r) => setTimeout(r, 100));
+  const c2 = new Client(`ws://${HOST}:${PORT}/rpc`);
+  await c2.connect();
+  await c2.call("auth.handshake", {
+    token,
+    protocolVersion: "1.0",
+    client: { name: "smoke-reconnect", version: "0" },
+  });
+  const listAfter = await c2.call("workspace.list", {});
+  assert(listAfter.active.some((w) => w.id === opened.workspace.id),
+    `workspace survived reconnect: ${opened.workspace.id} in ${JSON.stringify(listAfter.active.map((w) => w.id))}`);
+  const sessionsAfter = await c2.call("terminal.list", {
+    workspaceId: opened.workspace.id,
+  });
+  assert(sessionsAfter.sessions.some((s) => s.id === term.sessionId),
+    `session survived reconnect: ${term.sessionId}`);
+  const histAfter = await c2.call("terminal.history", {
+    sessionId: term.sessionId,
+  });
+  const histAfterBytes = Buffer.from(histAfter.scrollbackBase64, "base64");
+  assert(histAfterBytes.toString().includes("first-marker"),
+    "post-reconnect history still contains first-marker");
+  console.log("[ok] persistence across reconnect (workspace + PTY + scrollback intact)");
+
+  // Switch back to the original `c` symbol so the rest of the script reads
+  // naturally. The old socket is gone; everything goes through c2.
+  const cMain = c2;
+
+  // 11f. maxBytes clamp.
+  const histClamped = await cMain.call("terminal.history", {
+    sessionId: term.sessionId,
+    maxBytes: 16,
+  });
+  assert(histClamped.lengthBytes <= 16,
+    `maxBytes clamps lengthBytes, got ${histClamped.lengthBytes}`);
+  console.log("[ok] terminal.history maxBytes clamp");
+
+  // 11g. Drive the PTY to exit, using cMain.
+  await cMain.call("terminal.write", {
     sessionId: term.sessionId,
     dataBase64: Buffer.from("echo hello-smoke && exit\n").toString("base64"),
   });
 
   // Wait for exit
-  const exit = await c.waitNotif(
+  const exit = await cMain.waitNotif(
     (n) => n.method === "terminal.exit" && n.params.sessionId === term.sessionId,
     5000,
   );
@@ -300,26 +402,99 @@ async function main() {
   console.log("[ok] terminal.exit (code=%d)", exit.params.exitCode);
 
   // 12. terminal.list
-  const empty2 = await c.call("terminal.list", { workspaceId: opened.workspace.id });
+  const empty2 = await cMain.call("terminal.list", { workspaceId: opened.workspace.id });
   assert(empty2.sessions.length === 0, "terminal list empty after exit");
   console.log("[ok] terminal.list");
 
   // 13. workspace.close (the inactive one)
-  await c.call("workspace.close", { id: opened2.workspace.id });
-  const closedNotif = await c.waitNotif(
+  await cMain.call("workspace.close", { id: opened2.workspace.id });
+  const closedNotif = await cMain.waitNotif(
     (n) => n.method === "workspace.closed" && n.params.id === opened2.workspace.id,
   );
   assert(closedNotif, "workspace.closed notification");
   console.log("[ok] workspace.close + notification");
 
   // 14. Close the current workspace — current should become null.
-  await c.call("workspace.close", { id: opened.workspace.id });
-  const finalCur = await c.call("workspace.current", {});
+  await cMain.call("workspace.close", { id: opened.workspace.id });
+  const finalCur = await cMain.call("workspace.current", {});
   assert(finalCur.workspace === null, "current is null after closing last workspace");
   console.log("[ok] workspace.close (last) clears current");
 
-  c.close();
+  cMain.close();
+  await scrollbackWrapTest(token);
   console.log("\nALL PASS");
+}
+
+// Run a fresh backend (spawned by the caller with a small SCROLLBACK cap)
+// is too heavy for an inline test — instead, we just exercise wrap detection
+// by checking that bytesDropped behaves correctly when we drive enough output.
+// We skip this when SMOKE_SKIP_WRAP=1 (e.g. when the backend's cap is the
+// default 1 MiB and we don't want to wait).
+async function scrollbackWrapTest(token) {
+  if (process.env.SMOKE_SKIP_WRAP === "1") {
+    console.log("[skip] scrollback wrap test (SMOKE_SKIP_WRAP=1)");
+    return;
+  }
+  const capHint = Number(process.env.SMOKE_SCROLLBACK_CAP ?? 0);
+  if (capHint <= 0 || capHint > 64 * 1024) {
+    console.log(
+      "[skip] scrollback wrap test (set SMOKE_SCROLLBACK_CAP=4096 with OPENVSMOBILE_SCROLLBACK_BYTES=4096 on the backend to enable)",
+    );
+    return;
+  }
+  const c = new Client(`ws://${HOST}:${PORT}/rpc`);
+  await c.connect();
+  await c.call("auth.handshake", {
+    token,
+    protocolVersion: "1.0",
+    client: { name: "smoke-wrap", version: "0" },
+  });
+  const ws = await c.call("workspace.open", {
+    root: realpathSync(mkdtempSync(join(tmpdir(), "openvsmobile-wrap-"))),
+  });
+  const t = await c.call("terminal.create", {
+    workspaceId: ws.workspace.id,
+    cols: 80,
+    rows: 24,
+  });
+  // Wait for prompt
+  await c.waitNotif(
+    (n) => n.method === "terminal.data" && n.params.sessionId === t.sessionId,
+  );
+  // Drive enough output to wrap the buffer at the configured cap.
+  const fillCmd = `yes A | head -c ${capHint * 4}\n`;
+  await c.call("terminal.write", {
+    sessionId: t.sessionId,
+    dataBase64: Buffer.from(fillCmd).toString("base64"),
+  });
+  // Wait until seqEnd exceeds the cap by enough to guarantee a wrap.
+  let lastSeq = 0;
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const n = await c.waitNotif(
+      (m) =>
+        m.method === "terminal.data" &&
+        m.params.sessionId === t.sessionId &&
+        m.params.seqEnd > lastSeq,
+      1500,
+    ).catch(() => null);
+    if (!n) break;
+    lastSeq = n.params.seqEnd;
+    if (lastSeq > capHint * 2) break;
+  }
+  const h = await c.call("terminal.history", { sessionId: t.sessionId });
+  assert(h.bytesDropped > 0,
+    `wrap test: expected bytesDropped > 0, got ${h.bytesDropped} (seqEnd=${h.scrollbackOffsetEnd}, len=${h.lengthBytes})`);
+  assert(h.lengthBytes <= capHint,
+    `wrap test: lengthBytes (${h.lengthBytes}) must be <= cap (${capHint})`);
+  assert(h.lengthBytes === h.scrollbackOffsetEnd - h.bytesDropped,
+    `wrap test: invariant lengthBytes === offsetEnd - bytesDropped`);
+  console.log(
+    "[ok] scrollback wrap (cap=%d, offsetEnd=%d, bytesDropped=%d, len=%d)",
+    capHint, h.scrollbackOffsetEnd, h.bytesDropped, h.lengthBytes,
+  );
+  await c.call("workspace.close", { id: ws.workspace.id });
+  c.close();
 }
 
 main().catch((err) => {

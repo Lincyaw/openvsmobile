@@ -1,7 +1,9 @@
-// One connection = one workspace registry. Multiple active workspaces
-// per connection, each with its own PTY pool. Terminal notifications
-// always carry workspaceId so the client can route them to the right
-// (focused or background) view.
+// A Connection is an authenticated subscriber over a single WebSocket.
+// It does NOT own workspaces or terminals — those live in the shared
+// ProcessState. Closing the socket removes this subscriber but leaves all
+// workspaces and PTYs running so the client can reattach on reconnect.
+//
+// See docs/design/mobile-code-platform.md §5.1 (Session persistence).
 
 import type { WebSocket } from "ws";
 import {
@@ -13,78 +15,44 @@ import {
   sendResult,
   type JsonRpcId,
 } from "./rpc.js";
-import {
-  WorkspaceRegistry,
-  listDirAt,
-  readFileAt,
-  type ActiveWorkspace,
-} from "./workspace.js";
+import { listDirAt, readFileAt, type ActiveWorkspace } from "./workspace.js";
+import type { ProcessState, Subscriber } from "./state.js";
 
 const SERVER_VERSION = "0.1.0";
 const PROTOCOL_VERSION = "1.0";
 
 export interface ConnectionDeps {
   expectedToken: string;
+  state: ProcessState;
 }
 
 type Handler = (params: unknown) => Promise<unknown> | unknown;
 
-export class Connection {
+export class Connection implements Subscriber {
   private authed = false;
-  private readonly workspaces: WorkspaceRegistry;
   private readonly methods = new Map<string, Handler>();
+  public readonly ws: WebSocket;
+  private readonly state: ProcessState;
+  private readonly expectedToken: string;
 
-  constructor(
-    private readonly ws: WebSocket,
-    private readonly deps: ConnectionDeps,
-  ) {
-    // Notification sinks need workspaceId on the wire, but the
-    // TerminalRegistry is workspace-agnostic by design. The owning workspace
-    // is looked up per output chunk via `workspaceIdForTerminal`. The cost
-    // is O(active-workspaces) per chunk — fine in practice since the user
-    // rarely has more than a handful of workspaces open at once.
-    this.workspaces = new WorkspaceRegistry(
-      (sessionId, data) => {
-        const wsId = this.workspaceIdForTerminal(sessionId);
-        if (wsId === null) return;
-        sendNotification(this.ws, "terminal.data", {
-          sessionId,
-          workspaceId: wsId,
-          dataBase64: data.toString("base64"),
-        });
-      },
-      (sessionId, exitCode) => {
-        const wsId = this.workspaceIdForTerminal(sessionId);
-        sendNotification(this.ws, "terminal.exit", {
-          sessionId,
-          workspaceId: wsId, // may be null if the workspace was just closed
-          exitCode,
-        });
-      },
-    );
-
+  constructor(ws: WebSocket, deps: ConnectionDeps) {
+    this.ws = ws;
+    this.state = deps.state;
+    this.expectedToken = deps.expectedToken;
     this.register();
 
     ws.on("message", (raw) => {
       const text = typeof raw === "string" ? raw : raw.toString("utf8");
       this.handleRaw(text);
     });
+    // Critical: socket close does NOT dispose any state. PTYs and workspaces
+    // keep running. We just unhook our notification fan-out target.
     ws.on("close", () => {
-      this.workspaces.disposeAll();
+      this.state.removeSubscriber(this);
     });
     ws.on("error", () => {
-      this.workspaces.disposeAll();
+      this.state.removeSubscriber(this);
     });
-  }
-
-  private workspaceIdForTerminal(sessionId: string): string | null {
-    for (const info of this.workspaces.listActive()) {
-      const ws = this.workspaces.get(info.id);
-      if (ws.terminals.has(sessionId)) return ws.id;
-    }
-    // Terminal already removed from its registry (e.g. exit fired during
-    // workspace close) — report null so callers can render best-effort.
-    return null;
   }
 
   private register(): void {
@@ -93,13 +61,12 @@ export class Connection {
 
     // ---- System ----
     // Heartbeat used by the client to detect silent NAT/carrier drops.
-    // Cheap by design — no allocations beyond the response object.
     this.methods.set("system.ping", () => ({ now: Date.now() }));
 
     // ---- Workspace ----
     this.methods.set("workspace.list", () => ({
-      active: this.workspaces.listActive(),
-      recents: this.workspaces.listRecents(),
+      active: this.state.workspaces.listActive(),
+      recents: this.state.workspaces.listRecents(),
     }));
     this.methods.set("workspace.open", async (params) => {
       const p = (params as
@@ -115,12 +82,12 @@ export class Connection {
         }
         activate = p.activate;
       }
-      const ws = await this.workspaces.open(p.root, { activate });
+      const ws = await this.state.workspaces.open(p.root, { activate });
       return { workspace: ws.info() };
     });
     this.methods.set("workspace.activate", (params) => {
       const id = (params as { id?: unknown } | undefined)?.id;
-      const ws = this.workspaces.activate(id);
+      const ws = this.state.workspaces.activate(id);
       return { workspace: ws.info() };
     });
     this.methods.set("workspace.close", (params) => {
@@ -128,25 +95,18 @@ export class Connection {
       if (typeof id !== "string") {
         throw new RpcError(RPC_ERR.invalidParams, "id required");
       }
-      this.workspaces.close(id);
-      // Tell the client too — this primarily exists for server-initiated
-      // closes on shutdown, but echoing it on user-initiated close keeps
-      // the client's reactive code paths uniform.
-      sendNotification(this.ws, "workspace.closed", { id });
+      this.state.workspaces.close(id);
+      // Broadcast to every subscriber, not just this connection. Two clients
+      // sharing the same backend both deserve to know the workspace is gone.
+      this.state.broadcastWorkspaceClosed(id);
       return {};
     });
     this.methods.set("workspace.current", () => {
-      const ws = this.workspaces.current();
+      const ws = this.state.workspaces.current();
       return { workspace: ws ? ws.info() : null };
     });
 
     // ---- Filesystem ----
-    // fs.listDir has two shapes:
-    //   { workspaceId, path }       — path must be inside that workspace
-    //   { path, picker: true }      — workspace-less, OS-scoped (picker only)
-    //
-    // Scope is asserted BEFORE any filesystem read, so requests outside a
-    // workspace fail without leaking existence info or paying for IO.
     this.methods.set("fs.listDir", async (params) => {
       const p = (params as
         | { workspaceId?: unknown; path?: unknown; picker?: unknown }
@@ -155,7 +115,7 @@ export class Connection {
         const { entries } = await listDirAt(p.path, null);
         return { entries };
       }
-      const ws = this.workspaces.requireById(p.workspaceId);
+      const ws = this.state.workspaces.requireById(p.workspaceId);
       const { entries } = await listDirAt(p.path, ws);
       return { entries };
     });
@@ -163,7 +123,7 @@ export class Connection {
       const p = (params as
         | { workspaceId?: unknown; path?: unknown }
         | undefined) ?? {};
-      const ws = this.workspaces.requireById(p.workspaceId);
+      const ws = this.state.workspaces.requireById(p.workspaceId);
       const { contentBase64, encoding } = await readFileAt(p.path, ws);
       return { contentBase64, encoding };
     });
@@ -178,7 +138,7 @@ export class Connection {
             cwd?: unknown;
           }
         | undefined) ?? {};
-      const ws = this.workspaces.requireById(p.workspaceId);
+      const ws = this.state.workspaces.requireById(p.workspaceId);
       const cols = typeof p.cols === "number" ? p.cols : 80;
       const rows = typeof p.rows === "number" ? p.rows : 24;
       const cwd =
@@ -228,29 +188,49 @@ export class Connection {
       if (p.workspaceId === undefined || p.workspaceId === null) {
         // No filter — return every session across every active workspace.
         const out: Array<unknown> = [];
-        for (const info of this.workspaces.listActive()) {
-          const ws = this.workspaces.get(info.id);
+        for (const info of this.state.workspaces.listActive()) {
+          const ws = this.state.workspaces.get(info.id);
           for (const t of ws.terminals.list()) {
             out.push({ ...t, workspaceId: ws.id });
           }
         }
         return { sessions: out };
       }
-      const ws = this.workspaces.requireById(p.workspaceId);
+      const ws = this.state.workspaces.requireById(p.workspaceId);
       return {
         sessions: ws.terminals
           .list()
           .map((t) => ({ ...t, workspaceId: ws.id })),
       };
     });
+    this.methods.set("terminal.history", (params) => {
+      const p = (params as
+        | { sessionId?: unknown; maxBytes?: unknown }
+        | undefined) ?? {};
+      if (typeof p.sessionId !== "string") {
+        throw new RpcError(RPC_ERR.invalidParams, "sessionId required");
+      }
+      let maxBytes: number | undefined;
+      if (p.maxBytes !== undefined && p.maxBytes !== null) {
+        if (!Number.isInteger(p.maxBytes) || (p.maxBytes as number) < 0) {
+          throw new RpcError(
+            RPC_ERR.invalidParams,
+            "maxBytes must be a non-negative int when provided",
+          );
+        }
+        maxBytes = p.maxBytes as number;
+      }
+      const ws = this.findWorkspaceOwning(p.sessionId);
+      return ws.terminals.history(p.sessionId, maxBytes);
+    });
   }
 
   private findWorkspaceOwning(sessionId: string): ActiveWorkspace {
-    for (const info of this.workspaces.listActive()) {
-      const ws = this.workspaces.get(info.id);
-      if (ws.terminals.has(sessionId)) return ws;
+    const ws = this.state.findSession(sessionId);
+    if (ws === null) {
+      throw new RpcError(RPC_ERR.invalidParams, `no such session: ${sessionId}`);
     }
-    throw new RpcError(RPC_ERR.invalidParams, `no such session: ${sessionId}`);
+    return ws;
   }
 
   private async handleRaw(raw: string): Promise<void> {
@@ -296,7 +276,7 @@ export class Connection {
       setImmediate(() => this.ws.close(1008, "auth"));
       throw new RpcError(RPC_ERR.unauthorized, "missing or invalid token");
     }
-    if (p.token !== this.deps.expectedToken) {
+    if (p.token !== this.expectedToken) {
       setImmediate(() => this.ws.close(1008, "auth"));
       throw new RpcError(RPC_ERR.unauthorized, "token mismatch");
     }
@@ -310,13 +290,18 @@ export class Connection {
       );
     }
     this.authed = true;
+    // Register as a subscriber only after auth succeeds; pre-auth sockets
+    // must never receive notifications.
+    this.state.addSubscriber(this);
     return {
       ok: true,
       serverVersion: SERVER_VERSION,
       protocolVersion: PROTOCOL_VERSION,
-      // The Flutter picker uses this as the initial directory. The phone's
-      // own $HOME is meaningless on the backend, so the client must use ours.
       defaultCwd: process.env.HOME ?? "/",
     };
   }
 }
+
+// Notification helpers — kept exported because the smoke script and tests
+// occasionally use them for assertions when wired against a real connection.
+export { sendNotification };
