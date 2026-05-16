@@ -191,10 +191,67 @@ class _TerminalView extends StatefulWidget {
 class _TerminalViewState extends State<_TerminalView> {
   final TerminalController _ctrl = TerminalController();
 
+  /// Sticky-modifier state. When armed, the next keystroke routed through
+  /// the Terminal's onOutput (soft keyboard or toolbar) has Ctrl applied,
+  /// then auto-disarms. Termux-style.
+  bool _ctrlArmed = false;
+  void Function(String)? _origOnOutput;
+
+  @override
+  void initState() {
+    super.initState();
+    _origOnOutput = widget.terminal.onOutput;
+    widget.terminal.onOutput = _onOutputProxy;
+  }
+
   @override
   void dispose() {
+    // Be defensive: only restore if we're still the installed proxy. If
+    // some other layer rewired onOutput between init and now, leave it
+    // alone — touching it would clobber their handler.
+    if (widget.terminal.onOutput == _onOutputProxy) {
+      widget.terminal.onOutput = _origOnOutput;
+    }
     _ctrl.dispose();
     super.dispose();
+  }
+
+  /// Intercepts every byte heading to the PTY. When Ctrl is armed, swap
+  /// a single ASCII letter / [\]^_ / ? for its control byte and disarm.
+  /// Multi-byte sequences (escape codes from arrow toolbar buttons, etc.)
+  /// pass through — the toolbar path already applied ctrl via keyInput.
+  void _onOutputProxy(String data) {
+    if (_ctrlArmed) {
+      final transformed = _ctrlMaybeTransform(data);
+      _origOnOutput?.call(transformed);
+      if (mounted) setState(() => _ctrlArmed = false);
+      return;
+    }
+    _origOnOutput?.call(data);
+  }
+
+  String _ctrlMaybeTransform(String data) {
+    if (data.length != 1) return data;
+    final c = data.codeUnitAt(0);
+    // A-Z / a-z → 0x01-0x1a
+    if (c >= 0x41 && c <= 0x5a) return String.fromCharCode(c - 0x40);
+    if (c >= 0x61 && c <= 0x7a) return String.fromCharCode(c - 0x60);
+    // [ \ ] ^ _ → 0x1b-0x1f
+    if (c >= 0x5b && c <= 0x5f) return String.fromCharCode(c - 0x40);
+    // ? → 0x7f (DEL), matches Termux / typical xterm behavior.
+    if (c == 0x3f) return String.fromCharCode(0x7f);
+    return data;
+  }
+
+  void _toggleCtrl() {
+    setState(() => _ctrlArmed = !_ctrlArmed);
+  }
+
+  void _sendKey(TerminalKey key) {
+    widget.terminal.keyInput(key, ctrl: _ctrlArmed);
+    if (_ctrlArmed && mounted) {
+      setState(() => _ctrlArmed = false);
+    }
   }
 
   @override
@@ -209,7 +266,11 @@ class _TerminalViewState extends State<_TerminalView> {
             backgroundOpacity: 1.0,
           ),
         ),
-        _KeyToolbar(terminal: widget.terminal),
+        _KeyToolbar(
+          ctrlArmed: _ctrlArmed,
+          onCtrl: _toggleCtrl,
+          onKey: _sendKey,
+        ),
       ],
     );
   }
@@ -217,25 +278,17 @@ class _TerminalViewState extends State<_TerminalView> {
 
 /// Soft-keyboard companion: a horizontally scrollable strip of keys the
 /// Android soft keyboard doesn't surface easily — Esc, Tab, arrows, Home,
-/// End — plus a Ctrl popover that sends `Ctrl+<letter>` on selection.
+/// End. Ctrl is a sticky modifier; tap once to arm, the next key
+/// (toolbar or soft keyboard) applies Ctrl and auto-disarms.
 class _KeyToolbar extends StatelessWidget {
-  final Terminal terminal;
-  const _KeyToolbar({required this.terminal});
-
-  void _send(TerminalKey key) {
-    terminal.keyInput(key);
-  }
-
-  Future<void> _pickCtrl(BuildContext context) async {
-    final code = await showModalBottomSheet<int>(
-      context: context,
-      showDragHandle: true,
-      builder: (ctx) => const _CtrlPicker(),
-    );
-    if (code != null) {
-      terminal.charInput(code, ctrl: true);
-    }
-  }
+  final bool ctrlArmed;
+  final VoidCallback onCtrl;
+  final void Function(TerminalKey) onKey;
+  const _KeyToolbar({
+    required this.ctrlArmed,
+    required this.onCtrl,
+    required this.onKey,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -249,18 +302,22 @@ class _KeyToolbar extends StatelessWidget {
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
             children: [
-              _KeyBtn(label: 'Esc', onTap: () => _send(TerminalKey.escape)),
-              _KeyBtn(label: 'Tab', onTap: () => _send(TerminalKey.tab)),
-              _KeyBtn(label: 'Ctrl', onTap: () => _pickCtrl(context)),
-              _KeyBtn(label: '←', onTap: () => _send(TerminalKey.arrowLeft)),
-              _KeyBtn(label: '→', onTap: () => _send(TerminalKey.arrowRight)),
-              _KeyBtn(label: '↑', onTap: () => _send(TerminalKey.arrowUp)),
-              _KeyBtn(label: '↓', onTap: () => _send(TerminalKey.arrowDown)),
-              _KeyBtn(label: 'Home', onTap: () => _send(TerminalKey.home)),
-              _KeyBtn(label: 'End', onTap: () => _send(TerminalKey.end)),
-              _KeyBtn(label: 'PgUp', onTap: () => _send(TerminalKey.pageUp)),
-              _KeyBtn(label: 'PgDn', onTap: () => _send(TerminalKey.pageDown)),
-              _KeyBtn(label: 'Del', onTap: () => _send(TerminalKey.delete)),
+              _KeyBtn(label: 'Esc', onTap: () => onKey(TerminalKey.escape)),
+              _KeyBtn(label: 'Tab', onTap: () => onKey(TerminalKey.tab)),
+              _KeyBtn(
+                label: 'Ctrl',
+                onTap: onCtrl,
+                highlighted: ctrlArmed,
+              ),
+              _KeyBtn(label: '←', onTap: () => onKey(TerminalKey.arrowLeft)),
+              _KeyBtn(label: '→', onTap: () => onKey(TerminalKey.arrowRight)),
+              _KeyBtn(label: '↑', onTap: () => onKey(TerminalKey.arrowUp)),
+              _KeyBtn(label: '↓', onTap: () => onKey(TerminalKey.arrowDown)),
+              _KeyBtn(label: 'Home', onTap: () => onKey(TerminalKey.home)),
+              _KeyBtn(label: 'End', onTap: () => onKey(TerminalKey.end)),
+              _KeyBtn(label: 'PgUp', onTap: () => onKey(TerminalKey.pageUp)),
+              _KeyBtn(label: 'PgDn', onTap: () => onKey(TerminalKey.pageDown)),
+              _KeyBtn(label: 'Del', onTap: () => onKey(TerminalKey.delete)),
             ],
           ),
         ),
@@ -272,69 +329,40 @@ class _KeyToolbar extends StatelessWidget {
 class _KeyBtn extends StatelessWidget {
   final String label;
   final VoidCallback onTap;
-  const _KeyBtn({required this.label, required this.onTap});
+  final bool highlighted;
+  const _KeyBtn({
+    required this.label,
+    required this.onTap,
+    this.highlighted = false,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final padding = const EdgeInsets.symmetric(horizontal: 12);
+    final minSize = const Size(40, 36);
+    final density = VisualDensity.compact;
+    final text = Text(label, style: const TextStyle(fontSize: 13));
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 3),
-      child: OutlinedButton(
-        onPressed: onTap,
-        style: OutlinedButton.styleFrom(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          visualDensity: VisualDensity.compact,
-          minimumSize: const Size(40, 36),
-        ),
-        child: Text(label, style: const TextStyle(fontSize: 13)),
-      ),
-    );
-  }
-}
-
-/// Ctrl modifier picker. xterm.dart's charInput maps lowercase a-z to
-/// control bytes 0x01-0x1a, and [/\\/]/^/_ to 0x1b-0x1f. We display
-/// uppercase letters and the symbol set; pop the code point back.
-class _CtrlPicker extends StatelessWidget {
-  const _CtrlPicker();
-
-  @override
-  Widget build(BuildContext context) {
-    final letters = [
-      for (var c = 0x61; c <= 0x7a; c++) c,
-    ];
-    final symbols = <int>[0x5b, 0x5c, 0x5d, 0x5e, 0x5f]; // [ \ ] ^ _
-    return SafeArea(
-      top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Padding(
-              padding: EdgeInsets.only(bottom: 8),
-              child: Text('Send Ctrl + …',
-                  style: TextStyle(fontWeight: FontWeight.w600)),
+      child: highlighted
+          ? FilledButton(
+              onPressed: onTap,
+              style: FilledButton.styleFrom(
+                padding: padding,
+                visualDensity: density,
+                minimumSize: minSize,
+              ),
+              child: text,
+            )
+          : OutlinedButton(
+              onPressed: onTap,
+              style: OutlinedButton.styleFrom(
+                padding: padding,
+                visualDensity: density,
+                minimumSize: minSize,
+              ),
+              child: text,
             ),
-            Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: [
-                for (final code in letters)
-                  ActionChip(
-                    label: Text(String.fromCharCode(code - 0x20)),
-                    onPressed: () => Navigator.of(context).pop(code),
-                  ),
-                for (final code in symbols)
-                  ActionChip(
-                    label: Text(String.fromCharCode(code)),
-                    onPressed: () => Navigator.of(context).pop(code),
-                  ),
-              ],
-            ),
-          ],
-        ),
-      ),
     );
   }
 }
