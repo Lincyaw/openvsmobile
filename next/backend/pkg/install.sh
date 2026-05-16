@@ -1,0 +1,413 @@
+#!/usr/bin/env bash
+# Install or upgrade the openvsmobile-next backend as a systemd --user
+# service. Intended to be either curl-piped from a release URL or fed
+# via stdin over an SSH bootstrap.
+#
+# stdout contract: on success, exactly ONE line of JSON:
+#   {"port":N,"token":"...","version":"X.Y.Z","linger":true|false}
+# Everything else (progress, warnings, errors) is on stderr.
+
+set -euo pipefail
+
+# ----- defaults / constants -----
+REPO_SLUG="Lincyaw/openvsmobile"
+SHARE_ROOT="$HOME/.local/share/openvsmobile"
+STATE_DIR="$HOME/.local/state/openvsmobile-next"
+RUNTIME_INFO="$STATE_DIR/runtime.json"
+CACHE_DIR="$HOME/.cache/openvsmobile"
+UNIT_PATH="$HOME/.config/systemd/user/openvsmobile.service"
+SERVICE_NAME="openvsmobile.service"
+POLL_TIMEOUT_SECS=10
+
+# ----- usage -----
+usage() {
+  cat <<'EOF'
+Usage: install.sh <version> [--tarball <path>] [--dry-run-systemd] [--force]
+
+Args:
+  version       Release version without leading 'v' (e.g. 0.1.0).
+                When --tarball is omitted, the tarball is downloaded from
+                https://github.com/Lincyaw/openvsmobile/releases/download/v<version>/
+
+Flags:
+  --tarball <path>      Use a local tarball instead of downloading.
+                        The matching .sha256 must sit next to it.
+  --dry-run-systemd     Print the unit file to stderr, skip
+                        daemon-reload / enable / start. Spawns a sandboxed
+                        backend (HOME=mktemp) so it never touches the real
+                        ~/.config/openvsmobile-next/ or ~/.local/state/.
+                        Refuses to run if the real service is currently
+                        active (use --force to override).
+  --force               With --dry-run-systemd: proceed even when the real
+                        service is active. Otherwise no effect.
+  -h, --help            Show this help.
+
+Exit codes:
+  0   success
+  1   generic failure (e.g. backend never wrote runtime.json)
+  2   argument error
+  3   target not found (e.g. release tarball 404)
+  5   conflict (e.g. dry-run requested while real service is active)
+  7   missing dependency or unsupported environment
+
+On success, stdout is exactly one JSON line:
+  {"port":N,"token":"...","version":"X.Y.Z","linger":true|false}
+EOF
+}
+
+# ----- helpers -----
+log() { printf '[install] %s\n' "$*" >&2; }
+fatal() { printf '[install] error: %s\n' "${1:-unspecified error}" >&2; exit "${2:-1}"; }
+need() {
+  command -v "$1" >/dev/null 2>&1 || fatal "missing dependency: $1 (install it and retry)" 7
+}
+
+# ----- args -----
+VERSION=""
+TARBALL_OVERRIDE=""
+DRY_RUN_SYSTEMD=0
+FORCE=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --tarball)
+      [[ $# -ge 2 ]] || { usage >&2; fatal "--tarball requires a path" 2; }
+      TARBALL_OVERRIDE="$2"; shift 2 ;;
+    --dry-run-systemd)
+      DRY_RUN_SYSTEMD=1; shift ;;
+    --force)
+      FORCE=1; shift ;;
+    -*)
+      usage >&2; fatal "unknown flag: $1" 2 ;;
+    *)
+      if [[ -z "$VERSION" ]]; then
+        VERSION="$1"; shift
+      else
+        usage >&2; fatal "unexpected positional argument: $1" 2
+      fi
+      ;;
+  esac
+done
+
+[[ -n "$VERSION" ]] || { usage >&2; fatal "missing <version>" 2; }
+# Strip an accidental leading 'v' to be forgiving.
+VERSION="${VERSION#v}"
+INSTALL_DIR="$SHARE_ROOT/v$VERSION"
+CURRENT_LINK="$SHARE_ROOT/current"
+
+# ----- detect arch -----
+RAW_ARCH="$(uname -m)"
+case "$RAW_ARCH" in
+  x86_64)  ARCH="x64"   ;;
+  aarch64) ARCH="arm64" ;;
+  *)
+    fatal "unsupported architecture: $RAW_ARCH (need x86_64 or aarch64)" 7
+    ;;
+esac
+log "arch: $ARCH ($RAW_ARCH)"
+
+# ----- check deps -----
+need curl
+need tar
+need sha256sum
+need file
+# systemctl in user mode — present on any systemd-based distro a non-root
+# user can use. We don't require root.
+if ! command -v systemctl >/dev/null 2>&1; then
+  fatal "missing dependency: systemctl (need systemd --user)" 7
+fi
+
+# ----- dry-run vs real-unit conflict guard (B4) -----
+if [[ "$DRY_RUN_SYSTEMD" -eq 1 ]] && [[ "$FORCE" -eq 0 ]]; then
+  if systemctl --user is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+    fatal "real $SERVICE_NAME is currently active; --dry-run-systemd would spawn a parallel backend (use --force to override)" 5
+  fi
+fi
+
+# ----- tarball acquisition -----
+TARBALL_NAME="openvsmobile-backend-linux-${ARCH}.tar.gz"
+SHA_NAME="${TARBALL_NAME}.sha256"
+
+mkdir -p "$CACHE_DIR"
+
+if [[ -n "$TARBALL_OVERRIDE" ]]; then
+  [[ -f "$TARBALL_OVERRIDE" ]] || fatal "tarball not found: $TARBALL_OVERRIDE" 3
+  TARBALL_PATH="$TARBALL_OVERRIDE"
+  SHA_PATH="${TARBALL_OVERRIDE}.sha256"
+  [[ -f "$SHA_PATH" ]] || fatal "matching sha256 not found: $SHA_PATH" 3
+  log "using local tarball: $TARBALL_PATH"
+else
+  RELEASE_BASE="https://github.com/${REPO_SLUG}/releases/download/v${VERSION}"
+  TARBALL_URL="$RELEASE_BASE/$TARBALL_NAME"
+  SHA_URL="$RELEASE_BASE/$SHA_NAME"
+  TARBALL_PATH="$CACHE_DIR/v${VERSION}-$TARBALL_NAME"
+  SHA_PATH="$CACHE_DIR/v${VERSION}-$SHA_NAME"
+
+  log "downloading $TARBALL_URL"
+  if ! curl -fL --retry 3 -o "$TARBALL_PATH.part" "$TARBALL_URL"; then
+    rm -f "$TARBALL_PATH.part"
+    fatal "failed to download tarball (release v$VERSION may not exist)" 3
+  fi
+  mv "$TARBALL_PATH.part" "$TARBALL_PATH"
+
+  log "downloading $SHA_URL"
+  if ! curl -fL --retry 3 -o "$SHA_PATH.part" "$SHA_URL"; then
+    rm -f "$SHA_PATH.part"
+    fatal "failed to download .sha256" 3
+  fi
+  mv "$SHA_PATH.part" "$SHA_PATH"
+fi
+
+# ----- verify checksum -----
+EXPECTED_HEX="$(awk '{print $1; exit}' "$SHA_PATH")"
+[[ -n "$EXPECTED_HEX" ]] || fatal "could not parse sha256 file: $SHA_PATH"
+ACTUAL_HEX="$(sha256sum "$TARBALL_PATH" | awk '{print $1}')"
+if [[ "$EXPECTED_HEX" != "$ACTUAL_HEX" ]]; then
+  fatal "sha256 mismatch: expected $EXPECTED_HEX, got $ACTUAL_HEX"
+fi
+log "sha256 verified: $ACTUAL_HEX"
+
+# ----- ELF arch verification of bundled .node files (M1) -----
+# Cross-target via npm_config_target_arch only redirects prebuild
+# downloads; node-pty has no linux prebuilds, so it falls back to
+# node-gyp rebuild against the BUILD host's toolchain. An x64 build host
+# producing an "arm64" tarball would silently embed an x86-64 .node and
+# crash on the target. Probe each native module before we commit to the
+# install.
+case "$ARCH" in
+  x64)   EXPECTED_ELF="x86-64" ;;
+  arm64) EXPECTED_ELF="aarch64" ;;
+esac
+
+PROBE_DIR="$(mktemp -d -t openvsmobile-probe.XXXXXX)"
+# shellcheck disable=SC2064  # we want $PROBE_DIR expanded now, not later
+trap "rm -rf '$PROBE_DIR'" EXIT
+tar -xzf "$TARBALL_PATH" -C "$PROBE_DIR"
+# Only inspect ELF binaries. node-pty's package ships `prebuilds/` dirs
+# for darwin and win32 too (Mach-O / PE32+ files); those are never loaded
+# on a linux host, so flagging their arch as "wrong" would be a false
+# positive. The real risk is a linux .node compiled by node-gyp against
+# the wrong toolchain, which lives at `node_modules/<pkg>/build/Release/*.node`.
+mapfile -d '' -t ALL_NODE_FILES < <(find "$PROBE_DIR" -name '*.node' -print0)
+ELF_NODE_FILES=()
+for nf in "${ALL_NODE_FILES[@]}"; do
+  if file -b "$nf" | grep -q '^ELF '; then
+    ELF_NODE_FILES+=("$nf")
+  fi
+done
+if [[ ${#ELF_NODE_FILES[@]} -eq 0 ]]; then
+  log "warn: no linux ELF .node files in tarball — node-gyp cross-compile likely failed silently"
+else
+  for nf in "${ELF_NODE_FILES[@]}"; do
+    desc="$(file -b "$nf")"
+    if ! grep -q "$EXPECTED_ELF" <<<"$desc"; then
+      fatal "native module $nf is not $EXPECTED_ELF (got: $desc); cross-compile produced a wrong-arch binary"
+    fi
+  done
+  log "verified ${#ELF_NODE_FILES[@]} linux native module(s) match $EXPECTED_ELF"
+fi
+
+# ----- stop running service BEFORE swapping anything (B1) -----
+# `systemctl --user enable --now` is a no-op when the service is already
+# active, so an upgrade flips `current` to a new tree while the old node
+# process keeps running. Worse, it might resolve some new files via the
+# symlink at runtime. Always stop first; ignore failures (unit may not be
+# loaded yet on a first install).
+if [[ "$DRY_RUN_SYSTEMD" -eq 0 ]]; then
+  if systemctl --user is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+    log "stopping running $SERVICE_NAME before upgrade"
+    systemctl --user stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+  fi
+fi
+
+# ----- extract (idempotent) -----
+mkdir -p "$SHARE_ROOT"
+
+EXISTING_VERSION_FILE="$INSTALL_DIR/openvsmobile-backend/VERSION"
+if [[ -f "$EXISTING_VERSION_FILE" ]]; then
+  EXISTING="$(head -n1 "$EXISTING_VERSION_FILE" || true)"
+  if [[ "$EXISTING" == "$VERSION" ]]; then
+    log "already installed at $INSTALL_DIR (VERSION=$EXISTING), skipping extraction"
+  else
+    # Now safe to wipe: the service is stopped (we did that above) so the
+    # node process isn't holding open files in this tree.
+    log "stale install dir ($EXISTING != $VERSION); reinstalling"
+    rm -rf "$INSTALL_DIR"
+  fi
+fi
+
+if [[ ! -f "$EXISTING_VERSION_FILE" ]]; then
+  log "extracting to $INSTALL_DIR"
+  mkdir -p "$INSTALL_DIR"
+  tar -xzf "$TARBALL_PATH" -C "$INSTALL_DIR"
+fi
+
+BUNDLE_DIR="$INSTALL_DIR/openvsmobile-backend"
+LAUNCH_SCRIPT="$BUNDLE_DIR/launch.sh"
+[[ -x "$LAUNCH_SCRIPT" ]] || fatal "launch.sh missing or not executable at $LAUNCH_SCRIPT"
+
+# ----- atomic symlink current -> install dir -----
+TMP_LINK="$SHARE_ROOT/.current.tmp.$$"
+ln -snf "$INSTALL_DIR" "$TMP_LINK"
+mv -Tf "$TMP_LINK" "$CURRENT_LINK"
+log "current -> $INSTALL_DIR"
+
+# ----- write systemd unit -----
+mkdir -p "$(dirname "$UNIT_PATH")"
+UNIT_CONTENT=$(cat <<UNIT
+[Unit]
+Description=openvsmobile backend
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/openvsmobile/current/openvsmobile-backend/launch.sh
+Environment=PORT=0
+Environment=NODE_ENV=production
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+UNIT
+)
+
+# Track LINGER for the JSON-emit step regardless of branch.
+LINGER=false
+
+if [[ "$DRY_RUN_SYSTEMD" -eq 1 ]]; then
+  log "--- BEGIN unit (dry-run) ---"
+  printf '%s\n' "$UNIT_CONTENT" >&2
+  log "--- END unit (dry-run) ---"
+  log "dry-run: skipping daemon-reload/enable/start"
+
+  # Sandbox the spawned backend so it never touches the real
+  # ~/.config/openvsmobile-next/ or ~/.local/state/openvsmobile-next/.
+  # config.ts uses homedir() directly, so the only reliable lever is HOME.
+  DRY_HOME="$(mktemp -d -t openvsmobile-dryrun-home.XXXXXX)"
+  DRY_RUNTIME="$DRY_HOME/.local/state/openvsmobile-next/runtime.json"
+  mkdir -p "$(dirname "$DRY_RUNTIME")"
+  # Compose a single EXIT trap that reaps the child AND tears down the
+  # tempdir + the earlier $PROBE_DIR trap target.
+  # shellcheck disable=SC2064  # intentional eager expansion
+  trap "[[ -n \${BG_PID:-} ]] && kill -TERM \"\$BG_PID\" 2>/dev/null || true; wait \"\${BG_PID:-}\" 2>/dev/null || true; rm -rf '$PROBE_DIR' '$DRY_HOME'" EXIT
+
+  log "spawning sandboxed backend (HOME=$DRY_HOME, runtime=$DRY_RUNTIME)"
+  (
+    cd "$BUNDLE_DIR"
+    HOME="$DRY_HOME" \
+    PORT=0 \
+    NODE_ENV=production \
+    OPENVSMOBILE_RUNTIME_INFO_PATH="$DRY_RUNTIME" \
+      exec "$LAUNCH_SCRIPT"
+  ) >"$DRY_HOME/.backend.log" 2>&1 &
+  BG_PID=$!
+  # From here on the poll loop reads from $DRY_RUNTIME instead of the
+  # real $RUNTIME_INFO.
+  POLL_TARGET="$DRY_RUNTIME"
+else
+  log "writing unit file: $UNIT_PATH"
+  printf '%s\n' "$UNIT_CONTENT" > "$UNIT_PATH"
+
+  # Enable lingering so the service survives logout (and starts at boot).
+  # Linger requires either root or a polkit policy that permits the user.
+  # We do NOT fail the install if this is denied — surface it in the
+  # final JSON instead so the caller knows the service is session-bound.
+  if loginctl enable-linger "$USER" >/dev/null 2>&1; then
+    LINGER=true
+    log "linger enabled for $USER"
+  else
+    log "warn: could not enable linger (non-root SSH without polkit?); service is session-bound"
+  fi
+
+  # Wipe any stale runtime.json from the previous version BEFORE start,
+  # so the poll loop's "file appeared" signal unambiguously means "the new
+  # process wrote it" (B2).
+  rm -f "$RUNTIME_INFO"
+
+  systemctl --user daemon-reload
+  systemctl --user enable --now "$SERVICE_NAME" >/dev/null
+  log "systemd unit enabled and started"
+  POLL_TARGET="$RUNTIME_INFO"
+fi
+
+# ----- poll runtime.json -----
+log "waiting for $POLL_TARGET (up to ${POLL_TIMEOUT_SECS}s)"
+deadline=$(( $(date +%s) + POLL_TIMEOUT_SECS ))
+while [[ ! -f "$POLL_TARGET" ]]; do
+  if (( $(date +%s) >= deadline )); then
+    if [[ "$DRY_RUN_SYSTEMD" -eq 1 ]]; then
+      log "diagnostic backend log:"
+      sed -e 's/^/  /' "$DRY_HOME/.backend.log" >&2 || true
+      fatal "backend did not write $POLL_TARGET within ${POLL_TIMEOUT_SECS}s (dry-run)"
+    fi
+    log "diagnostic: 'systemctl --user status openvsmobile' may explain why"
+    fatal "backend did not write $POLL_TARGET within ${POLL_TIMEOUT_SECS}s"
+  fi
+  sleep 0.2
+done
+
+# ----- parse + emit single JSON line on stdout -----
+# Prefer python3 — it can both parse the input and emit canonical JSON in
+# one shot, avoiding any `read`/IFS round-trip that would break tokens
+# containing whitespace (M4).
+emit_via_python() {
+  python3 - "$POLL_TARGET" "$VERSION" "$LINGER" <<'PY'
+import json, sys
+runtime_path, expected_version, linger = sys.argv[1:4]
+with open(runtime_path) as f:
+    d = json.load(f)
+got_version = d.get("version")
+if got_version != expected_version:
+    sys.stderr.write(
+        f"[install] error: stale runtime info: file reports version "
+        f"{got_version!r}, installer expects {expected_version!r}\n"
+    )
+    sys.exit(1)
+out = {
+    "port": int(d["port"]),
+    "token": d["token"],
+    "version": d["version"],
+    "linger": linger == "true",
+}
+print(json.dumps(out, separators=(",", ":")))
+PY
+}
+
+emit_via_fallback() {
+  # No python3 available. Hand-parse the three fields.
+  local port token got_version safe_token linger_bool
+  port="$(grep -E '"port"[[:space:]]*:' "$POLL_TARGET" | head -n1 | sed -E 's/.*"port"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/')"
+  token="$(grep -E '"token"[[:space:]]*:' "$POLL_TARGET" | head -n1 | sed -E 's/.*"token"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
+  got_version="$(grep -E '"version"[[:space:]]*:' "$POLL_TARGET" | head -n1 | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
+  [[ -n "$port" && -n "$token" && -n "$got_version" ]] \
+    || { fatal "could not parse $POLL_TARGET"; }
+  if [[ "$got_version" != "$VERSION" ]]; then
+    fatal "stale runtime info: file reports version '$got_version', installer expects '$VERSION'"
+  fi
+  # Hand-rolled emit only handles tokens drawn from a narrow alphabet —
+  # the auto-generated tokens are 48 hex chars (see src/config.ts). If
+  # the user injected an arbitrary OPENVSMOBILE_TOKEN that contains
+  # characters outside [A-Za-z0-9_-], refuse rather than emit malformed
+  # JSON. The python path above handles the general case; install python3
+  # to lift this restriction.
+  if [[ ! "$token" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    fatal "OPENVSMOBILE_TOKEN contains characters that the fallback JSON emitter cannot safely quote; install python3 or use a hex/alphanumeric token"
+  fi
+  if [[ "$LINGER" == "true" ]]; then linger_bool=true; else linger_bool=false; fi
+  printf '{"port":%s,"token":"%s","version":"%s","linger":%s}\n' \
+    "$port" "$token" "$got_version" "$linger_bool"
+}
+
+if command -v python3 >/dev/null 2>&1; then
+  if ! emit_via_python; then
+    fatal "runtime.json failed validation (see above)"
+  fi
+else
+  emit_via_fallback
+fi
+
+log "installed successfully (version=$VERSION, linger=$LINGER)"

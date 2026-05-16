@@ -6,10 +6,18 @@
 // §5.1.
 
 import { createServer } from "node:http";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { resolveToken } from "./config.js";
 import { Connection } from "./connection.js";
 import { ProcessState } from "./state.js";
+import {
+  runtimeInfoPath,
+  unlinkRuntimeInfo,
+  writeRuntimeInfo,
+} from "./runtimeInfo.js";
 
 const DEFAULT_PORT = 7860;
 
@@ -17,15 +25,34 @@ function parsePort(): number {
   const raw = process.env.PORT;
   if (!raw) return DEFAULT_PORT;
   const n = Number(raw);
-  if (!Number.isInteger(n) || n < 1 || n > 65535) {
+  // PORT=0 means "ask the OS for a free port" — supported so install.sh can
+  // let the kernel pick and then read the actual bound port out of
+  // runtime.json.
+  if (!Number.isInteger(n) || n < 0 || n > 65535) {
     throw new Error(`invalid PORT: ${raw}`);
   }
   return n;
 }
 
+function readPackageVersion(): string {
+  // Resolve package.json relative to this source file so it works under
+  // both `tsx src/index.ts` (cwd may be anywhere) and compiled
+  // `node dist/index.js` (running from the install dir).
+  const here = dirname(fileURLToPath(import.meta.url));
+  // dist/index.js → ../package.json; src/index.ts → ../package.json.
+  const pkgPath = join(here, "..", "package.json");
+  const raw = readFileSync(pkgPath, "utf8");
+  const parsed = JSON.parse(raw) as { version?: unknown };
+  if (typeof parsed.version !== "string" || parsed.version.length === 0) {
+    throw new Error(`package.json missing string "version" field`);
+  }
+  return parsed.version;
+}
+
 async function main(): Promise<void> {
   const port = parsePort();
   const { token, source } = resolveToken();
+  const version = readPackageVersion();
 
   const state = new ProcessState();
 
@@ -45,13 +72,34 @@ async function main(): Promise<void> {
     new Connection(ws, { expectedToken: token, state });
   });
 
+  let runtimeFile: string | null = null;
   httpServer.listen(port, () => {
+    const addr = httpServer.address();
+    const boundPort =
+      typeof addr === "object" && addr !== null ? addr.port : port;
     console.error(
-      `[openvsmobile-next] listening on 0.0.0.0:${port} (ws path: /rpc)`,
+      `[openvsmobile-next] listening on 0.0.0.0:${boundPort} (ws path: /rpc)`,
     );
+    // Never log the token. It's exposed through runtime.json (mode 0600).
     console.error(`[openvsmobile-next] token source: ${source}`);
-    if (source !== "env") {
-      console.error(`[openvsmobile-next] token: ${token}`);
+    try {
+      runtimeFile = writeRuntimeInfo({
+        schema: 1,
+        pid: process.pid,
+        port: boundPort,
+        token,
+        startedAt: new Date().toISOString(),
+        version,
+      });
+      console.error(`[openvsmobile-next] runtime info: ${runtimeFile}`);
+    } catch (err) {
+      // If we can't write the runtime file, the wrapper has no way to learn
+      // our port — but a running backend is still useful to a client that
+      // already knows the token. Log loudly and continue.
+      console.error(
+        `[openvsmobile-next] WARN: failed to write runtime info at ${runtimeInfoPath()}:`,
+        err,
+      );
     }
   });
 
@@ -68,6 +116,9 @@ async function main(): Promise<void> {
     } catch (err) {
       console.error("[openvsmobile-next] shutdown error:", err);
     }
+    // Best-effort unlink — if the file is already gone (or was never
+    // written), we don't block shutdown on it.
+    unlinkRuntimeInfo();
     wss.close();
     httpServer.close(() => process.exit(0));
     setTimeout(() => process.exit(1), 3000).unref();
