@@ -45,7 +45,7 @@ export async function git(cwd: string, args: string[]): Promise<string> {
 export async function writeWorkspaceFile(
   root: string,
   relPath: string,
-  content: string,
+  content: string | Uint8Array,
 ): Promise<void> {
   const abs = join(root, relPath);
   const parent = abs.substring(0, abs.lastIndexOf("/"));

@@ -16,8 +16,18 @@ import type { WebSocket } from "ws";
 import { randomUUID } from "node:crypto";
 import { listDirAt, readFileAt, type ActiveWorkspace } from "./workspace.js";
 import type { ProcessState, Subscriber } from "./state.js";
-import { diffKind, readLog, runDiff } from "./git.js";
-import { parseUnifiedDiff } from "./diffParser.js";
+import {
+  hashWorkingFile,
+  indexBlobSha,
+  pathInIndex,
+  pathInTree,
+  readLog,
+  resolveRef,
+  runDiffArgs,
+} from "./git.js";
+import { parseUnifiedDiff, type DiffHunk } from "./diffParser.js";
+import { stat as fsStat } from "node:fs/promises";
+import { join as pathJoin } from "node:path";
 
 // -------- 1. Wire types + error catalog --------
 
@@ -438,32 +448,69 @@ methods.set("git.diff", async (ctx, params) => {
   const p = asBag(params);
   const ws = ctx.state.workspaces.requireById(p.workspaceId);
   const path = requireString(p, "path");
-  const baseSha = optionalString(p, "baseSha");
-  const workingHash = optionalString(p, "workingHash");
-  // Cache lookup. Two requests with the same key short-circuit the spawn.
-  const cacheKey = makeDiffCacheKey(ws.id, path, baseSha, workingHash);
-  const cached = ctx.state.diffCache.get(cacheKey);
+  const base = optionalString(p, "base") ?? "HEAD";
+  // `head` is allowed to be explicitly null (working tree) or a string (ref
+  // / "INDEX"). Missing param is treated as null per the protocol default.
+  const headParam = p.head;
+  if (
+    headParam !== undefined &&
+    headParam !== null &&
+    typeof headParam !== "string"
+  ) {
+    throw new RpcError(
+      RPC_ERR.invalidParams,
+      "head must be a string or null when provided",
+    );
+  }
+  const head: string | null =
+    headParam === undefined || headParam === null
+      ? null
+      : (headParam as string);
+
+  // Existence pre-check. A path that has never lived anywhere (working tree,
+  // index, or either ref's tree) is a caller bug — surface invalidParams
+  // rather than silently returning an empty diff.
+  await assertPathExists(ws.root, path, base, head);
+
+  const baseSha = await resolveBaseSha(ws.root, base, path);
+  const headSha = await resolveHeadSha(ws.root, head, path);
+  // Content-addressed cache key (first principle #3). Two callers asking
+  // for the same (workspace, path, baseSha, headSha) get the same patch
+  // byte-for-byte, so a second resolve short-circuits the git spawn.
+  const cacheKey = `${ws.id} ${path} ${baseSha} ${headSha}`;
+  const cached = ctx.state.diffCache.get(cacheKey) as GitDiffResult | undefined;
   if (cached !== undefined) return cached;
 
-  const kind = await diffKind(ws.root, path, baseSha);
-  let result: unknown;
-  if (kind === "binary") {
-    result = { kind: "binary", meta: { path } };
-  } else if (kind === "deleted") {
-    result = { kind: "deleted", meta: { path } };
-  } else if (kind === "absent") {
-    // No diff to compute — treat as text with zero hunks for the caller.
-    result = { kind: "text", hunks: [] };
-  } else {
-    const { stdout, tooLarge } = await runDiff(ws.root, path, baseSha);
-    if (tooLarge || stdout.length > DIFF_TEXT_LIMIT_BYTES) {
-      result = {
-        kind: "too-large",
-        meta: { path, sizeBytes: stdout.length || -1 },
-      };
-    } else {
-      result = { kind: "text", hunks: parseUnifiedDiff(stdout) };
-    }
+  const selectorArgs = buildDiffSelectorArgs(base, head);
+  const { stdout, tooLarge: bufferOverflow } = await runDiffArgs(
+    ws.root,
+    selectorArgs,
+    path,
+  );
+
+  // Binary detection. Git auto-detects and emits a literal
+  //   `Binary files a/x and b/x differ`
+  // line inside the patch when the blob has NUL bytes. The marker can show
+  // up at the start of stdout (no `diff --git` preamble in some shapes) or
+  // after it; scanning the body covers every permutation.
+  const isBinary = /(^|\n)Binary files .* and .* differ\n?/.test(stdout);
+
+  const overSize = stdout.length > DIFF_TEXT_LIMIT_BYTES;
+  const tooLarge = bufferOverflow || overSize;
+
+  let hunks: WireHunk[] = [];
+  if (!isBinary && !tooLarge) {
+    hunks = toWireHunks(parseUnifiedDiff(stdout));
+  }
+
+  const result: GitDiffResult = {
+    hunks,
+    baseSha,
+    headSha,
+    isBinary,
+  };
+  if (tooLarge) {
+    result.tooLarge = true;
   }
   ctx.state.diffCache.set(cacheKey, result);
   return result;
@@ -478,19 +525,148 @@ methods.set("git.log", async (ctx, params) => {
   return readLog(ws.root, { limit, path, beforeSha });
 });
 
-// Cap unified-diff text at 500KB. Beyond that we surface a `too-large` kind
-// rather than ship a megabyte of patch over a phone link. The cap is
-// intentionally lower than git's own maxBuffer (8 MiB) so the wire payload
-// stays bounded even when git is happy to keep going.
+// Cap unified-diff text at 500 KiB. Beyond that we surface `tooLarge: true`
+// rather than ship the patch over a phone link. The cap matches design-doc
+// section 2.2 (binary / >500KB / deleted files render an explanatory
+// placeholder, not the diff); it is intentionally lower than git's own
+// maxBuffer (8 MiB) so the wire payload stays bounded even when git is happy
+// to keep going.
 const DIFF_TEXT_LIMIT_BYTES = 500 * 1024;
 
-function makeDiffCacheKey(
-  workspaceId: string,
+/// Wire-shape hunk. Narrows DiffParser's DiffLine.kind to the three values
+/// the protocol commits to. Internal `noNewline` markers are dropped at the
+/// RPC boundary.
+interface WireHunk {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  header: string;
+  lines: { kind: "context" | "add" | "del"; text: string }[];
+}
+
+interface GitDiffResult {
+  hunks: WireHunk[];
+  baseSha: string;
+  headSha: string;
+  isBinary: boolean;
+  tooLarge?: true;
+}
+
+/// Sentinel returned in `baseSha` / `headSha` when the slot has no real blob
+/// to point at: deleted working-tree file, or `INDEX` for a path not in the
+/// index. 40 chars so the wire field is always a fixed-width SHA-like
+/// string.
+const ZERO_SHA = "0000000000000000000000000000000000000000";
+
+/// Translate (base, head) into the args that go AFTER `git diff` and BEFORE
+/// the pathspec. Throws invalidParams for nonsensical combinations.
+function buildDiffSelectorArgs(base: string, head: string | null): string[] {
+  if (head === null) {
+    if (base === "INDEX") {
+      // Bare `git diff -- <path>` = index to working tree.
+      return [];
+    }
+    return [base];
+  }
+  if (head === "INDEX") {
+    if (base === "INDEX") {
+      throw new RpcError(
+        RPC_ERR.invalidParams,
+        "base and head cannot both be INDEX",
+      );
+    }
+    return ["--cached", base];
+  }
+  if (base === "INDEX") {
+    throw new RpcError(
+      RPC_ERR.invalidParams,
+      "INDEX as base only supported with head=null or head=INDEX",
+    );
+  }
+  return [base, head];
+}
+
+async function resolveBaseSha(
+  cwd: string,
+  base: string,
   path: string,
-  baseSha: string | undefined,
-  workingHash: string | undefined,
-): string {
-  return `${workspaceId} ${path} ${baseSha ?? "WT"} ${workingHash ?? ""}`;
+): Promise<string> {
+  if (base === "INDEX") {
+    return (await indexBlobSha(cwd, path)) ?? ZERO_SHA;
+  }
+  const sha = await resolveRef(cwd, base);
+  if (sha === null) {
+    throw new RpcError(
+      RPC_ERR.invalidParams,
+      `cannot resolve base ref: ${base}`,
+    );
+  }
+  return sha;
+}
+
+async function resolveHeadSha(
+  cwd: string,
+  head: string | null,
+  path: string,
+): Promise<string> {
+  if (head === null) {
+    return (await hashWorkingFile(cwd, path)) ?? ZERO_SHA;
+  }
+  if (head === "INDEX") {
+    return (await indexBlobSha(cwd, path)) ?? ZERO_SHA;
+  }
+  const sha = await resolveRef(cwd, head);
+  if (sha === null) {
+    throw new RpcError(
+      RPC_ERR.invalidParams,
+      `cannot resolve head ref: ${head}`,
+    );
+  }
+  return sha;
+}
+
+async function assertPathExists(
+  cwd: string,
+  path: string,
+  base: string,
+  head: string | null,
+): Promise<void> {
+  // Working tree first: a present file is the cheapest "yes".
+  try {
+    await fsStat(pathJoin(cwd, path));
+    return;
+  } catch {
+    // not on disk; keep looking
+  }
+  // Index covers staged additions even before the first commit.
+  if (await pathInIndex(cwd, path)) return;
+  // Commit trees on either side of the requested diff.
+  const refs = new Set<string>();
+  if (base !== "INDEX") refs.add(base);
+  if (head !== null && head !== "INDEX") refs.add(head);
+  for (const ref of refs) {
+    const resolved = await resolveRef(cwd, ref);
+    if (resolved === null) continue;
+    if (await pathInTree(cwd, resolved, path)) return;
+  }
+  throw new RpcError(RPC_ERR.invalidParams, `no such path: ${path}`);
+}
+
+function toWireHunks(hunks: DiffHunk[]): WireHunk[] {
+  return hunks.map((h) => ({
+    oldStart: h.oldStart,
+    oldLines: h.oldLines,
+    newStart: h.newStart,
+    newLines: h.newLines,
+    header: h.header,
+    lines: h.lines
+      .filter((l) => l.kind !== "noNewline")
+      .map((l) => ({
+        kind: l.kind as "context" | "add" | "del",
+        text: l.text,
+      })),
+  }));
 }
 
 // ---- Terminal ----

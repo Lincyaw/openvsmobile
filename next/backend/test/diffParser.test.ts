@@ -29,6 +29,21 @@ describe("parseUnifiedDiff", () => {
       "context",
     ]);
     expect(hunks[0].lines[1].text).toBe("added");
+    expect(hunks[0].header).toBe("@@ -1,2 +1,3 @@");
+  });
+
+  it("captures the verbatim hunk header including trailing context", () => {
+    const input = [
+      "@@ -10,2 +10,3 @@ fn render_widget(state: &mut State) {",
+      " a",
+      "+b",
+      " c",
+    ].join("\n");
+    const hunks = parseUnifiedDiff(input);
+    expect(hunks).toHaveLength(1);
+    expect(hunks[0].header).toBe(
+      "@@ -10,2 +10,3 @@ fn render_widget(state: &mut State) {",
+    );
   });
 
   it("parses multiple hunks", () => {
