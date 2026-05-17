@@ -770,6 +770,16 @@ class AppState extends ChangeNotifier {
     _terminals.debugInjectOutput(sessionId, bytes);
   }
 
+  /// Test-only seam: inject a fully-built `FileTreeNode` for [workspaceId]
+  /// without going over the wire. Used by widget tests that need to render
+  /// the Files tab's tree against a known shape — production paths build
+  /// this from `fs.listDir` responses via [refreshFileTree].
+  @visibleForTesting
+  void debugSetFileTree(String workspaceId, FileTreeNode root) {
+    _fileTreeByWorkspace[workspaceId] = root;
+    notifyListeners();
+  }
+
   @override
   void dispose() {
     client.state.removeListener(_onConnState);
