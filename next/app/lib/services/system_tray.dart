@@ -133,11 +133,36 @@ class SystemTrayController {
   /// the async channel-creation calls inside `init()`.
   Future<void>? _ready;
 
+  /// Small-icon resource name passed to AndroidNotificationDetails.
+  /// Switched at runtime by `useFallbackIcon()` from the diagnostics
+  /// screen to test whether a vector-drawable rejection is the reason
+  /// posts fail silently on some OEM ROMs.
+  String _smallIcon = 'ic_notification';
+
+  String get currentIcon => _smallIcon;
+  bool get isInitialized => _initialized;
+
   /// Last platform-level failure observed when posting to the tray.
   /// Exposed so future diagnostic surfaces (a Settings → Diagnostics
   /// page) can render it without having to scrape `debugPrint`. Null
   /// means "no error since last successful post / init".
   final ValueNotifier<String?> lastError = ValueNotifier<String?>(null);
+
+  final ValueNotifier<DateTime?> lastShowAt = ValueNotifier<DateTime?>(null);
+  final ValueNotifier<String?> lastShowResult = ValueNotifier<String?>(null);
+  final ValueNotifier<List<String>> logs = ValueNotifier<List<String>>(const []);
+
+  void _log(String line) {
+    final now = DateTime.now();
+    final hh = now.hour.toString().padLeft(2, '0');
+    final mm = now.minute.toString().padLeft(2, '0');
+    final ss = now.second.toString().padLeft(2, '0');
+    final entry = '[$hh:$mm:$ss] $line';
+    debugPrint('SystemTray: $line');
+    final next = <String>[...logs.value, entry];
+    if (next.length > 100) next.removeRange(0, next.length - 100);
+    logs.value = next;
+  }
 
   Future<void> init() {
     return _ready ??= _init();
@@ -158,9 +183,9 @@ class SystemTrayController {
         initSettings,
         onDidReceiveNotificationResponse: onNotificationTap,
       );
-      debugPrint('SystemTray: _notif.initialize() returned $initOk');
+      _log('_notif.initialize() returned $initOk');
     } catch (e) {
-      debugPrint('SystemTray: initialize failed: $e');
+      _log('init failed: $e');
       lastError.value = 'initialize failed: $e';
       _initialized = true;
       return;
@@ -171,7 +196,7 @@ class SystemTrayController {
       android = _notif.resolvePlatformSpecificImplementation<
           AndroidFlutterLocalNotificationsPlugin>();
     } catch (e) {
-      debugPrint('SystemTray: resolvePlatformSpecificImplementation failed: $e');
+      _log('resolvePlatformSpecificImplementation failed: $e');
       _initialized = true;
       return;
     }
@@ -204,8 +229,41 @@ class SystemTrayController {
       playSound: true,
       enableVibration: true,
     ));
-    debugPrint('SystemTray: notification channels created');
+    _log('channels created');
     _initialized = true;
+  }
+
+  Future<void> reinit() async {
+    _initialized = false;
+    _ready = null;
+    _log('reinit requested');
+    await init();
+  }
+
+  void useFallbackIcon() {
+    _smallIcon = '@mipmap/ic_launcher';
+    _log('icon → @mipmap/ic_launcher (fallback)');
+  }
+
+  void resetIcon() {
+    _smallIcon = 'ic_notification';
+    _log('icon → ic_notification');
+  }
+
+  Future<void> testShow() async {
+    final now = DateTime.now();
+    final hh = now.hour.toString().padLeft(2, '0');
+    final mm = now.minute.toString().padLeft(2, '0');
+    final ss = now.second.toString().padLeft(2, '0');
+    final fake = AppNotification(
+      id: 'test-${now.millisecondsSinceEpoch}',
+      source: 'diagnostic',
+      level: NotificationLevel.error,
+      title: 'Test',
+      body: 'Test notification at $hh:$mm:$ss',
+      timestamp: now.millisecondsSinceEpoch,
+    );
+    await show(fake, mutedSources: const {});
   }
 
   /// Post a tray notification for [n], honoring mute / quiet-hours
@@ -222,15 +280,17 @@ class SystemTrayController {
     // Wait for channel creation to finish — a `notification.show` push
     // that races bootstrap would otherwise hit an uninitialized plugin.
     await _ready;
+    lastShowAt.value = DateTime.now();
     if (mutedSources.contains(n.source)) {
-      debugPrint('SystemTray: suppressing muted source ${n.source}');
+      _log('suppressing muted source ${n.source}');
+      lastShowResult.value = 'suppressed (muted)';
       return;
     }
     final inQuiet = _inQuietHours(quietStartMinutes, quietEndMinutes);
     final channelId =
         inQuiet ? NotificationChannels.low : channelForLevel(n.level);
-    debugPrint('SystemTray: show title=${n.title} '
-        'level=${n.level} channel=$channelId inQuiet=$inQuiet');
+    _log('show id=${n.id} title=${n.title} level=${n.level} '
+        'channel=$channelId icon=$_smallIcon inQuiet=$inQuiet');
     final details = AndroidNotificationDetails(
       channelId,
       _channelName(channelId),
@@ -238,7 +298,7 @@ class SystemTrayController {
       importance: _importanceFor(channelId),
       priority: _priorityFor(channelId),
       ticker: n.title,
-      icon: 'ic_notification',
+      icon: _smallIcon,
       silent: inQuiet || channelId == NotificationChannels.low,
       autoCancel: true,
     );
@@ -252,9 +312,15 @@ class SystemTrayController {
         payload: payload,
       );
       lastError.value = null;
+      lastShowResult.value = 'ok';
     } on PlatformException catch (e) {
-      debugPrint('SystemTray: show failed: $e');
+      _log('show PlatformException: ${e.code} ${e.message}');
       lastError.value = 'show failed: ${e.message ?? e.code}';
+      lastShowResult.value = 'platform error: ${e.message ?? e.code}';
+    } catch (e) {
+      _log('show threw: $e');
+      lastError.value = '$e';
+      lastShowResult.value = 'exception: ${e.runtimeType}';
     }
   }
 

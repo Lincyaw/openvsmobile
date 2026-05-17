@@ -9,6 +9,7 @@ import '../app_state.dart';
 import '../backend_client.dart';
 import '../models.dart';
 import '../services/fcm_service.dart';
+import '../services/system_tray.dart';
 import '../settings_store.dart';
 import 'files_tab.dart';
 import 'more_tab.dart';
@@ -22,6 +23,7 @@ class HomeShell extends StatefulWidget {
   final SettingsStore settingsStore;
   final Settings currentSettings;
   final FcmController fcmController;
+  final SystemTrayController systemTrayController;
   final Future<void> Function(Settings) onSettingsSaved;
 
   /// Called when the notification preferences screen saves a change.
@@ -33,6 +35,7 @@ class HomeShell extends StatefulWidget {
     required this.settingsStore,
     required this.currentSettings,
     required this.fcmController,
+    required this.systemTrayController,
     required this.onSettingsSaved,
     required this.onNotificationPrefsChanged,
   });
@@ -147,6 +150,7 @@ class _HomeShellState extends State<HomeShell> {
                   currentSettings: widget.currentSettings,
                   settingsStore: widget.settingsStore,
                   fcmController: widget.fcmController,
+                  systemTrayController: widget.systemTrayController,
                   onSettingsSaved: widget.onSettingsSaved,
                   onNotificationPrefsChanged:
                       widget.onNotificationPrefsChanged,
