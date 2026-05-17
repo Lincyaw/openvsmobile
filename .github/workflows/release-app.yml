@@ -1,0 +1,231 @@
+# Release workflow for the openvsmobile-next Flutter Android client.
+#
+# Tag naming convention:
+#   app-v<semver>   e.g. app-v0.1.0, app-v0.2.0-rc1
+#
+# Mirrors release-backend.yml in structure (composing release body from
+# sha256 sidecar files, prerelease detection via `-rc/-beta/-alpha`,
+# pinned third-party actions). The build matrix is degenerate (one
+# ubuntu-latest job) because Flutter's `--split-per-abi` already emits
+# per-arch APKs from a single host build — no qemu, no cross-toolchain.
+#
+# Signing degrades gracefully: if the four ANDROID_* secrets are set we
+# decode the keystore and produce a release-signed APK; otherwise we
+# emit a warning, skip writing key.properties, and the Gradle config in
+# next/app/android/app/build.gradle.kts falls through to debug signing
+# so the workflow still produces an installable artifact. See
+# docs/release.md for setting up release signing.
+
+name: release-app
+
+on:
+  push:
+    tags:
+      - 'app-v*'
+  workflow_dispatch:
+
+# Default everything to read; the release job opts into `contents: write`.
+permissions:
+  contents: read
+
+# Never cancel an in-flight release — half-published GitHub Releases are
+# worse than waiting for the previous run to finish.
+concurrency:
+  group: release-app-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build (android)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v3
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter pub get
+        working-directory: next/app
+        run: flutter pub get
+
+      - name: Analyze (fail fast before building APKs)
+        working-directory: next/app
+        run: flutter analyze
+
+      - name: Configure release signing (if secrets present)
+        id: signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${ANDROID_KEYSTORE_BASE64:-}" \
+             && -n "${ANDROID_KEYSTORE_PASSWORD:-}" \
+             && -n "${ANDROID_KEY_ALIAS:-}" \
+             && -n "${ANDROID_KEY_PASSWORD:-}" ]]; then
+            echo "Release signing secrets present — decoding keystore."
+            keystore_path="${RUNNER_TEMP}/release.keystore"
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$keystore_path"
+            # Gradle reads next/app/android/key.properties at configure time.
+            cat > next/app/android/key.properties <<EOF
+          storeFile=${keystore_path}
+          storePassword=${ANDROID_KEYSTORE_PASSWORD}
+          keyAlias=${ANDROID_KEY_ALIAS}
+          keyPassword=${ANDROID_KEY_PASSWORD}
+          EOF
+            echo "signed=release" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::No release signing secrets — building debug-signed APK; install will require uninstalling prior debug-signed install. See docs/release.md."
+            echo "signed=debug" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build split-per-ABI release APKs
+        working-directory: next/app
+        run: flutter build apk --release --split-per-abi
+
+      - name: Build universal release APK
+        working-directory: next/app
+        run: flutter build apk --release
+
+      - name: Stage APKs and sha256 sidecars
+        id: stage
+        run: |
+          set -euo pipefail
+          src=next/app/build/app/outputs/flutter-apk
+          out="${RUNNER_TEMP}/release-assets"
+          mkdir -p "$out"
+          tag="${GITHUB_REF_NAME:-app-vlocal}"
+          # Flutter emits these filenames verbatim with --split-per-abi and
+          # without; we rename to include the tag for unambiguous downloads.
+          declare -A map=(
+            ["app-arm64-v8a-release.apk"]="openvsmobile-${tag}-arm64-v8a.apk"
+            ["app-armeabi-v7a-release.apk"]="openvsmobile-${tag}-armeabi-v7a.apk"
+            ["app-x86_64-release.apk"]="openvsmobile-${tag}-x86_64.apk"
+            ["app-release.apk"]="openvsmobile-${tag}-universal.apk"
+          )
+          for src_name in "${!map[@]}"; do
+            dst_name="${map[$src_name]}"
+            if [[ -f "${src}/${src_name}" ]]; then
+              cp "${src}/${src_name}" "${out}/${dst_name}"
+              ( cd "$out" && sha256sum "$dst_name" > "${dst_name}.sha256" )
+            else
+              echo "::error::Expected APK not found: ${src}/${src_name}"
+              exit 1
+            fi
+          done
+          ls -la "$out"
+          echo "dir=${out}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: app-android
+          path: |
+            ${{ steps.stage.outputs.dir }}/*.apk
+            ${{ steps.stage.outputs.dir }}/*.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Record signing mode for release job
+        run: echo "${{ steps.signing.outputs.signed }}" > "${RUNNER_TEMP}/signing-mode.txt"
+
+      - name: Upload signing-mode marker
+        uses: actions/upload-artifact@v7
+        with:
+          name: signing-mode
+          path: ${{ runner.temp }}/signing-mode.txt
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    # Only publish a release on actual tag pushes; workflow_dispatch runs
+    # the build as a smoke test but stops short of releasing.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/app-v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List staged release assets
+        run: ls -la artifacts/
+
+      - name: Read signing mode
+        id: signing
+        run: |
+          set -euo pipefail
+          mode="$(cat artifacts/signing-mode.txt 2>/dev/null || echo debug)"
+          echo "mode=${mode}" >> "$GITHUB_OUTPUT"
+
+      - name: Compose release body from sha256 files
+        id: body
+        env:
+          SIGNING_MODE: ${{ steps.signing.outputs.mode }}
+        run: |
+          set -euo pipefail
+          {
+            echo 'body<<RELEASE_BODY_EOF'
+            echo "## openvsmobile-app ${GITHUB_REF_NAME}"
+            echo
+            echo '### Artifacts'
+            echo
+            echo '| File | SHA-256 |'
+            echo '| --- | --- |'
+            for sha_file in artifacts/*.sha256; do
+              [ -f "$sha_file" ] || continue
+              # sha256sum output: "<hex>  <filename>"
+              sum="$(awk '{print $1}' "$sha_file")"
+              fname="$(awk '{print $2}' "$sha_file")"
+              echo "| \`${fname}\` | \`${sum}\` |"
+            done
+            echo
+            echo '### Install'
+            echo
+            echo "Download the APK matching your phone's architecture (\`arm64-v8a\` is right for most modern Android phones) or the universal APK if you're unsure. Enable \"Install unknown apps\" for your file manager or browser, then open the APK to install."
+            if [[ "${SIGNING_MODE}" != "release" ]]; then
+              echo
+              echo '> ⚠️ This release is **debug-signed** — installing alongside a release-signed build is not possible. See [`docs/release.md`](../blob/main/docs/release.md) for setting up release signing.'
+            fi
+            echo 'RELEASE_BODY_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Detect prerelease from tag
+        id: prerelease
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if [[ "$tag" == *-rc* || "$tag" == *-beta* || "$tag" == *-alpha* ]]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: openvsmobile-app ${{ github.ref_name }}
+          body: ${{ steps.body.outputs.body }}
+          draft: false
+          prerelease: ${{ steps.prerelease.outputs.value == 'true' }}
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/*.apk
+            artifacts/*.apk.sha256

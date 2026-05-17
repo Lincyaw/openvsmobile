@@ -113,6 +113,8 @@ Backend ships as a self-contained linux tarball (portable Node + production node
 
 Released via `.github/workflows/release-backend.yml` on `backend-v*` tags; native runners for x64 and arm64 (no qemu — node-pty's node-gyp rebuild doesn't cross cleanly). Flutter client embeds `kBackendVersion` constant pointing at the matching release; SSH-bootstrap flow in `next/app/lib/screens/ssh_bootstrap_screen.dart` streams `install.sh` over SSH stdin and parses the JSON line to populate settings.
 
+The Android client ships its own GitHub Release on `app-v*` tags via `.github/workflows/release-app.yml` — per-ABI splits plus a universal APK. Signing degrades gracefully: with the four `ANDROID_*` secrets configured it's release-signed, without them it falls back to debug signing with a warning. See [`docs/release.md`](docs/release.md) for the full release workflow and keystore setup.
+
 ## Settled architectural decisions (do not propose reverting)
 
 - **No standalone Git tab.** Git is a view layer over Files.
