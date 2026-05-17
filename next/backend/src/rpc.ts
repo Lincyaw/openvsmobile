@@ -64,10 +64,18 @@ export const RPC_ERR = {
   /// it yet (e.g. workspace model still initializing). Distinct from
   /// invalidParams so the client can choose to retry.
   notReady: -32003,
-  // -32010..-32019 reserved for the notification namespace.
-  // (Previously -32010 was `notificationNotFound`; removed because both
-  // `markImportant` and `delete` now silently no-op on unknown ids, so no
-  // call site emits it. Re-add here if a future RPC needs the distinction.)
+  /// -32011: a plugin called a host RPC that requires a capability it
+  /// did not declare in `plugin.json`. Distinct from -32001
+  /// (`capabilityDenied`, reserved for runtime denials after a
+  /// declared-but-revoked capability lands in C2); -32011 specifically
+  /// means "the manifest never asked for this". See
+  /// docs/design/mobile-code-platform.md §3.2 and CLAUDE.md.
+  capabilityNotDeclared: -32011,
+  // -32010..-32019 was speculatively reserved for the notification
+  // namespace; only -32010 (`notificationNotFound`) ever landed there
+  // and it has since been removed. The plugin host now uses -32011 per
+  // §3.2 of the design doc. Re-add a notification code here if a future
+  // RPC needs the distinction.
 } as const;
 
 export class RpcError extends Error {

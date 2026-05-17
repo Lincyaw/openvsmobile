@@ -1,0 +1,8 @@
+{
+  "id": "crashy",
+  "name": "Crashy fixture",
+  "version": "0.0.1",
+  "entry": { "kind": "node", "path": "index.js" },
+  "activation": ["onStartup"],
+  "capabilities": {}
+}

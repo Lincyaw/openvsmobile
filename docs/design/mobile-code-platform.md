@@ -1046,6 +1046,47 @@ Phases, not deadlines. Each phase is small enough to be a single PR.
   Reopen if users push back; persisting full PTY state to disk is
   tmux-grade work and we don't want to build it speculatively.
 
+## 9a. Appendix: §3 plugin host — as-implemented status (issue C1)
+
+The first slice of the plugin host (issue C1) ships in `next/backend/src/plugins/`. It deliberately stays invisible to the Flutter client — no `plugin.*` RPCs surface in C1; that lands with C2. This appendix records what is live now versus what remains scheduled for C2–C5 so the design doc is not read as a promise of features that haven't shipped.
+
+### Live in v0 (this build)
+
+- **§3.1 — Discovery & registry.** `OPENVSMOBILE_PLUGINS_DIR` (default `~/.local/share/openvsmobile-next/plugins/`) scanned at backend boot. Each direct child with a `plugin.json` becomes a registry entry. Missing `plugin.json` is a silent skip; invalid manifest produces a registry entry in state `errored`. Directory name is canonical id; a mismatching `plugin.json.id` logs a warning and the directory wins.
+- **§3.1 — Lifecycle states.** `registered` / `active` / `crashed` / `errored` are observed and held in the registry. `disabled` is defined in the type but no `plugin.reload`/`plugin.disable` RPC reaches it yet (C2). `activating` is folded into the synchronous spawn → `active` transition for now.
+- **§3.2 — Manifest subset.** `id`, `name`, `version`, `entry { kind, path }`, `activation`, `capabilities { fs, terminal, network, secrets, ui }`, `contributes.commands[{id,title}]` are parsed and honored. Unknown top-level keys and unknown `contributes.*` keys are preserved verbatim (round-tripped forward) and trigger a warning so C2's richer parser doesn't have to re-discover them.
+- **§3.3 — Process model.** One `child_process.spawn` per active plugin, stdio piped, stderr tee'd to `~/.local/state/openvsmobile-next/plugins/<id>.stderr.log` with 5 MiB rotation + one backup. **No automatic restart on crash** (settled). Spawn CWD is the plugin's own directory.
+- **§4.2 — stdio JSON-RPC.** Backend autodetects Content-Length framing vs newline-delimited JSON from the plugin's first non-whitespace byte and uses the matching encoding for outbound writes.
+- **§3.5 — Capability gate.** Every plugin → host request is gated by `capabilities` declared in the manifest. Calls outside declared capabilities receive `RpcError -32011 capabilityNotDeclared`. `host.log({ level, msg })` is the one host method exposed in C1 and requires no capability; it serves as a stdio-path smoke target.
+- **`onStartup` activation.** Plugins listing `onStartup` spawn at backend boot; other activation events (`onCommand:*`, `onFileType:*`, …) are parsed and stored but do not fire any trigger in C1.
+
+### Deferred — C2 (`plugin.*` RPC surface to the Flutter client)
+
+- §3.1 client-side surface — `plugin.list`, `plugin.enable`, `plugin.disable`, `plugin.reload`, `plugin.invokeCommand`, log-tailing.
+- `initialize` handshake (backend → plugin) and `protocolVersion` negotiation.
+- `onCommand:*` activation triggered by `plugin.invokeCommand`.
+- `RpcError -32012 pluginCrashed` for in-flight RPCs at crash time (no host-initiated RPC channel until C2 needs one).
+- Manifest fields beyond the C1 subset (`panels`, `statusItems`, `secrets[]`, `network` allowlists, `protocolVersion`, …) — currently round-tripped but unused.
+
+### Deferred — C3 (UI descriptor protocol)
+
+- §4.3 `ui.render` / `ui.tree` / `ui.event` end-to-end.
+- §3.5 `ui:panel` / `ui:command` / `ui:statusItem` / `ui:notification` granularity (today `ui` is a single boolean gate).
+
+### Deferred — C4 (Plugins tab in the app)
+
+- Settings → Plugins list + log viewer + disable/reload UI.
+
+### Deferred — C5 (`@openvsmobile/sdk`)
+
+- §3.4 SDK package + import-surface restriction (Node `--experimental-permission` / `--require` shim).
+- SDK-side defense-in-depth capability checks.
+
+### Intentional simplifications in v0
+
+- The capability gate maps method namespaces (`fs.*`, `terminal.*`, `git.*`, `ui.*`, …) to a single key in the manifest's `capabilities`. The §3.5 fine-grained matrix (e.g. `network` as an allowlist of hosts) lands in C2 alongside the methods it gates.
+- The `errored` registry sentinel attached to a broken manifest carries a placeholder manifest object so the registry shape stays uniform; consumers check `state === "errored"` before relying on manifest fields.
+
 ## 10. Document follow-ups (once §1–§9 are ratified)
 
 - Rewrite `CLAUDE.md` to drop "forward, don't reimplement" and the
