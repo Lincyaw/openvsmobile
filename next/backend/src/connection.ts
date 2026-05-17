@@ -13,6 +13,7 @@
 import type { WebSocket } from "ws";
 import {
   dispatch,
+  METHOD_AUTH_HANDSHAKE,
   parseRequest,
   runAuthHandshake,
   RPC_ERR,
@@ -82,7 +83,7 @@ export class Connection implements Subscriber {
     }
     const { id, method, params } = parsed.req;
     const ctx = this.context();
-    if (method === "auth.handshake") {
+    if (method === METHOD_AUTH_HANDSHAKE) {
       await this.handleAuthHandshake(ctx, id, params);
       return;
     }

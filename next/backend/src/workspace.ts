@@ -174,7 +174,7 @@ export class WorkspaceRegistry {
   }
 }
 
-// -------- Filesystem helpers (used by connection.ts handlers) --------
+// -------- Filesystem helpers (called from rpc.ts handlers) --------
 
 async function validatedRoot(rawRoot: unknown): Promise<string> {
   if (typeof rawRoot !== "string" || rawRoot.length === 0) {

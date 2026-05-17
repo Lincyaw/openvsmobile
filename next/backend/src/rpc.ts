@@ -246,6 +246,12 @@ export interface RpcContext {
 
 const PROTOCOL_VERSION = "1.0";
 
+/// Method name of the one RPC the connection layer treats specially (its
+/// success flips the auth bit; its failure tears down the socket). Exported
+/// so the transport routes to `runAuthHandshake` without re-stating the
+/// string.
+export const METHOD_AUTH_HANDSHAKE = "auth.handshake";
+
 // -------- 5. Method table + handlers --------
 
 type Handler = (ctx: RpcContext, params: unknown) => Promise<unknown> | unknown;
