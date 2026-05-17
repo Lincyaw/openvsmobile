@@ -117,7 +117,6 @@ class _FilesTabState extends State<FilesTab> {
     FileTreeNode node,
     int depth,
     Workspace workspace,
-    WorkspaceState? wsState,
     bool changesView,
   ) {
     final out = <Widget>[];
@@ -125,43 +124,40 @@ class _FilesTabState extends State<FilesTab> {
     if (changesView && depth > 0) {
       // Hide nodes with no decorated descendants. The workspace-root row is
       // always shown so the user has a place to dock.
-      if (!_hasDecorationDescendant(rel, wsState)) {
+      if (!_hasDecorationDescendant(workspace.id, rel)) {
         return out;
       }
     }
-    out.add(_buildRow(node, depth, workspace, wsState));
+    out.add(_buildRow(node, depth, workspace));
     if (node.isDir && node.expanded && node.children != null) {
       for (final c in node.children!) {
-        out.addAll(_flatten(c, depth + 1, workspace, wsState, changesView));
+        out.addAll(_flatten(c, depth + 1, workspace, changesView));
       }
     }
     return out;
   }
 
-  bool _hasDecorationDescendant(String rel, WorkspaceState? wsState) {
-    if (wsState == null) return false;
-    if (rel.isEmpty) return wsState.decorationMap.isNotEmpty;
-    // Direct hit?
-    if (wsState.decorationMap.containsKey(rel)) return true;
-    // Anything under this directory?
-    return (wsState.dirRollup[rel] ?? 0) > 0;
+  /// True when [rel] is itself decorated or has any decorated descendants.
+  /// Reads only through [AppState.decorationFor] (PR-B review N2 — one way
+  /// to do the same thing).
+  bool _hasDecorationDescendant(String workspaceId, String rel) {
+    final v = widget.appState.decorationFor(workspaceId, rel);
+    if (rel.isEmpty) {
+      // For the workspace root, "decorated descendants" == total count.
+      return widget.appState.workspaces.decoratedCount(workspaceId) > 0;
+    }
+    return v.status != null || v.rollupCount > 0;
   }
 
   Widget _buildRow(
     FileTreeNode node,
     int depth,
     Workspace workspace,
-    WorkspaceState? wsState,
   ) {
     final theme = Theme.of(context);
     final wsId = workspace.id;
     final rel = _relPathFor(node.path, workspace.root);
-    final decoration = wsState == null
-        ? const WorkspaceDecorationView()
-        : WorkspaceDecorationView(
-            status: wsState.decorationMap[rel],
-            rollupCount: wsState.dirRollup[rel] ?? 0,
-          );
+    final decoration = widget.appState.decorationFor(wsId, rel);
     return InkWell(
       onTap: () {
         if (node.isDir) {
@@ -254,25 +250,31 @@ class _FilesTabState extends State<FilesTab> {
         ),
         Expanded(
           child: root == null
-              ? const Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                      SizedBox(height: 12),
-                      Text('Loading workspace…'),
-                    ],
+              ? Center(
+                  // Wrapped in Semantics so the "Loading workspace…" label
+                  // travels with the spinner for screen-reader users —
+                  // conventions §2 "no bare spinners".
+                  child: Semantics(
+                    label: 'Loading workspace',
+                    container: true,
+                    child: const Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                        SizedBox(height: 12),
+                        Text('Loading workspace…'),
+                      ],
+                    ),
                   ),
                 )
               : RefreshIndicator(
                   onRefresh: () => widget.appState.refreshFileTree(wsId),
                   child: ListView(
-                    children:
-                        _flatten(root, 0, cur, wsState, changesActive),
+                    children: _flatten(root, 0, cur, changesActive),
                   ),
                 ),
         ),

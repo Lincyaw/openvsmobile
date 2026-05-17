@@ -33,11 +33,6 @@ class AppState extends ChangeNotifier {
   /// "would the state survive remount? if yes, it's in AppState").
   bool _changesViewActive = false;
 
-  /// Whether the Files tab should reveal .gitignore-matched files (greyed
-  /// out, never participating in rollup). Stored in AppState for the same
-  /// survive-remount reason.
-  bool _showIgnoredFiles = false;
-
   // ---- Workspace + recents ----
   List<Workspace> _active = const [];
   List<String> _recents = const [];
@@ -138,7 +133,6 @@ class AppState extends ChangeNotifier {
       _workspacesModel.decorationFor(workspaceId, relPath);
 
   bool get changesViewActive => _changesViewActive;
-  bool get showIgnoredFiles => _showIgnoredFiles;
 
   void toggleChangesView() {
     _changesViewActive = !_changesViewActive;
@@ -148,11 +142,6 @@ class AppState extends ChangeNotifier {
   void setChangesView(bool active) {
     if (_changesViewActive == active) return;
     _changesViewActive = active;
-    notifyListeners();
-  }
-
-  void toggleShowIgnored() {
-    _showIgnoredFiles = !_showIgnoredFiles;
     notifyListeners();
   }
 
@@ -247,11 +236,11 @@ class AppState extends ChangeNotifier {
     _active = _active.where((w) => w.id != id).toList();
     _fileTreeByWorkspace.remove(id);
     _terminals.onWorkspaceClosed(id);
-    // Drop the resident workspace state too; the model will refuse to
-    // route any post-close notifications because the id is no longer
-    // tracked. We do not call workspace.unsubscribe explicitly here
-    // because the backend already disposed the model on close.
-    unawaited(_workspacesModel.unsubscribe(id));
+    // Server-initiated close: the backend has already disposed the
+    // workspace model, so we drop the local state without round-tripping
+    // an unsubscribe RPC (which would race against the close anyway).
+    // See WorkspacesModel.unsubscribeLocal vs unsubscribeRemote.
+    _workspacesModel.unsubscribeLocal(id);
     if (_current?.id == id) {
       _current = _active.isNotEmpty ? _active.first : null;
     }

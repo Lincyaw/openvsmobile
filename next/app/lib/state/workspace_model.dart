@@ -29,6 +29,7 @@
 //     AppState.
 
 import 'dart:async';
+import 'dart:collection';
 
 import 'package:flutter/foundation.dart';
 
@@ -55,44 +56,70 @@ class WorkspaceDecorationView {
 
 /// Server-derived state for one workspace. One instance per open workspace,
 /// owned by [WorkspacesModel].
+///
+/// The mutable state (decoration map, dir rollup, head info, version
+/// counter, listDir cache) lives behind private fields. The class exposes
+/// only read-only views — direct mutation would let widgets accidentally
+/// hold a stale reference to a map that's been swapped out, or worse,
+/// mutate it themselves and desync the rollup. Per PR-B review N3.
 class WorkspaceState {
+  String? _branch;
+  String? _headSha;
+  int _ahead = 0;
+  int _behind = 0;
+  bool _gitInfoReceived = false;
+
   /// Branch name; null while non-git or pre-snapshot.
-  String? branch;
+  String? get branch => _branch;
 
   /// HEAD sha; null when no commits yet or non-git.
-  String? headSha;
+  String? get headSha => _headSha;
 
   /// Commits ahead of upstream. Zero when no upstream is configured.
-  int ahead = 0;
+  int get ahead => _ahead;
 
   /// Commits behind upstream. Zero when no upstream is configured.
-  int behind = 0;
+  int get behind => _behind;
 
-  /// True once we've received any head info (i.e. confirmed git status).
-  /// Distinguishes "non-git workspace" (set false after a snapshot with no
-  /// head info) from "still subscribing".
-  bool gitInfoReceived = false;
+  /// True once we've received any head info from the backend. Distinguishes
+  /// "non-git workspace" from "still subscribing" — both have null branch.
+  bool get gitInfoReceived => _gitInfoReceived;
 
   /// True if backend reports this workspace is a git repo. Inferred:
   /// non-null branch ⇒ git.
-  bool get isGitRepo => branch != null;
+  bool get isGitRepo => _branch != null;
 
-  /// path → "M"|"A"|"D"|"?"|"U". Only non-clean files live here.
-  final Map<String, String> decorationMap = {};
+  /// path → "M"|"A"|"D"|"?"|"U". Only non-clean files appear here.
+  /// Read-only view; mutation goes through [WorkspacesModel]'s push
+  /// handlers, which then `notifyListeners`.
+  UnmodifiableMapView<String, String> get decorationMap =>
+      UnmodifiableMapView(_decorationMap);
 
-  /// Directory path → count of decorated descendants. Recomputed from
-  /// [decorationMap] on every change.
-  final Map<String, int> dirRollup = {};
+  /// Directory path → count of decorated descendants. Recomputed by
+  /// [WorkspacesModel] on every decoration change.
+  UnmodifiableMapView<String, int> get dirRollup =>
+      UnmodifiableMapView(_dirRollup);
 
   /// Monotonic version of the last event we successfully integrated. The
   /// next event MUST have version == lastSeenVersion + 1; if not we
   /// re-subscribe with [lastSeenVersion] as `sinceVersion`.
-  int lastSeenVersion = 0;
+  int get lastSeenVersion => _lastSeenVersion;
+
+  // --- internal mutable storage (private; mutated only by WorkspacesModel) ---
+
+  final Map<String, String> _decorationMap = {};
+  final Map<String, int> _dirRollup = {};
+  int _lastSeenVersion = 0;
 
   /// Cached `fs.listDir` responses keyed by directory path. Cleared
   /// wholesale on snapshot mode; per-parent on tree.delta. Implementation
   /// detail — read via [WorkspacesModel.listDir], not by widgets.
   final Map<String, _ListDirCacheEntry> _listDirCache = {};
+
+  /// Monotonic gen counter bumped on every cache invalidation. Used so an
+  /// in-flight `listDir` that resolves after invalidation does not poison
+  /// the cache with stale data.
+  int _cacheGeneration = 0;
 
   /// Number of paths currently held in the listDir cache. Test hook;
   /// production widgets have no reason to read this.
@@ -102,11 +129,6 @@ class WorkspaceState {
   /// Whether [path] currently has a cached listDir response. Test hook.
   @visibleForTesting
   bool hasCachedListDir(String path) => _listDirCache.containsKey(path);
-
-  /// Monotonic gen counter bumped on every cache invalidation. Used so an
-  /// in-flight `listDir` that resolves after invalidation does not poison
-  /// the cache with stale data.
-  int _cacheGeneration = 0;
 }
 
 /// All open workspaces' resident state, plus the subscribe lifecycle.
@@ -137,12 +159,16 @@ class WorkspacesModel extends ChangeNotifier {
   }
 
   /// All decorated paths for [workspaceId]. Order is insertion order — fine
-  /// for the Changes view, which sorts by tree position.
-  Iterable<String> decoratedPaths(String workspaceId) =>
-      _states[workspaceId]?.decorationMap.keys ?? const [];
+  /// for the Changes view, which sorts by tree position. Wrapped so callers
+  /// can iterate but not mutate (PR-B review N3).
+  Iterable<String> decoratedPaths(String workspaceId) {
+    final keys = _states[workspaceId]?._decorationMap.keys;
+    if (keys == null) return const Iterable<String>.empty();
+    return UnmodifiableListView(keys.toList(growable: false));
+  }
 
   int decoratedCount(String workspaceId) =>
-      _states[workspaceId]?.decorationMap.length ?? 0;
+      _states[workspaceId]?._decorationMap.length ?? 0;
 
   // ---- Subscribe / unsubscribe lifecycle ----
 
@@ -171,7 +197,7 @@ class WorkspacesModel extends ChangeNotifier {
         // arrives shortly after.
         st._listDirCache.clear();
         st._cacheGeneration++;
-        st.lastSeenVersion = baseVersion;
+        st._lastSeenVersion = baseVersion;
         // Don't clear decorationMap yet — the snapshot push will replace it.
         // Until then we keep the old view so the UI doesn't flicker to empty.
       }
@@ -188,37 +214,31 @@ class WorkspacesModel extends ChangeNotifier {
     }
   }
 
-  /// Unsubscribe from [workspaceId] (e.g. on workspace.close). Drops the
-  /// state entry — the workspace is gone, the last-known view would be
-  /// misleading.
-  Future<void> unsubscribe(String workspaceId) async {
+  /// Drop the local state entry for [workspaceId] without telling the
+  /// backend. Use this on **server-initiated** close (the
+  /// `workspace.closed` notification path) — the backend has already
+  /// disposed the model, an unsubscribe RPC would be pointless and would
+  /// race against the close.
+  void unsubscribeLocal(String workspaceId) {
     if (!_states.containsKey(workspaceId)) return;
     _states.remove(workspaceId);
-    try {
-      await _client.call(
-        'workspace.unsubscribe',
-        {'workspaceId': workspaceId},
-      );
-    } catch (_) {
-      // If the workspace was already closed by the backend, unsubscribe is a
-      // no-op there too. Nothing to surface.
-    }
     notifyListeners();
   }
 
-  /// Drop every cached state — used when the socket leaves `connected`.
-  /// We do NOT call workspace.unsubscribe (the socket is dead); the backend
-  /// auto-detaches subscribers on socket close. Per CLAUDE.md FP #4 we keep
-  /// the previously-rendered decorations in widget memory only briefly —
-  /// the upcoming reconnect will re-subscribe and either replay or snapshot.
-  ///
-  /// Conventions §2: "Disconnect never clears the UI." So we DON'T wipe;
-  /// we just mark the state as needing resync. The reconnect path drives
-  /// the actual subscribe call.
-  void markAllForResync() {
-    // No-op for now — the model is intact; reconnect will subscribe with
-    // the existing lastSeenVersion. This method exists as a marker so
-    // future invariants (e.g. "stale > N seconds → grey out") have a hook.
+  /// Drop the local state AND tell the backend to detach our subscription.
+  /// Use this on **client-initiated** close paths (currently unused — the
+  /// only client-side close goes through `workspace.close`, which itself
+  /// echoes back `workspace.closed` and lands in `unsubscribeLocal`).
+  /// Exposed for future flows that want to unsubscribe a workspace they
+  /// intend to keep open. Errors propagate; the caller decides whether to
+  /// surface or escalate (conventions §5 — no silent swallows).
+  Future<void> unsubscribeRemote(String workspaceId) async {
+    final hadState = _states.remove(workspaceId) != null;
+    if (hadState) notifyListeners();
+    await _client.call(
+      'workspace.unsubscribe',
+      {'workspaceId': workspaceId},
+    );
   }
 
   // ---- Notification handlers (called from AppState._onNotification) ----
@@ -258,7 +278,7 @@ class WorkspacesModel extends ChangeNotifier {
       st._listDirCache.remove(dir);
     }
     if (affectedDirs.isNotEmpty) st._cacheGeneration++;
-    st.lastSeenVersion = version;
+    st._lastSeenVersion = version;
     notifyListeners();
   }
 
@@ -278,14 +298,14 @@ class WorkspacesModel extends ChangeNotifier {
         if (path is! String) continue;
         final status = e['status'];
         if (status == null) {
-          st.decorationMap.remove(path);
+          st._decorationMap.remove(path);
         } else if (status is String) {
-          st.decorationMap[path] = status;
+          st._decorationMap[path] = status;
         }
       }
     }
     _recomputeRollup(st);
-    st.lastSeenVersion = version;
+    st._lastSeenVersion = version;
     notifyListeners();
   }
 
@@ -297,7 +317,7 @@ class WorkspacesModel extends ChangeNotifier {
     if (wsId == null) return;
     final st = _states.putIfAbsent(wsId, WorkspaceState.new);
     final version = (params['version'] as num?)?.toInt() ?? 0;
-    st.decorationMap.clear();
+    st._decorationMap.clear();
     final entries = params['entries'];
     if (entries is List) {
       for (final e in entries) {
@@ -306,12 +326,12 @@ class WorkspacesModel extends ChangeNotifier {
         if (path is! String) continue;
         final status = e['status'];
         if (status is String) {
-          st.decorationMap[path] = status;
+          st._decorationMap[path] = status;
         }
       }
     }
     _recomputeRollup(st);
-    st.lastSeenVersion = version;
+    st._lastSeenVersion = version;
     notifyListeners();
   }
 
@@ -322,12 +342,12 @@ class WorkspacesModel extends ChangeNotifier {
     final st = _states.putIfAbsent(wsId, WorkspaceState.new);
     final version = (params['version'] as num?)?.toInt() ?? 0;
     if (!_checkVersionGap(wsId, st, version)) return;
-    st.branch = params['branch'] as String?;
-    st.headSha = params['headSha'] as String?;
-    st.ahead = (params['ahead'] as num?)?.toInt() ?? 0;
-    st.behind = (params['behind'] as num?)?.toInt() ?? 0;
-    st.gitInfoReceived = true;
-    st.lastSeenVersion = version;
+    st._branch = params['branch'] as String?;
+    st._headSha = params['headSha'] as String?;
+    st._ahead = (params['ahead'] as num?)?.toInt() ?? 0;
+    st._behind = (params['behind'] as num?)?.toInt() ?? 0;
+    st._gitInfoReceived = true;
+    st._lastSeenVersion = version;
     notifyListeners();
   }
 
@@ -346,9 +366,9 @@ class WorkspacesModel extends ChangeNotifier {
     // the authoritative ahead/behind.
     final branch = params['branch'] as String?;
     if (branch != null && branch == st.branch) {
-      st.ahead = st.ahead + 1;
+      st._ahead = st.ahead + 1;
     }
-    st.lastSeenVersion = version;
+    st._lastSeenVersion = version;
     notifyListeners();
   }
 
@@ -433,12 +453,12 @@ class WorkspacesModel extends ChangeNotifier {
   }
 
   void _recomputeRollup(WorkspaceState st) {
-    st.dirRollup.clear();
-    for (final path in st.decorationMap.keys) {
+    st._dirRollup.clear();
+    for (final path in st._decorationMap.keys) {
       // Walk up ancestor chain. Workspace root (empty path) gets the total.
       var cursor = _parentDir(path);
       while (true) {
-        st.dirRollup.update(cursor, (v) => v + 1, ifAbsent: () => 1);
+        st._dirRollup.update(cursor, (v) => v + 1, ifAbsent: () => 1);
         if (cursor.isEmpty) break;
         cursor = _parentDir(cursor);
       }
