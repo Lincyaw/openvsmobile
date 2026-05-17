@@ -76,4 +76,4 @@ keyAlias=openvsmobile
 keyPassword=...
 ```
 
-Then `flutter build apk --release` will pick it up. Without `key.properties`, the same command falls back to debug signing — this is what makes the Gradle config idempotent for contributors who only ever build debug locally.
+Then `flutter build apk --release` will pick it up. Without `key.properties`, the same command falls back to debug signing — this fallback is what makes the Gradle config a no-op for contributors who only ever build debug locally.
