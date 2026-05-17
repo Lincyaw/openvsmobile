@@ -13,6 +13,7 @@ import '../settings_store.dart';
 import 'files_tab.dart';
 import 'more_tab.dart';
 import 'notification_center.dart';
+import 'plugins_tab.dart';
 import 'terminal_tab.dart';
 import 'workspace_picker.dart';
 
@@ -173,6 +174,7 @@ class _HomeShellState extends State<HomeShell> {
               children: [
                 FilesTab(appState: widget.appState),
                 TerminalTab(appState: widget.appState),
+                PluginsTab(appState: widget.appState),
                 MoreTab(
                   appState: widget.appState,
                   settingsStore: widget.settingsStore,
@@ -199,6 +201,11 @@ class _HomeShellState extends State<HomeShell> {
             icon: Icon(Icons.terminal_outlined),
             selectedIcon: Icon(Icons.terminal),
             label: 'Terminal',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.extension_outlined),
+            selectedIcon: Icon(Icons.extension),
+            label: 'Plugins',
           ),
           NavigationDestination(
             icon: Icon(Icons.more_horiz_outlined),

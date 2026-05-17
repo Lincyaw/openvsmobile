@@ -20,8 +20,10 @@ import 'models.dart';
 import 'notification.dart';
 import 'services/ssh_bootstrap.dart';
 import 'state/notifications_model.dart';
+import 'state/plugins_model.dart';
 import 'state/terminals_notifier.dart';
 import 'state/workspace_model.dart';
+import 'ui/ui_panels_model.dart';
 
 class AppState extends ChangeNotifier {
   final BackendClient client;
@@ -32,6 +34,8 @@ class AppState extends ChangeNotifier {
   late final TerminalsNotifier _terminals;
   late final WorkspacesModel _workspacesModel;
   late final NotificationsModel _notifications;
+  late final PluginsModel _plugins;
+  late final UiPanelsModel _uiPanels;
   StreamSubscription<BackendNotification>? _notifSub;
 
   /// Whether the Files tab should filter to the Changes view (decorated
@@ -85,6 +89,10 @@ class AppState extends ChangeNotifier {
       reportError: _reportOperationError,
     );
     _notifications.addListener(notifyListeners);
+    _plugins = PluginsModel(client: client);
+    _plugins.addListener(notifyListeners);
+    _uiPanels = UiPanelsModel(client: client);
+    _uiPanels.addListener(notifyListeners);
     client.state.addListener(_onConnState);
     client.lastError.addListener(_onConnError);
     _notifSub = client.notifications.listen(_onNotification);
@@ -139,6 +147,15 @@ class AppState extends ChangeNotifier {
   /// Notification surface (design §4.5). Composed under AppState so the bell
   /// icon, badge count, and notification center read from a single source.
   NotificationsModel get notifications => _notifications;
+
+  /// Plugin registry (design §3 / issue C4). Backs the Plugins tab —
+  /// AppState forwards notifyListeners so widgets only listen here.
+  PluginsModel get plugins => _plugins;
+
+  /// Plugin-owned UI panels (design §4.3 / issue C3). The Plugins-tab
+  /// detail view subscribes via `subscribe()` once on connect and
+  /// renders snapshots through `UiRenderer`.
+  UiPanelsModel get uiPanels => _uiPanels;
 
   /// Per-workspace state lookup. Returns null if the workspace hasn't been
   /// subscribed yet (e.g. between activate and the first event).
@@ -195,6 +212,10 @@ class AppState extends ChangeNotifier {
       // reconnect (first principle #4: disconnect never clears the UI).
       unawaited(_notifications.subscribe());
       unawaited(_notifications.refresh());
+      // Plugin surface + UI-descriptor fan-out follow the same shape —
+      // subscribe on every successful connect; failures self-log.
+      unawaited(_plugins.subscribeAndRefresh());
+      unawaited(_uiPanels.subscribe());
       notifyListeners();
       return;
     }
@@ -280,6 +301,9 @@ class AppState extends ChangeNotifier {
         if (oldId is String && newId is String) {
           _notifications.onSuperseded(oldId, newId);
         }
+        break;
+      case BackendNotifications.pluginStateChanged:
+        _plugins.onStateChanged(n.params as Map<String, dynamic>);
         break;
       default:
         // Ignore unknown notifications (forward-compat).
@@ -728,6 +752,10 @@ class AppState extends ChangeNotifier {
     _workspacesModel.dispose();
     _notifications.removeListener(notifyListeners);
     _notifications.dispose();
+    _plugins.removeListener(notifyListeners);
+    _plugins.dispose();
+    _uiPanels.removeListener(notifyListeners);
+    _uiPanels.dispose();
     _notifSub?.cancel();
     super.dispose();
   }

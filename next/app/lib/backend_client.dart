@@ -46,6 +46,7 @@ class BackendNotifications {
   static const String notificationReadChanged = 'notification.readChanged';
   static const String notificationDeleted = 'notification.deleted';
   static const String notificationSuperseded = 'notification.superseded';
+  static const String pluginStateChanged = 'plugin.stateChanged';
 }
 
 /// Permanent-error JSON-RPC code returned by the backend on a failed
