@@ -13,16 +13,18 @@ import '../settings_store.dart';
 import 'files_tab.dart';
 import 'more_tab.dart';
 import 'notification_center.dart';
-import 'settings_screen.dart';
 import 'terminal_tab.dart';
 import 'workspace_picker.dart';
 
 class HomeShell extends StatefulWidget {
   final AppState appState;
   final SettingsStore settingsStore;
-  final Settings currentSettings;
+  final AppPersistedState state;
   final SystemTrayController systemTrayController;
-  final Future<void> Function(Settings) onSettingsSaved;
+
+  /// Push the Backends management screen. Owned by main.dart so navigation
+  /// happens on the root navigator.
+  final VoidCallback onOpenBackends;
 
   /// Called when the notification preferences screen saves a change.
   /// `main.dart` uses this to (re)start or stop the foreground service.
@@ -31,9 +33,9 @@ class HomeShell extends StatefulWidget {
     super.key,
     required this.appState,
     required this.settingsStore,
-    required this.currentSettings,
+    required this.state,
     required this.systemTrayController,
-    required this.onSettingsSaved,
+    required this.onOpenBackends,
     required this.onNotificationPrefsChanged,
   });
 
@@ -75,47 +77,76 @@ class _HomeShellState extends State<HomeShell> {
     );
   }
 
-  Future<void> _openSettings() async {
-    await Navigator.of(context).push<Settings>(
-      MaterialPageRoute(
-        builder: (_) => SettingsScreen(
-          initial: widget.currentSettings,
-          onSave: widget.onSettingsSaved,
-        ),
-      ),
-    );
-    // The settings screen returned. Persisting + reconnecting happens inside
-    // onSave; nothing more to do here.
+  void _openSettings() {
+    // ⚙ in the app bar now lands on the Backends list, not the legacy
+    // single-backend form. Backend details are edited from there.
+    widget.onOpenBackends();
   }
 
   @override
   Widget build(BuildContext context) {
     final cur = widget.appState.currentWorkspace;
     final connState = widget.appState.connectionState;
+    final active = widget.state.activeBackend;
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
-        title: InkWell(
-          onTap: _openSwitcher,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            child: Row(
-              children: [
-                Icon(
-                  cur == null ? Icons.folder_off_outlined : Icons.folder_open,
-                  size: 20,
+        title: Row(
+          children: [
+            // Backend chip: tap → Backends screen. Always visible so the
+            // user can confirm which server the UI is talking to.
+            InkWell(
+              onTap: widget.onOpenBackends,
+              child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.dns_outlined, size: 18),
+                    const SizedBox(width: 6),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 120),
+                      child: Text(
+                        active?.name ?? '(no backend)',
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 8),
-                Flexible(
-                  child: Text(
-                    cur?.label ?? '(choose workspace)',
-                    overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            const Text('·',
+                style: TextStyle(color: Colors.grey, fontSize: 14)),
+            Expanded(
+              child: InkWell(
+                onTap: _openSwitcher,
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                  child: Row(
+                    children: [
+                      Icon(
+                        cur == null
+                            ? Icons.folder_off_outlined
+                            : Icons.folder_open,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: Text(
+                          cur?.label ?? '(choose workspace)',
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      const Icon(Icons.arrow_drop_down),
+                    ],
                   ),
                 ),
-                const Icon(Icons.arrow_drop_down),
-              ],
+              ),
             ),
-          ),
+          ],
         ),
         actions: [
           _BellIconAction(
@@ -144,10 +175,9 @@ class _HomeShellState extends State<HomeShell> {
                 TerminalTab(appState: widget.appState),
                 MoreTab(
                   appState: widget.appState,
-                  currentSettings: widget.currentSettings,
                   settingsStore: widget.settingsStore,
                   systemTrayController: widget.systemTrayController,
-                  onSettingsSaved: widget.onSettingsSaved,
+                  onOpenBackends: widget.onOpenBackends,
                   onNotificationPrefsChanged:
                       widget.onNotificationPrefsChanged,
                 ),
