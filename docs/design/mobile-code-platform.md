@@ -335,6 +335,14 @@ on demand. Backend-side throttling of non-focused workspaces is a
 performance optimization reserved for v1 if profiling shows it
 matters; v0 keeps the protocol simple.
 
+**Multi-client semantics — a workspace is a shared backend object, not a per-client view.** Several WebSocket clients may subscribe to the same workspace simultaneously (phone + tablet, multiple browser tabs in the future). The backend treats them symmetrically:
+
+- **Terminal streams are shared.** Each terminal session has one underlying PTY in the backend. Every connected client that has the workspace subscribed receives the same `terminal.data` notifications; any client can `terminal.write` and the bytes flow into the shared PTY. There is no concept of a "terminal owner" or "primary client" — the model is `tmux`-style multi-attach, not Mosh-style single-owner. Cursor position, scroll offset, soft-keyboard state, and `focusedTerminalId` are client-local.
+- **`terminal.history` replay is per-connection.** A client joining mid-stream gets its own history payload on subscribe; the underlying scrollback lives on the backend.
+- **Workspace events fan out to all subscribers.** `workspace.tree.delta` / `decoration.delta` / `head.changed` etc. go to every subscribed connection. Each subscriber tracks its own `lastSeenVersion` independently; the journal and snapshot logic in §4.5 work per-subscriber.
+- **Notifications fan out to all clients** (§4.5); read state syncs via `deviceId` + `notification.readChanged`.
+- **Workspace lifecycle is detached from any one client.** Closing a workspace requires `workspace.close({ id })` from a client; a client disconnect alone does NOT close the workspace or its terminals — non-focused clients can come back later. Backend GC of idle workspaces is a v1 concern.
+
 ### 4.2 Backend ↔ Plugin
 
 Transport: **JSON-RPC 2.0 over stdio**, line-delimited (one JSON
