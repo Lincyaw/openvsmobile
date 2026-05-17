@@ -1069,5 +1069,66 @@ describe("NotificationHub wiring (unit)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("publish() fires the attached ntfy sender with the persisted notification", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ovsm-hub-"));
+    const store = new NotificationStore({ dbPath: join(dir, "n.db") });
+    const hub = new NotificationHub(store);
+    const seen: Array<{ id: string; title: string; level: string }> = [];
+    let resolveOne: (() => void) | null = null;
+    const oneSent = new Promise<void>((resolve) => {
+      resolveOne = resolve;
+    });
+    hub.attachNtfySender({
+      async send(n) {
+        seen.push({ id: n.id, title: n.title, level: n.level });
+        resolveOne?.();
+      },
+    });
+    try {
+      const { id } = hub.publish({
+        source: "t",
+        level: "warning",
+        title: "ntfy probe",
+        body: "via stub",
+      });
+      // send() is fire-and-forget — wait for the stub to record the call.
+      await oneSent;
+      expect(seen).toHaveLength(1);
+      expect(seen[0]!.id).toBe(id);
+      expect(seen[0]!.title).toBe("ntfy probe");
+      expect(seen[0]!.level).toBe("warning");
+    } finally {
+      hub.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("publish() does not throw when the attached ntfy sender rejects", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ovsm-hub-"));
+    const store = new NotificationStore({ dbPath: join(dir, "n.db") });
+    const hub = new NotificationHub(store);
+    let resolveOne: (() => void) | null = null;
+    const oneSent = new Promise<void>((resolve) => {
+      resolveOne = resolve;
+    });
+    hub.attachNtfySender({
+      async send() {
+        // Simulate ntfy server unreachable. The fire-and-forget block in
+        // publish() must swallow this without bubbling up to the caller.
+        resolveOne?.();
+        throw new Error("simulated ntfy down");
+      },
+    });
+    try {
+      expect(() =>
+        hub.publish({ source: "t", level: "info", title: "ok" }),
+      ).not.toThrow();
+      await oneSent;
+    } finally {
+      hub.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 

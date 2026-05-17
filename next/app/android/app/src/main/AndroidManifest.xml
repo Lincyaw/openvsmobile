@@ -43,6 +43,18 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- Deep link from ntfy notification tap. The notification ID
+                 lands in the path; main.dart parses and routes to the
+                 notification center via DeepLinkService. MainActivity's
+                 launchMode="singleTop" ensures taps while the app is alive
+                 deliver through onNewIntent instead of starting a fresh
+                 instance. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="mobilecode" android:host="notifications"/>
+            </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->

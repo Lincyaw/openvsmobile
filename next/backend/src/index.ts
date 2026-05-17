@@ -18,6 +18,7 @@ import {
 } from "./runtimeInfo.js";
 import { readPackageVersion } from "./version.js";
 import { initFcmSender } from "./fcm.js";
+import { initNtfySender } from "./ntfy.js";
 
 const DEFAULT_PORT = 7860;
 const SHUTDOWN_HARD_EXIT_MS = 3000;
@@ -49,6 +50,14 @@ async function main(): Promise<void> {
   const fcmSender = await initFcmSender();
   if (fcmSender !== null) {
     state.notificationHub.attachFcmSender(fcmSender);
+  }
+
+  // ntfy is the third transport. Gated by $NTFY_URL + $NTFY_TOPIC; meant
+  // as the actually-working channel on Chinese vendor skins where FCM
+  // can't reach Google. Backends without ntfy configured keep working.
+  const ntfySender = initNtfySender();
+  if (ntfySender !== null) {
+    state.notificationHub.attachNtfySender(ntfySender);
   }
 
   const httpServer = createServer((req, res) => {
