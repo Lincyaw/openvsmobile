@@ -48,3 +48,16 @@ Push notifications, all carrying a monotonic per-workspace `version`:
 - `workspace.closed`
 - `workspace.tree.delta` / `decoration.delta` / `head.changed` / `commit.added`
 - `workspace.decoration.snapshot` (only after `subscribe` → `mode:"snapshot"`)
+
+## Plugin host (issue C1)
+
+- Discovery dir: `OPENVSMOBILE_PLUGINS_DIR` (default
+  `~/.local/share/openvsmobile-next/plugins/`).
+- Per-plugin stderr log: `~/.local/state/openvsmobile-next/plugins/<id>.stderr.log`
+  (rotates at 5 MiB, one backup).
+- `host.log({ level, msg })` is the only host method exposed in v0.
+- Capability gate returns `RpcError -32011 capabilityNotDeclared`.
+- `plugin.*` RPCs to the Flutter client are not wired yet (lands in C2).
+
+See `docs/design/mobile-code-platform.md` §3 and §9a for what's live now
+vs deferred.

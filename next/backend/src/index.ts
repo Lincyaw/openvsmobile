@@ -11,6 +11,7 @@ import { resolveToken } from "./config.js";
 import { Connection } from "./connection.js";
 import { ProcessState } from "./state.js";
 import { handleNotifyHttp } from "./notifyHttp.js";
+import { PluginHost } from "./plugins/host.js";
 import {
   runtimeInfoPath,
   unlinkRuntimeInfo,
@@ -49,6 +50,14 @@ async function main(): Promise<void> {
   if (ntfySender !== null) {
     state.notificationHub.attachNtfySender(ntfySender);
   }
+
+  // Plugin host. Discovers plugins on disk and spawns the ones with
+  // `onStartup` activation; calls from plugins are capability-gated
+  // before reaching any host method. The host is independent of the
+  // WS surface in v0 — no `plugin.*` RPCs to the client yet (that lands
+  // in C2). See docs/design/mobile-code-platform.md §3.
+  const pluginHost = new PluginHost();
+  await pluginHost.start();
 
   const httpServer = createServer((req, res) => {
     if (req.url === "/healthz") {
@@ -129,6 +138,11 @@ async function main(): Promise<void> {
       state.shutdownAll();
     } catch (err) {
       console.error("[openvsmobile-next] shutdown error:", err);
+    }
+    try {
+      pluginHost.shutdown();
+    } catch (err) {
+      console.error("[openvsmobile-next] plugin shutdown error:", err);
     }
     // Best-effort unlink — if the file is already gone (or was never
     // written), we don't block shutdown on it.
