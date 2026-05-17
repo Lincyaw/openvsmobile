@@ -26,6 +26,8 @@ import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as ws_status;
 
+import 'version.dart';
+
 /// Notification method names the backend pushes. Listed as constants so flow
 /// control in AppState doesn't switch on bare strings — see
 /// docs/conventions.md §2 (Single source of truth: AppState).
@@ -292,7 +294,9 @@ class BackendClient {
       final hsResult = await _rawCall('auth.handshake', {
         'token': token,
         'protocolVersion': '1.0',
-        'client': {'name': 'openvsmobile-flutter', 'version': '0.1.0'},
+        // `version` mirrors the kBackendVersion constant so it stays in
+        // lockstep with the release tag; no second source of truth.
+        'client': {'name': 'openvsmobile-flutter', 'version': kBackendVersion},
       }) as Map<String, dynamic>;
       final cwd = hsResult['defaultCwd'];
       defaultCwd = cwd is String ? cwd : '/';
@@ -478,11 +482,16 @@ class BackendClient {
   Future<void> _closeSocket() async {
     try {
       await _sub?.cancel();
-    } catch (_) {/* ignore */}
+    } catch (_) {
+      // Already closed — cancel() on a finished subscription is a no-op
+      // but the underlying transport may still throw on a torn socket.
+    }
     _sub = null;
     try {
       await _channel?.sink.close(ws_status.normalClosure);
-    } catch (_) {/* ignore */}
+    } catch (_) {
+      // Already closed (peer dropped, error path, race with _onSocketGone).
+    }
     _channel = null;
     _failPending('socket closed');
   }

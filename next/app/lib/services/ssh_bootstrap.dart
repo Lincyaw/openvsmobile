@@ -207,10 +207,14 @@ class SshBootstrapService {
     } finally {
       try {
         session?.close();
-      } catch (_) {}
+      } catch (_) {
+        // Already closed (remote hangup, exit before we got here).
+      }
       try {
         client?.close();
-      } catch (_) {}
+      } catch (_) {
+        // Already closed (transport torn down by the failure path above).
+      }
       await controller.close();
     }
   }

@@ -1,18 +1,13 @@
 // Central reactive state for the app.
 //
-// Every piece of server-derived state lives here: workspaces, terminals,
-// per-PTY byte buffers, the file tree per workspace, the workspace picker's
-// current directory + entries, the SSH bootstrap result, and a mirror of
-// the BackendClient's connection state. Widgets read from AppState; they do
-// not read BackendClient directly. See docs/conventions.md §2 "Single source
-// of truth: AppState".
-//
-// Session persistence (see docs/design/mobile-code-platform.md §5.1):
-// backend PTYs survive client disconnects. On reconnect we fetch each live
-// session's scrollback via `terminal.history` and replay it into a freshly-
-// built Terminal before resuming live `terminal.data` notifications. Each
-// chunk carries a monotonic `seqEnd` so duplicates queued during the
-// reconnect window are dropped instead of re-rendered.
+// Every piece of server-derived state lives here: workspaces, the file tree
+// per workspace, the workspace picker's current directory + entries, the
+// SSH bootstrap result, and a mirror of the BackendClient's connection
+// state. PTY-side state (sessions, xterms, backlog) lives in a composed
+// `TerminalsNotifier` child; AppState forwards reads to it and re-broadcasts
+// its `notifyListeners`. Widgets read from AppState; they do not read
+// BackendClient directly. See docs/conventions.md §2 "Single source of
+// truth: AppState".
 
 import 'dart:async';
 import 'dart:convert';
@@ -23,48 +18,17 @@ import 'package:xterm/xterm.dart';
 import 'backend_client.dart';
 import 'models.dart';
 import 'services/ssh_bootstrap.dart';
+import 'state/terminals_notifier.dart';
 
 class AppState extends ChangeNotifier {
   final BackendClient client;
+  late final TerminalsNotifier _terminals;
   StreamSubscription<BackendNotification>? _notifSub;
 
   // ---- Workspace + recents ----
   List<Workspace> _active = const [];
   List<String> _recents = const [];
   Workspace? _current;
-
-  // ---- Terminals ----
-  // Per-workspace terminal session lists (mirror of the backend state).
-  final Map<String, List<TerminalSession>> _termsByWorkspace = {};
-
-  // Per-workspace focused session id (UI state — but workspace-scoped, so it
-  // belongs here rather than in widget state).
-  final Map<String, String?> _focusedTermBySpace = {};
-
-  // Live xterm Terminal objects keyed by sessionId. We create one lazily on
-  // first focus (or when we replay history on reconnect) and keep feeding it
-  // bytes from terminal.data notifications regardless of which workspace is
-  // focused — so background terminals stay live.
-  final Map<String, Terminal> _xterms = {};
-
-  // Monotonic generation per sessionId. Bumped whenever the Terminal in
-  // `_xterms` is replaced (e.g. after a reconnect history replay). The
-  // terminal_tab widget composes its ValueKey from sessionId + generation so
-  // the TerminalView rebuilds when the underlying Terminal swaps.
-  final Map<String, int> _xtermGen = {};
-
-  // Last seqEnd actually written into the xterm for a session. Used to drop
-  // duplicate chunks that arrive after `terminal.history` (which captures
-  // bytes up to scrollbackOffsetEnd; any live chunk with seqEnd <= that has
-  // already been rendered as part of the replay).
-  final Map<String, int> _lastWrittenSeq = {};
-
-  // Pending chunks per session that arrived before the Terminal was created.
-  // Each entry is (bytes, seqEnd) so we can dedupe against history offsets
-  // on flush. Capped to ~256 KB per session by total byte count.
-  static const int _backlogCap = 256 * 1024;
-  final Map<String, List<_BacklogChunk>> _backlog = {};
-  final Map<String, int> _backlogBytes = {};
 
   // ---- File tree (per workspace) ----
   final Map<String, FileTreeNode> _fileTreeByWorkspace = {};
@@ -86,6 +50,18 @@ class AppState extends ChangeNotifier {
   AppState({required this.client}) {
     _connectionState = client.state.value;
     _lastConnectionError = client.lastError.value;
+    _terminals = TerminalsNotifier(
+      client: client,
+      rootOf: (workspaceId) {
+        for (final w in _active) {
+          if (w.id == workspaceId) return w.root;
+        }
+        return null;
+      },
+      currentWorkspaceId: () => _current?.id,
+      reportError: _reportOperationError,
+    );
+    _terminals.addListener(notifyListeners);
     client.state.addListener(_onConnState);
     client.lastError.addListener(_onConnError);
     _notifSub = client.notifications.listen(_onNotification);
@@ -105,33 +81,18 @@ class AppState extends ChangeNotifier {
   }
 
   /// Terminal sessions belonging to the currently-focused workspace.
-  List<TerminalSession> get currentTerminals {
-    final w = _current;
-    if (w == null) return const [];
-    return List.unmodifiable(_termsByWorkspace[w.id] ?? const []);
-  }
+  List<TerminalSession> get currentTerminals => _terminals.currentTerminals;
 
-  String? get focusedTerminalId {
-    final w = _current;
-    if (w == null) return null;
-    return _focusedTermBySpace[w.id];
-  }
+  String? get focusedTerminalId => _terminals.focusedTerminalId;
 
   /// Generation counter for a session's underlying Terminal. The UI uses
   /// this in its ValueKey so the TerminalView force-rebuilds when we swap
   /// the Terminal (e.g. after a reconnect history replay).
   int terminalGenerationFor(String sessionId) =>
-      _xtermGen[sessionId] ?? 0;
+      _terminals.terminalGenerationFor(sessionId);
 
-  Terminal terminalFor(String sessionId) {
-    final existing = _xterms[sessionId];
-    if (existing != null) return existing;
-    final t = _buildTerminal(sessionId);
-    _xterms[sessionId] = t;
-    // Flush any backlog that accumulated before the Terminal existed.
-    _flushBacklog(sessionId, t);
-    return t;
-  }
+  Terminal terminalFor(String sessionId) =>
+      _terminals.terminalFor(sessionId);
 
   /// File tree root for [workspaceId], or null if no workspace is open or the
   /// tree hasn't been initialized yet. Screens call [refreshFileTree] to
@@ -158,49 +119,9 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  Terminal _buildTerminal(String sessionId) {
-    final t = Terminal(maxLines: 5000);
-    t.onOutput = (data) {
-      client.call('terminal.write', {
-        'sessionId': sessionId,
-        'dataBase64': base64Encode(utf8.encode(data)),
-      });
-    };
-    t.onResize = (w, h, _, _) {
-      client.call('terminal.resize', {
-        'sessionId': sessionId,
-        'cols': w,
-        'rows': h,
-      });
-    };
-    return t;
-  }
-
-  /// Drain `_backlog[sessionId]` into the supplied Terminal, respecting the
-  /// `_lastWrittenSeq` watermark so we don't re-render bytes already covered
-  /// by a history replay.
-  void _flushBacklog(String sessionId, Terminal term) {
-    final pending = _backlog.remove(sessionId);
-    _backlogBytes.remove(sessionId);
-    if (pending == null || pending.isEmpty) return;
-    final lastSeq = _lastWrittenSeq[sessionId] ?? 0;
-    int newLast = lastSeq;
-    for (final chunk in pending) {
-      // Whole chunk already covered by history.
-      if (chunk.seqEnd <= lastSeq) continue;
-      final chunkSeqStart = chunk.seqEnd - chunk.bytes.length;
-      Uint8List bytes = chunk.bytes;
-      if (chunkSeqStart < lastSeq) {
-        // Partial overlap — keep only the tail past the watermark.
-        final skip = lastSeq - chunkSeqStart;
-        bytes = chunk.bytes.sublist(skip);
-      }
-      if (bytes.isNotEmpty) {
-        term.write(utf8.decode(bytes, allowMalformed: true));
-      }
-      newLast = chunk.seqEnd;
-    }
-    if (newLast > lastSeq) _lastWrittenSeq[sessionId] = newLast;
+  void _reportOperationError(String message) {
+    _lastOperationError = message;
+    notifyListeners();
   }
 
   // ---- Lifecycle / notifications ----
@@ -226,18 +147,11 @@ class AppState extends ChangeNotifier {
     // is stale until we reconfirm with the backend. The IDs themselves may
     // still be alive on the backend (that's the whole point of persistence),
     // but we tear down the local Terminal objects so the reconnect replay
-    // path can rebuild them fresh. _lastWrittenSeq is cleared too because
-    // those offsets are tied to the previous in-memory Terminal lifetime.
+    // path can rebuild them fresh.
     _active = const [];
     _current = null;
-    _termsByWorkspace.clear();
-    _focusedTermBySpace.clear();
-    _xterms.clear();
-    _xtermGen.clear();
-    _lastWrittenSeq.clear();
-    _backlog.clear();
-    _backlogBytes.clear();
     _fileTreeByWorkspace.clear();
+    _terminals.resetAll();
     // Keep recents — they're useful when reconnecting.
     notifyListeners();
   }
@@ -250,10 +164,10 @@ class AppState extends ChangeNotifier {
   Future<void> _onNotification(BackendNotification n) async {
     switch (n.method) {
       case BackendNotifications.terminalData:
-        _onTerminalData(n.params as Map<String, dynamic>);
+        _terminals.onTerminalData(n.params as Map<String, dynamic>);
         break;
       case BackendNotifications.terminalExit:
-        await _onTerminalExit(n.params as Map<String, dynamic>);
+        _terminals.onTerminalExit(n.params as Map<String, dynamic>);
         break;
       case BackendNotifications.workspaceClosed:
         final id = (n.params as Map<String, dynamic>)['id'] as String;
@@ -265,99 +179,10 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  void _onTerminalData(Map<String, dynamic> p) {
-    final sessionId = p['sessionId'] as String;
-    final dataB64 = p['dataBase64'] as String;
-    final bytes = Uint8List.fromList(base64Decode(dataB64));
-    // seqEnd is required by the post-P1.5 backend. Older backends without it
-    // will emit null/undefined; we tolerate that by falling back to a running
-    // counter derived from chunk length so dedupe still does *something*
-    // sane.
-    final seqEnd = (p['seqEnd'] as num?)?.toInt() ??
-        ((_lastWrittenSeq[sessionId] ?? 0) +
-            (_backlogBytes[sessionId] ?? 0) +
-            bytes.length);
-
-    final term = _xterms[sessionId];
-    if (term != null) {
-      final lastSeq = _lastWrittenSeq[sessionId] ?? 0;
-      if (seqEnd <= lastSeq) {
-        // Already rendered as part of a history replay. Drop.
-        return;
-      }
-      final chunkSeqStart = seqEnd - bytes.length;
-      Uint8List toWrite = bytes;
-      if (chunkSeqStart < lastSeq) {
-        // Partial overlap with history — keep the tail past the watermark.
-        final skip = lastSeq - chunkSeqStart;
-        toWrite = bytes.sublist(skip);
-      }
-      if (toWrite.isNotEmpty) {
-        term.write(utf8.decode(toWrite, allowMalformed: true));
-      }
-      _lastWrittenSeq[sessionId] = seqEnd;
-      return;
-    }
-    // No Terminal yet — buffer with the seqEnd attached so we can dedupe on flush.
-    final list = _backlog.putIfAbsent(sessionId, () => <_BacklogChunk>[]);
-    list.add(_BacklogChunk(bytes: bytes, seqEnd: seqEnd));
-    _backlogBytes.update(sessionId, (v) => v + bytes.length,
-        ifAbsent: () => bytes.length);
-    // Cap total queued bytes per session.
-    while ((_backlogBytes[sessionId] ?? 0) > _backlogCap && list.length > 1) {
-      final head = list.removeAt(0);
-      _backlogBytes[sessionId] =
-          (_backlogBytes[sessionId] ?? 0) - head.bytes.length;
-    }
-    // Edge case: a single chunk exceeds the cap. Trim its head in place.
-    if (list.length == 1 && list.first.bytes.length > _backlogCap) {
-      final head = list.first;
-      final trimmed = head.bytes.sublist(head.bytes.length - _backlogCap);
-      list[0] = _BacklogChunk(bytes: trimmed, seqEnd: head.seqEnd);
-      _backlogBytes[sessionId] = trimmed.length;
-    }
-  }
-
-  Future<void> _onTerminalExit(Map<String, dynamic> p) async {
-    final sessionId = p['sessionId'] as String;
-    final wsId = p['workspaceId'] as String?;
-    _xterms.remove(sessionId);
-    _xtermGen.remove(sessionId);
-    _lastWrittenSeq.remove(sessionId);
-    _backlog.remove(sessionId);
-    _backlogBytes.remove(sessionId);
-    if (wsId != null) {
-      final list = _termsByWorkspace[wsId];
-      if (list != null) {
-        list.removeWhere((t) => t.id == sessionId);
-      }
-      if (_focusedTermBySpace[wsId] == sessionId) {
-        _focusedTermBySpace[wsId] = list != null && list.isNotEmpty
-            ? list.first.id
-            : null;
-      }
-    } else {
-      // Workspace already closed locally — search all.
-      for (final entry in _termsByWorkspace.entries) {
-        entry.value.removeWhere((t) => t.id == sessionId);
-      }
-    }
-    notifyListeners();
-  }
-
   void _onWorkspaceClosed(String id) {
     _active = _active.where((w) => w.id != id).toList();
-    final sessions = _termsByWorkspace.remove(id) ?? const [];
-    _focusedTermBySpace.remove(id);
     _fileTreeByWorkspace.remove(id);
-    // Tear down any per-session local state that was tied to this workspace.
-    for (final s in sessions) {
-      _xterms.remove(s.id);
-      _xtermGen.remove(s.id);
-      _lastWrittenSeq.remove(s.id);
-      _backlog.remove(s.id);
-      _backlogBytes.remove(s.id);
-    }
+    _terminals.onWorkspaceClosed(id);
     if (_current?.id == id) {
       _current = _active.isNotEmpty ? _active.first : null;
     }
@@ -366,6 +191,14 @@ class AppState extends ChangeNotifier {
 
   // ---- Public actions ----
 
+  /// Re-fetch workspaces + terminals from the backend and replay every
+  /// session's scrollback. Called on successful (re)connect.
+  ///
+  /// Error policy: a mid-call socket drop is benign (the connection banner
+  /// already tells the user we're disconnected, and `_onConnState` will
+  /// clear everything when the state transition lands). Any other failure
+  /// is a real problem — a malformed reply, a server-side throw, an
+  /// unexpected exception — and surfaces via `lastOperationError`.
   Future<void> refreshWorkspaces() async {
     try {
       final res = await client.call('workspace.list') as Map<String, dynamic>;
@@ -381,7 +214,6 @@ class AppState extends ChangeNotifier {
       _current = curRaw == null
           ? null
           : Workspace.fromJson(curRaw as Map<String, dynamic>);
-      _termsByWorkspace.clear();
       for (final w in _active) {
         final tres = await client.call(
           'terminal.list',
@@ -391,63 +223,31 @@ class AppState extends ChangeNotifier {
             .cast<Map<String, dynamic>>()
             .map(TerminalSession.fromJson)
             .toList();
-        _termsByWorkspace[w.id] = sessions;
+        _terminals.setSessionsForWorkspace(w.id, sessions);
         // Replay each session's scrollback. Order matters: we must finish
-        // the replay (and set _lastWrittenSeq) BEFORE any live terminal.data
+        // the replay (and set the seq watermark) BEFORE any live terminal.data
         // notifications race in. Notifications observed while the call is
-        // in flight land in _backlog (because _xterms[sid] is still empty
-        // at that point) and get drained when we finally install the
-        // Terminal below. That keeps the dedupe protocol watertight.
+        // in flight land in the backlog (because no Terminal exists yet for
+        // that sid) and get drained when we finally install the Terminal.
+        // That keeps the dedupe protocol watertight.
         for (final s in sessions) {
-          await _replayHistory(s.id);
-        }
-        // Restore focus so the Terminal tab shows a session immediately on
-        // reconnect instead of the "Creating terminal…" placeholder. The
-        // disconnect path clears _focusedTermBySpace; without this step the
-        // user would have to tap a chip after every drop.
-        if (sessions.isNotEmpty) {
-          _focusedTermBySpace[w.id] ??= sessions.first.id;
+          await _terminals.replayHistory(s.id);
         }
       }
       notifyListeners();
     } catch (e) {
-      // Connection probably went away mid-call; _onConnState handles cleanup.
-      // Log so a developer running flutter run sees this — production users
-      // will just see "Connecting…" until the socket comes back.
-      debugPrint('AppState.refreshWorkspaces failed: $e');
+      // Discriminate: mid-call socket drop vs. real RPC failure.
+      // `_onConnState` cleans up local mirrors when the state transitions,
+      // and the connection banner is the user-visible signal for that
+      // case — adding a SnackBar on top would just be noise.
+      if (_connectionState != BackendConnectionState.connected) {
+        debugPrint(
+          'AppState.refreshWorkspaces dropped during reconnect: $e',
+        );
+        return;
+      }
+      _reportOperationError('Could not load workspaces: $e');
     }
-  }
-
-  Future<void> _replayHistory(String sessionId) async {
-    Map<String, dynamic> hist;
-    try {
-      hist = await client.call('terminal.history', {
-        'sessionId': sessionId,
-      }) as Map<String, dynamic>;
-    } catch (_) {
-      // Older backends won't implement terminal.history. Fall back to live-
-      // only rendering — set the watermark to 0 so the dedupe path is a
-      // no-op and every incoming chunk just gets written.
-      _lastWrittenSeq[sessionId] = 0;
-      _xtermGen[sessionId] = (_xtermGen[sessionId] ?? 0) + 1;
-      _xterms[sessionId] = _buildTerminal(sessionId);
-      return;
-    }
-    final bytes = base64Decode(hist['scrollbackBase64'] as String);
-    final offsetEnd = (hist['scrollbackOffsetEnd'] as num).toInt();
-
-    final term = _buildTerminal(sessionId);
-    if (bytes.isNotEmpty) {
-      term.write(utf8.decode(bytes, allowMalformed: true));
-    }
-    // Replace any previous Terminal for this session and bump the generation
-    // so the UI rebuilds the TerminalView (it keys on sessionId + gen).
-    _xterms[sessionId] = term;
-    _xtermGen[sessionId] = (_xtermGen[sessionId] ?? 0) + 1;
-    _lastWrittenSeq[sessionId] = offsetEnd;
-    // Drain anything that arrived during the in-flight call. Same dedupe
-    // logic as live notifications.
-    _flushBacklog(sessionId, term);
   }
 
   /// Open or focus a workspace rooted at [root]. Returns the resulting
@@ -462,14 +262,12 @@ class AppState extends ChangeNotifier {
       if (!_active.any((w) => w.id == ws.id)) {
         _active = [..._active, ws];
       }
-      _termsByWorkspace.putIfAbsent(ws.id, () => []);
       _current = ws;
       _recents = [root, ..._recents.where((r) => r != root)];
       notifyListeners();
       return ws;
     } catch (e) {
-      _lastOperationError = 'Failed to open $root: $e';
-      notifyListeners();
+      _reportOperationError('Failed to open $root: $e');
       return null;
     }
   }
@@ -483,8 +281,7 @@ class AppState extends ChangeNotifier {
     } catch (e) {
       // Stale id, most likely — refresh and let the UI catch up. Stash the
       // reason so the user sees *something* instead of a silent no-op.
-      _lastOperationError = 'Could not activate workspace: $e';
-      notifyListeners();
+      _reportOperationError('Could not activate workspace: $e');
       await refreshWorkspaces();
     }
   }
@@ -494,8 +291,7 @@ class AppState extends ChangeNotifier {
       await client.call('workspace.close', {'id': id});
       // The backend echoes workspace.closed; _onWorkspaceClosed updates state.
     } catch (e) {
-      _lastOperationError = 'Could not close workspace: $e';
-      notifyListeners();
+      _reportOperationError('Could not close workspace: $e');
       await refreshWorkspaces();
     }
   }
@@ -504,68 +300,44 @@ class AppState extends ChangeNotifier {
     required String workspaceId,
     required int cols,
     required int rows,
-  }) async {
-    try {
-      final r = await client.call('terminal.create', {
-        'workspaceId': workspaceId,
-        'cols': cols,
-        'rows': rows,
-      }) as Map<String, dynamic>;
-      final sid = r['sessionId'] as String;
-      final wsId = r['workspaceId'] as String;
-      final session = TerminalSession(
-        id: sid,
-        workspaceId: wsId,
+  }) =>
+      _terminals.createTerminal(
+        workspaceId: workspaceId,
         cols: cols,
         rows: rows,
-        cwd: _active.firstWhere((w) => w.id == wsId).root,
-        createdAt: DateTime.now().millisecondsSinceEpoch,
       );
-      final list = _termsByWorkspace.putIfAbsent(wsId, () => []);
-      list.add(session);
-      _focusedTermBySpace[wsId] = sid;
-      // Fresh session — no history to fetch.
-      _lastWrittenSeq[sid] = 0;
-      notifyListeners();
-      return session;
-    } catch (e) {
-      _lastOperationError = 'Could not create terminal: $e';
-      notifyListeners();
-      return null;
-    }
-  }
 
-  Future<void> disposeTerminal(String sessionId) async {
-    try {
-      await client.call('terminal.dispose', {'sessionId': sessionId});
-      // terminal.exit notification will arrive and trigger cleanup.
-    } catch (e) {
-      // If the session was already gone, the user sees nothing — they
-      // intended to close it and it's closed. Only surface if it looks like
-      // a real failure (anything other than not-found).
-      debugPrint('AppState.disposeTerminal($sessionId) failed: $e');
-    }
-  }
+  Future<void> disposeTerminal(String sessionId) =>
+      _terminals.disposeTerminal(
+        sessionId,
+        connectionState: _connectionState,
+      );
 
-  void focusTerminal(String sessionId) {
-    // Capture the current workspace once: this method runs synchronously,
-    // but capturing makes the intent obvious and matches the discipline
-    // we apply in the async paths.
-    final w = _current;
-    if (w == null) return;
-    _focusedTermBySpace[w.id] = sessionId;
-    notifyListeners();
-  }
+  void focusTerminal(String sessionId) => _terminals.focusTerminal(sessionId);
 
   // ---- File tree (per workspace) ----
 
   /// Discard the cached tree for [workspaceId] and re-fetch the root's
-  /// children. Used by the Files tab's pull-to-refresh.
+  /// children. Returns the future so callers (e.g. RefreshIndicator) can
+  /// await it. Errors surface via [lastOperationError]; fire-and-forget
+  /// callers (e.g. `_ensureRoot` after a workspace switch) get the same
+  /// SnackBar via HomeShell's listener.
   Future<void> refreshFileTree(String workspaceId) async {
-    final ws = _active.firstWhere(
-      (w) => w.id == workspaceId,
-      orElse: () => throw StateError('no such workspace: $workspaceId'),
-    );
+    Workspace? ws;
+    for (final w in _active) {
+      if (w.id == workspaceId) {
+        ws = w;
+        break;
+      }
+    }
+    if (ws == null) {
+      // Workspace was closed between the trigger and this call. Surface
+      // rather than throwing into the void.
+      _reportOperationError(
+        'Could not refresh file tree: workspace gone',
+      );
+      return;
+    }
     final root = FileTreeNode(path: ws.root, name: ws.label, isDir: true);
     _fileTreeByWorkspace[workspaceId] = root;
     notifyListeners();
@@ -600,7 +372,14 @@ class AppState extends ChangeNotifier {
           .toList();
       node.expanded = true;
     } catch (e) {
+      // Keep the per-node tooltip (visible next to the row) AND surface
+      // via SnackBar so a failure on a collapsed-then-tapped node doesn't
+      // go unnoticed if the user's eyes are elsewhere — unless we're
+      // already disconnected, in which case the banner is the signal.
       node.error = e.toString();
+      if (_connectionState == BackendConnectionState.connected) {
+        _reportOperationError('Could not list ${node.path}: $e');
+      }
     } finally {
       node.loading = false;
       notifyListeners();
@@ -699,13 +478,9 @@ class AppState extends ChangeNotifier {
   void dispose() {
     client.state.removeListener(_onConnState);
     client.lastError.removeListener(_onConnError);
+    _terminals.removeListener(notifyListeners);
+    _terminals.dispose();
     _notifSub?.cancel();
     super.dispose();
   }
-}
-
-class _BacklogChunk {
-  final Uint8List bytes;
-  final int seqEnd;
-  const _BacklogChunk({required this.bytes, required this.seqEnd});
 }
