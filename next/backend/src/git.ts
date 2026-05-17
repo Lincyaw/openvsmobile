@@ -83,21 +83,29 @@ export async function readStatus(cwd: string): Promise<GitStatusEntry[]> {
   return parsePorcelainV2(out);
 }
 
-/// Run `git diff` between baseSha (or working tree) and the on-disk version.
-/// `git diff <sha> -- <path>` compares the indexed tree at <sha> to the working
-/// tree. With `baseSha === undefined` we compare working tree to HEAD (the
-/// "what would I commit if I added everything" view), matching what the
-/// Changes view wants.
-export async function runDiff(
+/// Run a single `git diff` invocation with caller-supplied "selector" args
+/// (the bits that come AFTER `diff` and BEFORE the pathspec — e.g. `HEAD`,
+/// `--cached`, or `<base> <head>`). Returns the raw stdout plus a `tooLarge`
+/// flag for the buffer-overflow case.
+///
+/// We deliberately do NOT detect binary-vs-text here: git auto-detects and
+/// emits a `Binary files a/x and b/x differ` marker inline. The caller
+/// inspects that marker, so we get binary + text + content in one spawn
+/// rather than the old two-spawn (numstat + diff) pattern.
+export async function runDiffArgs(
   cwd: string,
+  selectorArgs: string[],
   path: string,
-  baseSha?: string,
 ): Promise<{ stdout: string; tooLarge: boolean }> {
-  const args = ["diff", "--no-color", "--no-ext-diff", "--unified=3"];
-  if (baseSha !== undefined && baseSha.length > 0) {
-    args.push(baseSha);
-  }
-  args.push("--", path);
+  const args = [
+    "diff",
+    "--no-color",
+    "--no-ext-diff",
+    "--unified=3",
+    ...selectorArgs,
+    "--",
+    path,
+  ];
   try {
     const { stdout } = await execFileAsync(GIT_BIN, args, {
       cwd,
@@ -116,36 +124,67 @@ export async function runDiff(
   }
 }
 
-/// Inspect what `git diff` would do for `path` without producing the patch.
-/// Returns the diff "kind" so the caller can short-circuit text parsing when
-/// the file is binary, missing, or pathologically large. We piggyback on
-/// `git diff --numstat` (returns `-\t-\t<path>` for binary, plus added/removed
-/// counts otherwise) and `git ls-files` to detect "deleted".
-export async function diffKind(
-  cwd: string,
-  path: string,
-  baseSha?: string,
-): Promise<"text" | "binary" | "deleted" | "absent"> {
-  const args = ["diff", "--no-color", "--numstat"];
-  if (baseSha !== undefined && baseSha.length > 0) {
-    args.push(baseSha);
-  }
-  args.push("--", path);
-  const out = await runGitOptional(args, cwd);
-  if (out === null || out.trim().length === 0) {
-    // No diff. Either the file is unchanged or it isn't tracked.
-    return "absent";
-  }
-  // Each line: `<added>\t<removed>\t<path>`. Binary files show `-\t-`.
-  const firstLine = out.split("\n")[0] ?? "";
-  if (firstLine.startsWith("-\t-\t")) return "binary";
-  // Detect deletion: ask `git diff --name-status` for the path.
-  const nameStatus = await runGitOptional(
-    ["diff", "--name-status", ...(baseSha ? [baseSha] : []), "--", path],
+/// Resolve a ref (branch, tag, commit-ish) to its full 40-char SHA. Returns
+/// null when the ref is unknown — callers turn that into invalidParams.
+export async function resolveRef(cwd: string, ref: string): Promise<string | null> {
+  const out = await runGitOptional(
+    ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
     cwd,
   );
-  if (nameStatus !== null && /^D\b/.test(nameStatus.trim())) return "deleted";
-  return "text";
+  if (out === null) return null;
+  const trimmed = out.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/// SHA of the working-tree file's current contents. Returns null when the
+/// file does not exist on disk (e.g. deleted vs HEAD). Used as `headSha` for
+/// the "vs working tree" diff so the client's cache key invalidates the
+/// moment the file changes.
+export async function hashWorkingFile(
+  cwd: string,
+  path: string,
+): Promise<string | null> {
+  const out = await runGitOptional(["hash-object", "--", path], cwd);
+  if (out === null) return null;
+  const trimmed = out.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/// SHA of the file's staged blob in the index. Returns null when the path is
+/// not in the index (untracked, or matches an entry only in a commit tree).
+export async function indexBlobSha(
+  cwd: string,
+  path: string,
+): Promise<string | null> {
+  const out = await runGitOptional(
+    ["ls-files", "--stage", "--", path],
+    cwd,
+  );
+  if (out === null) return null;
+  // `<mode> <sha> <stage>\t<path>` — extract the second field.
+  const match = /^\S+\s+(\S+)\s+\S+\t/.exec(out);
+  return match ? match[1] : null;
+}
+
+/// True when the file path is reachable in `commitRef`'s tree. Used to decide
+/// whether a deleted-from-working-tree path can still be diffed against an
+/// ancestor commit.
+export async function pathInTree(
+  cwd: string,
+  commitRef: string,
+  path: string,
+): Promise<boolean> {
+  const out = await runGitOptional(
+    ["ls-tree", "--name-only", commitRef, "--", path],
+    cwd,
+  );
+  return out !== null && out.trim().length > 0;
+}
+
+/// True when the file path is in the index.
+export async function pathInIndex(cwd: string, path: string): Promise<boolean> {
+  const out = await runGitOptional(["ls-files", "--", path], cwd);
+  return out !== null && out.trim().length > 0;
 }
 
 /// `git log` for a workspace or path. Output formatted as `<sha>\x01<author>\x01<date>\x01<subject>`

@@ -10,6 +10,10 @@ export interface DiffHunk {
   oldLines: number;
   newStart: number;
   newLines: number;
+  /// The verbatim `@@ -A,B +C,D @@ [section context]` line. Includes the
+  /// optional trailing context that git emits when the hunk falls inside a
+  /// function/section — the client renders it in the hunk header strip.
+  header: string;
   lines: DiffLine[];
 }
 
@@ -73,7 +77,14 @@ export function parseUnifiedDiff(text: string): DiffHunk[] {
       }
       i++;
     }
-    hunks.push({ oldStart, oldLines, newStart, newLines, lines: hunkLines });
+    hunks.push({
+      oldStart,
+      oldLines,
+      newStart,
+      newLines,
+      header,
+      lines: hunkLines,
+    });
   }
   return hunks;
 }
