@@ -428,11 +428,17 @@ class WorkspacesModel extends ChangeNotifier {
       return true;
     }
     if (version == st.lastSeenVersion + 1) return true;
-    if (version <= st.lastSeenVersion) {
-      // Replay overlap (e.g. our subscribe-replay slice + a live emit landed
-      // in the same tick on the server side). The backend's
-      // lastDeliveredVersion gate makes the duplicate impossible on a
-      // single-subscriber wire; this branch is defensive.
+    if (version == st.lastSeenVersion) {
+      // Same-version sibling event — accepted as idempotent. This happens
+      // on subscribe with mode=snapshot: backend pushes decoration.snapshot
+      // and head.changed both stamped with baseVersion, so the second one
+      // arrives with version == lastSeenVersion. State re-apply is safe.
+      return true;
+    }
+    if (version < st.lastSeenVersion) {
+      // Truly out-of-order (older than what we've integrated). Skip; the
+      // backend's lastDeliveredVersion gate makes this near-impossible on a
+      // single-subscriber wire but the branch is defensive.
       return false;
     }
     // Gap. Fire a subscribe to recover. We do NOT integrate the current
