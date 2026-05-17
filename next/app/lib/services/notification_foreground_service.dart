@@ -186,14 +186,15 @@ class NotificationForegroundHandler extends TaskHandler {
 
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
-    debugPrint('NotificationForegroundHandler.onStart starter=$starter');
+    debugPrint('FGS-HANDLER: onStart starter=$starter');
     await _initLocalNotifications();
     await _readPrefs();
+    debugPrint('FGS-HANDLER: prefs host=$_host port=$_port token=${_token != null} deviceId=$_deviceId');
     if (_host == null || _port == null || _token == null) {
-      debugPrint('NotificationForegroundHandler: missing connection prefs; '
-          'not opening WS. Service will idle.');
+      debugPrint('FGS-HANDLER: missing connection prefs; not opening WS.');
       return;
     }
+    debugPrint('FGS-HANDLER: starting _connect()');
     unawaited(_connect());
   }
 
@@ -240,12 +241,14 @@ class NotificationForegroundHandler extends TaskHandler {
     if (host == null || port == null || token == null) return;
 
     final uri = Uri.parse('ws://$host:$port/rpc');
+    debugPrint('FGS-HANDLER: connecting to $uri');
     WebSocketChannel ch;
     try {
       ch = WebSocketChannel.connect(uri);
       await ch.ready;
+      debugPrint('FGS-HANDLER: WS connected');
     } catch (e) {
-      debugPrint('NotificationForegroundHandler: connect failed: $e');
+      debugPrint('FGS-HANDLER: connect failed: $e');
       _scheduleReconnect();
       return;
     }
@@ -276,20 +279,18 @@ class NotificationForegroundHandler extends TaskHandler {
         'protocolVersion': '1.0',
         'client': clientInfo,
       });
+      debugPrint('FGS-HANDLER: handshake OK');
     } catch (e) {
-      debugPrint('NotificationForegroundHandler: handshake failed: $e');
+      debugPrint('FGS-HANDLER: handshake failed: $e');
       await _closeSocket();
       _scheduleReconnect();
       return;
     }
     try {
       await _rawCall('notification.subscribe');
+      debugPrint('FGS-HANDLER: subscribe OK');
     } catch (e) {
-      // Subscribe failure is non-fatal — the connection is up and the
-      // main isolate has its own subscribe channel feeding the in-app
-      // center. Don't tear down on this; the next reconnect cycle would
-      // just hit the same failure.
-      debugPrint('NotificationForegroundHandler: subscribe failed: $e');
+      debugPrint('FGS-HANDLER: subscribe failed: $e');
     }
     _backoffStep = 0;
   }
@@ -426,17 +427,15 @@ class NotificationForegroundHandler extends TaskHandler {
   // ---------- System-tray emit ----------
 
   Future<void> _handleShow(AppNotification n) async {
+    debugPrint('FGS-HANDLER: _handleShow title=${n.title} level=${n.level}');
     if (_mutedSources.contains(n.source)) {
-      debugPrint('NotificationForegroundHandler: suppressing muted source '
-          '${n.source}');
+      debugPrint('FGS-HANDLER: suppressing muted source ${n.source}');
       return;
     }
     final inQuiet = _inQuietHours();
-    // In quiet hours we drop every entry to the low/silent channel
-    // regardless of level. This trades some lost urgency for the user's
-    // explicit "don't bother me" signal — same trade as iOS Focus modes.
     final channelId =
         inQuiet ? NotificationChannels.low : channelForLevel(n.level);
+    debugPrint('FGS-HANDLER: channel=$channelId inQuiet=$inQuiet');
     final details = AndroidNotificationDetails(
       channelId,
       _channelName(channelId),
@@ -448,8 +447,6 @@ class NotificationForegroundHandler extends TaskHandler {
       silent: inQuiet || channelId == NotificationChannels.low,
       autoCancel: true,
     );
-    // Payload encodes the notification id so the tap handler routes the
-    // deeplink to the right item.
     final payload = jsonEncode({'id': n.id});
     try {
       await _notif.show(
@@ -459,11 +456,9 @@ class NotificationForegroundHandler extends TaskHandler {
         NotificationDetails(android: details),
         payload: payload,
       );
+      debugPrint('FGS-HANDLER: show OK');
     } on PlatformException catch (e) {
-      // Most common cause: POST_NOTIFICATIONS denied. Logged for the dev
-      // workflow; the user already sees nothing in the tray which is the
-      // honest signal.
-      debugPrint('NotificationForegroundHandler: show failed: $e');
+      debugPrint('FGS-HANDLER: show failed: $e');
     }
   }
 
@@ -559,17 +554,38 @@ class NotificationForegroundHandler extends TaskHandler {
     const initSettings = InitializationSettings(
       android: AndroidInitializationSettings('ic_notification'),
     );
-    await _notif.initialize(
+    final initOk = await _notif.initialize(
       initSettings,
       onDidReceiveNotificationResponse: onNotificationTap,
     );
+    debugPrint('FGS-HANDLER: _notif.initialize() returned $initOk');
+
     // Pre-create the per-level channels so they show up in the Android
     // Settings UI on first launch even before a notification arrives.
-    // After the user touches their importance/sound there, Android pins
-    // those overrides — we cannot change them later (matches design §4.5).
     final android = _notif.resolvePlatformSpecificImplementation<
         AndroidFlutterLocalNotificationsPlugin>();
     if (android == null) {
+      debugPrint('FGS-HANDLER: AndroidFlutterLocalNotificationsPlugin is null — '
+          'plugin not registered in this isolate. Trying MethodChannel fallback.');
+      // Fallback: attempt to show a test notification directly through the
+      // plugin's top-level API; if it works, channels will be auto-created.
+      try {
+        await _notif.show(
+          99999,
+          'Notification service started',
+          'Listening for backend notifications',
+          const NotificationDetails(
+            android: AndroidNotificationDetails(
+              NotificationChannels.defaultImp,
+              'Notifications',
+              importance: Importance.defaultImportance,
+            ),
+          ),
+        );
+        debugPrint('FGS-HANDLER: fallback test notification OK');
+      } on PlatformException catch (e) {
+        debugPrint('FGS-HANDLER: fallback test notification failed: $e');
+      }
       _notifInitialized = true;
       return;
     }
@@ -597,6 +613,7 @@ class NotificationForegroundHandler extends TaskHandler {
       playSound: true,
       enableVibration: true,
     ));
+    debugPrint('FGS-HANDLER: notification channels created');
     _notifInitialized = true;
   }
 }
@@ -669,17 +686,20 @@ class NotificationServiceController {
         key: _ServicePrefs.quietStart, value: quietStartMinutes);
     await FlutterForegroundTask.saveData(
         key: _ServicePrefs.quietEnd, value: quietEndMinutes);
-    if (await FlutterForegroundTask.isRunningService) {
-      // Already running — push the updated prefs to the running isolate.
+    final alreadyRunning = await FlutterForegroundTask.isRunningService;
+    debugPrint('FGS-CTRL: isRunningService=$alreadyRunning');
+    if (alreadyRunning) {
       FlutterForegroundTask.sendDataToTask({'kind': 'prefs-updated'});
       return true;
     }
+    debugPrint('FGS-CTRL: calling startService...');
     final r = await FlutterForegroundTask.startService(
       serviceId: kForegroundServiceId,
       notificationTitle: 'openvsmobile-next',
       notificationText: 'Listening for backend notifications',
       callback: startNotificationForegroundHandler,
     );
+    debugPrint('FGS-CTRL: startService result=$r (${r.runtimeType})');
     return r is ServiceRequestSuccess;
   }
 

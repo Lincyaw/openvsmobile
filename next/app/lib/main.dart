@@ -83,33 +83,37 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
 
   Future<void> _maybeStartForegroundService() async {
     final s = _settings, did = _deviceId, prefs = _notifPrefs;
-    if (s == null || did == null || prefs == null) return;
-    if (!s.isComplete) return;
+    debugPrint('FGS: _maybeStartForegroundService called');
+    if (s == null || did == null || prefs == null) {
+      debugPrint('FGS: early return — s=$s did=$did prefs=$prefs');
+      return;
+    }
+    if (!s.isComplete) {
+      debugPrint('FGS: early return — settings incomplete');
+      return;
+    }
     if (!prefs.backgroundEnabled) {
-      // User has the toggle off. Make sure no stale service is running
-      // from a previous launch.
+      debugPrint('FGS: early return — backgroundEnabled=false');
       await _fgService.stop();
       return;
     }
-    // Request POST_NOTIFICATIONS if the OS hasn't granted it yet. The
-    // plugin's own check/request methods route to the same OS API as
-    // `permission_handler`; using the bundled one avoids a second
-    // permission API surface for the same permission.
     final perm = await FlutterForegroundTask.checkNotificationPermission();
+    debugPrint('FGS: perm=$perm');
     NotificationPermission resolved = perm;
     if (perm == NotificationPermission.denied) {
       resolved = await FlutterForegroundTask.requestNotificationPermission();
+      debugPrint('FGS: after request perm=$resolved');
     }
     if (resolved != NotificationPermission.granted) {
-      // Permission missing — flip the persisted toggle back off so the
-      // Settings UI shows the truth on next read.
+      debugPrint('FGS: early return — perm not granted ($resolved)');
       await _settingsStore
           .saveNotificationPrefs(prefs.copyWith(backgroundEnabled: false));
       if (!mounted) return;
       setState(() => _notifPrefs = prefs.copyWith(backgroundEnabled: false));
       return;
     }
-    await _fgService.start(
+    debugPrint('FGS: calling _fgService.start...');
+    final ok = await _fgService.start(
       host: s.host,
       port: s.port,
       token: s.token,
@@ -118,6 +122,7 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
       quietStartMinutes: prefs.quietHoursStartMinutes ?? -1,
       quietEndMinutes: prefs.quietHoursEndMinutes ?? -1,
     );
+    debugPrint('FGS: _fgService.start returned $ok');
   }
 
   void _consumePendingTapIfAny() {
