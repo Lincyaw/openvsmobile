@@ -149,6 +149,12 @@ Frontend → Backend:
 | `notification.markRead`      | `{ ids }` → `{ ok: true }`. Writes the connection's `deviceId` (from handshake) into each row's `read_by` array; broadcasts `notification.readChanged` to subscribed peers. Same id from the same device twice is a no-op (the array stays length-1). |
 | `notification.delete`        | `{ ids }` → `{ ok: true }`. Broadcasts `notification.deleted`. Unknown ids are silently swallowed. |
 | `notification.markImportant` | `{ id, important }` → `{ ok: true }`. Promote clears `ttl_until`. Demote always re-anchors at `now + 7d` (the original window is not preserved — promote wipes it). Unknown ids are silently swallowed. |
+| `plugin.subscribe`           | `{}` → `{ ok: true }`. Per-connection toggle for the `plugin.stateChanged` push surface; off until called so older clients don't receive the frames. |
+| `plugin.unsubscribe`         | `{}` → `{ ok: true }`. |
+| `plugin.list`                | `{}` → `{ plugins: PluginInfo[] }` where `PluginInfo = { id, name, version, state: "running" \| "stopped" \| "crashed" \| "disabled", capabilities, contributes, crashReason? }`. Backend is the source of truth — clients render from this, never from a cached copy. |
+| `plugin.enable`              | `{ id }` → `{ ok: true }`. Removes the plugin from the persisted disabled set; if the in-memory state was `disabled`, transitions to `stopped` and immediately activates when the manifest declares `onStartup`. Fires `plugin.stateChanged`. |
+| `plugin.disable`             | `{ id }` → `{ ok: true }`. Persists the disabled flag, then terminates the child process (SIGTERM, 10 s grace, SIGKILL). Fires `plugin.stateChanged` to `state: "disabled"`. |
+| `plugin.invokeCommand`       | `{ id, commandId, args? }` → `{ result?: any }`. Routed through the plugin's JSON-RPC channel as a host→plugin `command.invoke` request; the plugin's response (or error) is returned. Triggers `onCommand:<commandId>` activation if the plugin is in `stopped` state and lists that activation event. Disabled / crashed plugins reject with `-32602`. |
 
 Backend → Frontend (notifications):
 
@@ -161,6 +167,7 @@ Backend → Frontend (notifications):
 | `notification.superseded`  | `{ oldId, newId }` — fires before the matching `notification.show` when the new row has a `supersedes` field. |
 | `notification.readChanged` | `{ ids, readByDevice, ts }` — multi-device read-state sync. |
 | `notification.deleted`     | `{ ids }` — fires on `notification.delete` and on GC sweeps. |
+| `plugin.stateChanged`      | `{ id, state, crashReason? }` — fires on every plugin state transition. Filtered to peers that called `plugin.subscribe`. `state` uses the wire vocab from `plugin.list` (`running` \| `stopped` \| `crashed` \| `disabled`); `crashReason` is set when the state is `crashed`. |
 
 Notification storage notes:
 
@@ -170,7 +177,24 @@ Notification storage notes:
   cap is a v1 task.
 
 JSON-RPC error code `-32001` ("capability denied") is reserved for the
-future plugin host and unused in this iteration.
+future plugin host and unused in this iteration. `-32011`
+(`capabilityNotDeclared`) is in use today — plugins that call a host RPC
+their manifest didn't request hit this code at the host's capability
+gate.
+
+### Why there is no `plugin.install` / `plugin.uninstall` RPC
+
+The `plugin.*` namespace deliberately excludes install and uninstall.
+Plugin install is filesystem-only — users drop a `<plugin-id>/`
+directory under `~/.local/share/openvsmobile-next/plugins/` and the host
+picks it up on next start. There is no marketplace, no URL fetcher, and
+no RPC method that pulls untrusted code from the network. This matches
+the settled architectural decision in
+[`CLAUDE.md`](../CLAUDE.md) ("Plugin install is filesystem-only.
+Single-user system; the user trusts their own plugins by virtue of
+having put them there"). Adding network-pulling install would require a
+separate design discussion about trust, signing, and uninstall is not in
+scope until install is.
 
 ### Protocol notes
 

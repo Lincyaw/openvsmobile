@@ -63,6 +63,9 @@ export class PluginProcess {
   private readonly codec: FrameCodec;
   private child: ChildProcess | null = null;
   private exited = false;
+  /// Resolves the first time `onExit` fires. Lets `terminate()` callers
+  /// block on the actual exit instead of racing the kernel.
+  private exitWaiters: Array<() => void> = [];
 
   constructor(opts: PluginProcessOptions) {
     this.manifest = opts.manifest;
@@ -140,6 +143,49 @@ export class PluginProcess {
     }
   }
 
+  /// Wait until the child actually exits. Resolves immediately if the
+  /// process already exited (or was never running). Used by the disable
+  /// path so we can SIGTERM, await this, and SIGKILL on timeout.
+  public waitForExit(): Promise<void> {
+    if (this.exited || this.child === null) return Promise.resolve();
+    return new Promise((resolve) => {
+      this.exitWaiters.push(resolve);
+    });
+  }
+
+  /// SIGTERM the plugin; if it hasn't exited within `graceMs`, SIGKILL.
+  /// Resolves once the child has actually exited. `graceMs` is tunable so
+  /// tests don't have to wait the 10-second production default.
+  public async terminate(graceMs: number): Promise<void> {
+    if (this.child === null || this.exited) return;
+    try {
+      this.child.kill("SIGTERM");
+    } catch {
+      // best-effort — the kernel may have already torn the child down.
+    }
+    const exited = this.waitForExit();
+    let timer: NodeJS.Timeout | null = null;
+    const grace = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), graceMs);
+    });
+    const winner = await Promise.race([
+      exited.then(() => "exited" as const),
+      grace,
+    ]);
+    if (timer !== null) clearTimeout(timer);
+    if (winner === "timeout" && !this.exited && this.child !== null) {
+      this.logger(
+        `[plugin:${this.manifest.id}] SIGTERM did not exit within ${graceMs}ms; escalating to SIGKILL`,
+      );
+      try {
+        this.child.kill("SIGKILL");
+      } catch {
+        // best-effort
+      }
+      await this.waitForExit();
+    }
+  }
+
   /// PID of the live child, or null if the process never spawned or has
   /// exited. Useful for diagnostics; the host doesn't use it for
   /// dispatch.
@@ -178,6 +224,9 @@ export class PluginProcess {
     this.exited = true;
     this.stderr.close();
     this.onExit({ code, signal });
+    const waiters = this.exitWaiters;
+    this.exitWaiters = [];
+    for (const w of waiters) w();
   }
 
   private handleMessage(raw: unknown): void {

@@ -30,6 +30,7 @@ import {
 } from "./git.js";
 import { parseUnifiedDiff, type DiffHunk } from "./diffParser.js";
 import { findFiles } from "./findFiles.js";
+import { PluginHostError } from "./plugins/host.js";
 import { stat as fsStat } from "node:fs/promises";
 import { join as pathJoin } from "node:path";
 
@@ -1015,6 +1016,98 @@ methods.set(METHOD_NOTIFICATION_MARK_IMPORTANT, (ctx, params) => {
   // error handling.
   ctx.state.notificationHub.markImportant(id, importantRaw);
   return { ok: true };
+});
+
+// ---- Plugin host ----
+//
+// Frontend surface for the plugin host. Subscription is per-connection — a
+// peer that hasn't called `plugin.subscribe` doesn't receive
+// `plugin.stateChanged` pushes. The host itself owns activation, kill
+// semantics, persistence, and host→plugin command.invoke routing; the
+// handlers here are thin glue that translates between RPC params and the
+// host's public methods.
+
+export const METHOD_PLUGIN_SUBSCRIBE = "plugin.subscribe";
+export const METHOD_PLUGIN_UNSUBSCRIBE = "plugin.unsubscribe";
+
+function requirePluginHost(ctx: RpcContext): NonNullable<RpcContext["state"]["pluginHost"]> {
+  const host = ctx.state.pluginHost;
+  if (host === null) {
+    throw new RpcError(RPC_ERR.internal, "plugin host not initialized");
+  }
+  return host;
+}
+
+/// Translate the host's PluginHostError into a wire RpcError so the
+/// JSON-RPC error code travels through unchanged. Anything else
+/// bubbles up to dispatch as an internal error.
+function rethrowPluginError(err: unknown): never {
+  if (err instanceof PluginHostError) {
+    throw new RpcError(err.code, err.message);
+  }
+  throw err;
+}
+
+methods.set(METHOD_PLUGIN_SUBSCRIBE, (ctx) => {
+  const sub = requireSubscriber(ctx);
+  sub.pluginsSubscribed = true;
+  return { ok: true };
+});
+
+methods.set(METHOD_PLUGIN_UNSUBSCRIBE, (ctx) => {
+  const sub = requireSubscriber(ctx);
+  sub.pluginsSubscribed = false;
+  return { ok: true };
+});
+
+methods.set("plugin.list", (ctx) => {
+  const host = requirePluginHost(ctx);
+  return { plugins: host.listInfo() };
+});
+
+methods.set("plugin.enable", async (ctx, params) => {
+  const host = requirePluginHost(ctx);
+  const p = asBag(params);
+  const id = requireString(p, "id");
+  try {
+    await host.enable(id);
+  } catch (err) {
+    rethrowPluginError(err);
+  }
+  return { ok: true };
+});
+
+methods.set("plugin.disable", async (ctx, params) => {
+  const host = requirePluginHost(ctx);
+  const p = asBag(params);
+  const id = requireString(p, "id");
+  try {
+    await host.disable(id);
+  } catch (err) {
+    rethrowPluginError(err);
+  }
+  return { ok: true };
+});
+
+methods.set("plugin.invokeCommand", async (ctx, params) => {
+  const host = requirePluginHost(ctx);
+  const p = asBag(params);
+  const id = requireString(p, "id");
+  const commandId = requireString(p, "commandId");
+  // `args` is opaque from the host's view — passed through untouched to
+  // the plugin's `command.invoke` handler. Missing / null is fine; we
+  // don't gate on shape.
+  const args = p.args;
+  let result: unknown;
+  try {
+    result = await host.invokeCommand(id, commandId, args);
+  } catch (err) {
+    rethrowPluginError(err);
+  }
+  // The plugin may legitimately respond with no result (e.g. for a
+  // fire-and-forget command). Surface that as an empty result object so
+  // the wire shape stays `{ result?: any }`.
+  return result === undefined ? {} : { result };
 });
 
 // -------- 6. Entry points --------

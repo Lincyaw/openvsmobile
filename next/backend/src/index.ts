@@ -53,10 +53,13 @@ async function main(): Promise<void> {
 
   // Plugin host. Discovers plugins on disk and spawns the ones with
   // `onStartup` activation; calls from plugins are capability-gated
-  // before reaching any host method. The host is independent of the
-  // WS surface in v0 — no `plugin.*` RPCs to the client yet (that lands
-  // in C2). See docs/design/mobile-code-platform.md §3.
-  const pluginHost = new PluginHost();
+  // before reaching any host method. The frontend reaches the host
+  // through the `plugin.*` RPCs in `rpc.ts`; state transitions fan out
+  // through `plugin.stateChanged`. See docs/design/mobile-code-platform.md §3.
+  const pluginHost = new PluginHost({
+    onStateChanged: (change) => state.broadcastPluginStateChanged(change),
+  });
+  state.pluginHost = pluginHost;
   await pluginHost.start();
 
   const httpServer = createServer((req, res) => {
