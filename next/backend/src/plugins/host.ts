@@ -23,7 +23,8 @@ import { existsSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { RPC_ERR } from "../rpc.js";
+import type { WebSocket } from "ws";
+import { RPC_ERR, sendNotification } from "../rpc.js";
 import {
   loadManifest,
   type ManifestCapabilities,
@@ -41,6 +42,13 @@ import {
   savePluginState,
 } from "./persistence.js";
 import { StderrLog } from "./stderrLog.js";
+import {
+  UiPanelRegistry,
+  UiValidationError,
+  validateUiTree,
+  type UiNotifier,
+  type UiPanelSnapshot,
+} from "./ui.js";
 
 export type PluginState =
   | "registered"
@@ -122,6 +130,10 @@ export interface PluginHostOptions {
   /// computes the wire state from the internal state + reason; downstream
   /// fan-out lives in `ProcessState`.
   onStateChanged?: (change: PluginStateChange) => void;
+  /// Override the `ui.tree` push transport. Tests substitute a recorder
+  /// so they can assert which sockets received which pushes without
+  /// running a real WebSocket. Defaults to `sendNotification` from rpc.ts.
+  uiNotifier?: UiNotifier;
 }
 
 const DEFAULT_PLUGINS_DIR_REL = [".local", "share", "openvsmobile-next", "plugins"];
@@ -214,13 +226,17 @@ export class PluginHost {
   /// land as `disabled` instead of being auto-spawned by `onStartup`.
   private readonly disabled: Set<string>;
   /// Counter for outgoing requests we initiate toward plugins
-  /// (`command.invoke` today, `initialize` once it lands). Lives here so a
-  /// single monotonic source covers every plugin.
+  /// (`command.invoke`, `ui.event`, future `initialize`). One monotonic
+  /// source covers every plugin.
   private nextOutboundId = 1;
   /// Pending `command.invoke` requests keyed by outbound id. The plugin
   /// must respond with the same id; we resolve / reject the awaiter and
   /// drop the entry.
   private readonly pendingInvokes = new Map<number, PendingInvoke>();
+  /// UI descriptor cache + subscriber fan-out (design §4.3). Owned by the
+  /// host because plugin lifecycle drives panel lifecycle: plugin exit /
+  /// disable retires every panel the plugin had emitted.
+  private readonly uiRegistry: UiPanelRegistry;
 
   constructor(opts: PluginHostOptions = {}) {
     this.pluginsDir = opts.pluginsDir ?? resolveDefaultPluginsDir();
@@ -239,6 +255,16 @@ export class PluginHost {
       this.onStateChanged = opts.onStateChanged;
     }
     this.disabled = loadPluginState(this.stateFile, this.logger);
+    const uiNotifier: UiNotifier =
+      opts.uiNotifier ??
+      ((ws, method, params) => sendNotification(ws, method, params));
+    this.uiRegistry = new UiPanelRegistry(uiNotifier);
+  }
+
+  /// UI panel registry. Public so the RPC layer can route `ui.subscribe`
+  /// and `state.removeSubscriber` to it.
+  public get ui(): UiPanelRegistry {
+    return this.uiRegistry;
   }
 
   /// Public read-only view of the registry. Tests + `plugin.list` reach
@@ -493,6 +519,10 @@ export class PluginHost {
         ),
       );
     }
+    // Retire any panels this plugin had emitted so the app drops its
+    // cached UI. Safe to call even when the plugin never rendered — the
+    // registry just returns an empty list.
+    this.uiRegistry.retirePlugin(entry.id);
   }
 
   private handlePluginMessage(
@@ -500,8 +530,9 @@ export class PluginHost {
     msg: JsonRpcInbound,
   ): void {
     // Requests carry an id; notifications don't. Plugins may also send
-    // responses to host-initiated requests (currently `command.invoke`);
-    // route those back to the pending awaiter.
+    // responses to host-initiated requests (currently `command.invoke`,
+    // and fire-and-forget `ui.event`); route those back to the pending
+    // awaiter when one exists, otherwise log and drop.
     if (msg.method === undefined) {
       this.handlePluginResponse(plugin, msg);
       return;
@@ -588,9 +619,9 @@ export class PluginHost {
     }
   }
 
-  /// The actual host-method table. Adding methods here without also
-  /// widening `requiredCapability` would let plugins bypass the gate, so
-  /// the two must move together.
+  /// The actual host-method table. v0 has `host.log` and `ui.render`.
+  /// Adding methods here without also widening `requiredCapability`
+  /// would let plugins bypass the gate, so the two must move together.
   private async callHostMethod(
     plugin: PluginProcess,
     method: string,
@@ -598,6 +629,10 @@ export class PluginHost {
   ): Promise<unknown> {
     if (method === "host.log") {
       this.handleHostLog(plugin.manifest.id, params);
+      return {};
+    }
+    if (method === "ui.render") {
+      this.handleUiRender(plugin, params);
       return {};
     }
     // Capability passed, but the method itself doesn't exist yet.
@@ -639,9 +674,9 @@ export class PluginHost {
     this.onHostLog({ pluginId, level, msg, ts: Date.now() });
   }
 
-  /// Reserve an outbound id for a host→plugin request. Each pending
-  /// invoke must have a unique id so the response router can find it
-  /// again.
+  /// Reserve an outbound id for a host→plugin request. Used by
+  /// `command.invoke` (whose response router uses `pendingInvokes`) and
+  /// by `dispatchUiEvent` (fire-and-forget).
   public allocateOutboundId(): number {
     return this.nextOutboundId++;
   }
@@ -847,6 +882,112 @@ export class PluginHost {
         `[plugins] failed to write state file ${this.stateFile}: ${(err as Error).message}`,
       );
     }
+  }
+
+  private handleUiRender(plugin: PluginProcess, params: unknown): void {
+    if (!params || typeof params !== "object" || Array.isArray(params)) {
+      const err = new Error(
+        "ui.render params must be an object",
+      ) as Error & { code: number };
+      err.code = RPC_ERR.invalidParams;
+      throw err;
+    }
+    const p = params as Record<string, unknown>;
+    const panelId = p.panelId;
+    if (typeof panelId !== "string" || panelId.length === 0) {
+      const err = new Error(
+        "ui.render panelId must be a non-empty string",
+      ) as Error & { code: number };
+      err.code = RPC_ERR.invalidParams;
+      throw err;
+    }
+    let tree;
+    try {
+      tree = validateUiTree(p.tree);
+    } catch (err) {
+      if (err instanceof UiValidationError) {
+        const out = new Error(`ui.render: ${err.message}`) as Error & {
+          code: number;
+        };
+        out.code = RPC_ERR.invalidParams;
+        throw out;
+      }
+      throw err;
+    }
+    this.uiRegistry.render(plugin.manifest.id, panelId, tree);
+  }
+
+  /// Forward an `ui.event` from the app into the owning plugin. Sent as a
+  /// JSON-RPC *request* (with an id) per the issue spec; the host does
+  /// not await the plugin's reply — UI events are fire-and-forget from
+  /// the client's perspective, and the existing message router logs
+  /// (then discards) any response the plugin chooses to send.
+  ///
+  /// Throws `RpcError`-shaped errors (`code` + `message`) so the
+  /// dispatcher can turn them into JSON-RPC error frames. Currently:
+  ///   * `invalidParams` — plugin id unknown or not active.
+  ///   * `capabilityNotDeclared` — plugin manifest lacks `ui` capability.
+  public dispatchUiEvent(params: {
+    pluginId: string;
+    panelId: string;
+    nodeId: string;
+    type: string;
+    payload?: unknown;
+  }): void {
+    const entry = this.plugins.get(params.pluginId);
+    if (entry === undefined) {
+      const err = new Error(
+        `ui.event: no such plugin "${params.pluginId}"`,
+      ) as Error & { code: number };
+      err.code = RPC_ERR.invalidParams;
+      throw err;
+    }
+    if (entry.state !== "active" || entry.process === undefined) {
+      const err = new Error(
+        `ui.event: plugin "${params.pluginId}" is not active (${entry.state})`,
+      ) as Error & { code: number };
+      err.code = RPC_ERR.invalidParams;
+      throw err;
+    }
+    // Mirror the capability gate the host applies to plugin-initiated
+    // calls: a plugin that never declared `ui` cannot be the target of a
+    // host→plugin `ui.event` either. Without this an app could push events
+    // at a non-UI plugin and bypass the manifest's `capabilities` contract.
+    if (entry.manifest.capabilities.ui !== true) {
+      const err = new Error(
+        `ui.event: plugin "${params.pluginId}" did not declare the "ui" capability`,
+      ) as Error & { code: number };
+      err.code = RPC_ERR.capabilityNotDeclared;
+      throw err;
+    }
+    const id = this.allocateOutboundId();
+    const outboundParams: Record<string, unknown> = {
+      pluginId: params.pluginId,
+      panelId: params.panelId,
+      nodeId: params.nodeId,
+      type: params.type,
+    };
+    if (params.payload !== undefined) outboundParams.payload = params.payload;
+    entry.process.send({
+      jsonrpc: "2.0",
+      id,
+      method: "ui.event",
+      params: outboundParams,
+    });
+  }
+
+  /// Test seam: handle a websocket dropping subscription from the UI
+  /// fan-out. Production wires this through `ProcessState.removeSubscriber`
+  /// so the connection-close path covers every panel.
+  public uiUnsubscribe(ws: WebSocket): void {
+    this.uiRegistry.unsubscribe(ws);
+  }
+
+  /// Test seam for assertions / future `plugin.disable` RPC. Returns the
+  /// retired panels so tests can verify the snapshot stream without
+  /// observing it through the subscriber fan-out.
+  public retirePluginPanels(pluginId: string): UiPanelSnapshot[] {
+    return this.uiRegistry.retirePlugin(pluginId);
   }
 }
 
