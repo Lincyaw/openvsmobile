@@ -8,7 +8,6 @@ import 'package:flutter/material.dart';
 import '../app_state.dart';
 import '../backend_client.dart';
 import '../models.dart';
-import '../services/fcm_service.dart';
 import '../services/system_tray.dart';
 import '../settings_store.dart';
 import 'files_tab.dart';
@@ -22,7 +21,6 @@ class HomeShell extends StatefulWidget {
   final AppState appState;
   final SettingsStore settingsStore;
   final Settings currentSettings;
-  final FcmController fcmController;
   final SystemTrayController systemTrayController;
   final Future<void> Function(Settings) onSettingsSaved;
 
@@ -34,7 +32,6 @@ class HomeShell extends StatefulWidget {
     required this.appState,
     required this.settingsStore,
     required this.currentSettings,
-    required this.fcmController,
     required this.systemTrayController,
     required this.onSettingsSaved,
     required this.onNotificationPrefsChanged,
@@ -149,7 +146,6 @@ class _HomeShellState extends State<HomeShell> {
                   appState: widget.appState,
                   currentSettings: widget.currentSettings,
                   settingsStore: widget.settingsStore,
-                  fcmController: widget.fcmController,
                   systemTrayController: widget.systemTrayController,
                   onSettingsSaved: widget.onSettingsSaved,
                   onNotificationPrefsChanged:

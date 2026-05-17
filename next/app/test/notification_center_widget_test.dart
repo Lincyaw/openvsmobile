@@ -6,10 +6,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:openvsmobile_next/app_state.dart';
-import 'package:openvsmobile_next/backend_client.dart';
-import 'package:openvsmobile_next/notification.dart';
-import 'package:openvsmobile_next/screens/notification_center.dart';
+import 'package:mobilecode/app_state.dart';
+import 'package:mobilecode/backend_client.dart';
+import 'package:mobilecode/notification.dart';
+import 'package:mobilecode/screens/notification_center.dart';
 
 AppNotification _n({
   required String id,

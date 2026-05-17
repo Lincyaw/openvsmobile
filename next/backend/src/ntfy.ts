@@ -1,8 +1,8 @@
-// ntfy sender — the third notification transport. Targets the user's own
-// self-hosted ntfy server (single-line docker on their box). The ntfy
+// ntfy sender — the background notification transport. Targets the user's
+// own self-hosted ntfy server (single-line docker on their box). The ntfy
 // Android app subscribes to a topic and renders system-tray notifications
 // natively; this is the path that actually works on Chinese MIUI / EMUI /
-// ColorOS devices where FCM can't reach Google.
+// ColorOS devices.
 //
 // Initialization model:
 //   * Reads $NTFY_URL (base, no trailing slash), $NTFY_TOPIC, optional

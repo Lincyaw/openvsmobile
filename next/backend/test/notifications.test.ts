@@ -376,46 +376,6 @@ describe("NotificationStore (unit, no transport)", () => {
     }
   });
 
-  it("fcm_tokens: upsert by deviceId, list, prune invalid tokens", () => {
-    const dir = mkdtempSync(join(tmpdir(), "ovsm-store-"));
-    const store = new NotificationStore({ dbPath: join(dir, "n.db") });
-    try {
-      // First registration.
-      store.registerFcmToken({
-        deviceId: "dev-A",
-        token: "token-A1",
-        platform: "android",
-      });
-      store.registerFcmToken({
-        deviceId: "dev-B",
-        token: "token-B1",
-        platform: "android",
-      });
-      expect(store.allFcmTokens().sort()).toEqual(["token-A1", "token-B1"]);
-
-      // Re-register same deviceId → token replaced, not duplicated. This is
-      // the "OS rotated my FCM token" path; the old token is dead the moment
-      // we hear about the new one.
-      store.registerFcmToken({
-        deviceId: "dev-A",
-        token: "token-A2",
-        platform: "android",
-      });
-      expect(store.allFcmTokens().sort()).toEqual(["token-A2", "token-B1"]);
-
-      // Prune — what `NotificationHub.publish` does after firebase-admin
-      // reports a token is no longer registered.
-      store.removeFcmTokens(["token-B1", "nonexistent"]);
-      expect(store.allFcmTokens()).toEqual(["token-A2"]);
-
-      // Empty array is a no-op (doesn't throw).
-      store.removeFcmTokens([]);
-      expect(store.allFcmTokens()).toEqual(["token-A2"]);
-    } finally {
-      store.close();
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
 });
 
 describe("POST /notify (HTTP)", () => {

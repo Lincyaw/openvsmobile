@@ -4,10 +4,8 @@
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
-import '../services/fcm_service.dart';
 import '../services/system_tray.dart';
 import '../settings_store.dart';
-import 'fcm_debug_screen.dart';
 import 'notification_settings_screen.dart';
 import 'settings_screen.dart';
 import 'ssh_bootstrap_screen.dart';
@@ -17,7 +15,6 @@ class MoreTab extends StatelessWidget {
   final AppState appState;
   final Settings currentSettings;
   final SettingsStore settingsStore;
-  final FcmController fcmController;
   final SystemTrayController systemTrayController;
   final Future<void> Function(Settings) onSettingsSaved;
   final Future<void> Function() onNotificationPrefsChanged;
@@ -26,7 +23,6 @@ class MoreTab extends StatelessWidget {
     required this.appState,
     required this.currentSettings,
     required this.settingsStore,
-    required this.fcmController,
     required this.systemTrayController,
     required this.onSettingsSaved,
     required this.onNotificationPrefsChanged,
@@ -92,25 +88,8 @@ class MoreTab extends StatelessWidget {
         const Divider(height: 1),
         ListTile(
           leading: const Icon(Icons.bug_report_outlined),
-          title: const Text('FCM diagnostics'),
-          subtitle: const Text(
-            'Firebase init status, token, register attempts, recent log',
-          ),
-          onTap: () {
-            Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => FcmDebugScreen(controller: fcmController),
-              ),
-            );
-          },
-        ),
-        const Divider(height: 1),
-        ListTile(
-          leading: const Icon(Icons.tap_and_play),
-          title: const Text('System tray diagnostics'),
-          subtitle: const Text(
-            'Init state, last post result, send test, fallback icon',
-          ),
+          title: const Text('Diagnostics'),
+          subtitle: const Text('System status, send test notification'),
           onTap: () {
             Navigator.of(context).push(
               MaterialPageRoute<void>(

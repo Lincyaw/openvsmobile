@@ -17,7 +17,6 @@ import {
   writeRuntimeInfo,
 } from "./runtimeInfo.js";
 import { readPackageVersion } from "./version.js";
-import { initFcmSender } from "./fcm.js";
 import { initNtfySender } from "./ntfy.js";
 
 const DEFAULT_PORT = 7860;
@@ -43,18 +42,9 @@ async function main(): Promise<void> {
 
   const state = new ProcessState();
 
-  // FCM is the second notification transport (the first being the
-  // in-process WS fan-out). When $FCM_SERVICE_ACCOUNT_JSON is unset or the
-  // file is missing, initFcmSender returns null and we simply don't attach
-  // — backends without FCM keep working unchanged.
-  const fcmSender = await initFcmSender();
-  if (fcmSender !== null) {
-    state.notificationHub.attachFcmSender(fcmSender);
-  }
-
-  // ntfy is the third transport. Gated by $NTFY_URL + $NTFY_TOPIC; meant
-  // as the actually-working channel on Chinese vendor skins where FCM
-  // can't reach Google. Backends without ntfy configured keep working.
+  // ntfy is the notification transport for background delivery. Gated by
+  // $NTFY_URL + $NTFY_TOPIC. Backends without ntfy configured still
+  // deliver via the in-process WS fan-out while the app is connected.
   const ntfySender = initNtfySender();
   if (ntfySender !== null) {
     state.notificationHub.attachNtfySender(ntfySender);

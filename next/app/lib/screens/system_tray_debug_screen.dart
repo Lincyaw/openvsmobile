@@ -1,6 +1,5 @@
-// System-tray diagnostics screen. Mirrors the FCM diagnostics screen
-// shape so a user without adb access can self-diagnose why
-// `notification.show` pushes never land in the system tray.
+// System-tray diagnostics screen — lets a user without adb access
+// self-diagnose why `notification.show` pushes never land in the system tray.
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -43,7 +42,7 @@ class _SystemTrayDebugScreenState extends State<SystemTrayDebugScreen> {
     final c = widget.controller;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('System tray diagnostics'),
+        title: const Text('Diagnostics'),
         actions: [
           IconButton(
             tooltip: 'Re-initialize',

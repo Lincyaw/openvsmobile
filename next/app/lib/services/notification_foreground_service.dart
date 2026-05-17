@@ -96,8 +96,8 @@ class NotificationServiceController {
       androidNotificationOptions: AndroidNotificationOptions(
         channelId: NotificationChannels.persistent,
         channelName: 'Service status',
-        channelDescription: 'Indicator that openvsmobile-next is listening '
-            'for backend notifications.',
+        channelDescription:
+            'Keeps MobileCode running in the background to receive notifications.',
         channelImportance: NotificationChannelImportance.LOW,
         priority: NotificationPriority.LOW,
         showBadge: false,
@@ -133,8 +133,8 @@ class NotificationServiceController {
     debugPrint('FGS-CTRL: calling startService...');
     final r = await FlutterForegroundTask.startService(
       serviceId: kForegroundServiceId,
-      notificationTitle: 'openvsmobile-next',
-      notificationText: 'Listening for backend notifications',
+      notificationTitle: 'MobileCode',
+      notificationText: 'Background ready',
       callback: startNotificationForegroundHandler,
     );
     debugPrint('FGS-CTRL: startService result=$r (${r.runtimeType})');

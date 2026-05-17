@@ -25,11 +25,10 @@
 //   * The pending-tap slot (`consumePendingTapNotificationId`) consumed
 //     by `main.dart` on resume to route to the notification center.
 //
-// FCM's background isolate (`fcm_service.dart`) still calls
-// `flutter_local_notifications` directly because it runs in a separate
-// isolate when the app is dead; it shares the channel ids defined here
-// (`NotificationChannels.*`) so user channel-level overrides apply
-// uniformly across both transports.
+// Background delivery uses the ntfy app as the second transport — it
+// renders its own system-tray entries and deep-links back via
+// `mobilecode://notifications/<id>`. The channel ids here are used only
+// by the in-app/foreground rendering path.
 
 import 'dart:async';
 import 'dart:convert';
@@ -384,7 +383,7 @@ class SystemTrayController {
       case NotificationChannels.defaultImp:
         return 'Warnings and routine updates.';
       case NotificationChannels.persistent:
-        return 'Indicator that openvsmobile-next is listening for backend '
+        return 'Indicator that MobileCode is listening for backend '
             'notifications.';
       case NotificationChannels.low:
       default:
