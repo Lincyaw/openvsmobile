@@ -16,7 +16,14 @@ import type { WebSocket } from "ws";
 import { randomUUID } from "node:crypto";
 import { listDirAt, readFileAt, type ActiveWorkspace } from "./workspace.js";
 import type { ProcessState, Subscriber } from "./state.js";
-import { diffKind, readLog, runDiff } from "./git.js";
+import {
+  diffKind,
+  isGitRepo,
+  readHeadInfo,
+  readLog,
+  readStatus,
+  runDiff,
+} from "./git.js";
 import { parseUnifiedDiff } from "./diffParser.js";
 
 // -------- 1. Wire types + error catalog --------
@@ -432,6 +439,43 @@ methods.set("workspace.unsubscribe", (ctx, params) => {
   const ws = ctx.state.workspaces.requireById(p.workspaceId);
   if (ws.model !== null) ws.model.unsubscribe(ctx.ws);
   return {};
+});
+
+methods.set("git.status", async (ctx, params) => {
+  const p = asBag(params);
+  const ws = ctx.state.workspaces.requireById(p.workspaceId);
+  // Detect git repo per call rather than reading from `ws.model.isRepo`: the
+  // model freezes its `isRepo` decision at init time (see workspaceModel.ts),
+  // so a workspace opened before `git init` would otherwise lie forever. A
+  // pull RPC is the right place to re-check.
+  const repo = await isGitRepo(ws.root);
+  if (!repo) {
+    return {
+      isGitRepo: false,
+      branch: null,
+      ahead: 0,
+      behind: 0,
+      entries: [],
+    };
+  }
+  // readStatus collapses rename ("R"/"C") porcelain codes to "M" because the
+  // *decoration* vocabulary is M/A/D/?/U/null — see git.ts:collapseXY. The
+  // git.status RPC has a richer vocabulary that includes "R", so we restore
+  // it here based on the presence of renamedFrom rather than re-parsing
+  // porcelain v2 ourselves.
+  const head = await readHeadInfo(ws.root);
+  const status = await readStatus(ws.root);
+  const entries = status.map((e) => ({
+    path: e.path,
+    status: e.renamedFrom !== undefined ? "R" : e.status,
+  }));
+  return {
+    isGitRepo: true,
+    branch: head?.branch ?? null,
+    ahead: head?.ahead ?? 0,
+    behind: head?.behind ?? 0,
+    entries,
+  };
 });
 
 methods.set("git.diff", async (ctx, params) => {

@@ -359,7 +359,7 @@ Method surface (frontend → backend):
 | `workspace`  | `list` (→ `{ active: Workspace[], recents: string[] }`), `open({ root })`, `activate({ id })`, `close({ id })`, `current`, `findFiles({ workspaceId, ... })`, `subscribe({ workspaceId, sinceVersion?, paths? })`, `unsubscribe({ workspaceId })` |
 | `fs`         | `listDir({ workspaceId, path })` or `listDir({ path, picker: true })`; `readFile({ workspaceId, path, ifEtag? })` |
 | `terminal`   | `create({ workspaceId, cols, rows, cwd? })`, `write`, `resize`, `dispose`, `list({ workspaceId? })` |
-| `git`        | `diff({ workspaceId, path, baseSha?, workingHash? })`, `log({ workspaceId, path?, limit, beforeSha? })` |
+| `git`        | `status({ workspaceId })`, `diff({ workspaceId, path, baseSha?, workingHash? })`, `log({ workspaceId, path?, limit, beforeSha? })` |
 | `plugin`     | `list`, `enable`, `disable`, `install`, `uninstall`, `invokeCommand` |
 | `ui`         | `event` (user interacted with plugin UI; routed to owning plugin)    |
 
@@ -375,7 +375,7 @@ Method surface (frontend → backend):
 
 The `paths` parameter scopes the subscription to a subset of the tree. v0 backend accepts but does not yet honor `paths` (subscription is always whole-tree); the protocol shape supports per-path filtering from day one so a future large-repo optimization is not a breaking change. See CLAUDE.md "First principles" #5.
 
-**Content-addressed pull RPCs.** `fs.readFile` accepts `ifEtag?` and may return `{ etag, notModified: true }` (client uses its cached content). The `etag` is an opaque server-issued string; v0 happens to format it as `${mtimeMs|0}-${size}` but clients MUST treat it as a blob and only compare it for equality. `git.diff` is keyed by `{ workspaceId, path, baseSha?, workingHash? }` — same key → same hunks, allowing client and backend to cache aggressively. An unchanged file returns `{ kind: "text", hunks: [] }` (in-band signal; there is no separate "unchanged" kind). Decoration status is **never** a pull RPC; it is push-only via `workspace.decoration.delta`. See CLAUDE.md "First principles" #3.
+**Content-addressed pull RPCs.** `fs.readFile` accepts `ifEtag?` and may return `{ etag, notModified: true }` (client uses its cached content). The `etag` is an opaque server-issued string; v0 happens to format it as `${mtimeMs|0}-${size}` but clients MUST treat it as a blob and only compare it for equality. `git.diff` is keyed by `{ workspaceId, path, baseSha?, workingHash? }` — same key → same hunks, allowing client and backend to cache aggressively. An unchanged file returns `{ kind: "text", hunks: [] }` (in-band signal; there is no separate "unchanged" kind). Per-file decoration **freshness** never flows via pull — it is push-only via `workspace.decoration.delta` so the client cannot drift from the model. The `git.status` RPC is a bulk one-shot snapshot for views that need the whole working tree at once (e.g. a "Changes" panel that opens cold); it returns `{ isGitRepo, branch, ahead, behind, entries: { path, status }[] }` with renames surfaced as `"R"` (the *decoration* push surface collapses these to `"M"` because the Files-tree vocabulary is `"M"|"A"|"D"|"?"|"U"`). See CLAUDE.md "First principles" #3.
 
 Notifications (backend → frontend, push-only). Every workspace-scoped event carries a monotonic `version` so the client can detect gaps and request resync:
 

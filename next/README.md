@@ -131,8 +131,13 @@ Frontend → Backend:
 | `workspace.activate`  | `{ id }` → `{ workspace }`. Focus only — no filesystem touch. |
 | `workspace.close`     | `{ id }` → `{}`. Kills all PTYs in the workspace, updates current. |
 | `workspace.current`   | `{} → { workspace \| null }` |
+| `workspace.subscribe`   | `{ workspaceId, sinceVersion?, paths? }` → `{ mode: "current"\|"replay"\|"snapshot", baseVersion }`. `current` when the caller's `sinceVersion` already matches; `replay` when the journal still holds the missing slice (delivered as a burst of `workspace.*.delta` notifications on the next microtask); `snapshot` otherwise (delivered as one `workspace.decoration.snapshot` plus a seeded `workspace.head.changed`). `paths` accepted but always treated as whole-tree in v0; the field is in the wire shape so per-path filtering is not a breaking change. |
+| `workspace.unsubscribe` | `{ workspaceId }` → `{}`. Removes this connection from the per-workspace fan-out list. Socket close auto-unsubscribes. |
 | `fs.listDir`          | `{ workspaceId, path }` → `{ entries }`, or `{ path, picker: true }` for the workspace-less picker. Dirs first, then files, alphabetical. The workspace-scoped form realpath-resolves the target before any read, so symlinks cannot escape the workspace boundary. |
 | `fs.readFile`         | `{ workspaceId, path }` → `{ contentBase64, encoding: "utf8"\|"binary" }`. 2 MiB cap; refused outside workspace. Scope is asserted before any IO, and out-of-scope vs. not-found errors are intentionally indistinguishable on the wire. |
+| `git.status`          | `{ workspaceId }` → `{ isGitRepo, branch \| null, ahead, behind, entries: { path, status: "M"\|"A"\|"D"\|"R"\|"?"\|"U" }[] }`. Pull RPC for the current working-tree state. Renames surface as `"R"` on the new path (the *decoration* push surface collapses these to `"M"` because that's the UI vocabulary — see `workspace.decoration.delta`). Returns `{ isGitRepo: false, branch: null, ahead: 0, behind: 0, entries: [] }` for non-repo workspaces; never throws. |
+| `git.diff`            | `{ workspaceId, path, baseSha?, workingHash? }` → `{ kind: "text"\|"binary"\|"deleted"\|"too-large", hunks?, meta? }`. Content-addressed cache; same key short-circuits. Unified-diff text capped at 500 KB before falling back to `"too-large"`. |
+| `git.log`             | `{ workspaceId, path?, limit, beforeSha? }` → `Array<{ sha, author, date, subject }>`. Newest first. |
 | `terminal.create`     | `{ workspaceId, cols, rows, cwd? }` → `{ sessionId, workspaceId }` |
 | `terminal.write`      | `{ sessionId, dataBase64 }` → `{}` |
 | `terminal.resize`     | `{ sessionId, cols, rows }` → `{}` |
@@ -153,6 +158,11 @@ Backend → Frontend (notifications):
 | `terminal.data`     | `{ sessionId, workspaceId, dataBase64, seqEnd }`. `seqEnd` is a per-session monotonic byte offset at the *end* of this chunk; clients use it to drop duplicates after a `terminal.history` replay. |
 | `terminal.exit`     | `{ sessionId, workspaceId, exitCode }` |
 | `workspace.closed`  | `{ id }` — broadcast to every subscriber when a workspace is closed (user-initiated or on backend shutdown). |
+| `workspace.head.changed`        | `{ workspaceId, branch, headSha, ahead, behind, version }` — emitted whenever HEAD moves (branch switch, commit, fetch). `.git/HEAD` writes bypass the debounce. |
+| `workspace.tree.delta`          | `{ workspaceId, added: string[], removed: string[], renamed: { from, to }[], version }` — strict delta of paths added/removed/renamed since the prior version. Cache-invalidation signal only; the client re-fetches affected `fs.listDir` results on demand. |
+| `workspace.decoration.delta`    | `{ workspaceId, entries: { path, status: "M"\|"A"\|"D"\|"?"\|"U"\|null }[], version }` — strict delta of git-status changes. `null` = cleared. File-level only; the client aggregates to directories. |
+| `workspace.decoration.snapshot` | `{ workspaceId, entries: { path, status }[], version }` — sent in response to a `workspace.subscribe` that resolved to `mode:"snapshot"`. Carries only non-clean files. |
+| `workspace.commit.added`        | `{ workspaceId, branch, sha, subject, version }` — one per new commit observed on the current branch. |
 | `notification.show`        | `{ notification }` — full Notification, sent on every new POST /notify (including supersedes-driven inserts). |
 | `notification.superseded`  | `{ oldId, newId }` — fires before the matching `notification.show` when the new row has a `supersedes` field. |
 | `notification.readChanged` | `{ ids, readByDevice, ts }` — multi-device read-state sync. |
