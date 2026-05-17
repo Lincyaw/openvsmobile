@@ -24,7 +24,9 @@ The backend is a **thin, well-typed, transport-uniform mediator** between the Fl
 
 **Streams are notifications, never polled.** Terminal output, file changes, plugin UI tree updates, git change events — pushed from backend to client. Clients never poll `git.status` on a timer. If a future feature wants polling, that's a design discussion, not an implementation choice.
 
-**Statefulness lives in one place.** `state.ts` (`ProcessState`) owns every long-lived resource: workspaces, PTYs, future plugin processes. Handlers in `rpc.ts` reach into `ProcessState` but never instantiate live resources directly. **Connections come and go; `ProcessState` does not.** A client disconnect detaches a subscriber; it does not dispose any resource. Resources are disposed only by explicit RPC (`terminal.dispose`, `workspace.close`).
+**Statefulness lives in one place.** `state.ts` (`ProcessState`) owns every long-lived resource: workspaces, PTYs, future plugin processes. Handlers reach into `ProcessState` but never instantiate live resources directly. **Connections come and go; `ProcessState` does not.** A client disconnect detaches a subscriber; it does not dispose any resource. Resources are disposed only by explicit RPC (`terminal.dispose`, `workspace.close`).
+
+**Method dispatch lives in `rpc.ts`, not in the transport.** `connection.ts` is purely the WebSocket lifecycle and frame codec — it accepts an inbound JSON-RPC object and hands it to the dispatcher. `rpc.ts` owns the method table, per-method param shape validation, error code mapping, and the handler bodies. This keeps dispatch transport-agnostic (testable without a WebSocket; trivially reusable if a second transport ever appears) and prevents handlers from drifting into the framing layer.
 
 **Workspace scoping at the gate.** Every `fs.*` and `terminal.*` call carries a `workspaceId`. Path validation (realpath, escape-check) happens before any IO, in one choke point. Per-handler ad-hoc validation is a bug. Out-of-scope vs. not-found errors are intentionally indistinguishable on the wire.
 
@@ -34,7 +36,7 @@ The backend is a **thin, well-typed, transport-uniform mediator** between the Fl
 
 **Tokens are not logged.** The bearer token is written to `~/.config/openvsmobile-next/config.json` (0600) and the runtime info file (0600). Never `console.log`'d, never echoed in error responses. The token's *source* (env / config / generated) is OK to log.
 
-**No background polling, ever.** No `setInterval` outside the keepalive heartbeat. State changes flow through events. The backend reacts; it does not patrol.
+**No background polling, ever.** No **recurring** timers (`setInterval` / `Timer.periodic`) outside the connection keepalive heartbeat. State changes flow through events. The backend reacts; it does not patrol. One-shot `setTimeout` / `Future.delayed` for shutdown deadlines, reconnect backoff, or request timeouts are fine.
 
 **Native modules are constrained.** Currently allowed: `node-pty`. Adding another native dep requires updating `pkg/build-tarball.sh`'s ELF-arch verification and `pnpm-workspace.yaml`'s `allowBuilds:` list. Pure-JS is preferred when feasible.
 
@@ -42,14 +44,22 @@ The backend is a **thin, well-typed, transport-uniform mediator** between the Fl
 
 **No `utils.ts` / `helpers.ts` dumping grounds.** Each file is one concern. New concerns get their own file.
 
+**Module-level constants in TypeScript use `SHOUT_CASE`.** Function-local constants and exported bindings used as values follow `camelCase`. Numeric/string knobs at the top of a file are `SHOUT_CASE` (`DEFAULT_PORT`, `SCROLLBACK_CAP`, `MAX_FILE_BYTES`).
+
+**Never duplicate the version string.** `package.json`'s `version` field is the single source of truth. `runtimeInfo.ts` reads it at boot; the handshake response uses the same value. No file hard-codes `"0.1.0"` etc.
+
 ### Module boundaries inside backend
 
 ```
 index.ts        bootstrap; reads no protocol, sees no PTY
 config.ts       token + recents persistence; no transport
 runtimeInfo.ts  atomic runtime.json write; no transport
-connection.ts   the ONLY file that knows WebSocket framing
-rpc.ts          method dispatch + error codes; speaks JSON-RPC only
+connection.ts   the ONLY file that knows WebSocket framing; thin
+                lifecycle wrapper that forwards parsed RPC objects
+                to rpc.ts
+rpc.ts          method table + per-method param validation + error
+                code mapping + handler bodies. Speaks JSON-RPC
+                objects, knows nothing about the transport.
 state.ts        ProcessState; owns live resources; no transport
 terminal.ts     the ONLY file that imports node-pty
 workspace.ts    the ONLY file that knows the workspace data model
@@ -69,15 +79,15 @@ We do **not** adopt a state-management framework (no Provider / Riverpod / Bloc 
 
 ### Hard rules
 
-**Single source of truth: `AppState`.** Anything visible to more than one screen lives in `AppState`. Screens subscribe via `addListener`/`removeListener` (or `AnimatedBuilder`). Screens never duplicate state that already exists in `AppState`. The one exception is settings persistence (`SettingsStore` over SharedPreferences).
+**Single source of truth: `AppState`.** All **server-derived state** lives in `AppState`, regardless of how many screens consume it today. That includes connection state, workspace lists, file tree caches, picker entry caches, terminal sessions, bootstrap results — anything that arrived via an RPC or notification. Local-only UI state (`TextEditingController`, scroll position, "is this sheet expanded") stays in widget `State`. The two persistence singletons (`SettingsStore` over SharedPreferences; `BackendClient` as the RPC dialer) are the only other places state can live. If `AppState` outgrows one file, split it into composed sub-notifiers, not into widget-local caches.
 
 **One Navigator.** All routes go through the root Navigator. No nested navigators, no tab-internal navigation stacks. Deep transitions: `Navigator.push(MaterialPageRoute(...))`.
 
-**Network through `BackendClient`.** Screens never call `WebSocket.connect` or `http.get`. All RPC goes through `BackendClient`; all state derived from RPC lives in `AppState`. New RPC methods land in `BackendClient` first, surface through `AppState` second, get consumed by screens third.
+**Network through `BackendClient` ↔ `AppState` ↔ screen.** Screens never call `WebSocket.connect`, `http.get`, or `BackendClient` methods directly. The dependency chain is one-way: screens depend on `AppState`; `AppState` depends on `BackendClient`. Screens that need connection status, last error, etc., read them from `AppState` — `BackendClient`'s internals (`client.state`, `client.lastError`) are not a public surface. New RPC methods land in `BackendClient` first, get exposed through `AppState` second, get consumed by screens third.
 
-**Widget statefulness is local UI state only.** A widget is `StatefulWidget` only if it owns a `TextEditingController`, a `ScrollController`, an animation, or a transient "is this sheet expanded" boolean. **Server-derived state is always in `AppState`.** A widget that `setState`s after a backend call is a bug; that data belongs in `AppState`.
+**Widget statefulness is local UI state only.** A widget is `StatefulWidget` only if it owns a `TextEditingController`, a `ScrollController`, an animation, or a transient "is this sheet expanded" boolean. A widget that `setState`s after a backend call is a bug — that data belongs in `AppState`. The reviewer's quick test: if you removed and re-mounted the widget tree right now, would the state survive? If yes, it's in `AppState`. If no, and it shouldn't (e.g. scroll position), it's allowed.
 
-**Material 3 by default.** No custom theme until there's a designer in the loop. Use `FilledButton`, `OutlinedButton`, `ListTile`, `ChoiceChip`, `Card` — don't hand-roll equivalents. *[Open call: §9.]*
+**Material 3 by default.** Use `FilledButton`, `OutlinedButton`, `ListTile`, `ChoiceChip`, `Card` — don't hand-roll equivalents. A single `seedColor` on the theme is allowed (chrome identity); deeper customization (custom `colorScheme`, bespoke component themes, custom typography) is not. Colors come from `Theme.of(context).colorScheme.*` (e.g. `error`, `primary`, `secondary`) — never hard-code `Colors.red` / `Colors.green` etc.
 
 **Cancellation discipline.** Every async operation inside a State checks `mounted` before `setState`. Every navigation/snackbar uses a `Navigator.of(context)` / `ScaffoldMessenger.of(context)` captured **before** the await, never after. The `use_build_context_synchronously` lint is on; do not ignore it.
 
@@ -211,14 +221,19 @@ Open a PR that changes *this document* in the same change that violates a rule. 
 
 ---
 
-## 9. Open calls (the higher-stakes opinionated choices)
+## 9. Settled opinionated calls
 
-These are decisions in this v0 that are worth explicit user sign-off. Flip them by editing this section.
+These were judgment calls. Recording them so they don't get re-debated every PR.
 
-| § | Choice | Why it's the call I made | What to write here to override |
-|---|---|---|---|
-| 2 | No state-management framework (`ChangeNotifier` only) | Smaller surface, less ceremony, fewer rebuild-trap landmines; can adopt Riverpod later without rewriting | "Adopt Riverpod from start" |
-| 2 | Material 3, no custom theme in v0 | Designer not in the loop yet; accessibility audit precedes branding | "Custom theme allowed when X" |
-| 2 | English-only strings, no `intl` in v0 | i18n touches every screen; do once, not piecemeal | "i18n adopted with locales: ..." |
-| 3 | `network` capability whitelists are exact hosts, no wildcards | Conservative default; widens later if needed | "Allow `*.subdomain.com` wildcards" |
-| 6 | No FS / PTY mocks | Real thing is fast enough; mock drift is the main test-failure mode in CI | "FS mocks allowed in <case>" |
+| § | Decision | Reasoning |
+|---|---|---|
+| 1 | Dispatch lives in `rpc.ts`, not in `connection.ts` | Transport-agnostic dispatcher; testable without a WebSocket; framing and method routing are different concerns |
+| 2 | No state-management framework (`ChangeNotifier` only) | Smaller surface, fewer rebuild-trap landmines; can adopt Riverpod later if it ever hurts |
+| 2 | All server-derived state is in `AppState`, not in widgets | One subscription surface; survives screen rebuilds; the "is it server-side?" check is unambiguous |
+| 2 | Material 3, seed color allowed, deeper theming deferred | Mild chrome identity has no cost; full theming waits for a designer |
+| 2 | English-only strings, no `intl` in v0 | i18n touches every screen; do it once, not piecemeal |
+| 3 | `network` capability whitelists are exact hosts, no wildcards | Conservative default; widens later if a real plugin needs it |
+| 4 | SharedPreferences keys are kebab-case (`server-host`, `bearer-token`) | No legacy migration — renames break existing installs; we accept that for v0 |
+| 6 | No FS / PTY mocks | Real thing is fast enough; mock drift is the main test-failure mode in CI |
+
+Flip any of these by editing this row and the corresponding section. Don't argue with a settled call in a code review — argue in this file.
