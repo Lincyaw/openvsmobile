@@ -155,6 +155,9 @@ Frontend → Backend:
 | `plugin.enable`              | `{ id }` → `{ ok: true }`. Removes the plugin from the persisted disabled set; if the in-memory state was `disabled`, transitions to `stopped` and immediately activates when the manifest declares `onStartup`. Fires `plugin.stateChanged`. |
 | `plugin.disable`             | `{ id }` → `{ ok: true }`. Persists the disabled flag, then terminates the child process (SIGTERM, 10 s grace, SIGKILL). Fires `plugin.stateChanged` to `state: "disabled"`. |
 | `plugin.invokeCommand`       | `{ id, commandId, args? }` → `{ result?: any }`. Routed through the plugin's JSON-RPC channel as a host→plugin `command.invoke` request; the plugin's response (or error) is returned. Triggers `onCommand:<commandId>` activation if the plugin is in `stopped` state and lists that activation event. Disabled / crashed plugins reject with `-32602`. |
+| `ui.subscribe`               | `{}` → `{ ok: true }`. Per-connection toggle for the UI-descriptor fan-out (design §4.3 / issue #59). The response is followed (on the next microtask) by one `ui.tree` push per currently-active panel so a fresh subscriber lands in sync. |
+| `ui.unsubscribe`             | `{}` → `{}`. Drops this connection from the `ui.tree` fan-out. Connection-close auto-unsubscribes too. |
+| `ui.event`                   | `{ pluginId, panelId, nodeId, type, payload? }` → `{}`. Forwards a leaf-widget interaction (button tap / text-field change / …) from the app into the owning plugin as a host→plugin `ui.event` JSON-RPC request. Returns `-32602` when the plugin id is unknown or the plugin is not active; returns `-32011 capabilityNotDeclared` when the target plugin's manifest never declared the `ui` capability. The plugin's reply is not surfaced back to the app in v0 — events are fire-and-forget from the client's perspective; plugins react by mutating their tree + re-rendering. |
 
 Backend → Frontend (notifications):
 
@@ -168,6 +171,7 @@ Backend → Frontend (notifications):
 | `notification.readChanged` | `{ ids, readByDevice, ts }` — multi-device read-state sync. |
 | `notification.deleted`     | `{ ids }` — fires on `notification.delete` and on GC sweeps. |
 | `plugin.stateChanged`      | `{ id, state, crashReason? }` — fires on every plugin state transition. Filtered to peers that called `plugin.subscribe`. `state` uses the wire vocab from `plugin.list` (`running` \| `stopped` \| `crashed` \| `disabled`); `crashReason` is set when the state is `crashed`. |
+| `ui.tree`                  | `{ pluginId, panelId, tree, version }` — plugin-owned UI descriptor (design §4.3). `version` is monotonic per (pluginId, panelId); clients drop pushes whose `version <= lastSeenVersion[panelKey]`. `tree` is one of the typed `UiNode` shapes — `Column / Row / Section / Card / List / Text / Spacer / TextField / Button` — and goes `null` on the final retirement push the host emits when the owning plugin's process exits or is disabled. Every node carries a mandatory unique `id`; the renderer uses it to construct `ValueKey`s so focus / scroll / animation state survive full re-renders. |
 
 Notification storage notes:
 
@@ -195,6 +199,37 @@ Single-user system; the user trusts their own plugins by virtue of
 having put them there"). Adding network-pulling install would require a
 separate design discussion about trust, signing, and uninstall is not in
 scope until install is.
+
+### UI descriptor protocol (`ui.*`)
+
+Plugins describe their UI as a typed `UiNode` tree (design §4.3). The
+backend exposes three surfaces:
+
+| Direction          | Method      | Purpose |
+|--------------------|-------------|---------|
+| plugin → host      | `ui.render` | Replace one panel's tree atomically. `{ panelId, tree }`. Mandatory unique node ids; the host rejects duplicates with `-32602 invalidParams`. |
+| host → app         | `ui.tree`   | Push: latest tree for one panel, with monotonic `version`. |
+| app → host → plugin | `ui.event` | Forwards a user interaction (button tap / text-field change) into the plugin's `ui.event` handler. |
+
+The widget vocabulary is `Column / Row / Section / Card / List / Text /
+Spacer / TextField / Button`. **There is no escape hatch** — a feature
+that doesn't fit grows the vocabulary, not the runtime. The
+[Flutter renderer](app/lib/ui/ui_renderer.dart) keys every widget by
+`ValueKey('ui:<id>')`; with that key stable, focus / scroll / animation
+state survive a full re-render even when leaf values mutate. The
+[panel cache](app/lib/ui/ui_panels_model.dart) tracks `lastVersion` per
+(pluginId, panelId) and drops any push whose `version <= lastVersion`,
+so reordered or duplicate pushes never roll the UI back.
+
+A panel's lifetime ends when its plugin's process exits or is disabled
+— the host emits one final `ui.tree { tree: null, version: ++ }` per
+panel so the app drops the cached UI. There is no auto-restart
+(settled decision; CLAUDE.md).
+
+The Plugins tab itself (the surface that actually hosts these panels)
+is deferred to C4 — this iteration ships the protocol + the renderer +
+the version-drop logic, exercised by tests rather than by a visible
+screen.
 
 ### Protocol notes
 
@@ -227,7 +262,9 @@ scope until install is.
 
 ## What's deferred (out of scope for this PR)
 
-- Plugin host / UI tree protocol (§3 and §4.3 of the design doc).
+- Plugin host §3 lifecycle UI (Plugins tab, install/uninstall flow).
+  The host itself + the `ui.*` descriptor protocol from §4.3 are
+  implemented — see the "UI descriptor protocol" section above.
 - Git status decorations + diff view.
 - Code syntax highlighting.
 - QR-code pairing.

@@ -56,6 +56,12 @@ export interface ProcessStateOptions {
   /// callers leave this undefined and let `notifications.ts` resolve from
   /// $OPENVSMOBILE_NOTIFICATIONS_DB or the default location.
   notificationDbPath?: string;
+  /// Plugin host. Optional so unit tests that exercise non-plugin RPCs
+  /// can construct a bare ProcessState without spinning up a host. The
+  /// production wiring in index.ts always supplies one; UI-related
+  /// handlers (`ui.subscribe`, `ui.event`) check for presence and surface
+  /// `notReady` when the host is missing.
+  pluginHost?: PluginHost;
 }
 
 export interface AttachPluginHostFanOut {
@@ -82,15 +88,18 @@ export class ProcessState {
   /// (like everything else owned by ProcessState).
   public readonly notificationHub: NotificationHub;
 
-  /// Plugin host reference. Wired by `index.ts` after construction so
-  /// `ProcessState` doesn't have to know about plugin-host options.
-  /// `rpc.ts` reaches for this via `ctx.state.pluginHost` to satisfy
-  /// `plugin.list / enable / disable / invokeCommand`.
+  /// Plugin host reference. Optionally seeded via the constructor
+  /// (`new ProcessState({ pluginHost })`) for unit tests; production
+  /// wires it via late assignment in `index.ts` because the host needs
+  /// `state.broadcastPluginStateChanged` for its `onStateChanged` hook
+  /// (chicken-and-egg). `rpc.ts` reaches for this via
+  /// `ctx.state.pluginHost` to satisfy `plugin.*` and `ui.*` handlers.
   public pluginHost: PluginHost | null = null;
 
   private readonly subscribers = new Set<Subscriber>();
 
   constructor(opts: ProcessStateOptions = {}) {
+    this.pluginHost = opts.pluginHost ?? null;
     const storeOpts = opts.notificationDbPath
       ? { dbPath: opts.notificationDbPath }
       : {};
@@ -155,6 +164,11 @@ export class ProcessState {
       if (ws.model !== null) {
         ws.model.removeSubscriber(s.ws);
       }
+    }
+    // Same shape for the UI panel fan-out — a dropped socket must not
+    // continue receiving `ui.tree` pushes.
+    if (this.pluginHost !== null) {
+      this.pluginHost.uiUnsubscribe(s.ws);
     }
   }
 

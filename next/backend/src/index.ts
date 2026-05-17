@@ -41,6 +41,7 @@ async function main(): Promise<void> {
   const { token, source } = resolveToken();
   const version = readPackageVersion();
 
+  // Plugin host. Discovers plugins on disk and spawns the ones with
   const state = new ProcessState();
 
   // ntfy is the notification transport for background delivery. Gated by
@@ -55,7 +56,10 @@ async function main(): Promise<void> {
   // `onStartup` activation; calls from plugins are capability-gated
   // before reaching any host method. The frontend reaches the host
   // through the `plugin.*` RPCs in `rpc.ts`; state transitions fan out
-  // through `plugin.stateChanged`. See docs/design/mobile-code-platform.md §3.
+  // through `plugin.stateChanged`. UI descriptor pushes (`ui.tree`)
+  // also flow through the host. Late-assigned to `state` because the
+  // host's `onStateChanged` needs `state.broadcastPluginStateChanged`
+  // (chicken-and-egg). See docs/design/mobile-code-platform.md §3.
   const pluginHost = new PluginHost({
     onStateChanged: (change) => state.broadcastPluginStateChanged(change),
   });

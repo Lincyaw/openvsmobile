@@ -1003,6 +1003,79 @@ methods.set(METHOD_NOTIFICATION_DELETE, (ctx, params) => {
   return { ok: true };
 });
 
+// ---- UI descriptor protocol (design §4.3, issue #59) ----
+//
+// `ui.tree` pushes originate from the plugin host's UiPanelRegistry. The
+// `ui.subscribe` handler registers the connection's socket for fan-out
+// and replays the current set of active panels on the next microtask so
+// the subscribe RESPONSE arrives first; `ui.event` forwards user
+// interactions from the app into the owning plugin via a host→plugin
+// JSON-RPC request. Connection-close unsubscribes are wired through
+// `ProcessState.removeSubscriber`.
+
+methods.set("ui.subscribe", (ctx) => {
+  const host = ctx.state.pluginHost;
+  if (host === null) {
+    throw new RpcError(
+      RPC_ERR.notReady,
+      "ui.subscribe: plugin host not initialized on this backend",
+    );
+  }
+  host.ui.subscribe(ctx.ws);
+  const snaps = host.ui.activePanels();
+  const sock = ctx.ws;
+  queueMicrotask(() => {
+    for (const snap of snaps) {
+      sendNotification(sock, "ui.tree", snap);
+    }
+  });
+  return { ok: true };
+});
+
+methods.set("ui.unsubscribe", (ctx) => {
+  const host = ctx.state.pluginHost;
+  if (host === null) return {};
+  host.ui.unsubscribe(ctx.ws);
+  return {};
+});
+
+methods.set("ui.event", (ctx, params) => {
+  const host = ctx.state.pluginHost;
+  if (host === null) {
+    throw new RpcError(
+      RPC_ERR.notReady,
+      "ui.event: plugin host not initialized on this backend",
+    );
+  }
+  const p = asBag(params);
+  const pluginId = requireString(p, "pluginId");
+  const panelId = requireString(p, "panelId");
+  const nodeId = requireString(p, "nodeId");
+  const type = requireString(p, "type");
+  const payload = p.payload;
+  // `dispatchUiEvent` throws Error-with-`code` shapes for known failures
+  // (unknown plugin, plugin not active, capability not declared); they
+  // propagate through `dispatch`'s catch into JSON-RPC error frames.
+  // Re-wrap into RpcError for a consistent error type at the boundary.
+  try {
+    const arg: Parameters<typeof host.dispatchUiEvent>[0] = {
+      pluginId,
+      panelId,
+      nodeId,
+      type,
+    };
+    if (payload !== undefined) arg.payload = payload;
+    host.dispatchUiEvent(arg);
+  } catch (err) {
+    if (err && typeof err === "object" && "code" in err) {
+      const e = err as { code: number; message?: string };
+      throw new RpcError(e.code, e.message ?? "ui.event failed");
+    }
+    throw err;
+  }
+  return {};
+});
+
 methods.set(METHOD_NOTIFICATION_MARK_IMPORTANT, (ctx, params) => {
   const p = asBag(params);
   const id = requireString(p, "id");
