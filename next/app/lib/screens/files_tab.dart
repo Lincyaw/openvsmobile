@@ -1,12 +1,15 @@
 // Files tab: lazy-expand tree rooted at the current workspace's root, with
 // git decorations (color + status letter) over the entries, a sticky status
-// bar at the top showing branch/ahead/behind/count, and a Changes-view
-// toggle that filters the tree to decorated paths (and their ancestors).
+// bar at the top showing branch/ahead/behind/count, a Changes-view toggle
+// that filters the tree to decorated paths (and their ancestors), and a
+// thin search bar that switches the body to a flat results list.
 //
 // The tree shape (expanded/collapsed flags + cached children) lives in
 // AppState's FileTreeNode; the decoration map / branch info / Changes-view
 // toggle live in AppState's WorkspacesModel. This widget is the view layer
 // — it does not own server-derived state. See docs/conventions.md §2.
+
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 
@@ -17,16 +20,69 @@ import '../state/workspace_model.dart';
 import 'diff_viewer.dart';
 import 'file_viewer.dart';
 
+/// Signature of the function FilesTab uses to perform a search. Production
+/// wires this to `AppState.findFiles`; tests inject a fake.
+typedef FindFilesFn = Future<FindFilesResult> Function(
+  String workspaceId,
+  String query,
+);
+
+/// Signature of the function FilesTab uses when a search result row is
+/// tapped. Production wires this to opening the read-only file viewer;
+/// tests inject a recorder so they can assert navigation occurred without
+/// needing a real `fs.readFile` over the wire.
+typedef OpenSearchResultFn = Future<void> Function(
+  BuildContext context,
+  String workspaceId,
+  String relPath,
+);
+
 class FilesTab extends StatefulWidget {
   final AppState appState;
-  const FilesTab({super.key, required this.appState});
+
+  /// Test-only override for the search function. Defaults to
+  /// `appState.findFiles`. Exposed so widget tests can mount FilesTab
+  /// against canned results.
+  @visibleForTesting
+  final FindFilesFn? searchOverride;
+
+  /// Test-only override for the search-result tap handler.
+  @visibleForTesting
+  final OpenSearchResultFn? openSearchResultOverride;
+
+  const FilesTab({
+    super.key,
+    required this.appState,
+    this.searchOverride,
+    this.openSearchResultOverride,
+  });
 
   @override
   State<FilesTab> createState() => _FilesTabState();
 }
 
+/// Debounce interval for search-bar keystrokes. 120 ms is the issue brief's
+/// value and matches typical command-palette feel without thrashing the
+/// backend on rapid typing.
+const Duration _kSearchDebounce = Duration(milliseconds: 120);
+
+/// Limit passed to `workspace.findFiles`. 50 keeps the result list scrollable
+/// on a phone screen; the user can refine the query for more precise matches.
+const int _kSearchLimit = 50;
+
 class _FilesTabState extends State<FilesTab> {
   String? _lastWorkspaceId;
+
+  // ---- Search state (lives in widget state because it's view-only, not
+  // server-derived — survives a workspace switch by clearing) ----
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocus = FocusNode();
+  Timer? _searchDebounce;
+  int _searchSeq = 0;
+  String _searchQuery = '';
+  bool _searchLoading = false;
+  FindFilesResult? _searchResult;
+  String? _searchError;
 
   @override
   void initState() {
@@ -38,6 +94,9 @@ class _FilesTabState extends State<FilesTab> {
   @override
   void dispose() {
     widget.appState.removeListener(_onAppStateChanged);
+    _searchDebounce?.cancel();
+    _searchController.dispose();
+    _searchFocus.dispose();
     super.dispose();
   }
 
@@ -45,8 +104,126 @@ class _FilesTabState extends State<FilesTab> {
     final cur = widget.appState.currentWorkspace;
     if (cur?.id != _lastWorkspaceId) {
       _ensureRoot();
+      // Workspace switched out from under the search bar. Clear the query
+      // so results from the previous workspace don't briefly flash with the
+      // new workspace's tree.
+      _clearSearchState();
     }
     if (mounted) setState(() {});
+  }
+
+  /// Reset the search bar to its empty/collapsed state. Called on workspace
+  /// switch and when the user explicitly clears the field.
+  void _clearSearchState() {
+    _searchDebounce?.cancel();
+    _searchSeq++;
+    _searchQuery = '';
+    _searchLoading = false;
+    _searchResult = null;
+    _searchError = null;
+    if (_searchController.text.isNotEmpty) {
+      _searchController.clear();
+    }
+  }
+
+  void _onSearchChanged(String value) {
+    final trimmed = value.trim();
+    _searchDebounce?.cancel();
+    if (trimmed.isEmpty) {
+      // Empty query → collapse results pane, no in-flight RPC.
+      setState(() {
+        _searchSeq++;
+        _searchQuery = '';
+        _searchLoading = false;
+        _searchResult = null;
+        _searchError = null;
+      });
+      return;
+    }
+    // Keep the current results visible while debouncing so the list doesn't
+    // strobe between every keystroke; only flip into the "no results yet"
+    // skeleton if there's nothing to show.
+    setState(() {
+      _searchQuery = trimmed;
+      if (_searchResult == null) {
+        _searchLoading = true;
+      }
+    });
+    _searchDebounce = Timer(_kSearchDebounce, () {
+      unawaited(_runSearch(trimmed));
+    });
+  }
+
+  Future<void> _runSearch(String query) async {
+    final workspace = widget.appState.currentWorkspace;
+    if (workspace == null) return;
+    final seq = ++_searchSeq;
+    setState(() {
+      _searchLoading = true;
+      _searchError = null;
+    });
+    try {
+      final searchFn = widget.searchOverride ??
+          (String wsId, String q) => widget.appState.findFiles(
+                workspaceId: wsId,
+                query: q,
+                limit: _kSearchLimit,
+              );
+      final result = await searchFn(workspace.id, query);
+      if (!mounted) return;
+      if (seq != _searchSeq) {
+        // A newer keystroke landed before this RPC came back. Drop the
+        // stale result on the floor — the newer RPC owns the UI now.
+        return;
+      }
+      setState(() {
+        _searchLoading = false;
+        _searchResult = result;
+        _searchError = null;
+      });
+    } catch (e) {
+      if (!mounted || seq != _searchSeq) return;
+      setState(() {
+        _searchLoading = false;
+        _searchResult = null;
+        _searchError = e.toString();
+      });
+    }
+  }
+
+  Future<void> _openSearchResult(String relPath) async {
+    final workspace = widget.appState.currentWorkspace;
+    if (workspace == null) return;
+    final override = widget.openSearchResultOverride;
+    if (override != null) {
+      await override(context, workspace.id, relPath);
+      return;
+    }
+    final navigator = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final absPath = _resolveAbsPath(workspace.root, relPath);
+    try {
+      final content = await widget.appState.readFile(
+        workspaceId: workspace.id,
+        path: absPath,
+      );
+      if (!mounted) return;
+      navigator.push(
+        MaterialPageRoute<void>(
+          builder: (_) => FileViewerScreen(path: absPath, content: content),
+        ),
+      );
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('Cannot open: $e')));
+    }
+  }
+
+  String _resolveAbsPath(String workspaceRoot, String relPath) {
+    if (relPath.isEmpty) return workspaceRoot;
+    if (relPath.startsWith('/')) return relPath;
+    return workspaceRoot.endsWith('/')
+        ? '$workspaceRoot$relPath'
+        : '$workspaceRoot/$relPath';
   }
 
   void _ensureRoot() {
@@ -240,8 +417,17 @@ class _FilesTabState extends State<FilesTab> {
     final connState = widget.appState.connectionState;
     final root = widget.appState.fileTreeFor(wsId);
     final changesActive = widget.appState.changesViewActive;
+    final isSearching = _searchQuery.isNotEmpty;
     return Column(
       children: [
+        _SearchBar(
+          controller: _searchController,
+          focusNode: _searchFocus,
+          onChanged: _onSearchChanged,
+          onClear: () {
+            setState(_clearSearchState);
+          },
+        ),
         _StatusBar(
           appState: widget.appState,
           workspaceState: wsState,
@@ -249,36 +435,321 @@ class _FilesTabState extends State<FilesTab> {
           connectionState: connState,
         ),
         Expanded(
-          child: root == null
-              ? Center(
-                  // Wrapped in Semantics so the "Loading workspace…" label
-                  // travels with the spinner for screen-reader users —
-                  // conventions §2 "no bare spinners".
-                  child: Semantics(
-                    label: 'Loading workspace',
-                    container: true,
-                    child: const Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                        SizedBox(height: 12),
-                        Text('Loading workspace…'),
-                      ],
-                    ),
-                  ),
+          child: isSearching
+              ? _SearchResultsView(
+                  query: _searchQuery,
+                  loading: _searchLoading,
+                  result: _searchResult,
+                  error: _searchError,
+                  onTapResult: _openSearchResult,
                 )
-              : RefreshIndicator(
-                  onRefresh: () => widget.appState.refreshFileTree(wsId),
-                  child: ListView(
-                    children: _flatten(root, 0, cur, changesActive),
-                  ),
-                ),
+              : root == null
+                  ? Center(
+                      // Wrapped in Semantics so the "Loading workspace…"
+                      // label travels with the spinner for screen-reader
+                      // users — conventions §2 "no bare spinners".
+                      child: Semantics(
+                        label: 'Loading workspace',
+                        container: true,
+                        child: const Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                            SizedBox(height: 12),
+                            Text('Loading workspace…'),
+                          ],
+                        ),
+                      ),
+                    )
+                  : RefreshIndicator(
+                      onRefresh: () => widget.appState.refreshFileTree(wsId),
+                      child: ListView(
+                        children: _flatten(root, 0, cur, changesActive),
+                      ),
+                    ),
         ),
       ],
+    );
+  }
+}
+
+/// Thin search bar above the status bar. Inline magnifier prefix, suffix
+/// clear button when the field is non-empty. Empty query: results pane
+/// stays collapsed (the parent decides what to show); non-empty query:
+/// results replace the tree below.
+class _SearchBar extends StatelessWidget {
+  final TextEditingController controller;
+  final FocusNode focusNode;
+  final ValueChanged<String> onChanged;
+  final VoidCallback onClear;
+
+  const _SearchBar({
+    required this.controller,
+    required this.focusNode,
+    required this.onChanged,
+    required this.onClear,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Material(
+      color: theme.colorScheme.surface,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+        child: TextField(
+          controller: controller,
+          focusNode: focusNode,
+          onChanged: onChanged,
+          textInputAction: TextInputAction.search,
+          style: const TextStyle(fontSize: 14),
+          decoration: InputDecoration(
+            isDense: true,
+            hintText: 'Search files',
+            prefixIcon: const Icon(Icons.search, size: 18),
+            prefixIconConstraints:
+                const BoxConstraints(minWidth: 32, minHeight: 32),
+            suffixIcon: AnimatedBuilder(
+              animation: controller,
+              builder: (context, _) {
+                if (controller.text.isEmpty) {
+                  return const SizedBox(width: 0, height: 0);
+                }
+                return IconButton(
+                  iconSize: 18,
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'Clear search',
+                  icon: const Icon(Icons.close),
+                  onPressed: onClear,
+                );
+              },
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: BorderSide(
+                color: theme.colorScheme.outlineVariant,
+              ),
+            ),
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 8,
+              vertical: 0,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Body shown when the search bar has a non-empty query. Replaces (does
+/// not overlay) the file tree.
+class _SearchResultsView extends StatelessWidget {
+  final String query;
+  final bool loading;
+  final FindFilesResult? result;
+  final String? error;
+  final Future<void> Function(String relPath) onTapResult;
+
+  const _SearchResultsView({
+    required this.query,
+    required this.loading,
+    required this.result,
+    required this.error,
+    required this.onTapResult,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    if (error != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            'Search failed: $error',
+            style: TextStyle(color: theme.colorScheme.error),
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
+    final r = result;
+    if (r == null) {
+      // Loading the very first result for this query. Show a centered
+      // spinner with a label so screen-readers get something useful.
+      return Center(
+        child: Semantics(
+          label: 'Searching',
+          container: true,
+          child: const SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        ),
+      );
+    }
+    if (r.matches.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            'No matches for "$query"',
+            style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
+          ),
+        ),
+      );
+    }
+    final children = <Widget>[
+      for (final match in r.matches)
+        _SearchResultRow(
+          match: match,
+          query: query,
+          onTap: () => onTapResult(match.path),
+        ),
+    ];
+    if (r.truncated) {
+      children.add(
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Text(
+            'Showing top ${r.matches.length} matches — refine the query for more.',
+            style: TextStyle(
+              fontSize: 11,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+      );
+    }
+    // Tiny inline spinner overlay when a follow-up search is in flight
+    // but we still have stale results to show.
+    return Stack(
+      children: [
+        ListView(children: children),
+        if (loading)
+          Positioned(
+            top: 4,
+            right: 8,
+            child: Semantics(
+              label: 'Searching',
+              container: true,
+              child: const SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+/// One row in the search results list. Filename bold, dimmed dir prefix,
+/// query chars highlighted.
+class _SearchResultRow extends StatelessWidget {
+  final FindFilesMatch match;
+  final String query;
+  final VoidCallback onTap;
+
+  const _SearchResultRow({
+    required this.match,
+    required this.query,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final lastSlash = match.path.lastIndexOf('/');
+    final dirPart =
+        lastSlash >= 0 ? match.path.substring(0, lastSlash + 1) : '';
+    final basePart =
+        lastSlash >= 0 ? match.path.substring(lastSlash + 1) : match.path;
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Row(
+          children: [
+            const Icon(Icons.insert_drive_file_outlined, size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _highlightedText(
+                    text: basePart,
+                    query: query,
+                    baseStyle: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: theme.colorScheme.onSurface,
+                    ),
+                    matchColor: theme.colorScheme.primary,
+                  ),
+                  if (dirPart.isNotEmpty)
+                    Text(
+                      dirPart,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Highlight (bold + primary color) every char in [text] that's also in
+  /// the case-insensitive query subsequence. This mirrors the backend
+  /// scorer's match policy — same chars, same order — so the user sees
+  /// exactly which query characters earned the hit.
+  Widget _highlightedText({
+    required String text,
+    required String query,
+    required TextStyle baseStyle,
+    required Color matchColor,
+  }) {
+    if (query.isEmpty) return Text(text, style: baseStyle);
+    final lowerText = text.toLowerCase();
+    final lowerQuery = query.toLowerCase();
+    final spans = <TextSpan>[];
+    int p = 0;
+    int q = 0;
+    final buffer = StringBuffer();
+    while (p < text.length) {
+      if (q < lowerQuery.length && lowerText[p] == lowerQuery[q]) {
+        if (buffer.isNotEmpty) {
+          spans.add(TextSpan(text: buffer.toString(), style: baseStyle));
+          buffer.clear();
+        }
+        spans.add(TextSpan(
+          text: text[p],
+          style: baseStyle.copyWith(color: matchColor),
+        ));
+        q++;
+      } else {
+        buffer.write(text[p]);
+      }
+      p++;
+    }
+    if (buffer.isNotEmpty) {
+      spans.add(TextSpan(text: buffer.toString(), style: baseStyle));
+    }
+    return RichText(
+      overflow: TextOverflow.ellipsis,
+      text: TextSpan(style: baseStyle, children: spans),
     );
   }
 }

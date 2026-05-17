@@ -686,6 +686,38 @@ class AppState extends ChangeNotifier {
     );
   }
 
+  /// Fuzzy file-name search rooted at [workspaceId]'s workspace. The
+  /// returned [FindFilesResult.matches] are sorted by score (high first);
+  /// the caller renders them as-is. Out-of-scope or vanished workspaces
+  /// resolve to an empty result rather than throwing — the UI's empty-
+  /// state copy is the user-visible signal.
+  Future<FindFilesResult> findFiles({
+    required String workspaceId,
+    required String query,
+    int limit = 50,
+    bool includeIgnored = false,
+  }) async {
+    final r = await client.call('workspace.findFiles', {
+      'workspaceId': workspaceId,
+      'query': query,
+      'limit': limit,
+      'includeIgnored': includeIgnored,
+    }) as Map<String, dynamic>;
+    return FindFilesResult.fromJson(r);
+  }
+
+  /// Test-only seam: directly populate `_active` + `_current` without
+  /// going over the wire. Production code paths go through
+  /// [refreshWorkspaces] / [openWorkspace]; widget tests need to render
+  /// the Files tab with a known workspace, and faking BackendClient is
+  /// heavier than this single setter.
+  @visibleForTesting
+  void debugSetActiveWorkspace(Workspace ws) {
+    _active = [ws];
+    _current = ws;
+    notifyListeners();
+  }
+
   @override
   void dispose() {
     client.state.removeListener(_onConnState);

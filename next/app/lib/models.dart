@@ -57,6 +57,38 @@ class FileContent {
   const FileContent({required this.bytes, required this.isBinary});
 }
 
+/// One row in a `workspace.findFiles` result. `path` is workspace-relative
+/// (POSIX separators), `score` is opaque — only the ordering is contractual.
+class FindFilesMatch {
+  final String path;
+  final int score;
+
+  const FindFilesMatch({required this.path, required this.score});
+
+  factory FindFilesMatch.fromJson(Map<String, dynamic> json) => FindFilesMatch(
+        path: json['path'] as String,
+        score: (json['score'] as num).toInt(),
+      );
+}
+
+/// Response shape for `workspace.findFiles`.
+class FindFilesResult {
+  final List<FindFilesMatch> matches;
+  /// `true` when the walker hit the candidate ceiling before exhausting
+  /// the tree. The UI surfaces a small hint when this is set.
+  final bool truncated;
+
+  const FindFilesResult({required this.matches, required this.truncated});
+
+  factory FindFilesResult.fromJson(Map<String, dynamic> json) {
+    final raw = (json['matches'] as List).cast<Map<String, dynamic>>();
+    return FindFilesResult(
+      matches: raw.map(FindFilesMatch.fromJson).toList(growable: false),
+      truncated: (json['truncated'] as bool?) ?? false,
+    );
+  }
+}
+
 /// A node in the per-workspace file tree. Lives in AppState rather than
 /// widget state so the tree (expansion + cached children) survives a tab
 /// switch or a screen rebuild — see docs/conventions.md §2 "Single source

@@ -36,6 +36,7 @@ Quick map:
 
 - `auth.handshake`, `system.ping`
 - `workspace.list` / `open` / `activate` / `close` / `current`
+- `workspace.findFiles` (fuzzy file-name search, gitignore-aware, scope-safe)
 - `workspace.subscribe` / `unsubscribe` (per-workspace push registration)
 - `fs.listDir` (returns `{ entries, version }`; `version === 0` in picker mode)
 - `fs.readFile` (accepts `ifEtag`; returns `{ etag, content }` or `{ etag, notModified: true }`)
