@@ -1,0 +1,30 @@
+{
+  "name": "@openvsmobile/sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "openvsmobile node-plugin SDK — typed widget vocabulary + stdio JSON-RPC runtime.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "runtime",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  }
+}

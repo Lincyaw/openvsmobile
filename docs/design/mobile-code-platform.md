@@ -233,42 +233,49 @@ Activation is **lazy**: a `registered`-state plugin sits idle until one of its e
 
 For `entry.kind: "node"` plugins, **the SDK is the only allowed import surface** outside Node's built-ins. The host spawns the plugin under Node's experimental permission model (or, where unavailable, with a custom `--require` shim that throws on disallowed `import`s) so that `import "axios"` inside a plugin fails fast. Plugins that need richer dependencies use `entry.kind: "binary"`.
 
-The SDK is a small local package shipped with the backend; plugins reference it via a host-injected resolver path. It exposes:
+The SDK is an in-repo workspace package (`next/backend/packages/sdk/`); plugins reference it as `@openvsmobile/sdk`. Resolution is "host-injected" in the literal sense: the host spawns Node with `--import` pointing at a side-effect loader (`@openvsmobile/sdk/runtime/sdk-loader.mjs`) which uses `module.register()` to map the bare specifier `@openvsmobile/sdk` to the package's compiled entry. This avoids NODE_PATH (which ESM does not consult) and avoids writing into user-controlled plugin directories.
+
+The SDK that ships in v0 is intentionally narrow — just enough to write the plugin contracts already on the wire (`host.log`, `ui.render`, `ui.event`, `command.invoke`) plus the §4.3 widget vocabulary. The richer surface area sketched below (`workspace.*`, `terminal.*`, `git.*`, `secrets.*`, `notify.*`) lands as those host RPCs come online, not before; the SDK does not export wrappers for methods the host doesn't yet implement, because the SDK-side capability double-check has no useful work to do when there's nothing on the other end.
 
 ```ts
-// rough sketch — exact API surface to be detailed before the host PR
-import {
-  defineCommand,        // contribute a command handler
-  definePanel,          // contribute a panel + render function
-  defineStatusItem,     // contribute a status bar item
-  workspace,            // fs.readFile / listDir / findFiles / onChange
-  terminal,             // spawn / write / onData / dispose
-  git,                  // diff / log (read-only)
-  notify,               // emit a notification (subject to ui:notification capability)
-  secrets,              // get / set, scoped to this plugin's id
-  log,                  // structured log → plugin-logs/<id>.log
-} from "@openvsmobile/sdk";
+// v0 surface — exactly what `next/examples/plugins/hello/` uses.
+import { createPlugin, ui } from "@openvsmobile/sdk";
+
+const plugin = createPlugin({
+  onActivate(ctx) {
+    ctx.renderPanel(
+      "home",
+      ui.section({
+        id: "home-section",
+        title: "Hello",
+        children: [
+          ui.text({ id: "greeting", text: "Hello, stranger." }),
+          ui.textField({ id: "name-field", label: "Your name" }),
+          ui.button({ id: "greet-btn", label: "Greet", style: "primary" }),
+        ],
+      }),
+    );
+  },
+  onUiEvent(ctx, event) { /* re-render with new state */ },
+  onCommand(ctx, commandId, args) { /* return value echoes back */ },
+});
+plugin.run();
 ```
 
+`ctx` exposes:
+
+- `log(level, msg)` → `host.log` (always allowed).
+- `renderPanel(panelId, tree)` → `ui.render` (gated by `capabilities.ui`).
+- `invokeCommand(targetPluginId, commandId, args)` → `plugin.invokeCommand` (cross-plugin call; gated by the host).
+
 Each SDK call is a thin wrapper that:
-1. Checks the plugin's declared capabilities (fail-fast `Error: capability "X" not declared`).
+1. Checks the plugin's declared capabilities (fail-fast `Error: capability "X" not declared`). *Reserved for richer capabilities; today the SDK trusts the manifest and lets the host's gate produce the error, since v0 only has `ui`.*
 2. Issues the stdio JSON-RPC call to the host.
 3. The host re-checks the capability declaration server-side (defense in depth).
 
 This double-check is deliberate: SDK-side check gives the plugin author a fast, in-process error during dev; host-side check gives the host an authoritative gate even if the plugin tampers with the SDK.
 
-UI rendering uses a builder API that produces the §4.3 widget tree:
-
-```ts
-definePanel("claude.chat", ({ context, fire }) =>
-  UiColumn({ id: "root", children: [
-    UiTextField({ id: "input", value: context.draft, onSubmit: "send" }),
-    UiButton({ id: "send", label: "Ask", onTap: "send" }),
-  ] })
-);
-```
-
-`fire` is the SDK helper that re-runs the plugin's render function and `ui.render`s the new tree to the host.
+UI rendering uses constructors on the `ui` namespace that mirror the §4.3 widget vocabulary one-for-one. Re-rendering is the plugin author's job: build a fresh tree with stable node ids and pass it back to `ctx.renderPanel`. v0 has no `definePanel` / `fire` indirection — the explicit call site is easier to reason about for a 30-line `index.js` and adds no boilerplate, and the §4.3 reconciler keys on node id either way.
 
 ### 3.5 Capability matrix
 
@@ -1077,10 +1084,10 @@ The first slice of the plugin host (issue C1) ships in `next/backend/src/plugins
 
 - Settings → Plugins list + log viewer + disable/reload UI.
 
-### Deferred — C5 (`@openvsmobile/sdk`)
+### Partially live — C5 (`@openvsmobile/sdk`)
 
-- §3.4 SDK package + import-surface restriction (Node `--experimental-permission` / `--require` shim).
-- SDK-side defense-in-depth capability checks.
+- §3.4 SDK package (`next/backend/packages/sdk/`) is in-tree, with the v0 surface area: `createPlugin({ onActivate, onCommand, onUiEvent })` + `ui.*` constructors covering the §4.3 widget vocabulary. Host injects the resolver via `node --import .../sdk-loader.mjs` so `import "@openvsmobile/sdk"` resolves regardless of where the plugin lives on disk. Exercised end-to-end by `next/examples/plugins/hello/`.
+- **Deferred to a later C5 slice**: import-surface restriction (Node `--experimental-permission` / `--require` shim that blocks `import "axios"`), and SDK-side defense-in-depth capability checks. The v0 SDK trusts its caller and leans on the host's capability gate as the authoritative check. Wider host RPCs (`workspace.*`, `terminal.*`, `git.*`, `secrets.*`, `notify.*`) and their matching SDK wrappers land alongside the issues that first need them.
 
 ### Intentional simplifications in v0
 

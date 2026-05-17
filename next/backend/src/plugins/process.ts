@@ -7,8 +7,10 @@
 // and never auto-restarts (settled decision; see CLAUDE.md).
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { accessSync, constants as fsConstants } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { execPath } from "node:process";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { FrameCodec } from "./framing.js";
 import type { PluginManifest } from "./manifest.js";
 import { resolveEntryPath } from "./manifest.js";
@@ -95,7 +97,20 @@ export class PluginProcess {
       // says we MUST spawn with the same node binary the backend is
       // running on, so `execPath` is the right thing here.
       command = execPath;
-      args = [entryPath];
+      // Inject the SDK resolver as an `--import` side-effect module so
+      // the plugin's `import "@openvsmobile/sdk"` resolves regardless
+      // of where the plugin directory lives on disk. ESM does not
+      // consult NODE_PATH (Node spec — bare specifiers walk only
+      // `node_modules`), and we deliberately don't write a
+      // `node_modules` symlink into user-controlled plugin
+      // directories, so a resolver hook is the v0 mechanism for the
+      // "host-injected resolver path" from design §3.4.
+      args = [];
+      const loaderUrl = resolveSdkLoaderUrl();
+      if (loaderUrl !== null) {
+        args.push("--import", loaderUrl);
+      }
+      args.push(entryPath);
     } else {
       // binary mode: refuse to spawn anything that isn't executable. A
       // non-executable file would error at spawn time with a confusing
@@ -244,5 +259,47 @@ export class PluginProcess {
       return;
     }
     void this.onMessage(this, msg);
+  }
+}
+
+/// Cached `file://` URL of the SDK loader hook. `null` means the SDK
+/// isn't installed and we should let the spawn proceed without the
+/// `--import` flag — the plugin will fail loud with `MODULE_NOT_FOUND`
+/// on its own `import "@openvsmobile/sdk"`, which is the right
+/// diagnostic for "you didn't run `pnpm install`". Searching the
+/// filesystem on every spawn would be wasted work; the layout is fixed
+/// for the lifetime of the process.
+let cachedSdkLoaderUrl: string | null | undefined;
+
+/// Locate `@openvsmobile/sdk/runtime/sdk-loader.mjs` by walking up from
+/// this file looking for a `node_modules/@openvsmobile/sdk/` directory.
+/// The dev path is `<backend>/src/plugins/process.ts` →
+/// `<backend>/node_modules`; after `tsc` it's
+/// `<backend>/dist/plugins/process.js` → `<backend>/node_modules`; in a
+/// packaged tarball the same walk works because the SDK lives under
+/// `<root>/node_modules` either way.
+function resolveSdkLoaderUrl(): string | null {
+  if (cachedSdkLoaderUrl !== undefined) return cachedSdkLoaderUrl;
+  const selfDir = dirname(fileURLToPath(import.meta.url));
+  let d = selfDir;
+  while (true) {
+    const candidate = join(
+      d,
+      "node_modules",
+      "@openvsmobile",
+      "sdk",
+      "runtime",
+      "sdk-loader.mjs",
+    );
+    if (existsSync(candidate)) {
+      cachedSdkLoaderUrl = pathToFileURL(candidate).href;
+      return cachedSdkLoaderUrl;
+    }
+    const parent = dirname(d);
+    if (parent === d) {
+      cachedSdkLoaderUrl = null;
+      return null;
+    }
+    d = parent;
   }
 }
