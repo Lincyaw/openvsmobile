@@ -1,6 +1,8 @@
-// App entrypoint. Boots the BackendClient + AppState, loads saved settings,
+// App entrypoint. Boots the BackendClient + AppState, loads the persisted
+// backends list (migrating the legacy single-backend keys if present),
 // wires connectivity + app-lifecycle to the always-on reconnect loop, and
-// drops the user into either the home shell or the first-run settings prompt.
+// drops the user into either the home shell or the empty-state Backends
+// screen for first-run setup.
 
 import 'dart:async';
 
@@ -10,9 +12,9 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'app_state.dart';
 import 'backend_client.dart';
 import 'notification.dart';
+import 'screens/backends_screen.dart';
 import 'screens/home_shell.dart';
 import 'screens/notification_center.dart';
-import 'screens/settings_screen.dart';
 import 'services/connectivity_probe.dart';
 import 'services/deep_link_service.dart';
 import 'services/notification_foreground_service.dart';
@@ -49,24 +51,18 @@ class _MobileCodeAppState extends State<MobileCodeApp>
   final GlobalKey<NavigatorState> _navKey = GlobalKey<NavigatorState>();
   AppState? _appState;
 
-  Settings? _settings;
+  AppPersistedState _state = const AppPersistedState();
   String? _deviceId;
   NotificationPrefs? _notifPrefs;
   bool _loadingSettings = true;
+  String? _lastPersistedWorkspaceId;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _fgService.init();
-    // Tray-side init is fire-and-forget: the platform-channel call to
-    // create the per-level channels can run in parallel with bootstrap.
-    // If it fails (test environment / non-Android host) `show()` still
-    // degrades cleanly via the `PlatformException` branch.
     unawaited(_tray.init());
-    // Subscribe to the same broadcast stream `AppState` listens on so
-    // tray posting is a peer of the in-app notification center, not
-    // downstream of it. Both listeners see every event independently.
     _trayNotifSub = _client.notifications.listen(_onBackendNotificationForTray);
     _bootstrap();
   }
@@ -108,34 +104,33 @@ class _MobileCodeAppState extends State<MobileCodeApp>
   }
 
   Future<void> _bootstrap() async {
-    final s = await _settingsStore.load();
+    final state = await _settingsStore.loadAppState();
     final did = await _settingsStore.loadOrCreateDeviceId();
     final prefs = await _settingsStore.loadNotificationPrefs();
     if (!mounted) return;
+    final appState = AppState(client: _client, deviceId: did);
+    appState.addListener(_onAppStateForWorkspaceTracking);
     setState(() {
-      _settings = s;
+      _state = state;
       _deviceId = did;
       _notifPrefs = prefs;
-      _appState = AppState(client: _client, deviceId: did);
+      _appState = appState;
       _loadingSettings = false;
     });
-    if (s.isComplete) {
+    final active = state.activeBackend;
+    if (active != null && active.isComplete) {
       _client.configure(
-        host: s.host,
-        port: s.port,
-        token: s.token,
+        host: active.host,
+        port: active.port,
+        token: active.token,
         deviceId: did,
       );
       await _client.start();
       await _maybeStartForegroundService();
+      _scheduleOpenLastWorkspaceWhenConnected(active);
     }
-    // Deep links from the ntfy app land in DeepLinkService. Cold-start
-    // ids are consumed on the first frame; warm taps push the same route
-    // through the listener.
     await _deepLinks.init();
     _deepLinkRemover = _deepLinks.addListener(_openNotificationCenterFor);
-    // If we were launched by a tap on a tray notification, route to the
-    // notification center after the first frame.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _consumePendingTapIfAny();
       final id = _deepLinks.consumePendingId();
@@ -143,15 +138,60 @@ class _MobileCodeAppState extends State<MobileCodeApp>
     });
   }
 
+  /// One-shot: once the client transitions to `connected` for an active
+  /// backend, reopen its last-known workspace (if any) and update
+  /// `lastConnectedAt`. Idempotent against multiple transitions — we detach
+  /// the listener after the first `connected` event.
+  void _scheduleOpenLastWorkspaceWhenConnected(BackendTarget target) {
+    void listener() {
+      if (_client.state.value != BackendConnectionState.connected) return;
+      _client.state.removeListener(listener);
+      final stamped = target.copyWith(
+        lastConnectedAt: DateTime.now().millisecondsSinceEpoch,
+      );
+      unawaited(_replaceBackend(stamped, makeActive: true, reconnect: false));
+      final ws = target.lastWorkspaceId;
+      if (ws != null && _appState != null) {
+        // Wait one microtask so AppState.refreshWorkspaces (kicked by the
+        // same connection-state listener inside AppState) has a chance to
+        // populate the active list. activateWorkspace is a no-op if the
+        // backend doesn't know the id — we then fall back to leaving the
+        // user on the switcher.
+        unawaited(Future<void>(() async {
+          await _appState!.activateWorkspace(ws);
+        }));
+      }
+    }
+
+    _client.state.addListener(listener);
+  }
+
+  /// Observe currentWorkspace transitions and persist them onto the active
+  /// backend so a later switch back lands on the same workspace.
+  void _onAppStateForWorkspaceTracking() {
+    final cur = _appState?.currentWorkspace;
+    final activeId = _state.activeBackendId;
+    if (activeId == null) return;
+    final id = cur?.id;
+    if (id == null) return;
+    if (id == _lastPersistedWorkspaceId) return;
+    _lastPersistedWorkspaceId = id;
+    final active = _state.activeBackend;
+    if (active == null || active.lastWorkspaceId == id) return;
+    final updated = active.copyWith(lastWorkspaceId: id);
+    unawaited(_replaceBackend(updated, makeActive: true, reconnect: false));
+  }
+
   Future<void> _maybeStartForegroundService() async {
-    final s = _settings, prefs = _notifPrefs;
+    final active = _state.activeBackend;
+    final prefs = _notifPrefs;
     debugPrint('FGS: _maybeStartForegroundService called');
-    if (s == null || prefs == null) {
-      debugPrint('FGS: early return — s=$s prefs=$prefs');
+    if (active == null || prefs == null) {
+      debugPrint('FGS: early return — active=$active prefs=$prefs');
       return;
     }
-    if (!s.isComplete) {
-      debugPrint('FGS: early return — settings incomplete');
+    if (!active.isComplete) {
+      debugPrint('FGS: early return — backend incomplete');
       return;
     }
     if (!prefs.backgroundEnabled) {
@@ -174,12 +214,6 @@ class _MobileCodeAppState extends State<MobileCodeApp>
       setState(() => _notifPrefs = prefs.copyWith(backgroundEnabled: false));
       return;
     }
-    // Without battery-optimization exemption, Doze suspends the main
-    // isolate's WebSocket after a few minutes of background — the
-    // persistent tray notification keeps showing (Android renders it from
-    // a snapshot) but `notification.show` pushes never reach
-    // `SystemTrayController`. We prompt once; if the user declines we
-    // still start the service so foreground delivery keeps working.
     final ignoringBattery =
         await FlutterForegroundTask.isIgnoringBatteryOptimizations;
     debugPrint('FGS: isIgnoringBatteryOptimizations=$ignoringBattery');
@@ -199,11 +233,6 @@ class _MobileCodeAppState extends State<MobileCodeApp>
     _openNotificationCenterFor(id);
   }
 
-  /// Push the notification-center route highlighting `id`. Shared between
-  /// the foreground-service tray-tap path (consumePendingTapNotificationId)
-  /// and the ntfy deep-link path (DeepLinkService). If state isn't ready
-  /// yet (very early launch) the call is dropped — the consumer paths both
-  /// retry on the next consumption point.
   void _openNotificationCenterFor(String id) {
     final state = _appState;
     if (state == null) return;
@@ -220,35 +249,108 @@ class _MobileCodeAppState extends State<MobileCodeApp>
     );
   }
 
-  Future<void> _onSettingsSaved(Settings s) async {
-    await _settingsStore.save(s);
+  // ---- Backends list mutations ----
+
+  /// Persist [_state] and reflect it locally. Pure write — no client touch.
+  Future<void> _persistState(AppPersistedState next) async {
+    await _settingsStore.saveAppState(next);
     if (!mounted) return;
-    setState(() => _settings = s);
-    await _client.userDisconnect();
-    if (s.isComplete) {
-      _client.configure(
-        host: s.host,
-        port: s.port,
-        token: s.token,
-        deviceId: _deviceId,
-      );
-      await _client.start();
-      // Restart the service with new params, if it's running or should be.
-      await _fgService.stop();
-      await _maybeStartForegroundService();
+    setState(() => _state = next);
+  }
+
+  /// Replace (or insert) [target] into the backends list. When [makeActive]
+  /// is true, switch the active backend to [target.id]. When [reconnect] is
+  /// true and the active backend's connection params changed, restart the
+  /// client. (Pure bookkeeping updates like a fresh lastConnectedAt pass
+  /// reconnect=false.)
+  Future<void> _replaceBackend(BackendTarget target,
+      {required bool makeActive, required bool reconnect}) async {
+    final existing = _state.backends;
+    final idx = existing.indexWhere((b) => b.id == target.id);
+    final next = [...existing];
+    if (idx >= 0) {
+      next[idx] = target;
+    } else {
+      next.add(target);
+    }
+    final wasActiveId = _state.activeBackendId;
+    final newActiveId = makeActive ? target.id : wasActiveId;
+    final newState = _state.copyWith(
+      backends: next,
+      activeBackendId: newActiveId,
+    );
+    await _persistState(newState);
+    if (!reconnect) return;
+    if (newActiveId == target.id) {
+      await _restartClientForActive();
     }
   }
 
-  /// Called by the notification settings screen when the user touches the
-  /// toggle, mute list, or quiet hours. Reloads prefs and re-evaluates
-  /// service state.
+  Future<void> _addBackend(BackendTarget target,
+      {required bool makeActive}) async {
+    await _replaceBackend(target, makeActive: makeActive, reconnect: makeActive);
+  }
+
+  Future<void> _updateBackend(BackendTarget target) async {
+    // Reconnect only when we're touching the currently active backend —
+    // otherwise it's just bookkeeping on the dormant entry.
+    final reconnect = target.id == _state.activeBackendId;
+    await _replaceBackend(target, makeActive: false, reconnect: reconnect);
+  }
+
+  Future<void> _deleteBackend(String id) async {
+    final next = _state.backends.where((b) => b.id != id).toList();
+    String? newActive = _state.activeBackendId;
+    final wasActive = id == newActive;
+    if (wasActive) {
+      newActive = next.isEmpty ? null : next.first.id;
+    }
+    final newState = _state.copyWith(
+      backends: next,
+      activeBackendId: newActive,
+      clearActiveBackendId: newActive == null,
+    );
+    await _persistState(newState);
+    if (wasActive) {
+      _lastPersistedWorkspaceId = null;
+      if (newActive == null) {
+        await _client.userDisconnect();
+        await _fgService.stop();
+      } else {
+        await _restartClientForActive();
+      }
+    }
+  }
+
+  Future<void> _switchBackend(String id) async {
+    if (id == _state.activeBackendId) return;
+    _lastPersistedWorkspaceId = null;
+    final newState = _state.copyWith(activeBackendId: id);
+    await _persistState(newState);
+    await _restartClientForActive();
+  }
+
+  /// Tear down and reopen the client against the active backend. Also
+  /// schedules the post-connect "reopen lastWorkspaceId" pass.
+  Future<void> _restartClientForActive() async {
+    final active = _state.activeBackend;
+    await _client.userDisconnect();
+    await _fgService.stop();
+    if (active == null || !active.isComplete) return;
+    _client.configure(
+      host: active.host,
+      port: active.port,
+      token: active.token,
+      deviceId: _deviceId,
+    );
+    await _client.start();
+    await _maybeStartForegroundService();
+    _scheduleOpenLastWorkspaceWhenConnected(active);
+  }
+
   Future<void> _onNotificationPrefsChanged() async {
     final prefs = await _settingsStore.loadNotificationPrefs();
     if (!mounted) return;
-    // Cached `_notifPrefs` is the source of mute/quiet-hours values read
-    // by `_onBackendNotificationForTray` at post time — updating it via
-    // setState is sufficient to apply the new policy on the very next
-    // push. No cross-isolate prefs sync to do.
     setState(() => _notifPrefs = prefs);
     if (!prefs.backgroundEnabled) {
       await _fgService.stop();
@@ -262,17 +364,9 @@ class _MobileCodeAppState extends State<MobileCodeApp>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // When the user yanks the app back from background, fast-path the
-    // reconnect instead of letting the backoff timer finish.
     if (state == AppLifecycleState.resumed) {
       _client.requestReconnectNow();
-      // Any tray notification tap that happened while we were paused
-      // landed in the static pending slot; consume it now.
       _consumePendingTapIfAny();
-      // ntfy deep links arriving while paused queue in the pending slot
-      // (cold-start path); the warm-path listener also fires from the
-      // stream, but consuming here covers the case where the URI was
-      // delivered before the listener was attached.
       final id = _deepLinks.consumePendingId();
       if (id != null) _openNotificationCenterFor(id);
     }
@@ -285,9 +379,21 @@ class _MobileCodeAppState extends State<MobileCodeApp>
     unawaited(_deepLinks.dispose());
     unawaited(_trayNotifSub?.cancel());
     _trayNotifSub = null;
+    _appState?.removeListener(_onAppStateForWorkspaceTracking);
     _appState?.dispose();
     _client.dispose();
     super.dispose();
+  }
+
+  Widget _buildBackendsScreen() {
+    return BackendsScreen(
+      state: _state,
+      appState: _appState!,
+      onAdd: _addBackend,
+      onUpdate: _updateBackend,
+      onDelete: _deleteBackend,
+      onSwitch: _switchBackend,
+    );
   }
 
   @override
@@ -301,19 +407,20 @@ class _MobileCodeAppState extends State<MobileCodeApp>
       ),
       home: _loadingSettings || _appState == null
           ? const _BootSplash()
-          : (_settings == null || !_settings!.isComplete)
-              ? SettingsScreen(
-                  initial: _settings ??
-                      const Settings(host: '', port: 7860, token: ''),
-                  isFirstRun: true,
-                  onSave: _onSettingsSaved,
-                )
+          : (_state.activeBackend == null)
+              ? _buildBackendsScreen()
               : HomeShell(
                   appState: _appState!,
                   settingsStore: _settingsStore,
-                  currentSettings: _settings!,
+                  state: _state,
                   systemTrayController: _tray,
-                  onSettingsSaved: _onSettingsSaved,
+                  onOpenBackends: () {
+                    _navKey.currentState?.push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => _buildBackendsScreen(),
+                      ),
+                    );
+                  },
                   onNotificationPrefsChanged: _onNotificationPrefsChanged,
                 ),
     );

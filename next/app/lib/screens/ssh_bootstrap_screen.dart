@@ -19,11 +19,15 @@ enum _AuthMode { password, key }
 
 class SshBootstrapScreen extends StatefulWidget {
   final AppState appState;
-  final Future<void> Function(Settings) onSettingsSaved;
+
+  /// Called when the user accepts a successful bootstrap result. The
+  /// caller persists the new [BackendTarget] (typically by appending it to
+  /// the backends list and making it active).
+  final Future<void> Function(BackendTarget) onBackendInstalled;
   const SshBootstrapScreen({
     super.key,
     required this.appState,
-    required this.onSettingsSaved,
+    required this.onBackendInstalled,
   });
 
   @override
@@ -137,15 +141,22 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
   Future<void> _saveAndSwitch() async {
     final s = widget.appState.lastBootstrapSuccess;
     if (s == null) return;
-    final settings = Settings(
-      host: _hostCtrl.text.trim(),
+    final host = _hostCtrl.text.trim();
+    final user = _userCtrl.text.trim();
+    final target = BackendTarget(
+      id: generateUuidV4(),
+      name: user.isEmpty ? host : '$user@$host',
+      host: host,
       port: s.port,
       token: s.token,
+      origin: BackendOrigin.sshInstall,
+      originRef: user.isEmpty ? host : '$user@$host',
+      addedAt: DateTime.now().millisecondsSinceEpoch,
     );
     final navigator = Navigator.of(context);
-    await widget.onSettingsSaved(settings);
+    await widget.onBackendInstalled(target);
     if (!mounted) return;
-    navigator.pop(settings);
+    navigator.pop(target);
   }
 
   void _copyLog() {

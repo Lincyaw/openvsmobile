@@ -1,6 +1,8 @@
-// Connection settings: host, port, bearer token. Two-field form, no QR.
-// Includes a "Test connection" button that attempts a WebSocket handshake
-// and prints diagnostic logs so users can debug network issues.
+// Backend connection editor: name, host, port, bearer token. Used both for
+// creating a brand-new BackendTarget (Backends screen "Manual entry") and
+// for editing details of an existing one. Includes a "Test connection"
+// button that attempts a WebSocket handshake and prints diagnostic logs so
+// users can debug network issues.
 
 import 'dart:async';
 import 'dart:convert';
@@ -15,12 +17,13 @@ class _LogEntry {
   final DateTime time;
   final String text;
   final bool isError;
-  const _LogEntry({required this.time, required this.text, this.isError = false});
+  const _LogEntry(
+      {required this.time, required this.text, this.isError = false});
 }
 
 class SettingsScreen extends StatefulWidget {
-  final Settings initial;
-  final Future<void> Function(Settings) onSave;
+  final BackendTarget initial;
+  final Future<void> Function(BackendTarget) onSave;
   final bool isFirstRun;
 
   const SettingsScreen({
@@ -36,6 +39,7 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _nameCtrl;
   late final TextEditingController _hostCtrl;
   late final TextEditingController _portCtrl;
   late final TextEditingController _tokenCtrl;
@@ -47,15 +51,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
+    _nameCtrl = TextEditingController(text: widget.initial.name);
     _hostCtrl = TextEditingController(text: widget.initial.host);
     _portCtrl = TextEditingController(
-      text: widget.initial.port == 0 ? '7860' : widget.initial.port.toString(),
+      text: widget.initial.port == 0
+          ? '7860'
+          : widget.initial.port.toString(),
     );
     _tokenCtrl = TextEditingController(text: widget.initial.token);
   }
 
   @override
   void dispose() {
+    _nameCtrl.dispose();
     _hostCtrl.dispose();
     _portCtrl.dispose();
     _tokenCtrl.dispose();
@@ -64,7 +72,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _log(String text, {bool isError = false}) {
     setState(() {
-      _testLogs.add(_LogEntry(time: DateTime.now(), text: text, isError: isError));
+      _testLogs.add(
+          _LogEntry(time: DateTime.now(), text: text, isError: isError));
     });
   }
 
@@ -120,7 +129,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             if (decoded.containsKey('error')) {
               final err = decoded['error'] as Map<String, dynamic>;
               completer.completeError(
-                _RpcError((err['code'] as num).toInt(), err['message'] as String),
+                _RpcError(
+                    (err['code'] as num).toInt(), err['message'] as String),
               );
             } else {
               completer.complete(decoded['result'] as Map<String, dynamic>);
@@ -141,11 +151,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
         'params': {
           'token': token,
           'protocolVersion': '1.0',
-          'client': {'name': 'openvsmobile-flutter-test', 'version': '0.1.0'},
+          'client': {
+            'name': 'openvsmobile-flutter-test',
+            'version': '0.1.0',
+          },
         },
       }));
 
-      final result = await completer.future.timeout(const Duration(seconds: 5));
+      final result =
+          await completer.future.timeout(const Duration(seconds: 5));
       if (result['ok'] == true) {
         _log('   Auth OK! Server version: ${result['serverVersion']}');
         _log('   defaultCwd: ${result['defaultCwd']}');
@@ -155,15 +169,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
     } on TimeoutException catch (e) {
       _log('   TIMEOUT: $e', isError: true);
-      _log('   Hint: check that host/port are correct and the backend is running.', isError: true);
+      _log(
+          '   Hint: check that host/port are correct and the backend is running.',
+          isError: true);
     } on _RpcError catch (e) {
       _log('   Auth failed: [${e.code}] ${e.message}', isError: true);
       if (e.code == -32002) {
-        _log('   Hint: token is wrong. Check backend stdout for the correct token.', isError: true);
+        _log(
+            '   Hint: token is wrong. Check backend stdout for the correct token.',
+            isError: true);
       }
     } on WebSocketChannelException catch (e) {
       _log('   WebSocket error: ${e.message}', isError: true);
-      _log('   Hint: backend may not be running, or a firewall is blocking port $port.', isError: true);
+      _log(
+          '   Hint: backend may not be running, or a firewall is blocking port $port.',
+          isError: true);
     } catch (e) {
       _log('   Error: $e', isError: true);
     } finally {
@@ -177,21 +197,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _saving = true);
-    final s = Settings(
-      host: _hostCtrl.text.trim(),
+    final name = _nameCtrl.text.trim();
+    final host = _hostCtrl.text.trim();
+    final updated = widget.initial.copyWith(
+      name: name.isEmpty ? host : name,
+      host: host,
       port: int.parse(_portCtrl.text.trim()),
       token: _tokenCtrl.text.trim(),
     );
-    await widget.onSave(s);
+    await widget.onSave(updated);
     if (!mounted) return;
-    Navigator.of(context).pop(s);
+    Navigator.of(context).pop(updated);
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.isFirstRun ? 'Connect to backend' : 'Settings'),
+        title: Text(widget.isFirstRun ? 'New backend' : 'Edit backend'),
       ),
       body: Padding(
         padding: const EdgeInsets.all(16),
@@ -200,6 +223,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              TextFormField(
+                controller: _nameCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Name',
+                  hintText: 'e.g. home-server',
+                ),
+              ),
+              const SizedBox(height: 12),
               TextFormField(
                 controller: _hostCtrl,
                 decoration: const InputDecoration(
@@ -243,7 +274,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           ? const SizedBox(
                               width: 14,
                               height: 14,
-                              child: CircularProgressIndicator(strokeWidth: 2),
+                              child:
+                                  CircularProgressIndicator(strokeWidth: 2),
                             )
                           : const Icon(Icons.network_ping, size: 18),
                       label: Text(_testing ? 'Testing…' : 'Test connection'),
@@ -269,7 +301,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   child: Container(
                     padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                      color: Theme.of(context)
+                          .colorScheme
+                          .surfaceContainerHighest,
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: ListView.builder(
@@ -277,7 +311,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       itemBuilder: (ctx, i) {
                         final log = _testLogs[i];
                         return SelectableText(
-                          '[${log.time.hour.toString().padLeft(2, '0')}:''${log.time.minute.toString().padLeft(2, '0')}:''${log.time.second.toString().padLeft(2, '0')}] ${log.text}',
+                          '[${log.time.hour.toString().padLeft(2, '0')}:'
+                          '${log.time.minute.toString().padLeft(2, '0')}:'
+                          '${log.time.second.toString().padLeft(2, '0')}] ${log.text}',
                           style: TextStyle(
                             fontFamily: 'monospace',
                             fontSize: 12,
