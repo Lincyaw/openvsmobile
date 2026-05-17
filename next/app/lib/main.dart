@@ -421,6 +421,7 @@ class _MobileCodeAppState extends State<MobileCodeApp>
                       ),
                     );
                   },
+                  onBackendInstalled: _addBackend,
                   onNotificationPrefsChanged: _onNotificationPrefsChanged,
                 ),
     );
