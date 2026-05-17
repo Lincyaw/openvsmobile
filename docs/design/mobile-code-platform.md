@@ -117,14 +117,55 @@ GitHub PRs, search-across-files, debugger — is a plugin.
 
 ## 3. Plugin model
 
-The model is deliberately closer to **LSP** than to **vscode.\***. The
-goal is "anything that can speak JSON-RPC over stdio can be a plugin",
-because this keeps the surface small, language-neutral, and amenable to
-sandboxing.
+Closer to **LSP** than to **vscode.\***: anything that can speak JSON-RPC over stdio is a plugin. The host treats plugins as untrusted peers reached over a process boundary, not as extensions inheriting the host's runtime authority.
 
-### 3.1 Manifest
+**The system is single-user.** No marketplace, no central registry, no install flow with user-facing confirmation prompts. The user installs plugins by writing files into a directory on their backend host; they trust their own plugins by virtue of having put them there. Capability declarations exist for accident-prevention and documentation, not for a security boundary against the user themselves.
 
-Each plugin ships a `plugin.json`:
+### 3.1 Installation, discovery, lifecycle
+
+**Plugins live on disk.** Directory layout (single source of truth):
+
+```
+~/.local/share/openvsmobile-next/plugins/
+├── <plugin-id>/
+│   ├── plugin.json          # manifest
+│   ├── main.mjs             # entry (or whatever manifest names)
+│   └── ...                  # plugin's own files
+└── <other-plugin-id>/
+```
+
+Override the root via env `OPENVSMOBILE_PLUGINS_DIR`. The `<plugin-id>` directory name must match `manifest.id`; mismatch → load skipped + warning logged.
+
+**Installation = filesystem write.** There is no `plugin.install` RPC that "pulls a plugin from a URL", no centralized registry, no marketplace. The user installs by:
+
+```bash
+# on the backend host (or any machine that can write into the plugins dir over SSH/rsync)
+mkdir -p ~/.local/share/openvsmobile-next/plugins/com.me.timer
+cp -r ./my-built-plugin/* ~/.local/share/openvsmobile-next/plugins/com.me.timer/
+# either restart the backend or call plugin.reload via RPC
+```
+
+Local dev gets a friendly path: symlink the plugin's working tree into the plugins dir and `plugin.reload` picks up changes without restart.
+
+**Discovery is a scan.** On startup and on `plugin.reload`, the host scans `plugins/`, parses each `plugin.json`, validates it, and registers the plugin in its in-memory registry. Invalid manifest → skip + log to `~/.local/state/openvsmobile-next/plugin-logs/<id>.log`. Persisted enable/disable state lives in `~/.config/openvsmobile-next/plugin-state.json` (`{ "<id>": { "enabled": true } }`); new plugins default to enabled.
+
+**Lifecycle states** (visible to the client via `plugin.list`):
+
+| State        | Meaning                                                                 |
+|--------------|-------------------------------------------------------------------------|
+| `registered` | Manifest parsed, plugin known to the host. No process yet.              |
+| `disabled`   | Registered but `enabled: false` in plugin-state — host won't activate.  |
+| `activating` | Activation event matched; process spawning; `initialize` handshake in flight. |
+| `active`     | Initialize handshake completed; plugin is serving RPCs.                 |
+| `crashed`    | Process exited unexpectedly. Stays in this state until user reloads.    |
+| `errored`    | Manifest invalid or capability conflict at activation time.             |
+
+**Client-side surface** (kept to the bare minimum — see §2 capability #6):
+- Settings → Plugins shows a list with `id / version / state / [Disable] [Enable] [View log] [Reload]`.
+- No "Install" button. No "Approve capabilities" prompt. No "Update available" indicator.
+- Plugin panels render through the §4.3 widget renderer in the Plugins tab; the renderer does not know which plugin owns a panel, only the `panelId`.
+
+### 3.2 Manifest
 
 ```json
 {
@@ -132,68 +173,144 @@ Each plugin ships a `plugin.json`:
   "name": "Claude Helper",
   "version": "0.1.0",
   "protocolVersion": "1.0",
-  "entry": { "kind": "process", "command": ["node", "main.js"] },
-  "activation": ["onStartup", "onCommand:claude.ask", "onFileType:dart"],
+  "entry": { "kind": "node", "main": "main.mjs" },
+  "activation": ["onStartup", "onCommand:claude.ask", "onWorkspaceOpen"],
   "capabilities": {
-    "fs":       "read",
+    "fs": "read",
     "terminal": "spawn",
-    "network":  ["api.anthropic.com"],
-    "secrets":  ["anthropic.apiKey"],
-    "ui":       ["panel", "command", "statusItem"]
+    "network": ["api.anthropic.com"],
+    "secrets": ["anthropic.apiKey"],
+    "ui": ["panel", "command", "statusItem", "notification"]
   },
   "contributes": {
-    "commands":    [{ "id": "claude.ask", "title": "Ask Claude" }],
-    "panels":      [{ "id": "claude.chat", "title": "Claude", "icon": "sparkles" }],
-    "statusItems": [{ "id": "claude.status" }]
+    "commands":      [{ "id": "claude.ask", "title": "Ask Claude" }],
+    "panels":        [{ "id": "claude.chat", "title": "Claude", "icon": "sparkles" }],
+    "statusItems":   [{ "id": "claude.status" }],
+    "notifications": [{ "source": "claude-helper:*" }]
   }
 }
 ```
 
-Three principles:
+**`id`** must be a reverse-DNS string `[a-z0-9._-]+`. The host uses it as both the directory name and the namespace prefix for the plugin's `source` strings in the notification system.
 
-- **Capabilities are declared, not inferred.** A plugin that doesn't
-  declare `terminal: spawn` cannot spawn a process even if it tries;
-  the backend rejects the JSON-RPC call.
-- **Activation is event-based.** Plugins do not all start at boot;
-  activation events scope when they wake.
-- **Contributions are data, not code.** What the user sees in the UI
-  (commands, panels, status items) is declared in the manifest; the
-  plugin process only handles the events.
+**`entry.kind`** is one of:
 
-### 3.2 Plugin host
+| Kind     | Shape                                      | Semantics                                                 |
+|----------|--------------------------------------------|-----------------------------------------------------------|
+| `node`   | `{ kind: "node", main: "main.mjs" }`       | Default. Host spawns the bundled portable Node with `--experimental-permission` (if available); main is resolved relative to the plugin directory. Plugin can only `import` from `@openvsmobile/sdk` and Node built-ins — see §3.4. |
+| `binary` | `{ kind: "binary", command: [...], env? }` | Escape hatch for non-Node plugins (Go, Rust, Python). Host spawns the command unchanged. The plugin must speak the stdio JSON-RPC protocol itself (no SDK injection). Capability gating still applies on the wire side. |
 
-- Plugins run as **child processes** of the backend (one process per
-  active plugin). Process boundary = capability boundary; the host
-  enforces `fs`, `network`, `terminal`, and `secrets` gates by
-  mediating the API calls, not by relying on the plugin to behave.
-- Language of the plugin process is its own business. Node is the
-  expected default because the LSP ecosystem is there, but a Go,
-  Python, or Rust plugin is fine as long as it speaks the protocol.
-- Each plugin has a lifecycle: `installed → enabled → activated →
-  deactivated → disabled → uninstalled`. Backend persists the
-  `installed/enabled` flags; `activated` is derived from activation
-  events at runtime.
+`node` is the recommended path; `binary` exists so a plugin that genuinely needs to spawn a foreign-language process is possible without forcing it through a Node shim.
 
-### 3.3 API surface exposed to plugins
+**`activation`** events:
 
-Method namespaces, all reachable via JSON-RPC from the plugin to the
-backend. Each call is gated by the matching capability in §3.1.
+| Event                  | Fires when                                                                   |
+|------------------------|------------------------------------------------------------------------------|
+| `onStartup`            | Backend startup, after all `registered` plugins are scanned.                 |
+| `onWorkspaceOpen`      | Any `workspace.open` call succeeds.                                          |
+| `onWorkspaceOpen:<id>` | A workspace with this stable `label`-derived id opens (rare; v1).            |
+| `onCommand:<cmdId>`    | The user invokes `<cmdId>` from the command palette or another contribution.|
+| `onFileType:<ext>`     | A file matching `*.<ext>` is opened in the viewer.                           |
+| `onNotificationSource:<source>` | A notification with matching `source` is published (lets a plugin react to other plugins' notifications). |
 
-- `workspace.*` — `readFile`, `listDir`, `findFiles`, `findText`,
-  `getCurrentSelection`, `onDidChangeFile` (notification stream).
-- `editor.*` — `getOpenedFile`, `revealRange`, `applyEdit` (if/when
-  editing arrives in core).
-- `terminal.*` — `spawn`, `write`, `onData` (subscription), `dispose`.
-- `git.*` — read-only status/diff/log; write ops gated and deferred.
-- `ui.*` — `renderPanel`, `setStatusItem`, `showMessage`,
-  `showQuickPick`. See §4.3 for the UI tree schema. Incremental patch
-  (`updatePanel`) is reserved for v1; v0 plugins re-render the whole
-  panel.
-- `secrets.*` — `get(key)`, `set(key, value)`, scoped to the plugin id
-  and backed by an OS keystore on the phone (never persisted in plugin
-  storage).
-- `lm.*` (optional, defined in v1) — a uniform "language model"
-  interface so AI plugins are interchangeable.
+Activation is **lazy**: a `registered`-state plugin sits idle until one of its events fires. The host spawns the process, sends `initialize`, and transitions to `active`. Plugins with no `activation` field never activate (useful for "library" plugins that other plugins might reference — though plugin-to-plugin RPC is out of scope for v0).
+
+**`capabilities`** must be declared exhaustively; any RPC call that requires an undeclared capability returns `RpcError{ code: -32011, message: "capabilityNotDeclared" }`. The host enforces this silently — there is no user-facing prompt (this is single-user; the user wrote the manifest). The capability matrix is fully specified in §3.5.
+
+**`contributes`** is data only — declared at manifest parse time, surfaced to the client by `plugin.list` and the command palette / status bar / Plugins tab. Plugins never imperatively register a command at runtime; they declare and handle.
+
+### 3.3 Process model and failure isolation
+
+- **One process per active plugin.** Process boundary = capability boundary. Crash blast radius is one plugin.
+- **stdio JSON-RPC** (line-delimited, one JSON object per line — same as LSP). See §4.2 for the protocol.
+- **Standard streams**: stdin/stdout carry RPC; stderr is captured by the host and tee'd to `~/.local/state/openvsmobile-next/plugin-logs/<id>.log` (rotated at 10MB, last 3 retained). Anything the plugin `console.error`s lands there.
+- **Crash policy**: a plugin process exiting non-zero — or its `initialize` handshake failing — transitions it to `crashed`. **No automatic restart.** The Plugins-tab UI shows a banner inside the plugin's panel(s): `Plugin <name> crashed · [View log] [Reload]`. The user-issued `plugin.reload` is the only way back to `active`. (Rationale: automatic restart hides bugs and burns battery; one-shot crashes deserve human attention.)
+- **UI on crash**: the last `ui.tree` the plugin rendered stays visible (frozen) with the crash banner overlaid. The client doesn't blank the screen — context preservation lets the user see what the plugin was doing when it died.
+- **In-flight RPC**: when a plugin crashes, the host fails every pending plugin-bound RPC with `RpcError{ code: -32012, message: "pluginCrashed" }`. Calls that come in after the crash but before reload return the same error.
+- **Process limits**: each plugin is spawned with conservative `ulimit`s (RSS soft cap, CPU-quota nice value) via the host's spawn options. Hardcoded for v0; configurable in v1 if a real plugin needs more.
+
+### 3.4 Plugin SDK (`@openvsmobile/sdk`)
+
+For `entry.kind: "node"` plugins, **the SDK is the only allowed import surface** outside Node's built-ins. The host spawns the plugin under Node's experimental permission model (or, where unavailable, with a custom `--require` shim that throws on disallowed `import`s) so that `import "axios"` inside a plugin fails fast. Plugins that need richer dependencies use `entry.kind: "binary"`.
+
+The SDK is a small local package shipped with the backend; plugins reference it via a host-injected resolver path. It exposes:
+
+```ts
+// rough sketch — exact API surface to be detailed before the host PR
+import {
+  defineCommand,        // contribute a command handler
+  definePanel,          // contribute a panel + render function
+  defineStatusItem,     // contribute a status bar item
+  workspace,            // fs.readFile / listDir / findFiles / onChange
+  terminal,             // spawn / write / onData / dispose
+  git,                  // diff / log (read-only)
+  notify,               // emit a notification (subject to ui:notification capability)
+  secrets,              // get / set, scoped to this plugin's id
+  log,                  // structured log → plugin-logs/<id>.log
+} from "@openvsmobile/sdk";
+```
+
+Each SDK call is a thin wrapper that:
+1. Checks the plugin's declared capabilities (fail-fast `Error: capability "X" not declared`).
+2. Issues the stdio JSON-RPC call to the host.
+3. The host re-checks the capability declaration server-side (defense in depth).
+
+This double-check is deliberate: SDK-side check gives the plugin author a fast, in-process error during dev; host-side check gives the host an authoritative gate even if the plugin tampers with the SDK.
+
+UI rendering uses a builder API that produces the §4.3 widget tree:
+
+```ts
+definePanel("claude.chat", ({ context, fire }) =>
+  UiColumn({ id: "root", children: [
+    UiTextField({ id: "input", value: context.draft, onSubmit: "send" }),
+    UiButton({ id: "send", label: "Ask", onTap: "send" }),
+  ] })
+);
+```
+
+`fire` is the SDK helper that re-runs the plugin's render function and `ui.render`s the new tree to the host.
+
+### 3.5 Capability matrix
+
+Declared capabilities resolve to host-enforced RPC gates:
+
+| Capability key | Allowed values                              | RPC methods gated                                                            | Scope rule                                                                 |
+|----------------|---------------------------------------------|------------------------------------------------------------------------------|----------------------------------------------------------------------------|
+| `fs`           | `"read"` \| `"write"`                       | `workspace.readFile`, `workspace.listDir`, `workspace.findFiles`, `workspace.findText`; `write` additionally unlocks `workspace.writeFile` (v1) | Always workspace-scoped — plugins cannot traverse outside the active workspace's root, even with `write`. |
+| `terminal`     | `"spawn"`                                   | `terminal.spawn`, `terminal.write`, `terminal.dispose`, `terminal.onData`    | Plugins get **their own** PTY; cannot read or write the user's terminal sessions. |
+| `network`      | `string[]` — domain allowlist               | Plugin-side `fetch` is intercepted via SDK helper that checks host policy; `entry.kind: "binary"` plugins must use the host's network proxy RPC to make outbound HTTP. | Strict host-prefix match (no wildcards in v0 except `"*"` which means "no restriction"). |
+| `secrets`      | `string[]` — secret-key allowlist           | `secrets.get(key)`, `secrets.set(key, value)`                                | Keys outside the allowlist → `capabilityNotDeclared`. v0 stores in plain JSON at `~/.config/openvsmobile-next/plugin-secrets.json` (0600); v1 moves to an OS keystore via Android Keystore over the WS. |
+| `ui`           | `string[]` — surface types                  | Each surface gates a contribution: `"panel"` → `definePanel`/`ui.render`; `"command"` → `defineCommand`/`contributes.commands`; `"statusItem"` → `defineStatusItem`/`contributes.statusItems`; `"notification"` → `notify()` to the §4.5 notification system | UI contributions appear in the client only if the matching capability is declared. |
+
+Capabilities declared but unused are fine. Capabilities used but not declared → `-32011` and the call fails. The plugin process keeps running — capability errors are programming bugs surfaced like type errors, not crashes.
+
+### 3.6 API surface plugins can call
+
+(All gated by §3.5.) Method namespaces from the plugin side:
+
+| Namespace    | Methods                                                                        |
+|--------------|--------------------------------------------------------------------------------|
+| `workspace.` | `readFile`, `listDir`, `findFiles`, `findText`, `getCurrentSelection`, `onChange` (subscription)        |
+| `editor.`    | `getOpenedFile`, `revealRange`. `applyEdit` reserved for v1 (depends on editor capability arriving in core). |
+| `terminal.`  | `spawn`, `write`, `dispose`, `onData` (subscription)                           |
+| `git.`       | `diff`, `log` (read-only). Write ops are out of scope (first principle #6).    |
+| `ui.`        | `render(panelId, tree)`, `setStatusItem(itemId, props)`, `showMessage`, `showQuickPick`. Incremental `update` reserved for v1; v0 re-renders full panels. |
+| `secrets.`   | `get(key)`, `set(key, value)`                                                  |
+| `notify.`    | `post(notification)` — wraps §4.5 `POST /notify` with the plugin's `id` auto-prefixed to `source` |
+
+Notifications from the plugin to the client (host pushes back to plugin):
+
+| Method                  | Params                                                          |
+|-------------------------|-----------------------------------------------------------------|
+| `ui.event`              | `{ panelId, eventId, sourceId, payload }` — see §4.3            |
+| `workspace.changed`     | `{ workspaceId, files: { added, removed, modified } }` — filtered to capability scope |
+| `terminal.data`         | `{ sessionId, bytesBase64 }` — only for plugin-owned sessions   |
+| `terminal.exit`         | `{ sessionId, exitCode }`                                       |
+| `commandInvoked`        | `{ commandId, args }` — activation hook handoff                 |
+
+### 3.7 Versioning
+
+Plugin manifests declare `protocolVersion`. The host advertises a `supportedProtocolVersions: ["1.0"]` in the `initialize` handshake. A mismatch on major version → plugin transitions to `errored` with a clear message; minor version mismatches are allowed (plugins should treat unknown RPCs / widgets as best-effort).
 
 ## 4. Communication contracts
 

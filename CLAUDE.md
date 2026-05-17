@@ -126,6 +126,10 @@ The Android client ships its own GitHub Release on `app-v*` tags via `.github/wo
 - **Workspaces are UUID-keyed**, not path-keyed. Same path closed and re-opened gets a fresh id.
 - **No raw filesystem path text input anywhere in the UI.** Workspace switcher uses recents list + step-by-step picker.
 - **`server/`, `openvscode-server/`, `app/` are legacy** and kept side-by-side with `next/` until P6 cutover. Do not edit. Do not reintroduce code that was deleted from them.
+- **Plugin install is filesystem-only.** Users put a `<plugin-id>/` directory under `~/.local/share/openvsmobile-next/plugins/`. No marketplace, no URL install, no `plugin.install` RPC that pulls from the network. Single-user system; the user trusts their own plugins by virtue of having put them there.
+- **No client-side plugin approval flow.** Capability declarations in `plugin.json` are accident-prevention and documentation, not a consent UI. Host enforces silently — calls outside declared capabilities return `RpcError -32011 capabilityNotDeclared`.
+- **One process per plugin; no automatic restart on crash.** A crashed plugin freezes its last `ui.tree` and overlays a `[View log] [Reload]` banner. Automatic restart would hide bugs and burn battery.
+- **Node plugins can only import `@openvsmobile/sdk` and Node built-ins.** Plugins that need arbitrary npm dependencies declare `entry.kind: "binary"` and ship their own runtime. The SDK route keeps the plugin surface small and the host's responsibilities narrow.
 
 <!-- auto-harness:begin -->
 ## Project conventions
