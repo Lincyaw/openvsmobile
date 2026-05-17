@@ -14,14 +14,13 @@
 // (head → tree → decoration → commit) so the client never sees a decoration
 // for a path that doesn't exist yet.
 
-import { readFile, stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import { type FSWatcher, watch } from "chokidar";
 import ignoreFactory, { type Ignore } from "ignore";
 import type { WebSocket } from "ws";
 import {
   isGitRepo,
-  parsePorcelainV2,
   readCommitSubject,
   readHeadInfo,
   readStatus,
@@ -37,10 +36,13 @@ import { sendNotification } from "./rpc.js";
 /// fall off. A subscribe call whose `sinceVersion` lies inside this window
 /// gets a replay; otherwise we drop to snapshot mode.
 const JOURNAL_MAX_EVENTS = 200;
-/// Maximum age of journal entries. Even with low event volume, anything older
-/// than this is considered stale (an idle client that comes back hours later
-/// gets a snapshot, not a replay of long-forgotten work).
-const JOURNAL_MAX_AGE_MS = 30_000;
+/// Maximum age of journal entries. Even with low event volume, anything
+/// older than this is considered stale (an idle client that comes back
+/// after this window gets a snapshot, not a replay of long-forgotten
+/// work). 5 minutes covers a phone backgrounded across a coffee break;
+/// snapshot cost is small but the UI flicker on every brief disconnect
+/// is annoying when it's too short.
+const JOURNAL_MAX_AGE_MS = 300_000;
 /// Debounce window for coalescing watcher events. .git/HEAD writes bypass
 /// this to make branch switches feel instant.
 const DRAIN_DEBOUNCE_MS = 100;
@@ -147,6 +149,12 @@ export class WorkspaceModel {
   private gitWatcher: FSWatcher | null = null;
   private gitignoreMatcher: Ignore = ignoreFactory();
   private gitignoreLoaded = false;
+  /// Whether this workspace is a git repo. Decided once at `init()`.
+  /// v0 decision: we do NOT re-detect later — a workspace opened on a
+  /// non-repo stays non-repo for its lifetime. If the user runs `git init`
+  /// they currently need to close + reopen the workspace. Re-init on `.git/`
+  /// materialization is a v1 nicety.
+  private isRepo = false;
 
   // Drain state.
   private drainTimer: ReturnType<typeof setTimeout> | null = null;
@@ -171,8 +179,8 @@ export class WorkspaceModel {
   /// ActiveWorkspace is constructed.
   public async init(): Promise<void> {
     await this.reloadGitignore();
-    const repo = await isGitRepo(this.root);
-    if (repo) {
+    this.isRepo = await isGitRepo(this.root);
+    if (this.isRepo) {
       this.head = await readHeadInfo(this.root);
       const entries = await readStatus(this.root);
       for (const e of entries) {
@@ -188,43 +196,72 @@ export class WorkspaceModel {
   // ---------- Subscription / journal ----------
 
   public subscribe(ws: WebSocket, req: SubscribeRequest): SubscribeResult {
+    // B2: a second subscribe from the same socket replaces the prior
+    // subscriber rather than stacking — otherwise every push is delivered
+    // twice. Reconnect-then-resubscribe-before-prior-unsubscribe-settles is a
+    // real wire pattern, not theoretical.
+    this.subscribers = this.subscribers.filter((s) => s.ws !== ws);
+
     const paths =
       req.paths !== undefined && req.paths.length > 0 ? [...req.paths] : null;
+    const baseVersion = this.version;
+    const since = req.sinceVersion;
+    // The subscriber object is reused across modes. lastDeliveredVersion is
+    // set per-mode below — replay defers registration so the slice can be
+    // delivered before live fan-out is allowed to start; the other modes
+    // register synchronously.
     const subscriber: Subscriber = {
       ws,
       paths,
-      lastDeliveredVersion: this.version,
+      lastDeliveredVersion: baseVersion,
     };
-    this.subscribers.push(subscriber);
-    const since = req.sinceVersion;
+
     if (since === undefined) {
+      this.subscribers.push(subscriber);
       // No baseline → caller wants a fresh snapshot.
-      return { mode: "snapshot", baseVersion: this.version };
+      return { mode: "snapshot", baseVersion };
     }
-    if (since === this.version) {
-      return { mode: "current", baseVersion: this.version };
+    if (since === baseVersion) {
+      this.subscribers.push(subscriber);
+      return { mode: "current", baseVersion };
     }
-    if (since > this.version) {
+    if (since > baseVersion) {
+      this.subscribers.push(subscriber);
       // Client claims to have seen the future. Resnapshot to be safe.
-      return { mode: "snapshot", baseVersion: this.version };
+      return { mode: "snapshot", baseVersion };
     }
     // Can we replay? journal[0] is the oldest retained event.
     const oldest =
-      this.journal.length > 0 ? this.journal[0].version : this.version + 1;
+      this.journal.length > 0 ? this.journal[0].version : baseVersion + 1;
     if (since >= oldest - 1) {
-      // Replay events with version > sinceVersion. We deliver these on the
-      // next tick so the caller can send the subscribe RESPONSE first.
+      // B1: hold the subscriber OUT of `this.subscribers` until replay has
+      // been delivered. Live emit() can't fan out to us during the gap
+      // (we're not registered), so the slice arrives intact and in version
+      // order. We register inside the same microtask, atomically with the
+      // final lastDeliveredVersion bump.
+      //
+      // Drains can't interleave because chokidar's debounced drain fires on
+      // a macrotask (setTimeout); the microtask we queue here runs before
+      // any macrotask. If a drain SOMEHOW slips in (e.g. drainOnce called
+      // synchronously from a test that already had work queued), the journal
+      // still has the slice we captured here — `slice` is a synchronous
+      // copy — and we re-walk it deterministically.
       const slice = this.journal.filter((e) => e.version > since);
       queueMicrotask(() => {
         for (const ev of slice) {
           this.emitOne(ws, ev);
         }
+        // Register at the end so live emit only sees us starting from
+        // events that genuinely came after we joined.
         subscriber.lastDeliveredVersion = this.version;
+        this.subscribers.push(subscriber);
       });
-      return { mode: "replay", baseVersion: this.version };
+      return { mode: "replay", baseVersion };
     }
-    // Gap too large.
-    return { mode: "snapshot", baseVersion: this.version };
+    // Gap too large → snapshot. Register so the upcoming decoration.snapshot
+    // and any subsequent drains reach us.
+    this.subscribers.push(subscriber);
+    return { mode: "snapshot", baseVersion };
   }
 
   /// Build the decoration snapshot the client gets after a subscribe in
@@ -239,6 +276,30 @@ export class WorkspaceModel {
 
   public currentVersion(): number {
     return this.version;
+  }
+
+  /// Number of active subscribers. Exposed for tests asserting auto-cleanup
+  /// on socket close; not part of the wire surface.
+  public subscriberCount(): number {
+    return this.subscribers.length;
+  }
+
+  /// Maximum events the in-memory journal retains. Exposed so tests can
+  /// drive overflow conditions deterministically.
+  public static journalMaxEvents(): number {
+    return JOURNAL_MAX_EVENTS;
+  }
+
+  /// Synthesize a decoration.delta event for tests that need to fill the
+  /// journal past `journalMaxEvents` without spawning hundreds of file
+  /// operations. Production code never calls this.
+  public testEmitSyntheticDecorationEvent(path: string): void {
+    this.emit({
+      kind: "decoration.delta",
+      version: this.nextVersion(),
+      ts: Date.now(),
+      entries: [{ path, status: "M" }],
+    });
   }
 
   public removeSubscriber(ws: WebSocket): void {
@@ -310,106 +371,132 @@ export class WorkspaceModel {
   private async runDrainBody(): Promise<void> {
     this.drainRunning = true;
     try {
-      const previousHead = this.head;
-      const newHead = await readHeadInfo(this.root);
-      // 1. HEAD diff
-      let headChanged = false;
-      if (!headInfoEqual(previousHead, newHead)) {
-        this.head = newHead;
-        headChanged = true;
-      }
-      if (headChanged && newHead !== null) {
-        this.emit({
-          kind: "head.changed",
-          version: this.nextVersion(),
-          ts: Date.now(),
-          branch: newHead.branch,
-          headSha: newHead.headSha,
-          ahead: newHead.ahead,
-          behind: newHead.behind,
-        });
-      }
-
-      // 2. Tree delta — coalesce add/remove.
-      const adds = [...this.pendingTreeAdds];
-      const removes = [...this.pendingTreeRemoves];
-      this.pendingTreeAdds.clear();
-      this.pendingTreeRemoves.clear();
-      // add+delete inside the same window cancels out.
-      const addSet = new Set(adds);
-      const removeSet = new Set(removes);
-      const filteredAdds = adds.filter((p) => !removeSet.has(p));
-      const filteredRemoves = removes.filter((p) => !addSet.has(p));
-      // Rename detection lives in the status pass below — porcelain v2's
-      // rename code (kind "2") tells us which (from, to) pairs to surface.
-      const renamedPairs: TreeRename[] = [];
-
-      // 3. Decoration delta. Always re-read status; coalescing tree events
-      // doesn't avoid this because a watcher can drop kernel events under
-      // pressure and we want to converge eventually.
-      const statusEntries = await readStatus(this.root);
-      // Surface renames detected by git status as tree renames as well.
-      for (const e of statusEntries) {
-        if (e.renamedFrom !== undefined && e.renamedFrom.length > 0) {
-          renamedPairs.push({ from: e.renamedFrom, to: e.path });
-        }
-      }
-
-      if (
-        filteredAdds.length > 0 ||
-        filteredRemoves.length > 0 ||
-        renamedPairs.length > 0
-      ) {
-        this.emit({
-          kind: "tree.delta",
-          version: this.nextVersion(),
-          ts: Date.now(),
-          added: filteredAdds,
-          removed: filteredRemoves,
-          renamed: renamedPairs,
-        });
-      }
-
-      const decorationDelta = this.diffStatus(statusEntries);
-      if (decorationDelta.length > 0) {
-        this.emit({
-          kind: "decoration.delta",
-          version: this.nextVersion(),
-          ts: Date.now(),
-          entries: decorationDelta,
-        });
-      }
-
-      // 4. Commit advance on current branch.
-      if (
-        headChanged &&
-        newHead !== null &&
-        previousHead !== null &&
-        newHead.branch === previousHead.branch &&
-        previousHead.headSha.length > 0 &&
-        newHead.headSha.length > 0 &&
-        previousHead.headSha !== newHead.headSha
-      ) {
-        const shas = await revList(
-          this.root,
-          previousHead.headSha,
-          newHead.headSha,
-        );
-        for (const sha of shas) {
-          const subject = await readCommitSubject(this.root, sha);
-          this.emit({
-            kind: "commit.added",
-            version: this.nextVersion(),
-            ts: Date.now(),
-            branch: newHead.branch,
-            sha,
-            subject,
-          });
-        }
-      }
+      await this.runDrainBodyInner();
+    } catch (err) {
+      // M2: any throw from porcelain parsing / status diffing aborts the
+      // drain. Operational error, not user-facing — log and reschedule one
+      // follow-up so the next watcher tick (or this one's queued retry)
+      // re-attempts. We don't add retry counters in v0; if the drain stays
+      // broken every event will keep logging until someone notices.
+      console.error(
+        `[workspaceModel] drain failed for ${this.root}:`,
+        err,
+      );
+      // Reschedule via the queued flag — the trailing block in `drainNow`
+      // will pick it up after we mark drainRunning=false.
+      this.drainQueued = true;
     } finally {
       this.drainRunning = false;
       this.pruneJournal();
+    }
+  }
+
+  private async runDrainBodyInner(): Promise<void> {
+    // Non-repo workspace: nothing to read from git. Tree watcher still fires
+    // here so we drain pending tree events to keep the queue bounded, but we
+    // do not spawn `git status` / `git rev-parse` / `git rev-list`.
+    if (!this.isRepo) {
+      this.pendingTreeAdds.clear();
+      this.pendingTreeRemoves.clear();
+      return;
+    }
+
+    const previousHead = this.head;
+    const newHead = await readHeadInfo(this.root);
+    // 1. HEAD diff
+    let headChanged = false;
+    if (!headInfoEqual(previousHead, newHead)) {
+      this.head = newHead;
+      headChanged = true;
+    }
+    if (headChanged && newHead !== null) {
+      this.emit({
+        kind: "head.changed",
+        version: this.nextVersion(),
+        ts: Date.now(),
+        branch: newHead.branch,
+        headSha: newHead.headSha,
+        ahead: newHead.ahead,
+        behind: newHead.behind,
+      });
+    }
+
+    // 2. Tree delta — coalesce add/remove.
+    const adds = [...this.pendingTreeAdds];
+    const removes = [...this.pendingTreeRemoves];
+    this.pendingTreeAdds.clear();
+    this.pendingTreeRemoves.clear();
+    // add+delete inside the same window cancels out.
+    const addSet = new Set(adds);
+    const removeSet = new Set(removes);
+    const filteredAdds = adds.filter((p) => !removeSet.has(p));
+    const filteredRemoves = removes.filter((p) => !addSet.has(p));
+    // Rename detection lives in the status pass below — porcelain v2's
+    // rename code (kind "2") tells us which (from, to) pairs to surface.
+    const renamedPairs: TreeRename[] = [];
+
+    // 3. Decoration delta. Always re-read status; coalescing tree events
+    // doesn't avoid this because a watcher can drop kernel events under
+    // pressure and we want to converge eventually.
+    const statusEntries = await readStatus(this.root);
+    // Surface renames detected by git status as tree renames as well.
+    for (const e of statusEntries) {
+      if (e.renamedFrom !== undefined && e.renamedFrom.length > 0) {
+        renamedPairs.push({ from: e.renamedFrom, to: e.path });
+      }
+    }
+
+    if (
+      filteredAdds.length > 0 ||
+      filteredRemoves.length > 0 ||
+      renamedPairs.length > 0
+    ) {
+      this.emit({
+        kind: "tree.delta",
+        version: this.nextVersion(),
+        ts: Date.now(),
+        added: filteredAdds,
+        removed: filteredRemoves,
+        renamed: renamedPairs,
+      });
+    }
+
+    const decorationDelta = this.diffStatus(statusEntries);
+    if (decorationDelta.length > 0) {
+      this.emit({
+        kind: "decoration.delta",
+        version: this.nextVersion(),
+        ts: Date.now(),
+        entries: decorationDelta,
+      });
+    }
+
+    // 4. Commit advance on current branch.
+    if (
+      headChanged &&
+      newHead !== null &&
+      previousHead !== null &&
+      newHead.branch === previousHead.branch &&
+      previousHead.headSha.length > 0 &&
+      newHead.headSha.length > 0 &&
+      previousHead.headSha !== newHead.headSha
+    ) {
+      const shas = await revList(
+        this.root,
+        previousHead.headSha,
+        newHead.headSha,
+      );
+      for (const sha of shas) {
+        const subject = await readCommitSubject(this.root, sha);
+        this.emit({
+          kind: "commit.added",
+          version: this.nextVersion(),
+          ts: Date.now(),
+          branch: newHead.branch,
+          sha,
+          subject,
+        });
+      }
     }
   }
 
@@ -462,7 +549,11 @@ export class WorkspaceModel {
       );
     });
 
-    // Git metadata watcher.
+    // Git metadata watcher — only useful on actual repos. Skipping it on
+    // non-repos avoids spurious watches on `.git/` paths that don't exist
+    // (chokidar logs "missing" errors otherwise) and is the symmetric
+    // counterpart to skipping git CLI invocations in the drain.
+    if (!this.isRepo) return;
     const gitDir = join(this.root, ".git");
     this.gitWatcher = watch(
       [
@@ -507,6 +598,9 @@ export class WorkspaceModel {
     // including them here would generate a flood of irrelevant events.
     const rel = relative(this.root, absPath);
     if (rel === "" || rel === ".") return false;
+    // Forward-slash branch covers Windows, where `sep === '\\'` but chokidar
+    // occasionally hands us POSIX-style paths via the underlying `readdirp`.
+    // Cheap defensive check; collapses to the same condition on Linux.
     if (rel === ".git" || rel.startsWith(`.git${sep}`) || rel.startsWith(".git/")) {
       return true;
     }
@@ -565,6 +659,11 @@ export class WorkspaceModel {
       if (this.onInvalidate !== null) this.onInvalidate();
     }
     for (const sub of this.subscribers) {
+      // Gate on lastDeliveredVersion so a subscribe-replay's microtask can
+      // safely re-walk the journal slice without duplicating events that
+      // were already live-fanned in the same tick. See subscribe() for the
+      // matching gate on the replay side.
+      if (ev.version <= sub.lastDeliveredVersion) continue;
       this.emitOne(sub.ws, ev);
       sub.lastDeliveredVersion = ev.version;
     }
@@ -674,12 +773,3 @@ function paramsForEvent(workspaceId: string, ev: JournalEvent): unknown {
   }
 }
 
-/// Exposed for test diagnostics — the parser is otherwise used only by git.ts.
-export { parsePorcelainV2 };
-
-/// Exposed for stat-based fs.readFile ETag (mtime + size). Caller passes the
-/// absolute path; we let the file system surface the error if missing.
-export async function fileEtag(absPath: string): Promise<string> {
-  const st = await stat(absPath);
-  return `${Math.floor(st.mtimeMs)}-${st.size}`;
-}

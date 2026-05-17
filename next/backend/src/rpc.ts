@@ -63,10 +63,6 @@ export const RPC_ERR = {
   /// it yet (e.g. workspace model still initializing). Distinct from
   /// invalidParams so the client can choose to retry.
   notReady: -32003,
-  /// -32004: workspace has no resident model — either because the workspace
-  /// id is unknown or because model init has not completed. We use invalidParams
-  /// for the unknown case (same as other workspace lookups) and notReady for
-  /// the half-initialized case.
 } as const;
 
 export class RpcError extends Error {
@@ -383,10 +379,10 @@ methods.set("workspace.subscribe", (ctx, params) => {
   }
   const sinceVersion = optionalNonNegativeInt(p, "sinceVersion");
   const paths = optionalStringArray(p, "paths");
-  const result = model.subscribe(ctx.ws, {
-    ...(sinceVersion !== undefined ? { sinceVersion } : {}),
-    ...(paths !== undefined ? { paths } : {}),
-  });
+  // SubscribeRequest fields are optional; with exactOptionalPropertyTypes
+  // off (tsconfig) we can pass `undefined` directly without the conditional-
+  // spread dance.
+  const result = model.subscribe(ctx.ws, { sinceVersion, paths });
   // For snapshot mode, send the decoration snapshot on the next tick so the
   // subscribe RESPONSE arrives first.
   if (result.mode === "snapshot") {
@@ -453,11 +449,7 @@ methods.set("git.log", async (ctx, params) => {
   const path = optionalString(p, "path");
   const limit = optionalPositiveInt(p, "limit") ?? 50;
   const beforeSha = optionalString(p, "beforeSha");
-  return readLog(ws.root, {
-    limit,
-    ...(path !== undefined ? { path } : {}),
-    ...(beforeSha !== undefined ? { beforeSha } : {}),
-  });
+  return readLog(ws.root, { limit, path, beforeSha });
 });
 
 // Cap unified-diff text at 500KB. Beyond that we surface a `too-large` kind

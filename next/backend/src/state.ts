@@ -32,12 +32,12 @@ export class ProcessState {
   /// individual subscribers.
   public readonly workspaces: WorkspaceRegistry;
   /// Process-global diff cache keyed by
-  /// `<workspaceId> <path> <baseSha|WT> <workingHash>`. Invalidated by the
-  /// drain loop when affected paths show up in `tree.delta` / when HEAD
-  /// changes for that workspace.
-  ///
-  /// Cap is intentionally modest — diff bodies are bounded at 500KB upstream
-  /// and we expect single-digit concurrent file viewings on the phone.
+  /// `<workspaceId> <path> <baseSha|WT> <workingHash>`. LRU-evicted at 64
+  /// entries (see BoundedMap below). Invalidated by the drain loop when
+  /// affected paths show up in `tree.delta` / when HEAD changes for that
+  /// workspace. Diff bodies are bounded at 500KB upstream and we expect
+  /// single-digit concurrent file viewings on the phone, so a small cap is
+  /// fine.
   public readonly diffCache = new BoundedMap<string, unknown>(64);
 
   private readonly subscribers = new Set<Subscriber>();
@@ -151,9 +151,10 @@ export class ProcessState {
   }
 }
 
-/// Insertion-ordered map with a maximum entry count. When `set` would push us
-/// past the cap, the oldest entry is evicted. Good-enough LRU substitute when
-/// "everything we evict is cheap to recompute".
+/// Bounded LRU map. `get` re-inserts the hit key so recency is honored —
+/// a hot diff stays warm even after 64 cold lookups slide past. Eviction
+/// fires on `set` when size exceeds cap; the oldest (least-recently-touched)
+/// entry goes. O(1) per op via `Map`'s insertion-order semantics.
 export class BoundedMap<K, V> {
   private readonly map = new Map<K, V>();
   private readonly cap: number;
@@ -163,7 +164,14 @@ export class BoundedMap<K, V> {
   }
 
   public get(key: K): V | undefined {
-    return this.map.get(key);
+    // Re-insert on hit so this key becomes the newest in iteration order.
+    // Cheap because Map.delete + Map.set are both O(1) and we already had
+    // the key in hand.
+    if (!this.map.has(key)) return undefined;
+    const value = this.map.get(key) as V;
+    this.map.delete(key);
+    this.map.set(key, value);
+    return value;
   }
 
   public set(key: K, value: V): void {

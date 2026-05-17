@@ -31,6 +31,10 @@ const PICKER_VERSION = 0;
 export interface TreeEntry {
   name: string;
   kind: "file" | "dir" | "symlink";
+  /// `symlinkTarget`, when present, is the raw POSIX string returned by
+  /// `readlink(2)`. It may be relative or absolute; it may point outside the
+  /// workspace; the backend does NOT resolve it. The client decides what to
+  /// do (treat as opaque, attempt scope-checked traversal, or display only).
   size?: number;
   symlinkTarget?: string;
   /// Legacy alias for `kind` — older clients (pre-PR-B Flutter) consume
@@ -38,6 +42,7 @@ export interface TreeEntry {
   /// window so the existing app build keeps working; new code reads `kind`.
   /// Symlinks surface as `type: "file"` for the legacy reader (it has no
   /// concept of click-through), matching the old behavior.
+  // TODO(remove-when-flutter-reads-kind): drop legacy 'type' alias — see PR-B.
   type: "file" | "dir";
 }
 

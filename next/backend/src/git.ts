@@ -255,7 +255,7 @@ async function runGitOptional(
 /// `?` = untracked, `u` = unmerged), followed by tab-separated fields, with
 /// entries separated by NUL. Renames have a second NUL between new and old
 /// paths.
-export function parsePorcelainV2(raw: string): GitStatusEntry[] {
+function parsePorcelainV2(raw: string): GitStatusEntry[] {
   const entries: GitStatusEntry[] = [];
   // Split on NUL; for rename entries, the second NUL separates the old path,
   // so we have to special-case the join.
@@ -337,7 +337,10 @@ function extractPathFromV2Changed(record: string): string | null {
 
 /// Collapse the staged/worktree XY pair into a single decoration letter.
 /// Priority: deletion wins over modify (the file is gone), add over modify
-/// (the file is new), unmerged wins over everything else.
+/// (the file is new), unmerged wins over everything else. R/C entries
+/// collapse to "M" — the rename source path lives in `renamedFrom`, not in
+/// the status letter; we never decorate the new path with an "R" because the
+/// UI vocabulary is M/A/D/?/U.
 function collapseXY(xy: string): "M" | "A" | "D" | "U" | null {
   const x = xy.charAt(0);
   const y = xy.charAt(1);
