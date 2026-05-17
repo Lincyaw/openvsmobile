@@ -1,10 +1,11 @@
-// Persistent settings: backend host:port, bearer token, plus per-install
+// Persistent settings: backend list + active selection, plus per-install
 // secondary preferences (deviceId, notification toggles, mute list, quiet
 // hours, default TTL).
 //
-// Keys are kebab-case per docs/conventions.md §4. No migration code: the v0
-// rename from `backend.host` etc. will drop existing users' saved settings,
-// which is accepted per the settled call in §9.
+// Keys are kebab-case per docs/conventions.md §4. The legacy single-backend
+// fields (`server-host` / `server-port` / `bearer-token`) are read once at
+// startup and migrated into a `BackendTarget` inside the v2 blob, then
+// removed — see `loadAppState`.
 
 import 'dart:convert';
 import 'dart:math';
@@ -78,10 +79,239 @@ class NotificationPrefs {
   }
 }
 
+/// How a [BackendTarget] entered the user's backends list. Persisted as a
+/// string tag rather than an int so the on-disk blob stays diffable.
+enum BackendOrigin {
+  /// Typed in by hand via the manual-entry form.
+  manual,
+
+  /// Installed via the SSH bootstrap flow.
+  sshInstall,
+
+  /// Discovered via a [DiscoverySource] (k8s-style LB endpoint). Reserved —
+  /// the discovery path is not implemented in v0; the enum value exists so
+  /// the persisted schema does not need a breaking bump when it lands.
+  discovery,
+}
+
+String _originToString(BackendOrigin o) => switch (o) {
+      BackendOrigin.manual => 'manual',
+      BackendOrigin.sshInstall => 'sshInstall',
+      BackendOrigin.discovery => 'discovery',
+    };
+
+BackendOrigin _originFromString(String s) => switch (s) {
+      'sshInstall' => BackendOrigin.sshInstall,
+      'discovery' => BackendOrigin.discovery,
+      _ => BackendOrigin.manual,
+    };
+
+/// One reachable backend instance — host:port + bearer token, plus a
+/// user-editable display name and bookkeeping for the last workspace opened
+/// against it (so a switch back can auto-reopen).
+class BackendTarget {
+  final String id;
+  final String name;
+  final String host;
+  final int port;
+  final String token;
+  final BackendOrigin origin;
+
+  /// Free-form back-pointer to whatever produced this target: for
+  /// `sshInstall` it can be the `<user>@<host>` string; for `discovery` it
+  /// is the [DiscoverySource.id]. Manual entries leave it null.
+  final String? originRef;
+
+  /// Future k8s grouping ("prod-east", "staging", …). Always null in v0.
+  final String? cluster;
+
+  final int addedAt;
+  final int? lastConnectedAt;
+  final String? lastWorkspaceId;
+
+  const BackendTarget({
+    required this.id,
+    required this.name,
+    required this.host,
+    required this.port,
+    required this.token,
+    required this.origin,
+    this.originRef,
+    this.cluster,
+    required this.addedAt,
+    this.lastConnectedAt,
+    this.lastWorkspaceId,
+  });
+
+  bool get isComplete =>
+      host.isNotEmpty && port > 0 && port < 65536 && token.isNotEmpty;
+
+  BackendTarget copyWith({
+    String? name,
+    String? host,
+    int? port,
+    String? token,
+    BackendOrigin? origin,
+    String? originRef,
+    String? cluster,
+    int? lastConnectedAt,
+    String? lastWorkspaceId,
+    bool clearLastWorkspaceId = false,
+  }) {
+    return BackendTarget(
+      id: id,
+      name: name ?? this.name,
+      host: host ?? this.host,
+      port: port ?? this.port,
+      token: token ?? this.token,
+      origin: origin ?? this.origin,
+      originRef: originRef ?? this.originRef,
+      cluster: cluster ?? this.cluster,
+      addedAt: addedAt,
+      lastConnectedAt: lastConnectedAt ?? this.lastConnectedAt,
+      lastWorkspaceId: clearLastWorkspaceId
+          ? null
+          : (lastWorkspaceId ?? this.lastWorkspaceId),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'host': host,
+        'port': port,
+        'token': token,
+        'origin': _originToString(origin),
+        if (originRef != null) 'originRef': originRef,
+        if (cluster != null) 'cluster': cluster,
+        'addedAt': addedAt,
+        if (lastConnectedAt != null) 'lastConnectedAt': lastConnectedAt,
+        if (lastWorkspaceId != null) 'lastWorkspaceId': lastWorkspaceId,
+      };
+
+  factory BackendTarget.fromJson(Map<String, dynamic> j) => BackendTarget(
+        id: j['id'] as String,
+        name: (j['name'] as String?) ?? '',
+        host: (j['host'] as String?) ?? '',
+        port: (j['port'] as num?)?.toInt() ?? 0,
+        token: (j['token'] as String?) ?? '',
+        origin: _originFromString((j['origin'] as String?) ?? 'manual'),
+        originRef: j['originRef'] as String?,
+        cluster: j['cluster'] as String?,
+        addedAt: (j['addedAt'] as num?)?.toInt() ?? 0,
+        lastConnectedAt: (j['lastConnectedAt'] as num?)?.toInt(),
+        lastWorkspaceId: j['lastWorkspaceId'] as String?,
+      );
+}
+
+/// Source of a list of backends fetched at runtime (k8s LB, custom
+/// directory service, …). v0 only persists the schema — no code path
+/// actually polls these yet.
+class DiscoverySource {
+  final String id;
+  final String name;
+  final String url;
+  final String? authHeader;
+  final int refreshIntervalSec;
+  final int? lastRefreshedAt;
+
+  const DiscoverySource({
+    required this.id,
+    required this.name,
+    required this.url,
+    this.authHeader,
+    this.refreshIntervalSec = 300,
+    this.lastRefreshedAt,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'url': url,
+        if (authHeader != null) 'authHeader': authHeader,
+        'refreshIntervalSec': refreshIntervalSec,
+        if (lastRefreshedAt != null) 'lastRefreshedAt': lastRefreshedAt,
+      };
+
+  factory DiscoverySource.fromJson(Map<String, dynamic> j) => DiscoverySource(
+        id: j['id'] as String,
+        name: (j['name'] as String?) ?? '',
+        url: (j['url'] as String?) ?? '',
+        authHeader: j['authHeader'] as String?,
+        refreshIntervalSec: (j['refreshIntervalSec'] as num?)?.toInt() ?? 300,
+        lastRefreshedAt: (j['lastRefreshedAt'] as num?)?.toInt(),
+      );
+}
+
+/// Top-level persisted state for the backends/discovery surface.
+class AppPersistedState {
+  final List<BackendTarget> backends;
+  final String? activeBackendId;
+  final List<DiscoverySource> discoverySources;
+  final int schemaVersion;
+
+  const AppPersistedState({
+    this.backends = const [],
+    this.activeBackendId,
+    this.discoverySources = const [],
+    this.schemaVersion = 2,
+  });
+
+  BackendTarget? get activeBackend {
+    final id = activeBackendId;
+    if (id == null) return null;
+    for (final b in backends) {
+      if (b.id == id) return b;
+    }
+    return null;
+  }
+
+  AppPersistedState copyWith({
+    List<BackendTarget>? backends,
+    String? activeBackendId,
+    bool clearActiveBackendId = false,
+    List<DiscoverySource>? discoverySources,
+  }) {
+    return AppPersistedState(
+      backends: backends ?? this.backends,
+      activeBackendId: clearActiveBackendId
+          ? null
+          : (activeBackendId ?? this.activeBackendId),
+      discoverySources: discoverySources ?? this.discoverySources,
+      schemaVersion: schemaVersion,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'schemaVersion': schemaVersion,
+        'backends': backends.map((b) => b.toJson()).toList(),
+        if (activeBackendId != null) 'activeBackendId': activeBackendId,
+        'discoverySources':
+            discoverySources.map((d) => d.toJson()).toList(),
+      };
+
+  factory AppPersistedState.fromJson(Map<String, dynamic> j) {
+    final backends = ((j['backends'] as List?) ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(BackendTarget.fromJson)
+        .toList(growable: false);
+    return AppPersistedState(
+      backends: backends,
+      activeBackendId: j['activeBackendId'] as String?,
+      discoverySources: ((j['discoverySources'] as List?) ?? const [])
+          .cast<Map<String, dynamic>>()
+          .map(DiscoverySource.fromJson)
+          .toList(growable: false),
+      schemaVersion: (j['schemaVersion'] as num?)?.toInt() ?? 2,
+    );
+  }
+}
+
 class SettingsStore {
   static const _kServerHost = 'server-host';
   static const _kServerPort = 'server-port';
   static const _kBearerToken = 'bearer-token';
+  static const _kBackendsStateV2 = 'backends-state-v2';
   static const _kDeviceId = 'device-id';
   static const _kBackgroundNotifications = 'background-notifications';
   static const _kMutedSources = 'notifications-mute-sources';
@@ -105,6 +335,60 @@ class SettingsStore {
     await prefs.setString(_kBearerToken, s.token);
   }
 
+  /// Load the multi-backend state. If the v2 blob is absent but legacy
+  /// single-backend keys exist and are complete, migrate them into a fresh
+  /// blob with one [BackendTarget] (`name: "default"`, `origin: manual`)
+  /// marked active. Legacy keys are removed after a successful migration so
+  /// the next load reads from v2 directly.
+  Future<AppPersistedState> loadAppState() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_kBackendsStateV2);
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map<String, dynamic>) {
+          return AppPersistedState.fromJson(decoded);
+        }
+      } on FormatException catch (e) {
+        // Corrupted blob — fall through to legacy / empty rather than
+        // crashing the boot path. The next save overwrites it cleanly.
+        // ignore: avoid_print
+        print('SettingsStore: dropping malformed backends-state-v2: $e');
+      }
+    }
+    final legacy = await load();
+    if (legacy.isComplete) {
+      final migrated = AppPersistedState(
+        backends: [
+          BackendTarget(
+            id: generateUuidV4(),
+            name: 'default',
+            host: legacy.host,
+            port: legacy.port,
+            token: legacy.token,
+            origin: BackendOrigin.manual,
+            addedAt: DateTime.now().millisecondsSinceEpoch,
+          ),
+        ],
+        activeBackendId: null,
+      );
+      final state = migrated.copyWith(
+        activeBackendId: migrated.backends.first.id,
+      );
+      await saveAppState(state);
+      await prefs.remove(_kServerHost);
+      await prefs.remove(_kServerPort);
+      await prefs.remove(_kBearerToken);
+      return state;
+    }
+    return const AppPersistedState();
+  }
+
+  Future<void> saveAppState(AppPersistedState s) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kBackendsStateV2, jsonEncode(s.toJson()));
+  }
+
   /// Stable per-install identifier. Generated and persisted on first read.
   /// Used for multi-device read-state sync (see design §4.5).
   ///
@@ -115,7 +399,7 @@ class SettingsStore {
     final prefs = await SharedPreferences.getInstance();
     final existing = prefs.getString(_kDeviceId);
     if (existing != null && existing.isNotEmpty) return existing;
-    final id = _generateUuidV4();
+    final id = generateUuidV4();
     await prefs.setString(_kDeviceId, id);
     return id;
   }
@@ -180,7 +464,7 @@ class SettingsStore {
 /// Generate a v4-style UUID using `Random.secure`. Crypto-strong randomness
 /// — 122 random bits, same entropy as `crypto.randomUUID()`. Format is
 /// `xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx` where `y` ∈ {8,9,a,b}.
-String _generateUuidV4() {
+String generateUuidV4() {
   final r = Random.secure();
   final bytes = List<int>.generate(16, (_) => r.nextInt(256));
   // Set version (4) and variant (10xx) bits per RFC 4122.
