@@ -258,7 +258,7 @@ Method surface (frontend → backend):
 
 The `paths` parameter scopes the subscription to a subset of the tree. v0 backend accepts but does not yet honor `paths` (subscription is always whole-tree); the protocol shape supports per-path filtering from day one so a future large-repo optimization is not a breaking change. See CLAUDE.md "First principles" #5.
 
-**Content-addressed pull RPCs.** `fs.readFile` accepts `ifEtag?` and may return `{ etag, notModified: true }` (client uses its cached content). `git.diff` is keyed by `{ workspaceId, path, baseSha?, workingHash? }` — same key → same hunks, allowing client and backend to cache aggressively. Decoration status is **never** a pull RPC; it is push-only via `workspace.decoration.delta`. See CLAUDE.md "First principles" #3.
+**Content-addressed pull RPCs.** `fs.readFile` accepts `ifEtag?` and may return `{ etag, notModified: true }` (client uses its cached content). The `etag` is an opaque server-issued string; v0 happens to format it as `${mtimeMs|0}-${size}` but clients MUST treat it as a blob and only compare it for equality. `git.diff` is keyed by `{ workspaceId, path, baseSha?, workingHash? }` — same key → same hunks, allowing client and backend to cache aggressively. An unchanged file returns `{ kind: "text", hunks: [] }` (in-band signal; there is no separate "unchanged" kind). Decoration status is **never** a pull RPC; it is push-only via `workspace.decoration.delta`. See CLAUDE.md "First principles" #3.
 
 Notifications (backend → frontend, push-only). Every workspace-scoped event carries a monotonic `version` so the client can detect gaps and request resync:
 
@@ -290,7 +290,11 @@ type TreeEntry = {
   name: string;             // entry name only, not a path
   kind: "file" | "dir" | "symlink";
   size?: number;            // bytes; files only
-  symlinkTarget?: string;   // symlinks only; click-through resolves to target kind
+  symlinkTarget?: string;   // symlinks only; raw POSIX `readlink(2)` value —
+                            // opaque, may be relative or absolute, may point
+                            // outside the workspace; backend does NOT resolve
+                            // it. Client decides what to do (treat as opaque,
+                            // attempt scope-checked traversal, or display only).
 };
 // → { entries: TreeEntry[], version }
 ```
