@@ -216,29 +216,88 @@ Method surface (frontend → backend):
 | Namespace    | Methods                                                              |
 |--------------|----------------------------------------------------------------------|
 | `auth`       | `handshake`, `rotateToken`                                           |
-| `workspace`  | `list` (→ `{ active: Workspace[], recents: string[] }`), `open({ root })`, `activate({ id })`, `close({ id })`, `current`, `findFiles({ workspaceId, ... })` |
-| `fs`         | `listDir({ workspaceId, path })` or `listDir({ path, picker: true })`; `readFile({ workspaceId, path })` |
+| `workspace`  | `list` (→ `{ active: Workspace[], recents: string[] }`), `open({ root })`, `activate({ id })`, `close({ id })`, `current`, `findFiles({ workspaceId, ... })`, `subscribe({ workspaceId, sinceVersion?, paths? })`, `unsubscribe({ workspaceId })` |
+| `fs`         | `listDir({ workspaceId, path })` or `listDir({ path, picker: true })`; `readFile({ workspaceId, path, ifEtag? })` |
 | `terminal`   | `create({ workspaceId, cols, rows, cwd? })`, `write`, `resize`, `dispose`, `list({ workspaceId? })` |
-| `git`        | `status({ workspaceId })`, `diff({ workspaceId, ... })`, `log({ workspaceId, ... })` |
+| `git`        | `diff({ workspaceId, path, baseSha?, workingHash? })`, `log({ workspaceId, path?, limit, beforeSha? })` |
 | `plugin`     | `list`, `enable`, `disable`, `install`, `uninstall`, `invokeCommand` |
 | `ui`         | `event` (user interacted with plugin UI; routed to owning plugin)    |
 
 `Workspace = { id: string (UUID), root: string, label: string, createdAt: number }`. Backend assigns the UUID; the same path opened, closed, then reopened gets a fresh id. `fs.*` operations on paths outside their `workspaceId`'s root are rejected; the `picker: true` form of `fs.listDir` is the only OS-scoped escape hatch and is intended exclusively for the workspace picker UI.
 
-Notifications (backend → frontend, push-only):
+**Workspace subscription model.** Opening a workspace is not the same as subscribing to its events; the client makes an explicit `workspace.subscribe` call (typically right after `open`/`activate`). The backend maintains a resident model per active workspace (file tree + git status + branch state) and replies with one of three modes:
 
-| Method            | Params                                          |
-|-------------------|-------------------------------------------------|
-| `terminal.data`   | `{ sessionId, workspaceId, bytesBase64 }`       |
-| `terminal.exit`   | `{ sessionId, workspaceId, exitCode }`          |
-| `workspace.fileChanged` | `{ workspaceId, path, change: "added"\|"modified"\|"deleted" }` |
-| `workspace.closed`| `{ id }` (server-initiated, e.g. on backend shutdown) |
-| `git.changed`     | `{ workspaceId }`                               |
-| `ui.tree`         | `{ panelId, tree: UiPanel }` (full render; only render protocol in v0) |
-| `notification.show` | `{ level, title, message, pluginId? }`        |
-| `plugin.stateChanged` | `{ pluginId, state }`                       |
+| `mode`     | Meaning                                                                      | Follows up with                     |
+|------------|------------------------------------------------------------------------------|-------------------------------------|
+| `current`  | Client's `sinceVersion` matches the live version; nothing to send.           | nothing                             |
+| `replay`   | Backend can replay missed events from its journal.                           | a burst of `workspace.*.delta`s     |
+| `snapshot` | Gap is too large; backend resets the baseline.                               | one `workspace.decoration.snapshot` at `baseVersion` — client also invalidates all cached `fs.listDir` responses |
 
-Output streaming (terminal `data`, file changes) is **always** a
+The `paths` parameter scopes the subscription to a subset of the tree. v0 backend accepts but does not yet honor `paths` (subscription is always whole-tree); the protocol shape supports per-path filtering from day one so a future large-repo optimization is not a breaking change. See CLAUDE.md "First principles" #5.
+
+**Content-addressed pull RPCs.** `fs.readFile` accepts `ifEtag?` and may return `{ etag, notModified: true }` (client uses its cached content). `git.diff` is keyed by `{ workspaceId, path, baseSha?, workingHash? }` — same key → same hunks, allowing client and backend to cache aggressively. Decoration status is **never** a pull RPC; it is push-only via `workspace.decoration.delta`. See CLAUDE.md "First principles" #3.
+
+Notifications (backend → frontend, push-only). Every workspace-scoped event carries a monotonic `version` so the client can detect gaps and request resync:
+
+| Method                          | Params                                                                                     |
+|---------------------------------|--------------------------------------------------------------------------------------------|
+| `terminal.data`                 | `{ sessionId, workspaceId, bytesBase64 }`                                                  |
+| `terminal.exit`                 | `{ sessionId, workspaceId, exitCode }`                                                     |
+| `workspace.closed`              | `{ id }` (server-initiated, e.g. on backend shutdown)                                      |
+| `workspace.tree.delta`          | `{ workspaceId, added: path[], removed: path[], renamed: {from,to}[], version }` — **cache-invalidation signal only**; the client uses it to mark affected directories' `fs.listDir` caches stale and re-fetch on demand |
+| `workspace.decoration.delta`    | `{ workspaceId, entries: {path, status: "M"\|"A"\|"D"\|"?"\|"U"\|null}[], version }` (status `null` = cleared; **file-level only**) |
+| `workspace.decoration.snapshot` | `{ workspaceId, entries: {path, status}[], version }` — sent only as the result of a `subscribe` returning `mode:"snapshot"`; carries only non-clean files (typically <100 entries even on large repos) |
+| `workspace.head.changed`        | `{ workspaceId, branch, headSha, ahead, behind, version }`                                 |
+| `workspace.commit.added`        | `{ workspaceId, branch, sha, subject, version }` (affects ahead/behind on current branch)  |
+| `ui.tree`                       | `{ panelId, tree: UiPanel }` (full render; only render protocol in v0)                     |
+| `notification.show`             | `{ level, title, message, pluginId? }`                                                     |
+| `plugin.stateChanged`           | `{ pluginId, state }`                                                                      |
+
+Vague broadcasts (a `git.changed` that just says "something happened") are explicitly **not** in this surface — they would force every client to re-pull and defeat the point of a push. Each event tells the client exactly what changed; the client never needs a follow-up query to act on it. See CLAUDE.md "First principles" #2.
+
+**The tree is never materialized on the client as one graph; it is lazy via `fs.listDir`.** The client holds (a) a forest of cached `fs.listDir` responses keyed by directory path and (b) a global decoration map per workspace. Tree shape comes from on-demand `listDir` calls; `workspace.tree.delta` is purely a cache-invalidation signal that tells the client which directories' cached entries are stale. No `tree.snapshot` event exists — on `mode:"snapshot"` resync, the client invalidates all `listDir` caches and re-fetches on next render, while the backend only needs to push the decoration snapshot. This keeps the protocol identical for tiny and monorepo-sized workspaces.
+
+`fs.listDir` returns:
+
+```ts
+type TreeEntry = {
+  name: string;             // entry name only, not a path
+  kind: "file" | "dir" | "symlink";
+  size?: number;            // bytes; files only
+  symlinkTarget?: string;   // symlinks only; click-through resolves to target kind
+};
+// → { entries: TreeEntry[], version }
+```
+
+`listDir` does **not** carry git status (decoration is a separate channel — client looks up by path) and does **not** carry mtime (`fs.readFile` handles freshness via ETag). The returned `version` is the workspace-model version at the moment of listing, so the client can detect "the listDir result was already stale before I got it" races against concurrent `tree.delta` events.
+
+**Decoration is file-level; directory roll-up is a client view concern.** The backend never emits a "directory has changes inside" status — git itself has no such concept, and mixing it into the protocol would make a single event carry both an authoritative file fact and a derived ancestor summary. The client maintains its own path-trie counter over the file-level statuses it has received and renders directory adornments (a badge with the descendant change count) from that. Consequences:
+
+- Folders show one neutral "has changes" badge with a count (e.g. `5↑`), never a mixed M/A/?/U color.
+- `.gitignore`-matched files are hidden from the tree by default (mirrors VSCode `Files: Exclude`) and do not contribute to roll-up. A Files-tab toggle ("Show ignored") makes them visible; even when shown, they do not contribute to roll-up.
+- Untracked files (`?`) **do** contribute to roll-up — they are real working-tree changes the user wants visible at the folder level.
+- The `.git` directory itself is always hidden.
+
+**Event delivery contract.** The backend processes filesystem and `.git/` watcher events through a single drain loop with a small debounce window. Each drain emits a coherent burst of notifications in causal order: `workspace.head.changed` (if HEAD moved) → `workspace.tree.delta` (if entries changed) → `workspace.decoration.delta` (after one `git status --porcelain=v2 -z` diff against the in-memory baseline) → `workspace.commit.added` (one per new commit on the current branch). `.git/HEAD` writes bypass the debounce so branch switches feel instant.
+
+Within a drain window:
+
+- Repeat events for the same path coalesce. A file modified ten times produces one decoration entry; add+delete inside the window produces nothing.
+- Watchers are configured to ignore `.git/`'s internal tree (except the handful of files the backend deliberately watches: `HEAD`, `index`, `refs/heads/*`, `MERGE_HEAD`, `FETCH_HEAD`, `packed-refs`) and `.gitignore`-matched paths, so noise from `npm install` / `node_modules` does not enter the queue at all.
+- A single `decoration.delta` is unbounded in entry count. Bulk operations (a branch checkout touching 1000 files) emit one large delta, not chunks.
+- Drains are serial; the next drain waits for the current one to finish.
+
+When `.gitignore` itself changes, the backend rebuilds its matcher and triggers a full re-scan drain (equivalent to walking every tracked path through `git status` once); the client receives a larger-than-usual `decoration.delta` and applies it normally.
+
+**Journal and resync.** The backend keeps a ring-buffered event journal per workspace, bounded by both event count and wall-clock age. `workspace.subscribe` returns `replay` when the client's `sinceVersion` lies within the journal, otherwise `snapshot`. Disconnects beyond the journal horizon resync via one `workspace.decoration.snapshot` (smaller than replaying hundreds of stale events on a real repo, since the snapshot carries only non-clean files) plus client-side invalidation of every `fs.listDir` cache. The exact debounce duration, journal size, and age cap are implementation parameters tunable in code; the contract — drain model, causal ordering, monotonic versioning, no rate-limit guarantee for clients — is what's locked here.
+
+**Client obligations.**
+
+- Apply events in version order. A gap (`receivedVersion != lastSeen + 1`) triggers `subscribe(sinceVersion: lastSeen)` to either replay or resnapshot.
+- Treat any single delta as potentially large. Batch UI updates over a delta — do not `setState` per entry.
+- Do not assume rate limits. The wire can deliver an arbitrary-size delta in one frame.
+
+Output streaming (terminal `data`, workspace deltas) is **always** a
 notification — never a polled request. Bytes are base64-encoded inside
 JSON to keep the channel debuggable; a v1 binary side-channel can move
 PTY traffic off JSON if profiling demands it.

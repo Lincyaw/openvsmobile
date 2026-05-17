@@ -17,6 +17,28 @@ Project-specific conventions for both code and review are at [`docs/conventions.
 - A backend wrapper for the Claude CLI. Users run `claude` from the terminal; rich AI integration is a plugin.
 - A WebView-based plugin UI host. Plugins describe UI as a typed widget tree; Flutter renders natively.
 
+## First principles
+
+Read these before designing anything new. Every concrete rule under "Settled architectural decisions" is downstream of one of these. They are the *why*; the settled list is the *what*.
+
+**Design for the long term, not the v0 surface.** v0 may implement only a slice, but the wire protocol shape must be the one we'd pick if we were building this at full scale. Getting the protocol wrong now means breaking every client later. Implementation can be lazy; the contract cannot be.
+
+1. **Backend is the source of truth; client subscribes and renders.** No client-side polling for freshness. No "pull to refresh". If the user can perceive the UI is stale, the model is wrong — fix the push path, not the UI.
+
+2. **Pushes are semantic, not "something changed."** A push tells the client *exactly* what changed (which paths, which branch, which version) so the client never needs a follow-up query to act on it. Vague broadcasts ("git.changed") are an anti-pattern — they force every client to re-pull and defeat the point of a push.
+
+3. **Pull RPCs are content-addressed and cacheable.** Request-response methods (`git.diff`, `git.log`, `fs.readFile`) are keyed by content hash / commit sha / mtime+size so the client can cache aggressively and the backend can short-circuit recomputation.
+
+4. **State carries a monotonic version; reconnect is a first-class path.** Every server-pushed event carries a `version`. On reconnect, the client asks `subscribe(sinceVersion: N)`; the backend either replays from a small journal or sends a fresh snapshot and resets the baseline. Disconnect never clears the UI — last-known state stays visible behind an "offline" indicator until resync.
+
+5. **Per-resource subscription is in the protocol from day one.** Subscriptions carry a scope (paths, ids, …); pushes are filtered to subscribed scope. v0 may always subscribe-all, but the protocol must scale to 50k-file monorepos without a breaking redesign. Lazy / on-demand expansion is a server-side optimization layered over the same wire format, not a protocol change.
+
+6. **Write operations stay in the terminal; the app observes.** Git writes, deploys, package installs, file edits — none of these get app-side buttons in the core. The user types the command; the backend watches the filesystem and pushes the resulting state delta. Any "should we add a button for X?" temptation reframes to "should X be a plugin?" — if yes, the plugin host gates it via capabilities; if no, terminal-only.
+
+7. **Multiple views are projections of one model, not separate pages.** Files / Changes / Search are filter predicates over the same tree, not independent screens. One workspace = one tree; tabs and toggles change *what's emphasized*, never *what exists*.
+
+8. **Plugins extend the vocabulary, never the runtime.** When a feature doesn't fit, grow the typed widget tree, the RPC namespace, or the capability set — never reach for an escape hatch (WebView, `vscode.*` shim, in-tree if-statement for one plugin's needs). The core stays thin precisely so the surface stays auditable.
+
 ## Architecture
 
 ```
@@ -68,7 +90,9 @@ Single persistent WebSocket carrying JSON-RPC 2.0; first message is `auth.handsh
 - `plugin.*` — list, enable, disable, install, uninstall, invokeCommand  *(not yet implemented)*
 - `ui.*` — event (user interacted with plugin UI; routed to owning plugin)  *(not yet implemented)*
 
-Notifications (push-only, no polling for streams): `terminal.data`, `terminal.exit`, `workspace.fileChanged`, `workspace.closed`, `git.changed`, `ui.tree`, `notification.show`, `plugin.stateChanged`.
+Notifications (push-only, no polling for streams): `terminal.data`, `terminal.exit`, `workspace.closed`, `ui.tree`, `notification.show`, `plugin.stateChanged`.
+
+The workspace/git push surface (tree deltas, decoration deltas, HEAD changes) is being designed per first principles #2–#5 — semantic events carrying a monotonic version, filtered by per-path subscription. Exact event names land when `git.*` and the resident workspace model are implemented; `workspace.fileChanged` / `git.changed` placeholders from earlier drafts are explicitly **not** the target shape.
 
 Full reference in `next/README.md` (currently-shipped surface) and `docs/design/mobile-code-platform.md` §4 (target surface).
 
