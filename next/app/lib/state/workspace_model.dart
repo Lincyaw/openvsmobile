@@ -67,7 +67,6 @@ class WorkspaceState {
   String? _headSha;
   int _ahead = 0;
   int _behind = 0;
-  bool _gitInfoReceived = false;
 
   /// Branch name; null while non-git or pre-snapshot.
   String? get branch => _branch;
@@ -80,10 +79,6 @@ class WorkspaceState {
 
   /// Commits behind upstream. Zero when no upstream is configured.
   int get behind => _behind;
-
-  /// True once we've received any head info from the backend. Distinguishes
-  /// "non-git workspace" from "still subscribing" — both have null branch.
-  bool get gitInfoReceived => _gitInfoReceived;
 
   /// True if backend reports this workspace is a git repo. Inferred:
   /// non-null branch ⇒ git.
@@ -346,7 +341,6 @@ class WorkspacesModel extends ChangeNotifier {
     st._headSha = params['headSha'] as String?;
     st._ahead = (params['ahead'] as num?)?.toInt() ?? 0;
     st._behind = (params['behind'] as num?)?.toInt() ?? 0;
-    st._gitInfoReceived = true;
     st._lastSeenVersion = version;
     notifyListeners();
   }
