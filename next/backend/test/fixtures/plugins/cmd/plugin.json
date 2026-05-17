@@ -1,0 +1,14 @@
+{
+  "id": "cmd",
+  "name": "Command fixture",
+  "version": "0.0.1",
+  "entry": { "kind": "node", "path": "index.js" },
+  "activation": ["onStartup", "onCommand:cmd.echoOnDemand"],
+  "capabilities": {},
+  "contributes": {
+    "commands": [
+      { "id": "cmd.echo", "title": "Echo" },
+      { "id": "cmd.echoOnDemand", "title": "Echo (on-demand)" }
+    ]
+  }
+}

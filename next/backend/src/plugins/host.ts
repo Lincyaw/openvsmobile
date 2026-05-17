@@ -6,13 +6,18 @@
 // calls from each plugin. Everything plugin-related stays in this folder;
 // the rest of the backend reaches in via PluginHost only.
 //
-// The only host method exposed in C1 is `host.log({ level, msg })`. Any
+// Host methods exposed to plugins today: `host.log({ level, msg })`. Any
 // other namespace from a plugin gets capability-gated and (since no
 // other host RPCs are wired yet) ultimately resolves to either
 // `-32011 capabilityNotDeclared` (manifest didn't ask for the capability)
 // or `-32601 methodNotFound` (manifest declared it but the host has not
-// implemented the method yet — landing in C2/C3/C4/C5). The capability
+// implemented the method yet — landing in C3/C4/C5). The capability
 // check runs first, per the conventions doc.
+//
+// Surface exposed to the frontend (via `rpc.ts`): `plugin.list`,
+// `plugin.enable`, `plugin.disable`, `plugin.invokeCommand`. Each
+// frontend-visible state transition fans a `plugin.stateChanged`
+// notification out through the host's onStateChanged callback.
 
 import { existsSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
@@ -22,6 +27,7 @@ import { RPC_ERR } from "../rpc.js";
 import {
   loadManifest,
   type ManifestCapabilities,
+  type ManifestContributes,
   type PluginManifest,
 } from "./manifest.js";
 import {
@@ -29,6 +35,11 @@ import {
   PluginSpawnError,
   type JsonRpcInbound,
 } from "./process.js";
+import {
+  loadPluginState,
+  resolveDefaultStateFile,
+  savePluginState,
+} from "./persistence.js";
 import { StderrLog } from "./stderrLog.js";
 
 export type PluginState =
@@ -37,6 +48,12 @@ export type PluginState =
   | "crashed"
   | "errored"
   | "disabled";
+
+/// Vocabulary the frontend sees on `plugin.list` and `plugin.stateChanged`.
+/// Internal `registered` / `errored` collapse into "stopped" / "crashed" at
+/// the wire boundary — the wider internal vocabulary is for host
+/// bookkeeping, the wire surface is what the user can act on.
+export type WirePluginState = "running" | "stopped" | "crashed" | "disabled";
 
 export interface PluginRegistryEntry {
   id: string;
@@ -59,6 +76,26 @@ export interface HostLogEntry {
   ts: number;
 }
 
+/// Wire-shape entry returned by `plugin.list`. Mirrors the structure agreed
+/// in the issue ticket; mapping from the internal entry happens in
+/// `toWireInfo()` so the shape stays in one place.
+export interface PluginInfo {
+  id: string;
+  name: string;
+  version: string;
+  state: WirePluginState;
+  capabilities: ManifestCapabilities;
+  contributes: ManifestContributes;
+  crashReason?: string;
+}
+
+/// Payload emitted to subscribers on every state transition.
+export interface PluginStateChange {
+  id: string;
+  state: WirePluginState;
+  crashReason?: string;
+}
+
 export interface PluginHostOptions {
   /// Override discovery root. Tests point this at a tempdir; production
   /// reads it from `OPENVSMOBILE_PLUGINS_DIR` and falls back to the
@@ -67,15 +104,43 @@ export interface PluginHostOptions {
   /// Directory for plugin stderr logs. Default
   /// `~/.local/state/openvsmobile-next/plugins/`.
   logDir?: string;
+  /// Override the persistence file. Tests point this at a tempfile so they
+  /// don't read or write the user's real disabled list.
+  stateFile?: string;
+  /// SIGTERM-to-SIGKILL grace window (ms) for `disable()`. Default 10000,
+  /// per the issue spec. Tunable for tests.
+  killGraceMs?: number;
+  /// Timeout (ms) for a `plugin.invokeCommand` round-trip. Default 30000.
+  /// Tunable for tests.
+  invokeTimeoutMs?: number;
   /// Diagnostic logger. Defaults to console.error.
   logger?: (line: string) => void;
   /// Sink for `host.log` calls. The default fan-out routes them through
   /// `logger`. Tests pass a collector to assert delivery.
   onHostLog?: (entry: HostLogEntry) => void;
+  /// Called every time a registry entry's wire-state changes. The host
+  /// computes the wire state from the internal state + reason; downstream
+  /// fan-out lives in `ProcessState`.
+  onStateChanged?: (change: PluginStateChange) => void;
 }
 
 const DEFAULT_PLUGINS_DIR_REL = [".local", "share", "openvsmobile-next", "plugins"];
 const DEFAULT_LOG_DIR_REL = [".local", "state", "openvsmobile-next", "plugins"];
+
+const DEFAULT_KILL_GRACE_MS = 10_000;
+const DEFAULT_INVOKE_TIMEOUT_MS = 30_000;
+
+/// Error subclass thrown by the public mutation methods (`enable`,
+/// `disable`, `invokeCommand`) so the RPC layer can translate them to the
+/// right JSON-RPC error code without leaking host internals. The `code` is
+/// the JSON-RPC code; the message is human text.
+export class PluginHostError extends Error {
+  public readonly code: number;
+  constructor(code: number, message: string) {
+    super(message);
+    this.code = code;
+  }
+}
 
 /// Capability key required by a method namespace. Methods under `host.*`
 /// require no capability (the host log is intentionally always
@@ -108,20 +173,61 @@ function pluginHasCapability(
   return caps[key] === true;
 }
 
+/// Internal → wire-state collapse. The frontend only needs the four
+/// outcomes a user can act on; the wider internal vocabulary stays inside
+/// the host.
+function toWireState(state: PluginState): WirePluginState {
+  switch (state) {
+    case "active":
+      return "running";
+    case "registered":
+      return "stopped";
+    case "disabled":
+      return "disabled";
+    case "crashed":
+    case "errored":
+      return "crashed";
+  }
+}
+
+interface PendingInvoke {
+  resolve: (value: unknown) => void;
+  reject: (err: Error) => void;
+  pluginId: string;
+  timer: NodeJS.Timeout;
+}
+
 export class PluginHost {
   private readonly pluginsDir: string;
   private readonly logDir: string;
+  private readonly stateFile: string;
+  private readonly killGraceMs: number;
+  private readonly invokeTimeoutMs: number;
   private readonly logger: (line: string) => void;
   private readonly onHostLog: (entry: HostLogEntry) => void;
+  private readonly onStateChanged?: (change: PluginStateChange) => void;
   private readonly plugins = new Map<string, PluginRegistryEntry>();
-  /// Counter for outgoing requests we initiate toward plugins (e.g.
-  /// `initialize` in the C2 timeframe). Lives here so a single
-  /// monotonic source covers every plugin.
+  /// Persistent disabled set. Loaded from disk on construction; mirrored to
+  /// disk on every `enable` / `disable` call. The registry tracks both an
+  /// in-memory entry state (which can be `disabled`) and this set so a
+  /// plugin we discovered for the first time after a disable can still
+  /// land as `disabled` instead of being auto-spawned by `onStartup`.
+  private readonly disabled: Set<string>;
+  /// Counter for outgoing requests we initiate toward plugins
+  /// (`command.invoke` today, `initialize` once it lands). Lives here so a
+  /// single monotonic source covers every plugin.
   private nextOutboundId = 1;
+  /// Pending `command.invoke` requests keyed by outbound id. The plugin
+  /// must respond with the same id; we resolve / reject the awaiter and
+  /// drop the entry.
+  private readonly pendingInvokes = new Map<number, PendingInvoke>();
 
   constructor(opts: PluginHostOptions = {}) {
     this.pluginsDir = opts.pluginsDir ?? resolveDefaultPluginsDir();
     this.logDir = opts.logDir ?? resolveDefaultLogDir();
+    this.stateFile = opts.stateFile ?? resolveDefaultStateFile();
+    this.killGraceMs = opts.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
+    this.invokeTimeoutMs = opts.invokeTimeoutMs ?? DEFAULT_INVOKE_TIMEOUT_MS;
     this.logger = opts.logger ?? ((line) => console.error(line));
     this.onHostLog =
       opts.onHostLog ??
@@ -129,12 +235,23 @@ export class PluginHost {
         this.logger(
           `[plugin:${entry.pluginId}] ${entry.level}: ${entry.msg}`,
         ));
+    if (opts.onStateChanged !== undefined) {
+      this.onStateChanged = opts.onStateChanged;
+    }
+    this.disabled = loadPluginState(this.stateFile, this.logger);
   }
 
-  /// Public read-only view of the registry. Tests + future `plugin.list`
-  /// reach for this.
+  /// Public read-only view of the registry. Tests + `plugin.list` reach
+  /// for this. Note that callers receive live references, not copies — do
+  /// not mutate.
   public list(): PluginRegistryEntry[] {
     return [...this.plugins.values()];
+  }
+
+  /// Wire-shape projection of the registry, exactly what `plugin.list`
+  /// returns to the client.
+  public listInfo(): PluginInfo[] {
+    return this.list().map((e) => this.toWireInfo(e));
   }
 
   public get(id: string): PluginRegistryEntry | undefined {
@@ -147,9 +264,16 @@ export class PluginHost {
     return this.pluginsDir;
   }
 
-  /// Discover everything on disk and start `onStartup` plugins. Safe to
-  /// call once at backend boot. If the plugins directory is missing
-  /// entirely we treat that as "no plugins installed" — not an error.
+  /// Persistence path. Exposed so tests can inspect the on-disk state
+  /// after `enable`/`disable` mutations.
+  public stateFilePath(): string {
+    return this.stateFile;
+  }
+
+  /// Discover everything on disk and start `onStartup` plugins that have
+  /// not been explicitly disabled. Safe to call once at backend boot. If
+  /// the plugins directory is missing entirely we treat that as "no
+  /// plugins installed" — not an error.
   public async start(): Promise<void> {
     await this.discover();
     for (const entry of this.plugins.values()) {
@@ -167,17 +291,22 @@ export class PluginHost {
   /// Tear every plugin process down. Best-effort; we send SIGTERM and
   /// move on. Called from the backend's shutdown handler.
   public shutdown(): void {
+    for (const [, pending] of this.pendingInvokes) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error("backend shutting down"));
+    }
+    this.pendingInvokes.clear();
     for (const entry of this.plugins.values()) {
       if (entry.process !== undefined) entry.process.kill();
     }
   }
 
   /// Walk the plugins directory. Each direct child that contains a
-  /// `plugin.json` becomes a `registered` entry. Mismatched id, parse
-  /// errors, and missing manifest files are surfaced through the entry
-  /// state — invalid plugins land as `errored` so the host can still
-  /// report them to the future Plugins tab without erroring the whole
-  /// backend.
+  /// `plugin.json` becomes a `registered` entry (or `disabled` if the
+  /// state file said so). Mismatched id, parse errors, and missing
+  /// manifest files are surfaced through the entry state — invalid
+  /// plugins land as `errored` so the host can still report them to the
+  /// Plugins tab without erroring the whole backend.
   private async discover(): Promise<void> {
     let dirents: import("node:fs").Dirent[];
     try {
@@ -218,11 +347,18 @@ export class PluginHost {
       for (const w of warnings) {
         this.logger(`[plugin:${dirId}] ${w}`);
       }
+      // Honor the persisted disabled set: if the user disabled this
+      // plugin before the last restart, land it in `disabled` so
+      // `onStartup` activation doesn't fire and the wire state reads
+      // "disabled" from the first `plugin.list` call.
+      const initialState: PluginState = this.disabled.has(dirId)
+        ? "disabled"
+        : "registered";
       this.plugins.set(dirId, {
         id: dirId,
         dir,
         manifest,
-        state: "registered",
+        state: initialState,
       });
     } catch (err) {
       // Synthesize a minimal "errored" entry so the future Plugins tab
@@ -259,12 +395,15 @@ export class PluginHost {
     }
   }
 
-  /// Spawn a plugin's process and wire its message handler. Idempotent:
-  /// a re-activate on an already-active plugin is a no-op. After this
-  /// returns, the plugin's state is one of `active`, `crashed`, or
-  /// `errored`.
+  /// Spawn a plugin's process and wire its message handler. Idempotent on
+  /// `active`: a re-activate on an already-active plugin is a no-op.
+  /// Disabled / errored entries cannot be activated through this path —
+  /// the caller is responsible for transitioning through `enable()`
+  /// first.
   public async activate(entry: PluginRegistryEntry): Promise<void> {
     if (entry.state === "active") return;
+    if (entry.state === "disabled") return;
+    if (entry.state === "errored") return;
     const logPath = join(this.logDir, `${entry.id}.stderr.log`);
     const stderr = new StderrLog(logPath);
     const proc = new PluginProcess({
@@ -279,40 +418,81 @@ export class PluginHost {
       await proc.start();
     } catch (err) {
       if (err instanceof PluginSpawnError) {
-        entry.state = "errored";
-        entry.reason = err.message;
+        this.setState(entry, "errored", err.message);
         this.logger(`[plugin:${entry.id}] refused to spawn: ${err.message}`);
         return;
       }
       throw err;
     }
     entry.process = proc;
-    entry.state = "active";
+    this.setState(entry, "active");
     this.logger(`[plugin:${entry.id}] spawned pid=${proc.pid() ?? "?"}`);
   }
 
-  /// Used for the activating-state intermediate; today we flip directly
-  /// from `registered` to `active`. Kept as a placeholder so existing
-  /// callers don't break when the C2 `initialize` handshake lands.
+  /// Transition state, clearing any stale `reason` unless the caller
+  /// supplies a new one. Emits `onStateChanged` only when the wire-state
+  /// actually changes — internal `registered` → `errored` collapses to
+  /// `stopped` → `crashed`, but a `registered` → `registered` no-op is
+  /// suppressed.
+  private setState(
+    entry: PluginRegistryEntry,
+    next: PluginState,
+    reason?: string,
+  ): void {
+    const wireBefore = toWireState(entry.state);
+    const reasonBefore = entry.reason;
+    entry.state = next;
+    if (reason !== undefined) {
+      entry.reason = reason;
+    } else if (next !== "crashed" && next !== "errored") {
+      // Leaving crashed/errored → reason is no longer meaningful.
+      entry.reason = undefined;
+    }
+    const wireAfter = toWireState(next);
+    if (this.onStateChanged !== undefined) {
+      const reasonAfter = entry.reason;
+      if (wireBefore !== wireAfter || reasonBefore !== reasonAfter) {
+        const change: PluginStateChange = {
+          id: entry.id,
+          state: wireAfter,
+        };
+        if (entry.reason !== undefined) {
+          change.crashReason = entry.reason;
+        }
+        this.onStateChanged(change);
+      }
+    }
+  }
+
   private handlePluginExit(
     entry: PluginRegistryEntry,
     info: { code: number | null; signal: NodeJS.Signals | null },
   ): void {
-    // No automatic restart (settled decision; CLAUDE.md). We move the
-    // entry to `crashed` if it had been running, or leave `errored`
-    // alone (a stillborn child can fire `exit` after we already
-    // transitioned to errored via the spawn-error path).
+    // No automatic restart (settled decision; CLAUDE.md). Disabled plugins
+    // that were just terminated via `disable()` land here too — their
+    // state has already been set to `disabled` so we leave it alone. A
+    // crash of a previously-active plugin transitions to `crashed`.
+    entry.exit = info;
     if (entry.state === "active") {
-      entry.state = "crashed";
-      entry.reason = explainExit(info);
-      entry.exit = info;
+      this.setState(entry, "crashed", explainExit(info));
       this.logger(
         `[plugin:${entry.id}] crashed: ${entry.reason} (no automatic restart)`,
       );
-    } else {
-      entry.exit = info;
     }
     entry.process = undefined;
+    // Reject any pending invokes targeted at this plugin — without this
+    // their await would block until the timeout fires.
+    for (const [outboundId, pending] of this.pendingInvokes) {
+      if (pending.pluginId !== entry.id) continue;
+      clearTimeout(pending.timer);
+      this.pendingInvokes.delete(outboundId);
+      pending.reject(
+        new PluginHostError(
+          RPC_ERR.internal,
+          `plugin ${entry.id} exited before responding to command.invoke`,
+        ),
+      );
+    }
   }
 
   private handlePluginMessage(
@@ -320,17 +500,46 @@ export class PluginHost {
     msg: JsonRpcInbound,
   ): void {
     // Requests carry an id; notifications don't. Plugins may also send
-    // *responses* to host-initiated requests (we'll have those once
-    // `initialize` lands in C2); v0 has none so we just log them.
+    // responses to host-initiated requests (currently `command.invoke`);
+    // route those back to the pending awaiter.
     if (msg.method === undefined) {
-      // Response to a (currently nonexistent) host-initiated request.
-      // Logging until the C2 timeframe wires the response router.
-      this.logger(
-        `[plugin:${plugin.manifest.id}] discarding response (no outstanding host requests)`,
-      );
+      this.handlePluginResponse(plugin, msg);
       return;
     }
     void this.dispatchPluginRequest(plugin, msg);
+  }
+
+  private handlePluginResponse(
+    plugin: PluginProcess,
+    msg: JsonRpcInbound,
+  ): void {
+    const id = msg.id;
+    if (typeof id !== "number") {
+      this.logger(
+        `[plugin:${plugin.manifest.id}] discarding response with non-numeric id`,
+      );
+      return;
+    }
+    const pending = this.pendingInvokes.get(id);
+    if (pending === undefined) {
+      this.logger(
+        `[plugin:${plugin.manifest.id}] discarding response for unknown id ${id}`,
+      );
+      return;
+    }
+    clearTimeout(pending.timer);
+    this.pendingInvokes.delete(id);
+    if (msg.error !== undefined) {
+      const code = msg.error.code ?? RPC_ERR.internal;
+      pending.reject(
+        new PluginHostError(
+          code,
+          msg.error.message ?? "plugin returned an error response",
+        ),
+      );
+      return;
+    }
+    pending.resolve(msg.result);
   }
 
   private async dispatchPluginRequest(
@@ -379,9 +588,9 @@ export class PluginHost {
     }
   }
 
-  /// The actual host-method table. v0 has exactly one entry: `host.log`.
-  /// Adding methods here without also widening `requiredCapability`
-  /// would let plugins bypass the gate, so the two must move together.
+  /// The actual host-method table. Adding methods here without also
+  /// widening `requiredCapability` would let plugins bypass the gate, so
+  /// the two must move together.
   private async callHostMethod(
     plugin: PluginProcess,
     method: string,
@@ -391,10 +600,10 @@ export class PluginHost {
       this.handleHostLog(plugin.manifest.id, params);
       return {};
     }
-    // Pre-C2: capability passed, but the method itself doesn't exist
-    // yet. Surface as methodNotFound so a plugin author has a clear
-    // signal that they declared a capability but the host hasn't wired
-    // the corresponding API in this build.
+    // Capability passed, but the method itself doesn't exist yet.
+    // Surface as methodNotFound so a plugin author has a clear signal
+    // that they declared a capability but the host hasn't wired the
+    // corresponding API in this build.
     const err = new Error(`unknown host method: ${method}`) as Error & {
       code: number;
     };
@@ -430,11 +639,214 @@ export class PluginHost {
     this.onHostLog({ pluginId, level, msg, ts: Date.now() });
   }
 
-  /// Reserve an outbound id for a future host→plugin request. Not used
-  /// in v0; lives here so the C2 initialize handshake doesn't have to
-  /// invent its own counter.
+  /// Reserve an outbound id for a host→plugin request. Each pending
+  /// invoke must have a unique id so the response router can find it
+  /// again.
   public allocateOutboundId(): number {
     return this.nextOutboundId++;
+  }
+
+  // ----- Frontend-facing surface: enable / disable / invokeCommand -----
+
+  /// Project an internal registry entry to the wire-shape the frontend
+  /// sees. `crashReason` shows up for `crashed` (which collapses internal
+  /// `errored` too) so a broken manifest is observable on the UI.
+  public toWireInfo(entry: PluginRegistryEntry): PluginInfo {
+    const info: PluginInfo = {
+      id: entry.id,
+      name: entry.manifest.name,
+      version: entry.manifest.version,
+      state: toWireState(entry.state),
+      capabilities: entry.manifest.capabilities,
+      contributes: entry.manifest.contributes,
+    };
+    if (info.state === "crashed" && entry.reason !== undefined) {
+      info.crashReason = entry.reason;
+    }
+    return info;
+  }
+
+  /// Re-enable a plugin. Removes it from the persisted disabled set and,
+  /// if it was in-memory `disabled`, transitions it back to `registered`
+  /// (then immediately activates if the manifest declares `onStartup`).
+  /// Calling on an already-enabled plugin is a no-op that still returns
+  /// `{ ok: true }` so the client can fire-and-forget.
+  public async enable(id: string): Promise<void> {
+    const entry = this.plugins.get(id);
+    if (entry === undefined) {
+      throw new PluginHostError(
+        RPC_ERR.invalidParams,
+        `no such plugin: ${id}`,
+      );
+    }
+    if (this.disabled.has(id)) {
+      this.disabled.delete(id);
+      this.persist();
+    }
+    if (entry.state !== "disabled") return;
+    // Reset the entry to `registered` so the activation path sees a
+    // valid starting state. `errored` plugins keep their original
+    // disable→errored chain — we can't fix a broken manifest here.
+    this.setState(entry, "registered");
+    if (entry.manifest.activation.includes("onStartup")) {
+      await this.activate(entry);
+    }
+  }
+
+  /// Disable a plugin. Marks it disabled, persists, then terminates the
+  /// child process if one is running. SIGTERM → 10s grace → SIGKILL. The
+  /// `exit` handler will see `state === "disabled"` and leave it alone.
+  public async disable(id: string): Promise<void> {
+    const entry = this.plugins.get(id);
+    if (entry === undefined) {
+      throw new PluginHostError(
+        RPC_ERR.invalidParams,
+        `no such plugin: ${id}`,
+      );
+    }
+    if (!this.disabled.has(id)) {
+      this.disabled.add(id);
+      this.persist();
+    }
+    if (entry.state === "disabled") return;
+    const wasActive = entry.state === "active" && entry.process !== undefined;
+    // Flip state BEFORE the kill so the exit handler doesn't transition
+    // through `crashed` on the way out.
+    this.setState(entry, "disabled");
+    if (wasActive && entry.process !== undefined) {
+      await entry.process.terminate(this.killGraceMs);
+    }
+  }
+
+  /// Invoke a command on a plugin. Triggers `onCommand:<commandId>`
+  /// activation if the plugin is in the `stopped` (registered) state and
+  /// the activation event matches. Sends `command.invoke` to the plugin
+  /// over its JSON-RPC channel; awaits the plugin's response.
+  public async invokeCommand(
+    id: string,
+    commandId: string,
+    args: unknown,
+  ): Promise<unknown> {
+    const entry = this.plugins.get(id);
+    if (entry === undefined) {
+      throw new PluginHostError(
+        RPC_ERR.invalidParams,
+        `no such plugin: ${id}`,
+      );
+    }
+    if (entry.state === "disabled") {
+      throw new PluginHostError(
+        RPC_ERR.invalidParams,
+        `plugin ${id} is disabled`,
+      );
+    }
+    if (entry.state === "errored") {
+      throw new PluginHostError(
+        RPC_ERR.invalidParams,
+        `plugin ${id} is in errored state: ${entry.reason ?? "unknown"}`,
+      );
+    }
+    if (entry.state === "crashed") {
+      // The settled "no automatic restart" decision means we can't
+      // resurrect a crashed plugin even on an explicit command call.
+      // The user must re-enable (or fix the underlying problem) first.
+      throw new PluginHostError(
+        RPC_ERR.invalidParams,
+        `plugin ${id} crashed; restart it before invoking commands`,
+      );
+    }
+    if (entry.state === "registered") {
+      const matches = entry.manifest.activation.includes(
+        `onCommand:${commandId}`,
+      );
+      if (!matches) {
+        throw new PluginHostError(
+          RPC_ERR.invalidParams,
+          `plugin ${id} is not active and does not list onCommand:${commandId}`,
+        );
+      }
+      await this.activate(entry);
+      // Activation may have failed (errored after spawn). Re-check via
+      // a fresh lookup so the type narrowing doesn't lie — the if-block
+      // above gave the compiler "registered" but activate() mutates the
+      // entry in place.
+      const reread = this.plugins.get(id);
+      if (reread === undefined || reread.state !== "active") {
+        throw new PluginHostError(
+          RPC_ERR.internal,
+          `plugin ${id} failed to activate: ${reread?.reason ?? "unknown"}`,
+        );
+      }
+    }
+    // Whitelist commandId against the manifest's contributed commands.
+    // Plugins could in principle handle commands not listed in
+    // `contributes.commands`, but the manifest is the contract — making
+    // the host the source of truth here keeps the model honest.
+    const declared = entry.manifest.contributes.commands.find(
+      (c) => c.id === commandId,
+    );
+    if (declared === undefined) {
+      throw new PluginHostError(
+        RPC_ERR.invalidParams,
+        `plugin ${id} does not contribute command ${commandId}`,
+      );
+    }
+    if (entry.process === undefined) {
+      throw new PluginHostError(
+        RPC_ERR.internal,
+        `plugin ${id} is active but has no live process`,
+      );
+    }
+    return await this.sendCommandInvoke(
+      entry.process,
+      entry.id,
+      commandId,
+      args,
+    );
+  }
+
+  private sendCommandInvoke(
+    plugin: PluginProcess,
+    pluginId: string,
+    commandId: string,
+    args: unknown,
+  ): Promise<unknown> {
+    const outboundId = this.allocateOutboundId();
+    return new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingInvokes.delete(outboundId);
+        reject(
+          new PluginHostError(
+            RPC_ERR.internal,
+            `plugin ${pluginId} did not respond to command.invoke within ${this.invokeTimeoutMs}ms`,
+          ),
+        );
+      }, this.invokeTimeoutMs);
+      this.pendingInvokes.set(outboundId, {
+        resolve,
+        reject,
+        pluginId,
+        timer,
+      });
+      plugin.send({
+        jsonrpc: "2.0",
+        id: outboundId,
+        method: "command.invoke",
+        params: { id: commandId, args },
+      });
+    });
+  }
+
+  private persist(): void {
+    try {
+      savePluginState(this.stateFile, this.disabled);
+    } catch (err) {
+      // The on-disk file is best-effort: if we can't write it we still
+      // honor the in-memory state, but a future restart won't pick it up.
+      this.logger(
+        `[plugins] failed to write state file ${this.stateFile}: ${(err as Error).message}`,
+      );
+    }
   }
 }
 

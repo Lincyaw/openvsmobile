@@ -23,6 +23,10 @@ import {
   NotificationHub,
   NotificationStore,
 } from "./notifications.js";
+import type {
+  PluginHost,
+  PluginStateChange,
+} from "./plugins/host.js";
 
 /// Each authenticated WebSocket registers a Subscriber. The connection is
 /// responsible for unregistering when the socket closes.
@@ -36,10 +40,15 @@ import {
 /// `notificationsSubscribed` toggles via `notification.subscribe` /
 /// `unsubscribe`. The fan-out helper consults it on every emit so a freshly-
 /// authenticated connection that hasn't subscribed receives nothing.
+///
+/// `pluginsSubscribed` is the same pattern for `plugin.stateChanged` pushes;
+/// off by default so a connection that doesn't care about the plugin surface
+/// (e.g. an older client) doesn't get the frames.
 export interface Subscriber {
   readonly ws: WebSocket;
   notificationDeviceId?: string;
   notificationsSubscribed?: boolean;
+  pluginsSubscribed?: boolean;
 }
 
 export interface ProcessStateOptions {
@@ -47,6 +56,12 @@ export interface ProcessStateOptions {
   /// callers leave this undefined and let `notifications.ts` resolve from
   /// $OPENVSMOBILE_NOTIFICATIONS_DB or the default location.
   notificationDbPath?: string;
+}
+
+export interface AttachPluginHostFanOut {
+  /// `plugin.stateChanged` fan-out target. The host calls this on every
+  /// state transition; ProcessState filters down to subscribed peers.
+  readonly emitStateChanged: (change: PluginStateChange) => void;
 }
 
 export class ProcessState {
@@ -66,6 +81,12 @@ export class ProcessState {
   /// Notification persistence + fan-out hub. Survives client disconnects
   /// (like everything else owned by ProcessState).
   public readonly notificationHub: NotificationHub;
+
+  /// Plugin host reference. Wired by `index.ts` after construction so
+  /// `ProcessState` doesn't have to know about plugin-host options.
+  /// `rpc.ts` reaches for this via `ctx.state.pluginHost` to satisfy
+  /// `plugin.list / enable / disable / invokeCommand`.
+  public pluginHost: PluginHost | null = null;
 
   private readonly subscribers = new Set<Subscriber>();
 
@@ -205,6 +226,16 @@ export class ProcessState {
     for (const sub of this.subscribers) {
       if (sub.notificationsSubscribed !== true) continue;
       sendNotification(sub.ws, method, params);
+    }
+  }
+
+  /// `plugin.stateChanged` fan-out — same per-subscriber subscription
+  /// gate as the notification surface. Exposed for the host to call via
+  /// the `onStateChanged` constructor hook (see `index.ts`).
+  public broadcastPluginStateChanged(change: PluginStateChange): void {
+    for (const sub of this.subscribers) {
+      if (sub.pluginsSubscribed !== true) continue;
+      sendNotification(sub.ws, "plugin.stateChanged", change);
     }
   }
 }
