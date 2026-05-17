@@ -29,6 +29,7 @@ import {
   runDiffArgs,
 } from "./git.js";
 import { parseUnifiedDiff, type DiffHunk } from "./diffParser.js";
+import { findFiles } from "./findFiles.js";
 import { stat as fsStat } from "node:fs/promises";
 import { join as pathJoin } from "node:path";
 
@@ -363,6 +364,20 @@ methods.set("workspace.close", (ctx, params) => {
 methods.set("workspace.current", (ctx) => {
   const ws = ctx.state.workspaces.current();
   return { workspace: ws ? ws.info() : null };
+});
+
+/// File-name fuzzy search. Pure pull RPC — see findFiles.ts for the walker
+/// + scorer + scope-safety posture.
+methods.set("workspace.findFiles", async (ctx, params) => {
+  const p = asBag(params);
+  const ws = ctx.state.workspaces.requireById(p.workspaceId);
+  const query = requireString(p, "query");
+  const rawLimit = optionalPositiveInt(p, "limit") ?? 50;
+  // Hard ceiling at 200. A single mobile result list past that is unusable
+  // and the walker pays for every candidate it scores.
+  const limit = Math.min(rawLimit, 200);
+  const includeIgnored = optionalBool(p, "includeIgnored") ?? false;
+  return findFiles(ws.root, { query, limit, includeIgnored });
 });
 
 // ---- Filesystem ----
