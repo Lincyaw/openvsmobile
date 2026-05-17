@@ -11,9 +11,9 @@ import '../models.dart';
 import '../services/system_tray.dart';
 import '../settings_store.dart';
 import 'files_tab.dart';
-import 'more_tab.dart';
 import 'notification_center.dart';
 import 'plugins_tab.dart';
+import 'settings_tab.dart';
 import 'terminal_tab.dart';
 import 'workspace_picker.dart';
 
@@ -27,9 +27,16 @@ class HomeShell extends StatefulWidget {
   /// happens on the root navigator.
   final VoidCallback onOpenBackends;
 
+  /// Wire a freshly-bootstrapped backend back into the persisted list.
+  /// Forwarded to the Settings tab so SSH bootstrap launched from there
+  /// produces the same result as launching it from BackendsScreen.
+  final Future<void> Function(BackendTarget target, {required bool makeActive})
+      onBackendInstalled;
+
   /// Called when the notification preferences screen saves a change.
   /// `main.dart` uses this to (re)start or stop the foreground service.
   final Future<void> Function() onNotificationPrefsChanged;
+
   const HomeShell({
     super.key,
     required this.appState,
@@ -37,6 +44,7 @@ class HomeShell extends StatefulWidget {
     required this.state,
     required this.systemTrayController,
     required this.onOpenBackends,
+    required this.onBackendInstalled,
     required this.onNotificationPrefsChanged,
   });
 
@@ -175,11 +183,12 @@ class _HomeShellState extends State<HomeShell> {
                 FilesTab(appState: widget.appState),
                 TerminalTab(appState: widget.appState),
                 PluginsTab(appState: widget.appState),
-                MoreTab(
+                SettingsTab(
                   appState: widget.appState,
                   settingsStore: widget.settingsStore,
                   systemTrayController: widget.systemTrayController,
                   onOpenBackends: widget.onOpenBackends,
+                  onBackendInstalled: widget.onBackendInstalled,
                   onNotificationPrefsChanged:
                       widget.onNotificationPrefsChanged,
                 ),
@@ -208,9 +217,9 @@ class _HomeShellState extends State<HomeShell> {
             label: 'Plugins',
           ),
           NavigationDestination(
-            icon: Icon(Icons.more_horiz_outlined),
-            selectedIcon: Icon(Icons.more_horiz),
-            label: 'More',
+            icon: Icon(Icons.settings_outlined),
+            selectedIcon: Icon(Icons.settings),
+            label: 'Settings',
           ),
         ],
       ),
