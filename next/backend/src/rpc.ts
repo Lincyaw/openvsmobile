@@ -395,18 +395,33 @@ methods.set("workspace.subscribe", (ctx, params) => {
   // spread dance.
   const result = model.subscribe(ctx.ws, { sinceVersion, paths });
   // For snapshot mode, send the decoration snapshot on the next tick so the
-  // subscribe RESPONSE arrives first.
+  // subscribe RESPONSE arrives first. Also seed the client's branch state
+  // via `head.changed`: the drain loop only fires on *changes*, so without
+  // this a fresh subscribe never learns the current branch and the client
+  // permanently renders "Not a git repository". For non-git workspaces
+  // `currentHead()` returns null and the push is skipped.
   if (result.mode === "snapshot") {
     const entries = model.buildDecorationSnapshot();
     const version = result.baseVersion;
     const workspaceId = ws.id;
     const sock = ctx.ws;
+    const head = model.currentHead();
     queueMicrotask(() => {
       sendNotification(sock, "workspace.decoration.snapshot", {
         workspaceId,
         entries,
         version,
       });
+      if (head !== null) {
+        sendNotification(sock, "workspace.head.changed", {
+          workspaceId,
+          branch: head.branch,
+          headSha: head.headSha,
+          ahead: head.ahead,
+          behind: head.behind,
+          version,
+        });
+      }
     });
   }
   return result;

@@ -278,6 +278,25 @@ export class WorkspaceModel {
     return this.version;
   }
 
+  /// Current HEAD info, or null on non-git workspaces. Used by the subscribe
+  /// handler to seed the client's branch/ahead/behind state on initial
+  /// snapshot — the drain loop only fires `head.changed` on *changes*, so a
+  /// fresh subscribe would otherwise never learn the current branch.
+  public currentHead(): {
+    branch: string | null;
+    headSha: string | null;
+    ahead: number;
+    behind: number;
+  } | null {
+    if (!this.isRepo || this.head === null) return null;
+    return {
+      branch: this.head.branch,
+      headSha: this.head.headSha,
+      ahead: this.head.ahead,
+      behind: this.head.behind,
+    };
+  }
+
   /// Number of active subscribers. Exposed for tests asserting auto-cleanup
   /// on socket close; not part of the wire surface.
   public subscriberCount(): number {
