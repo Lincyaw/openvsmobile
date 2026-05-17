@@ -6,9 +6,6 @@
 // §5.1.
 
 import { createServer } from "node:http";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { resolveToken } from "./config.js";
 import { Connection } from "./connection.js";
@@ -18,8 +15,10 @@ import {
   unlinkRuntimeInfo,
   writeRuntimeInfo,
 } from "./runtimeInfo.js";
+import { readPackageVersion } from "./version.js";
 
 const DEFAULT_PORT = 7860;
+const SHUTDOWN_HARD_EXIT_MS = 3000;
 
 function parsePort(): number {
   const raw = process.env.PORT;
@@ -32,21 +31,6 @@ function parsePort(): number {
     throw new Error(`invalid PORT: ${raw}`);
   }
   return n;
-}
-
-function readPackageVersion(): string {
-  // Resolve package.json relative to this source file so it works under
-  // both `tsx src/index.ts` (cwd may be anywhere) and compiled
-  // `node dist/index.js` (running from the install dir).
-  const here = dirname(fileURLToPath(import.meta.url));
-  // dist/index.js → ../package.json; src/index.ts → ../package.json.
-  const pkgPath = join(here, "..", "package.json");
-  const raw = readFileSync(pkgPath, "utf8");
-  const parsed = JSON.parse(raw) as { version?: unknown };
-  if (typeof parsed.version !== "string" || parsed.version.length === 0) {
-    throw new Error(`package.json missing string "version" field`);
-  }
-  return parsed.version;
 }
 
 async function main(): Promise<void> {
@@ -69,7 +53,11 @@ async function main(): Promise<void> {
 
   const wss = new WebSocketServer({ server: httpServer, path: "/rpc" });
   wss.on("connection", (ws) => {
-    new Connection(ws, { expectedToken: token, state });
+    new Connection(ws, {
+      expectedToken: token,
+      serverVersion: version,
+      state,
+    });
   });
 
   let runtimeFile: string | null = null;
@@ -121,7 +109,10 @@ async function main(): Promise<void> {
     unlinkRuntimeInfo();
     wss.close();
     httpServer.close(() => process.exit(0));
-    setTimeout(() => process.exit(1), 3000).unref();
+    // One-shot deadline — if httpServer.close hasn't drained in time, exit
+    // hard. This is the only `setTimeout` in the backend hot path; it's
+    // explicitly allowed by §1 as a shutdown deadline (not a recurring poll).
+    setTimeout(() => process.exit(1), SHUTDOWN_HARD_EXIT_MS).unref();
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));

@@ -18,6 +18,7 @@ import {
   WorkspaceRegistry,
   type ActiveWorkspace,
 } from "./workspace.js";
+import type { TerminalSnapshot } from "./terminal.js";
 
 /// Each authenticated WebSocket registers a Subscriber. The connection is
 /// responsible for unregistering when the socket closes.
@@ -97,6 +98,20 @@ export class ProcessState {
       if (ws.terminals.has(sessionId)) return ws;
     }
     return null;
+  }
+
+  /// Flat list of every terminal session across every active workspace, each
+  /// annotated with its owning workspaceId. Used by `terminal.list` when the
+  /// caller omits a workspaceId filter.
+  public listAllTerminals(): Array<TerminalSnapshot & { workspaceId: string }> {
+    const out: Array<TerminalSnapshot & { workspaceId: string }> = [];
+    for (const info of this.workspaces.listActive()) {
+      const ws = this.workspaces.get(info.id);
+      for (const t of ws.terminals.list()) {
+        out.push({ ...t, workspaceId: ws.id });
+      }
+    }
+    return out;
   }
 
   /// Walk every active workspace, kill its PTYs, and emit workspace.closed
