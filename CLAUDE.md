@@ -111,9 +111,7 @@ Closer to **LSP** than to **vscode.\***: anything that speaks JSON-RPC over stdi
 
 Backend ships as a self-contained linux tarball (portable Node + production node_modules + compiled JS + `launch.sh`) plus an `install.sh` that drops a `systemd --user` unit and emits one line of JSON (`{port, token, version, linger}`) on success.
 
-Released via `.github/workflows/release-backend.yml` on `backend-v*` tags; native runners for x64 and arm64 (no qemu — node-pty's node-gyp rebuild doesn't cross cleanly). Flutter client embeds `kBackendVersion` constant pointing at the matching release; SSH-bootstrap flow in `next/app/lib/screens/ssh_bootstrap_screen.dart` streams `install.sh` over SSH stdin and parses the JSON line to populate settings.
-
-The Android client ships its own GitHub Release on `app-v*` tags via `.github/workflows/release-app.yml` — per-ABI splits plus a universal APK. Signing degrades gracefully: with the four `ANDROID_*` secrets configured it's release-signed, without them it falls back to debug signing with a warning. See [`docs/release.md`](docs/release.md) for the full release workflow and keystore setup.
+Backend tarballs (linux x64 + arm64) and Android APKs (per-ABI + universal) are built and published together on `v*` tags by `.github/workflows/release.yml`. Native runners for backend (x64 + arm64); APK splits emerge from a single host build via `--split-per-abi`. The APK's `kBackendVersion` is substituted from the tag at build time so SSH bootstrap pulls the matching backend. APK signing degrades gracefully: with the four `ANDROID_*` secrets configured it's release-signed, without them it falls back to debug signing with a warning. See [`docs/release.md`](docs/release.md) for the full release workflow and keystore setup. The SSH-bootstrap flow in `next/app/lib/screens/ssh_bootstrap_screen.dart` streams `install.sh` over SSH stdin and parses the JSON line to populate settings.
 
 ## Settled architectural decisions (do not propose reverting)
 

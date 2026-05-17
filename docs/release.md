@@ -1,28 +1,14 @@
 # Releases
 
-The repo publishes two independent release streams via GitHub Actions:
+Both halves of the product ship together on `v<semver>` tags (e.g. `v0.2.0`, `v0.2.0-rc1`) driven by `.github/workflows/release.yml`. A single tag push produces one GitHub Release with the backend tarballs (linux x64 + arm64), `install.sh`, and the Android APKs (per-ABI splits + a universal APK) all attached side by side.
 
-- **`backend-v<semver>`** — Linux tarballs for the Node backend, built per arch on native runners. Driven by `.github/workflows/release-backend.yml`.
-- **`app-v<semver>`** — Android APKs for the Flutter client (per-ABI splits + a universal APK). Driven by `.github/workflows/release-app.yml`.
+The APK's `kBackendVersion` is substituted from the tag at build time, so a released APK always knows the matching backend version. SSH bootstrap uses this to fetch the right tarball.
 
-Both flows detect `-rc` / `-beta` / `-alpha` suffixes in the tag and flip the GitHub Release `prerelease` flag accordingly.
-
-## Tagging convention
-
-The two streams version independently: a backend bug fix does not require a new app release, and vice versa. The client pins itself to a specific backend release through the constant `kBackendVersion` in [`next/app/lib/version.dart`](../next/app/lib/version.dart) — the SSH-bootstrap installer downloads the matching `openvsmobile-backend-linux-<arch>.tar.gz` from the GitHub Release named `backend-v${kBackendVersion}`.
-
-When cutting a coupled release (e.g. a wire-protocol change that touches both halves):
-
-1. Land the protocol change on `main`.
-2. Tag `backend-v<new>` first; wait for the backend release to publish.
-3. Bump `kBackendVersion` in `next/app/lib/version.dart` to the new backend version. Commit.
-4. Tag `app-v<new>`; wait for the APK release to publish.
-
-When the change only touches one half, only that half gets a new tag.
+The workflow detects `-rc` / `-beta` / `-alpha` suffixes in the tag and flips the GitHub Release `prerelease` flag accordingly.
 
 ## Setting up release signing (optional)
 
-The `release-app` workflow degrades gracefully. If the four signing secrets below are **not** configured, the workflow emits a warning and produces a **debug-signed** APK — installable, but cannot coexist with a release-signed install of the same app. For internal smoke testing this is fine; for any user-facing distribution, configure real signing.
+The workflow degrades gracefully. If the four signing secrets below are **not** configured, the workflow emits a warning and produces a **debug-signed** APK — installable, but cannot coexist with a release-signed install of the same app. For internal smoke testing this is fine; for any user-facing distribution, configure real signing.
 
 ### 1. Generate a release keystore
 
@@ -63,7 +49,7 @@ All four must be present, or the workflow falls back to debug signing.
 
 ### 4. Verify on the next tagged release
 
-Push `app-v<next>`. The build log should print `Release signing secrets present — decoding keystore.` and the published release body **will not** contain the debug-signed warning callout.
+Push `v<next>`. The build log should print `Release signing secrets present — decoding keystore.` and the published release body **will not** contain the debug-signed warning callout.
 
 ### Local signing (for testing release builds outside CI)
 
