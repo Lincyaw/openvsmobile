@@ -138,8 +138,8 @@ void main() {
         return const [];
       }
 
-      await model.listDir(workspaceId: 'ws-1', path: 'src', fetch: fetch);
-      await model.listDir(workspaceId: 'ws-1', path: 'src', fetch: fetch);
+      await model.listDir(workspaceId: 'ws-1', relPath: 'src', fetch: fetch);
+      await model.listDir(workspaceId: 'ws-1', relPath: 'src', fetch: fetch);
       // First call hits the lambda; second is cache hit.
       expect(fetches, 1);
     });
@@ -162,13 +162,13 @@ void main() {
       });
       await model.listDir(
         workspaceId: 'ws-1',
-        path: 'src',
+        relPath: 'src',
         fetch: fetch,
       );
       // Cache hit confirms baseline.
       await model.listDir(
         workspaceId: 'ws-1',
-        path: 'src',
+        relPath: 'src',
         fetch: fetch,
       );
       expect(fetches, 1);
@@ -182,8 +182,68 @@ void main() {
       });
       await model.listDir(
         workspaceId: 'ws-1',
-        path: 'src',
+        relPath: 'src',
         fetch: fetch,
+      );
+      expect(fetches, 2);
+    });
+
+    // Regression for PR-B review B1: the cache must be keyed by the same
+    // coordinate system the wire uses (workspace-relative), so that a
+    // tree.delta from the backend actually evicts entries even when the
+    // RPC layer above resolved the fetched path to absolute. This test
+    // simulates an AppState-style fetch lambda that resolves to abs
+    // internally — only the rel arg passed to `listDir` is what the
+    // cache should see.
+    test('cache key is the rel arg, not the abs path the fetch resolves to',
+        () async {
+      final model = WorkspacesModel(client: BackendClient());
+      const wsRoot = '/home/user/proj';
+      var fetches = 0;
+      Future<List<DirEntry>> Function() fetchFor(String relPath) {
+        return () async {
+          // Stand-in for AppState's actual fetch lambda — it resolves the
+          // rel arg to an absolute path before calling the backend. The
+          // cache should not see this absolute form.
+          final resolved =
+              relPath.isEmpty ? wsRoot : '$wsRoot/$relPath';
+          expect(resolved.startsWith(wsRoot), isTrue);
+          fetches++;
+          return const [];
+        };
+      }
+
+      await model.listDir(
+        workspaceId: 'ws-1',
+        relPath: 'src',
+        fetch: fetchFor('src'),
+      );
+      expect(fetches, 1);
+      // The cache must be keyed by 'src' (rel), NOT '/home/user/proj/src'.
+      expect(model.stateFor('ws-1')!.hasCachedListDir('src'), isTrue);
+      expect(
+        model.stateFor('ws-1')!.hasCachedListDir('$wsRoot/src'),
+        isFalse,
+        reason: 'absolute path must not appear in the cache',
+      );
+
+      // Now a tree.delta arrives over the wire with workspace-relative
+      // paths (matching what the backend actually emits). It must evict
+      // the 'src' cache entry.
+      model.onTreeDelta({
+        'workspaceId': 'ws-1',
+        'version': 1,
+        'added': ['src/new.dart'],
+        'removed': const [],
+        'renamed': const [],
+      });
+      expect(model.stateFor('ws-1')!.hasCachedListDir('src'), isFalse);
+
+      // A subsequent listDir for 'src' should re-fetch.
+      await model.listDir(
+        workspaceId: 'ws-1',
+        relPath: 'src',
+        fetch: fetchFor('src'),
       );
       expect(fetches, 2);
     });
@@ -198,12 +258,12 @@ void main() {
 
       await model.listDir(
         workspaceId: 'ws-1',
-        path: 'src',
+        relPath: 'src',
         fetch: fetch,
       );
       await model.listDir(
         workspaceId: 'ws-1',
-        path: 'docs',
+        relPath: 'docs',
         fetch: fetch,
       );
       expect(fetches, 2);

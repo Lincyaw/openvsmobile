@@ -443,7 +443,19 @@ class AppState extends ChangeNotifier {
     node.error = null;
     notifyListeners();
     try {
-      final entries = await listDir(path: node.path, workspaceId: workspaceId);
+      // FileTreeNode.path is absolute (rooted at the workspace root); the
+      // listDir cache is keyed by workspace-relative paths. Translate here
+      // so the cache invalidation path (which sees relative paths from
+      // workspace.tree.delta) hits the same keys.
+      final ws = _workspaceById(workspaceId);
+      if (ws == null) {
+        throw StateError('workspace $workspaceId no longer active');
+      }
+      final relPath = _relPathFromAbs(ws.root, node.path);
+      final entries = await listDir(
+        workspaceId: workspaceId,
+        relPath: relPath,
+      );
       node.children = entries
           .map((e) => FileTreeNode(
                 path: _joinPath(node.path, e.name),
@@ -469,6 +481,21 @@ class AppState extends ChangeNotifier {
 
   String _joinPath(String dir, String name) =>
       dir.endsWith('/') ? '$dir$name' : '$dir/$name';
+
+  /// Inverse of [_resolveWorkspacePath]: strip the workspace root from an
+  /// absolute path. Returns `''` when [absPath] is the root itself.
+  /// Defensive — if the abs path doesn't start with the root we return it
+  /// unchanged rather than guess.
+  String _relPathFromAbs(String root, String absPath) {
+    if (absPath == root) return '';
+    if (absPath.startsWith('$root/')) {
+      return absPath.substring(root.length + 1);
+    }
+    if (root.endsWith('/') && absPath.startsWith(root)) {
+      return absPath.substring(root.length);
+    }
+    return absPath;
+  }
 
   // ---- Workspace picker ----
 
@@ -515,21 +542,33 @@ class AppState extends ChangeNotifier {
 
   // ---- Filesystem helpers (passthrough wrappers around the RPC) ----
 
+  /// Workspace-scoped directory listing. **[relPath] is workspace-relative**
+  /// (`''` for the workspace root, `'src'` for a subdirectory) — same
+  /// coordinate system as `workspace.tree.delta` so the cache invalidation
+  /// path (`WorkspacesModel.onTreeDelta`) can land on the same keys. The
+  /// fetch lambda resolves to the absolute path the backend's `fs.listDir`
+  /// RPC wants; that knowledge does not leak into the cache layer. See
+  /// PR-B review B1.
   Future<List<DirEntry>> listDir({
-    required String path,
     required String workspaceId,
+    required String relPath,
   }) async {
-    // Route through the workspace model's cache so a tree.delta-driven
-    // invalidation actually has somewhere to land. The model never calls
-    // the wire directly — we pass the fetch lambda — so the single RPC
-    // choke point stays here in AppState.
+    final ws = _workspaceById(workspaceId);
+    if (ws == null) {
+      // Workspace closed between trigger and call. Surface and bail.
+      _reportOperationError(
+        'Could not list directory: workspace gone',
+      );
+      return const [];
+    }
+    final absPath = _resolveWorkspacePath(ws.root, relPath);
     return _workspacesModel.listDir(
       workspaceId: workspaceId,
-      path: path,
+      relPath: relPath,
       fetch: () async {
         final r = await client.call('fs.listDir', {
           'workspaceId': workspaceId,
-          'path': path,
+          'path': absPath,
         }) as Map<String, dynamic>;
         return (r['entries'] as List)
             .cast<Map<String, dynamic>>()
@@ -537,6 +576,24 @@ class AppState extends ChangeNotifier {
             .toList();
       },
     );
+  }
+
+  Workspace? _workspaceById(String workspaceId) {
+    for (final w in _active) {
+      if (w.id == workspaceId) return w;
+    }
+    return null;
+  }
+
+  /// Translate a workspace-relative path to absolute. Empty / `'.'` /
+  /// `'/'` resolve to the root itself. Defensive against accidental
+  /// absolute input — if the caller already handed us an absolute path
+  /// we pass it through (the backend's scope check will catch a real
+  /// escape).
+  String _resolveWorkspacePath(String root, String relPath) {
+    if (relPath.isEmpty || relPath == '.' || relPath == '/') return root;
+    if (relPath.startsWith('/')) return relPath;
+    return root.endsWith('/') ? '$root$relPath' : '$root/$relPath';
   }
 
   /// Fetch a unified diff against HEAD for [path] in [workspaceId]. Returns

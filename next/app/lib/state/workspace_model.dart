@@ -355,19 +355,26 @@ class WorkspacesModel extends ChangeNotifier {
   // ---- fs.listDir with caching ----
 
   /// Workspace-scoped listDir with the per-workspace cache layer described
-  /// in §7 of the implementation plan. Returns cached entries when fresh,
-  /// otherwise calls the RPC and caches.
+  /// in §7 of the implementation plan.
+  ///
+  /// **[relPath] is workspace-relative**, matching the path coordinate
+  /// system the backend uses for `workspace.tree.delta` events. The
+  /// workspace root is `''`. The caller's [fetch] lambda is responsible
+  /// for resolving to whatever absolute form the actual `fs.listDir` RPC
+  /// expects — keeping the absolute-path knowledge out of the cache means
+  /// `onTreeDelta`'s invalidation (which sees relative paths from the
+  /// wire) lands on the same keys the cache stores. See PR-B review B1.
   ///
   /// We pass the underlying RPC function as a callback rather than calling
   /// the client directly so AppState can keep its single RPC choke point
   /// (this layer doesn't try to second-guess error reporting / typing).
   Future<List<DirEntry>> listDir({
     required String workspaceId,
-    required String path,
+    required String relPath,
     required Future<List<DirEntry>> Function() fetch,
   }) async {
     final st = _states.putIfAbsent(workspaceId, WorkspaceState.new);
-    final cached = st._listDirCache[path];
+    final cached = st._listDirCache[relPath];
     if (cached != null) {
       return cached.entries;
     }
@@ -379,19 +386,20 @@ class WorkspacesModel extends ChangeNotifier {
     // can have right now, and the UI will be re-driven by the upcoming
     // notification).
     if (genAtRequest == st._cacheGeneration) {
-      st._listDirCache[path] = _ListDirCacheEntry(entries, genAtRequest);
+      st._listDirCache[relPath] = _ListDirCacheEntry(entries, genAtRequest);
     }
     return entries;
   }
 
-  /// Drop cached entries for [path] without bumping generation. Currently
-  /// unused (delta-driven invalidation goes through [onTreeDelta]); exposed
-  /// for tests that want to drive a stale-cache scenario.
+  /// Drop cached entries for the workspace-relative [relPath] without
+  /// bumping generation. Currently unused by production (delta-driven
+  /// invalidation goes through [onTreeDelta]); exposed for tests that
+  /// want to drive a stale-cache scenario.
   @visibleForTesting
-  void evictListDirEntry(String workspaceId, String path) {
+  void evictListDirEntry(String workspaceId, String relPath) {
     final st = _states[workspaceId];
     if (st == null) return;
-    st._listDirCache.remove(path);
+    st._listDirCache.remove(relPath);
     st._cacheGeneration++;
   }
 
