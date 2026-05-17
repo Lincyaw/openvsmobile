@@ -789,6 +789,15 @@ export interface NotificationFcmSender {
   ) => Promise<{ invalidTokens: string[] }>;
 }
 
+/// Optional third-transport sender. ntfy is a one-shot HTTP POST to the
+/// user's self-hosted ntfy server; the ntfy Android app renders the
+/// system-tray notification. This is the path that actually works on
+/// vendor-skinned Chinese devices where FCM can't reach Google. Implemented
+/// in `ntfy.ts`; absent when $NTFY_URL / $NTFY_TOPIC aren't configured.
+export interface NotificationNtfySender {
+  send: (notification: Notification) => Promise<void>;
+}
+
 /// Glue between the persistence layer and the WebSocket fan-out target. The
 /// HTTP `/notify` endpoint and the `notification.*` RPC handlers both go
 /// through this object; the WS fan-out helper is set by `ProcessState`.
@@ -802,6 +811,7 @@ export class NotificationHub {
   private readonly store: NotificationStore;
   private fanOut: NotificationFanOut | null = null;
   private fcm: NotificationFcmSender | null = null;
+  private ntfy: NotificationNtfySender | null = null;
   /// Wall-clock time of the last sweep; 0 means "never". Compared against
   /// `now - GC_MIN_INTERVAL_MS` in `maybeSweepOnList`.
   private lastSweepMs = 0;
@@ -825,6 +835,14 @@ export class NotificationHub {
   /// part of the same fire-and-forget path.
   public attachFcmSender(sender: NotificationFcmSender): void {
     this.fcm = sender;
+  }
+
+  /// Wire in the third-transport sender (ntfy). Optional — when the env
+  /// vars aren't configured the backend simply doesn't call this and ntfy
+  /// delivery is silently skipped. Per-message, not per-token: one POST
+  /// per publish covers every subscriber on the user's ntfy topic.
+  public attachNtfySender(sender: NotificationNtfySender): void {
+    this.ntfy = sender;
   }
 
   public registerFcmToken(args: {
@@ -870,6 +888,14 @@ export class NotificationHub {
             console.error("[notifications] fcm send failed:", err);
           });
       }
+    }
+    // Third transport: ntfy. Also fire-and-forget. One POST per publish
+    // (not per token), so no fan-out loop here. ntfy is the working channel
+    // on Chinese MIUI/EMUI/ColorOS where FCM is unreachable.
+    if (this.ntfy !== null) {
+      void this.ntfy.send(notification).catch((err) => {
+        console.error("[notifications] ntfy send failed:", err);
+      });
     }
     return { id: notification.id };
   }

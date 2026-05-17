@@ -13,6 +13,7 @@ import 'screens/home_shell.dart';
 import 'screens/notification_center.dart';
 import 'screens/settings_screen.dart';
 import 'services/connectivity_probe.dart';
+import 'services/deep_link_service.dart';
 import 'services/fcm_service.dart';
 import 'services/notification_foreground_service.dart';
 import 'settings_store.dart';
@@ -44,6 +45,8 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
   final NotificationServiceController _fgService =
       NotificationServiceController();
   final FcmController _fcm = FcmController();
+  final DeepLinkService _deepLinks = DeepLinkService();
+  VoidCallback? _deepLinkRemover;
   final GlobalKey<NavigatorState> _navKey = GlobalKey<NavigatorState>();
   AppState? _appState;
   bool _fcmListenerWired = false;
@@ -84,10 +87,17 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
       await _maybeStartForegroundService();
       await _initFcm(did);
     }
+    // Deep links from the ntfy app land in DeepLinkService. Cold-start
+    // ids are consumed on the first frame; warm taps push the same route
+    // through the listener.
+    await _deepLinks.init();
+    _deepLinkRemover = _deepLinks.addListener(_openNotificationCenterFor);
     // If we were launched by a tap on a tray notification, route to the
     // notification center after the first frame.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _consumePendingTapIfAny();
+      final id = _deepLinks.consumePendingId();
+      if (id != null) _openNotificationCenterFor(id);
     });
   }
 
@@ -174,8 +184,16 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
   void _consumePendingTapIfAny() {
     final id = consumePendingTapNotificationId();
     if (id == null) return;
+    _openNotificationCenterFor(id);
+  }
+
+  /// Push the notification-center route highlighting `id`. Shared between
+  /// the foreground-service tray-tap path (consumePendingTapNotificationId)
+  /// and the ntfy deep-link path (DeepLinkService). If state isn't ready
+  /// yet (very early launch) the call is dropped — the consumer paths both
+  /// retry on the next consumption point.
+  void _openNotificationCenterFor(String id) {
     final state = _appState;
-    final settingsStore = _settingsStore;
     if (state == null) return;
     final nav = _navKey.currentState;
     if (nav == null) return;
@@ -183,7 +201,7 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
       MaterialPageRoute<void>(
         builder: (_) => NotificationCenterScreen(
           appState: state,
-          settingsStore: settingsStore,
+          settingsStore: _settingsStore,
           highlightId: id,
         ),
       ),
@@ -246,6 +264,12 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
       // Any tray notification tap that happened while we were paused
       // landed in the static pending slot; consume it now.
       _consumePendingTapIfAny();
+      // ntfy deep links arriving while paused queue in the pending slot
+      // (cold-start path); the warm-path listener also fires from the
+      // stream, but consuming here covers the case where the URI was
+      // delivered before the listener was attached.
+      final id = _deepLinks.consumePendingId();
+      if (id != null) _openNotificationCenterFor(id);
     }
   }
 
@@ -256,6 +280,8 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
       _client.state.removeListener(_onClientStateForFcm);
     }
     unawaited(_fcm.dispose());
+    _deepLinkRemover?.call();
+    unawaited(_deepLinks.dispose());
     _appState?.dispose();
     _client.dispose();
     super.dispose();
