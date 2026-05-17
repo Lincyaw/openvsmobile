@@ -9,6 +9,7 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import 'app_state.dart';
 import 'backend_client.dart';
+import 'notification.dart';
 import 'screens/home_shell.dart';
 import 'screens/notification_center.dart';
 import 'screens/settings_screen.dart';
@@ -16,6 +17,7 @@ import 'services/connectivity_probe.dart';
 import 'services/deep_link_service.dart';
 import 'services/fcm_service.dart';
 import 'services/notification_foreground_service.dart';
+import 'services/system_tray.dart';
 import 'settings_store.dart';
 
 Future<void> main() async {
@@ -46,6 +48,8 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
       NotificationServiceController();
   final FcmController _fcm = FcmController();
   final DeepLinkService _deepLinks = DeepLinkService();
+  final SystemTrayController _tray = SystemTrayController();
+  StreamSubscription<BackendNotification>? _trayNotifSub;
   VoidCallback? _deepLinkRemover;
   final GlobalKey<NavigatorState> _navKey = GlobalKey<NavigatorState>();
   AppState? _appState;
@@ -61,7 +65,52 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _fgService.init();
+    // Tray-side init is fire-and-forget: the platform-channel call to
+    // create the per-level channels can run in parallel with bootstrap.
+    // If it fails (test environment / non-Android host) `show()` still
+    // degrades cleanly via the `PlatformException` branch.
+    unawaited(_tray.init());
+    // Subscribe to the same broadcast stream `AppState` listens on so
+    // tray posting is a peer of the in-app notification center, not
+    // downstream of it. Both listeners see every event independently.
+    _trayNotifSub = _client.notifications.listen(_onBackendNotificationForTray);
     _bootstrap();
+  }
+
+  /// Fan `notification.show` / `.deleted` / `.superseded` pushes to
+  /// the system tray. Other pushes (terminal.*, workspace.*, etc.) are
+  /// ignored here — `AppState._onNotification` consumes them.
+  void _onBackendNotificationForTray(BackendNotification n) {
+    switch (n.method) {
+      case BackendNotifications.notificationShow:
+        final p = n.params;
+        if (p is! Map<String, dynamic>) return;
+        final raw = p['notification'];
+        if (raw is! Map<String, dynamic>) return;
+        final appNotif = AppNotification.fromJson(raw);
+        final prefs = _notifPrefs;
+        unawaited(_tray.show(
+          appNotif,
+          mutedSources: prefs?.mutedSources.toSet() ?? const <String>{},
+          quietStartMinutes: prefs?.quietHoursStartMinutes ?? -1,
+          quietEndMinutes: prefs?.quietHoursEndMinutes ?? -1,
+        ));
+      case BackendNotifications.notificationDeleted:
+        final p = n.params;
+        if (p is! Map<String, dynamic>) return;
+        final ids = (p['ids'] as List?)?.whereType<String>().toList() ??
+            const <String>[];
+        for (final id in ids) {
+          unawaited(_tray.cancel(id));
+        }
+      case BackendNotifications.notificationSuperseded:
+        final p = n.params;
+        if (p is! Map<String, dynamic>) return;
+        final oldId = p['oldId'];
+        if (oldId is String) unawaited(_tray.cancel(oldId));
+      default:
+        break;
+    }
   }
 
   Future<void> _bootstrap() async {
@@ -124,10 +173,10 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
   }
 
   Future<void> _maybeStartForegroundService() async {
-    final s = _settings, did = _deviceId, prefs = _notifPrefs;
+    final s = _settings, prefs = _notifPrefs;
     debugPrint('FGS: _maybeStartForegroundService called');
-    if (s == null || did == null || prefs == null) {
-      debugPrint('FGS: early return — s=$s did=$did prefs=$prefs');
+    if (s == null || prefs == null) {
+      debugPrint('FGS: early return — s=$s prefs=$prefs');
       return;
     }
     if (!s.isComplete) {
@@ -154,12 +203,12 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
       setState(() => _notifPrefs = prefs.copyWith(backgroundEnabled: false));
       return;
     }
-    // Without battery-optimization exemption, Doze freezes the service
-    // isolate's WebSocket after a few minutes of background — the persistent
-    // tray notification keeps showing (Android renders it from a snapshot)
-    // but `notification.show` pushes never reach `_handleShow`. We prompt
-    // once; if the user declines we still start the service so foreground
-    // delivery keeps working.
+    // Without battery-optimization exemption, Doze suspends the main
+    // isolate's WebSocket after a few minutes of background — the
+    // persistent tray notification keeps showing (Android renders it from
+    // a snapshot) but `notification.show` pushes never reach
+    // `SystemTrayController`. We prompt once; if the user declines we
+    // still start the service so foreground delivery keeps working.
     final ignoringBattery =
         await FlutterForegroundTask.isIgnoringBatteryOptimizations;
     debugPrint('FGS: isIgnoringBatteryOptimizations=$ignoringBattery');
@@ -169,15 +218,7 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
       debugPrint('FGS: requestIgnoreBatteryOptimization=$granted');
     }
     debugPrint('FGS: calling _fgService.start...');
-    final ok = await _fgService.start(
-      host: s.host,
-      port: s.port,
-      token: s.token,
-      deviceId: did,
-      mutedSources: prefs.mutedSources,
-      quietStartMinutes: prefs.quietHoursStartMinutes ?? -1,
-      quietEndMinutes: prefs.quietHoursEndMinutes ?? -1,
-    );
+    final ok = await _fgService.start();
     debugPrint('FGS: _fgService.start returned $ok');
   }
 
@@ -237,19 +278,16 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
   Future<void> _onNotificationPrefsChanged() async {
     final prefs = await _settingsStore.loadNotificationPrefs();
     if (!mounted) return;
+    // Cached `_notifPrefs` is the source of mute/quiet-hours values read
+    // by `_onBackendNotificationForTray` at post time — updating it via
+    // setState is sufficient to apply the new policy on the very next
+    // push. No cross-isolate prefs sync to do.
     setState(() => _notifPrefs = prefs);
     if (!prefs.backgroundEnabled) {
       await _fgService.stop();
       return;
     }
     if (await _fgService.isRunning) {
-      // Already running — only the mute / quiet-hours fields can have
-      // changed because backgroundEnabled is true. Push them down.
-      await _fgService.updatePrefs(
-        mutedSources: prefs.mutedSources,
-        quietStartMinutes: prefs.quietHoursStartMinutes ?? -1,
-        quietEndMinutes: prefs.quietHoursEndMinutes ?? -1,
-      );
       return;
     }
     await _maybeStartForegroundService();
@@ -282,6 +320,8 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
     unawaited(_fcm.dispose());
     _deepLinkRemover?.call();
     unawaited(_deepLinks.dispose());
+    unawaited(_trayNotifSub?.cancel());
+    _trayNotifSub = null;
     _appState?.dispose();
     _client.dispose();
     super.dispose();

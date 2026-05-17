@@ -33,7 +33,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../backend_client.dart';
 import '../notification.dart';
 import 'fcm_diagnostics.dart';
-import 'notification_foreground_service.dart';
+import 'system_tray.dart';
 
 /// SharedPreferences key for the last token we successfully registered
 /// with the backend. We avoid re-registering on every launch by diffing
@@ -177,9 +177,9 @@ Future<void> _showFromFcmData(Map<String, dynamic> data) async {
   );
 }
 
-/// Foreground FCM handler — invoked while the app is alive. The
-/// foreground-service WS has already delivered this notification through
-/// the primary path, so we'd just be duplicating. Drop it. (If a future
+/// Foreground FCM handler — invoked while the app is alive. The main
+/// isolate WS has already delivered this notification through the
+/// primary path, so we'd just be duplicating. Drop it. (If a future
 /// design wants FCM to be primary, this is the dedup hook.)
 void onForegroundFcmMessage(RemoteMessage _) {
   // No-op: WS path wins in foreground.

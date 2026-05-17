@@ -9,7 +9,7 @@
 //   2. Warm: app already running. `appLinks.uriLinkStream` emits each tap.
 //
 // API mirrors `consumePendingTapNotificationId()` in
-// notification_foreground_service.dart — a static slot that the consumer
+// system_tray.dart — a static slot that the consumer
 // reads-and-clears, plus a listener so the consumer can react to taps
 // arriving while the app is running. We intentionally keep both patterns
 // rather than picking one, because the FGS path is consume-on-resume and
