@@ -1,11 +1,11 @@
 {
   "name": "openvsmobile-next-backend",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Mobile code platform backend (P1: auth + workspace + fs + terminal).",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=25"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

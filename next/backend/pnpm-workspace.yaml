@@ -1,0 +1,8 @@
+# pnpm 11+ requires explicit approval for packages that run lifecycle
+# scripts (build/install/postinstall). Without these entries pnpm refuses
+# to compile node-pty's native binding, so the bundled backend would crash
+# the moment it tries to spawn a terminal. esbuild is pulled in transitively
+# by tsx; it just self-extracts a prebuilt binary.
+allowBuilds:
+  esbuild: true
+  node-pty: true

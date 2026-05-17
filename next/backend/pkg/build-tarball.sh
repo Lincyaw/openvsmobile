@@ -5,7 +5,7 @@
 #   <output_dir>/openvsmobile-backend-linux-<arch>.tar.gz
 #   <output_dir>/openvsmobile-backend-linux-<arch>.tar.gz.sha256
 #
-# The tarball bundles a portable Node 20 runtime, the compiled JS, the
+# The tarball bundles a portable Node 25 runtime, the compiled JS, the
 # production node_modules tree (with the native node-pty prebuild for the
 # target arch), and a thin launch.sh. The result must be runnable on a
 # fresh linux-<arch> host with no extra dependencies.
@@ -16,7 +16,7 @@
 set -euo pipefail
 
 # ----- constants -----
-NODE_VERSION="v20.18.0"
+NODE_VERSION="v25.9.0"
 NODE_DIST_BASE="https://nodejs.org/dist/${NODE_VERSION}"
 
 # ----- usage / args -----
@@ -129,6 +129,12 @@ if [[ ! -f "$BACKEND_DIR/pnpm-lock.yaml" ]]; then
   exit 1
 fi
 cp "$BACKEND_DIR/pnpm-lock.yaml" "$BUILD_DIR/"
+# pnpm 11+ reads `allowBuilds:` from pnpm-workspace.yaml to decide which
+# packages may run install scripts. Without this file pnpm refuses to
+# compile node-pty's native binding and the tarball ships broken.
+if [[ -f "$BACKEND_DIR/pnpm-workspace.yaml" ]]; then
+  cp "$BACKEND_DIR/pnpm-workspace.yaml" "$BUILD_DIR/"
+fi
 
 log "installing production deps for linux-${ARCH} (pnpm, frozen lockfile, hoisted)"
 (
