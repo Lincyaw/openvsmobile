@@ -15,7 +15,6 @@ import 'screens/notification_center.dart';
 import 'screens/settings_screen.dart';
 import 'services/connectivity_probe.dart';
 import 'services/deep_link_service.dart';
-import 'services/fcm_service.dart';
 import 'services/notification_foreground_service.dart';
 import 'services/system_tray.dart';
 import 'settings_store.dart';
@@ -26,34 +25,29 @@ Future<void> main() async {
   // `runApp` so that taps on tray notifications posted while the app was
   // dead are still routed correctly when the app launches.
   FlutterForegroundTask.initCommunicationPort();
-  // Best-effort FCM init — failures (e.g. no GMS / missing config) are
-  // logged and ignored. The foreground-service path keeps working.
-  await initFirebaseAndFcm();
-  runApp(const OpenVsMobileApp());
+  runApp(const MobileCodeApp());
 }
 
-class OpenVsMobileApp extends StatefulWidget {
-  const OpenVsMobileApp({super.key});
+class MobileCodeApp extends StatefulWidget {
+  const MobileCodeApp({super.key});
 
   @override
-  State<OpenVsMobileApp> createState() => _OpenVsMobileAppState();
+  State<MobileCodeApp> createState() => _MobileCodeAppState();
 }
 
-class _OpenVsMobileAppState extends State<OpenVsMobileApp>
+class _MobileCodeAppState extends State<MobileCodeApp>
     with WidgetsBindingObserver {
   final SettingsStore _settingsStore = SettingsStore();
   late final BackendClient _client =
       BackendClient(probe: ConnectivityPlusProbe());
   final NotificationServiceController _fgService =
       NotificationServiceController();
-  final FcmController _fcm = FcmController();
   final DeepLinkService _deepLinks = DeepLinkService();
   final SystemTrayController _tray = SystemTrayController();
   StreamSubscription<BackendNotification>? _trayNotifSub;
   VoidCallback? _deepLinkRemover;
   final GlobalKey<NavigatorState> _navKey = GlobalKey<NavigatorState>();
   AppState? _appState;
-  bool _fcmListenerWired = false;
 
   Settings? _settings;
   String? _deviceId;
@@ -134,7 +128,6 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
       );
       await _client.start();
       await _maybeStartForegroundService();
-      await _initFcm(did);
     }
     // Deep links from the ntfy app land in DeepLinkService. Cold-start
     // ids are consumed on the first frame; warm taps push the same route
@@ -148,28 +141,6 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
       final id = _deepLinks.consumePendingId();
       if (id != null) _openNotificationCenterFor(id);
     });
-  }
-
-  /// Wire FCM once we have a deviceId. The token-register call is fired on
-  /// every backend (re)connect (and on token rotation), so it survives
-  /// transient drops without re-init. Safe to call multiple times.
-  Future<void> _initFcm(String deviceId) async {
-    await _fcm.init(client: _client, deviceId: deviceId);
-    if (!_fcmListenerWired) {
-      _fcmListenerWired = true;
-      _client.state.addListener(_onClientStateForFcm);
-    }
-    // Fire once now in case we're already past the connected transition
-    // (race between bootstrap and the first ws handshake).
-    if (_client.state.value == BackendConnectionState.connected) {
-      unawaited(_fcm.registerWithBackend());
-    }
-  }
-
-  void _onClientStateForFcm() {
-    if (_client.state.value == BackendConnectionState.connected) {
-      unawaited(_fcm.registerWithBackend());
-    }
   }
 
   Future<void> _maybeStartForegroundService() async {
@@ -265,10 +236,6 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
       // Restart the service with new params, if it's running or should be.
       await _fgService.stop();
       await _maybeStartForegroundService();
-      final did = _deviceId;
-      if (did != null && did.isNotEmpty) {
-        await _initFcm(did);
-      }
     }
   }
 
@@ -314,10 +281,6 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    if (_fcmListenerWired) {
-      _client.state.removeListener(_onClientStateForFcm);
-    }
-    unawaited(_fcm.dispose());
     _deepLinkRemover?.call();
     unawaited(_deepLinks.dispose());
     unawaited(_trayNotifSub?.cancel());
@@ -331,7 +294,7 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
   Widget build(BuildContext context) {
     return MaterialApp(
       navigatorKey: _navKey,
-      title: 'openvsmobile',
+      title: 'MobileCode',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
         useMaterial3: true,
@@ -349,7 +312,6 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
                   appState: _appState!,
                   settingsStore: _settingsStore,
                   currentSettings: _settings!,
-                  fcmController: _fcm,
                   systemTrayController: _tray,
                   onSettingsSaved: _onSettingsSaved,
                   onNotificationPrefsChanged: _onNotificationPrefsChanged,

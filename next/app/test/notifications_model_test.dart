@@ -8,9 +8,9 @@
 
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:openvsmobile_next/backend_client.dart';
-import 'package:openvsmobile_next/notification.dart';
-import 'package:openvsmobile_next/state/notifications_model.dart';
+import 'package:mobilecode/backend_client.dart';
+import 'package:mobilecode/notification.dart';
+import 'package:mobilecode/state/notifications_model.dart';
 
 AppNotification _make({
   required String id,

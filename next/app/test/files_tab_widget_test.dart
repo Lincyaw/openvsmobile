@@ -16,9 +16,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:openvsmobile_next/app_state.dart';
-import 'package:openvsmobile_next/backend_client.dart';
-import 'package:openvsmobile_next/screens/files_tab.dart';
+import 'package:mobilecode/app_state.dart';
+import 'package:mobilecode/backend_client.dart';
+import 'package:mobilecode/screens/files_tab.dart';
 
 Future<void> _pumpFilesTab(WidgetTester tester, AppState appState) async {
   await tester.pumpWidget(

@@ -149,7 +149,7 @@ class _NotificationSettingsScreenState
         SnackBar(
           duration: const Duration(seconds: 8),
           content: const Text(
-            'On Xiaomi/Oppo/Huawei phones, add openvsmobile-next to the '
+            'On Xiaomi/Oppo/Huawei phones, add MobileCode to the '
             'battery whitelist so notifications keep flowing while the '
             'screen is off.',
           ),
@@ -268,7 +268,7 @@ class _NotificationSettingsScreenState
           Padding(
             padding: const EdgeInsets.fromLTRB(72, 0, 16, 12),
             child: Text(
-              'On Xiaomi / Oppo / Huawei phones, also add openvsmobile-next '
+              'On Xiaomi / Oppo / Huawei phones, also add MobileCode '
               'to the battery whitelist — same trade-off as Telegram and '
               'K-9 Mail. See docs/notifications-android.md.',
               style: TextStyle(

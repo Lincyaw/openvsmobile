@@ -10,9 +10,9 @@
 
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:openvsmobile_next/backend_client.dart';
-import 'package:openvsmobile_next/models.dart';
-import 'package:openvsmobile_next/state/workspace_model.dart';
+import 'package:mobilecode/backend_client.dart';
+import 'package:mobilecode/models.dart';
+import 'package:mobilecode/state/workspace_model.dart';
 
 void main() {
   group('dirRollup', () {

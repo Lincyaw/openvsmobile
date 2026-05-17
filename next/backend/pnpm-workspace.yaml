@@ -4,11 +4,6 @@
 # the moment it tries to spawn a terminal. esbuild is pulled in transitively
 # by tsx; it just self-extracts a prebuilt binary.
 allowBuilds:
-  # firebase-admin transitives. Neither runs native code; we approve them
-  # so pnpm 11+ stops gating with a warning. @firebase/util has a tiny
-  # postinstall; protobufjs's postinstall is a no-op on Node.
-  '@firebase/util': true
   better-sqlite3: true
   esbuild: true
   node-pty: true
-  protobufjs: true

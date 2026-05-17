@@ -5,13 +5,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:openvsmobile_next/main.dart';
+import 'package:mobilecode/main.dart';
 
 void main() {
   testWidgets('first run shows settings prompt',
       (WidgetTester tester) async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
-    await tester.pumpWidget(const OpenVsMobileApp());
+    await tester.pumpWidget(const MobileCodeApp());
     // Initial frame is the splash; pump until settings prompt appears.
     await tester.pump(const Duration(milliseconds: 50));
     await tester.pumpAndSettle();
