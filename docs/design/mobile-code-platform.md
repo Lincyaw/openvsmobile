@@ -95,8 +95,15 @@ it is either deferred or assigned to a plugin.
    backend; QR-code first-run flow.
 6. **Plugin loader and IPC** — discover installed plugins, spawn their
    processes, route messages, surface their declared UI contributions.
-7. **Notification surface** — a place plugins can post user-visible
-   messages (toasts, badges) without owning the chrome.
+7. **Notification system** — a multi-source, mobile-delivered surface
+   where structured messages from any sender (CLI tool from a dev
+   machine, webhook from CI, plugin running in the host, or the
+   backend itself) reach the user even when the app is not in the
+   foreground. Senders post over a single HTTP endpoint; the backend
+   persists, fans out to connected clients over the existing WS, and
+   the Flutter app's foreground service posts to the Android system
+   tray. No third-party push provider (FCM, ntfy, UnifiedPush) — the
+   transport is the same WS we already operate. Detail in §4.5.
 
 The Flutter bottom navigation is **Files / Terminal / Plugins /
 Settings** (4 tabs). Git lives inside Files — there is no standalone
@@ -266,7 +273,10 @@ Notifications (backend → frontend, push-only). Every workspace-scoped event ca
 | `workspace.head.changed`        | `{ workspaceId, branch, headSha, ahead, behind, version }`                                 |
 | `workspace.commit.added`        | `{ workspaceId, branch, sha, subject, version }` (affects ahead/behind on current branch)  |
 | `ui.tree`                       | `{ panelId, tree: UiPanel }` (full render; only render protocol in v0)                     |
-| `notification.show`             | `{ level, title, message, pluginId? }`                                                     |
+| `notification.show`             | `{ notification: Notification }` — full payload, see §4.5                                  |
+| `notification.readChanged`      | `{ ids: string[], readByDevice: string, ts: number }` — multi-device sync                  |
+| `notification.deleted`          | `{ ids: string[] }`                                                                        |
+| `notification.superseded`       | `{ oldId: string, newId: string }`                                                         |
 | `plugin.stateChanged`           | `{ pluginId, state }`                                                                      |
 
 Vague broadcasts (a `git.changed` that just says "something happened") are explicitly **not** in this surface — they would force every client to re-pull and defeat the point of a push. Each event tells the client exactly what changed; the client never needs a follow-up query to act on it. See CLAUDE.md "First principles" #2.
@@ -553,6 +563,126 @@ grow the vocabulary, not punt to a WebView.
   placeholders.
 - The three protocols (§4.1, §4.2, §4.3) share a single version
   number for v0 to keep mental load low; they can be split later.
+
+### 4.5 Notification system
+
+A multi-source, mobile-delivered status surface. Any sender (CLI tool, webhook, plugin, the backend itself) posts to one endpoint; the backend persists, fans out to connected clients over the same WebSocket already used for everything else, and the Flutter client's Android foreground service posts entries to the system tray so notifications arrive even when the app is not on screen.
+
+**No third-party push provider.** FCM, ntfy, and UnifiedPush were considered and rejected for v0. The transport is the same WS we operate; the foreground service holds the connection open. Future addition of an external transport (FCM/UnifiedPush) is a backend-side adapter at the fan-out layer — wire schema and sender surface do not change.
+
+**Sender API (HTTP).**
+
+```
+POST /notify        Authorization: Bearer <token>
+Content-Type: application/json
+Body: Notification (minus server-assigned fields)
+→ 200 { id }
+```
+
+**Notification payload.**
+
+```ts
+type Notification = {
+  id: string;                        // server-assigned uuid; clients echo it back
+  source: string;                    // free-form, recommended "<kind>:<scope>"
+                                     //   e.g. "claude-code:openvsmobile",
+                                     //        "ci:nightly", "experiment:e0421"
+  level: "info" | "success" | "warning" | "error";
+  title: string;                     // ≤80 chars
+  body?: string;                     // markdown, no size cap but ≤16KB recommended
+  fields?: { key: string; value: string }[];      // structured key/value pairs
+  links?: { title: string; url: string }[];       // tap → external browser
+  action?:                                         // tap on the notif itself
+    | { kind: "open-url"; url: string }
+    | { kind: "copy"; text: string }
+    | { kind: "open-workspace"; workspaceId: string };
+  groupKey?: string;                 // consecutive notifs with same key collapse in UI
+  supersedes?: string;               // id of an earlier notif this replaces
+                                     //   (progress updates → final result)
+  important?: boolean;               // pinned; never auto-deleted by TTL
+  ttl?: number;                      // seconds; default 7 days; important wins
+  timestamp: number;                 // unix epoch ms; server fills if omitted
+  widget?: UiPanel;                  // optional override; renderer reuses §4.3
+                                     //   if absent → default layout from fields/links
+};
+```
+
+**RPC surface (client-facing).**
+
+| Method                        | Direction        | Purpose                                    |
+|-------------------------------|------------------|--------------------------------------------|
+| `notification.subscribe`      | client → backend | start receiving live `notification.*` push |
+| `notification.unsubscribe`    | client → backend | stop receiving                             |
+| `notification.list`           | client → backend | `{ since?, limit, source?, includeRead? }` → `{ items, cursor? }` |
+| `notification.markRead`       | client → backend | `{ ids }` → broadcasts `notification.readChanged` |
+| `notification.delete`         | client → backend | `{ ids }` → broadcasts `notification.deleted` |
+| `notification.markImportant`  | client → backend | `{ id, important }` — pins / unpins from TTL GC |
+
+Push notifications already listed in §4.1: `notification.show`, `notification.readChanged`, `notification.deleted`, `notification.superseded`.
+
+**Persistence (SQLite).** Backend uses `better-sqlite3` (synchronous, single-file db). Schema:
+
+```sql
+CREATE TABLE notifications (
+  id            TEXT PRIMARY KEY,
+  source        TEXT NOT NULL,
+  level         TEXT NOT NULL,
+  title         TEXT NOT NULL,
+  body          TEXT,
+  payload       TEXT,        -- JSON blob: fields, links, action, widget
+  group_key     TEXT,
+  supersedes    TEXT,        -- id of notif this replaced (history pointer)
+  superseded_by TEXT,        -- non-null = this notif was superseded (history entry)
+  important     INTEGER DEFAULT 0,
+  timestamp     INTEGER NOT NULL,
+  ttl_until     INTEGER,
+  read_by       TEXT,        -- JSON array of device ids
+  created_at    INTEGER NOT NULL
+);
+CREATE INDEX idx_notifs_ts        ON notifications(timestamp DESC);
+CREATE INDEX idx_notifs_source_ts ON notifications(source, timestamp DESC);
+CREATE INDEX idx_notifs_group     ON notifications(group_key);
+```
+
+A GC worker (hourly) deletes rows where `ttl_until < now AND important = 0 AND superseded_by IS NULL`. Important and superseding-chain history are preserved indefinitely.
+
+**`groupKey` semantics:** the client groups consecutive notifications with the same `groupKey` into one collapsible card. Backend does not enforce; render hint only.
+
+**`supersedes` semantics:** when a new notification arrives with `supersedes: <id>`, the backend writes `superseded_by` on the old row, persists the new row, and broadcasts `notification.superseded { oldId, newId }`. The new notification also fires `notification.show` as usual. Clients hide superseded entries from the main feed but can reveal them via "show history" on the superseding entry.
+
+**Multi-device semantics.** Every client maintains a stable `deviceId` (UUID, persisted in SharedPreferences). `notification.markRead` writes the device id into the `read_by` JSON array; backend broadcasts `notification.readChanged` so other devices update their UI. Notifications fan out to **all** connected clients — there is no concept of a "primary" device.
+
+**CLI tool (`mobile-notify`).** Single Node script, bundled in the backend tarball under `bin/`. Behavior:
+
+- Local: reads `~/.config/openvsmobile-next/config.json` for port and token; POSTs to `http://127.0.0.1:<port>/notify`.
+- Remote: `--server host:port --token $TOKEN`, or env `OPENVSMOBILE_SERVER` / `OPENVSMOBILE_TOKEN`.
+- Args: `--source`, `--level`, `--title`, `--body`, `--field k=v` (repeatable), `--link title=url` (repeatable), `--action open-url:URL` or `copy:TEXT` or `open-workspace:ID`, `--group-key`, `--supersedes`, `--important`, `--ttl`.
+- `--from-json -` reads the full payload from stdin (for scripts that already have JSON ready).
+- Exit codes: 0 success, 2 args, 3 network, 4 auth, 5 server error.
+
+**Foreground service (Flutter / Android).** App starts a `flutter_foreground_task`-backed service on launch (gated by a Settings toggle, default on). The service holds the WebSocket, calls `notification.subscribe`, and on `notification.show` posts to the Android system tray via a channel chosen from the `level` field:
+
+| level     | Android channel importance | Sound  |
+|-----------|----------------------------|--------|
+| `info`    | low                        | no     |
+| `success` | low                        | no     |
+| `warning` | default                    | default|
+| `error`   | high                       | default|
+
+The persistent foreground notification ("openvsmobile-next active") is low-importance, silent, and serves only as Android's required indicator that a foreground service is running. OEMs (Xiaomi/Huawei/Oppo) that aggressively kill background services require a battery-whitelist exception; the onboarding flow documents this — same trade-off as Telegram / K-9 Mail.
+
+**UI placement (chrome).** A bell icon in the app bar, visible from every tab with an unread-count badge. Tap → full-screen notification center with:
+
+- List sorted by `timestamp DESC`, grouped by `groupKey` when consecutive.
+- Per-source filter pills along the top.
+- Each item: source pill, level color stripe, title, expandable body (markdown), action button row from `links`, relative timestamp.
+- Long-press: mark read / delete / pin / mute source.
+- Tap: execute `action` if present (open url, open workspace, copy text); else expand inline.
+- Rendering: if `widget` is present, use the §4.3 panel renderer; on render error fall back to the default field-and-links layout. (v0 reserves the widget field but ships only the default renderer; the §4.3 renderer slot is wired but disabled until plugin host lands.)
+
+**Settings.** Per-source rules (mute, priority override, sound override), quiet hours, default TTL, foreground-service toggle.
+
+**Auth.** v0 uses the same single bearer token for both WS and HTTP `/notify`. Per-source scoped publish tokens are deferred to v1.
 
 ## 5. Backend stack and deployment
 
