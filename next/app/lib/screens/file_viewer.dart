@@ -47,7 +47,10 @@ class FileViewerScreen extends StatelessWidget {
           : SingleChildScrollView(
               padding: const EdgeInsets.all(12),
               child: SelectableText(
-                _decode(content.bytes),
+                // `allowMalformed: true` papers over a partial UTF-8 truncation
+                // at the file's tail (rare but legitimate, e.g. a large file
+                // clipped at MAX_FILE_BYTES mid-codepoint) instead of throwing.
+                utf8.decode(content.bytes, allowMalformed: true),
                 style: const TextStyle(
                   fontFamily: 'monospace',
                   fontSize: 13,
@@ -56,13 +59,5 @@ class FileViewerScreen extends StatelessWidget {
               ),
             ),
     );
-  }
-
-  String _decode(List<int> bytes) {
-    try {
-      return utf8.decode(bytes);
-    } catch (_) {
-      return utf8.decode(bytes, allowMalformed: true);
-    }
   }
 }

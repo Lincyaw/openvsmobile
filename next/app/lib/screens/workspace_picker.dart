@@ -1,6 +1,9 @@
 // Step-by-step directory picker. No raw path input — the user drills.
 // Uses fs.listDir({ path, picker: true }) so it can traverse outside any
 // active workspace.
+//
+// The picker's directory + entry cache lives in AppState so it survives a
+// rebuild and stays in one place — see docs/conventions.md §2.
 
 import 'package:flutter/material.dart';
 
@@ -16,42 +19,26 @@ class WorkspacePickerScreen extends StatefulWidget {
 }
 
 class _WorkspacePickerScreenState extends State<WorkspacePickerScreen> {
-  late String _path;
-  List<DirEntry>? _entries;
-  String? _error;
-  bool _loading = false;
-
   @override
   void initState() {
     super.initState();
+    widget.appState.addListener(_onAppStateChanged);
     // Start at the BACKEND's $HOME, not the phone's. The phone's $HOME on
     // Android is something useless like `/data/user/0/...` — the picker
     // would crash or list a placeholder dir. The handshake response carries
     // the server-side default cwd; fall back to "/" if missing.
-    _path = widget.appState.backendDefaultCwd;
-    _load(_path);
+    widget.appState.openPicker();
   }
 
-  Future<void> _load(String path) async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
-    try {
-      final entries = await widget.appState.pickerListDir(path);
-      if (!mounted) return;
-      setState(() {
-        _path = path;
-        _entries = entries;
-        _loading = false;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = e.toString();
-        _loading = false;
-      });
-    }
+  @override
+  void dispose() {
+    widget.appState.removeListener(_onAppStateChanged);
+    widget.appState.closePicker();
+    super.dispose();
+  }
+
+  void _onAppStateChanged() {
+    if (mounted) setState(() {});
   }
 
   String _parent(String path) {
@@ -63,13 +50,13 @@ class _WorkspacePickerScreenState extends State<WorkspacePickerScreen> {
 
   Future<void> _select() async {
     final navigator = Navigator.of(context);
-    final messenger = ScaffoldMessenger.of(context);
-    final ws = await widget.appState.openWorkspace(_path);
+    final picker = widget.appState.pickerState;
+    if (picker == null) return;
+    final ws = await widget.appState.openWorkspace(picker.path);
     if (!mounted) return;
     if (ws == null) {
-      messenger.showSnackBar(
-        SnackBar(content: Text('Failed to open $_path')),
-      );
+      // AppState surfaces the failure via lastOperationError → SnackBar
+      // (handled centrally by HomeShell). Nothing extra to do.
       return;
     }
     navigator.pop(ws);
@@ -77,7 +64,13 @@ class _WorkspacePickerScreenState extends State<WorkspacePickerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final dirs = _entries?.where((e) => e.isDir).toList() ?? const <DirEntry>[];
+    final theme = Theme.of(context);
+    final picker = widget.appState.pickerState;
+    final path = picker?.path ?? widget.appState.backendDefaultCwd;
+    final entries = picker?.entries;
+    final loading = picker?.loading ?? true;
+    final error = picker?.error;
+    final dirs = entries?.where((e) => e.isDir).toList() ?? const <DirEntry>[];
     return Scaffold(
       appBar: AppBar(
         title: const Text('Choose a folder'),
@@ -85,7 +78,8 @@ class _WorkspacePickerScreenState extends State<WorkspacePickerScreen> {
           IconButton(
             tooltip: 'Refresh',
             icon: const Icon(Icons.refresh),
-            onPressed: _loading ? null : () => _load(_path),
+            onPressed:
+                loading ? null : () => widget.appState.navigatePicker(path),
           ),
         ],
       ),
@@ -93,17 +87,20 @@ class _WorkspacePickerScreenState extends State<WorkspacePickerScreen> {
         children: [
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            color: theme.colorScheme.surfaceContainerHighest,
             child: Row(
               children: [
                 IconButton(
                   icon: const Icon(Icons.arrow_upward),
                   tooltip: 'Parent',
-                  onPressed: _path == '/' ? null : () => _load(_parent(_path)),
+                  onPressed: path == '/'
+                      ? null
+                      : () =>
+                          widget.appState.navigatePicker(_parent(path)),
                 ),
                 Expanded(
                   child: Text(
-                    _path,
+                    path,
                     style: const TextStyle(fontFamily: 'monospace'),
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -111,42 +108,39 @@ class _WorkspacePickerScreenState extends State<WorkspacePickerScreen> {
               ],
             ),
           ),
-          if (_error != null)
+          if (error != null)
             Padding(
               padding: const EdgeInsets.all(12),
-              child: Text(_error!, style: const TextStyle(color: Colors.red)),
+              child: Text(error,
+                  style: TextStyle(color: theme.colorScheme.error)),
             ),
-          if (_loading) const LinearProgressIndicator(minHeight: 2),
+          if (loading) const LinearProgressIndicator(minHeight: 2),
           Expanded(
-            child: _entries == null
+            child: entries == null
                 ? const SizedBox.shrink()
                 : ListView.builder(
-                    itemCount: _entries!.length,
+                    itemCount: entries.length,
                     itemBuilder: (ctx, i) {
-                      final e = _entries![i];
+                      final e = entries[i];
                       final enabled = e.isDir;
                       return ListTile(
                         leading: Icon(
                           e.isDir
                               ? Icons.folder_outlined
                               : Icons.insert_drive_file_outlined,
-                          color: enabled
-                              ? null
-                              : Theme.of(context).disabledColor,
+                          color: enabled ? null : theme.disabledColor,
                         ),
                         title: Text(
                           e.name,
                           style: TextStyle(
-                            color: enabled
-                                ? null
-                                : Theme.of(context).disabledColor,
+                            color: enabled ? null : theme.disabledColor,
                           ),
                         ),
                         onTap: enabled
-                            ? () => _load(
-                                  _path.endsWith('/')
-                                      ? '$_path${e.name}'
-                                      : '$_path/${e.name}',
+                            ? () => widget.appState.navigatePicker(
+                                  path.endsWith('/')
+                                      ? '$path${e.name}'
+                                      : '$path/${e.name}',
                                 )
                             : null,
                       );
@@ -162,7 +156,7 @@ class _WorkspacePickerScreenState extends State<WorkspacePickerScreen> {
                 child: FilledButton.icon(
                   icon: const Icon(Icons.check),
                   label: Text('Select this directory (${dirs.length} subdirs)'),
-                  onPressed: _loading ? null : _select,
+                  onPressed: loading ? null : _select,
                 ),
               ),
             ),

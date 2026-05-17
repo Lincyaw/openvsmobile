@@ -26,6 +26,20 @@ import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as ws_status;
 
+/// Notification method names the backend pushes. Listed as constants so flow
+/// control in AppState doesn't switch on bare strings — see
+/// docs/conventions.md §2 (Single source of truth: AppState).
+class BackendNotifications {
+  BackendNotifications._();
+  static const String terminalData = 'terminal.data';
+  static const String terminalExit = 'terminal.exit';
+  static const String workspaceClosed = 'workspace.closed';
+}
+
+/// Permanent-error JSON-RPC code returned by the backend on a failed
+/// `auth.handshake`. Mirrors `RPC_ERR.unauthorized` on the server side.
+const int kRpcUnauthorized = -32002;
+
 enum BackendConnectionState {
   /// No socket; either never started or [userDisconnect] was called.
   disconnected,
@@ -284,7 +298,7 @@ class BackendClient {
       defaultCwd = cwd is String ? cwd : '/';
     } on BackendRpcException catch (e) {
       // Auth failure is permanent — user has to fix settings.
-      if (e.code == -32002) {
+      if (e.code == kRpcUnauthorized) {
         lastError.value = 'auth failed: ${e.message}';
         await _closeSocket();
         state.value = BackendConnectionState.failed;

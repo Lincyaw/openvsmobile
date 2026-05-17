@@ -1,9 +1,15 @@
 // Files tab: lazy-expand tree rooted at the current workspace's root.
 // Tapping a file opens a read-only viewer.
+//
+// The tree shape (expanded/collapsed flags + cached children) lives in
+// AppState, not widget state — see docs/conventions.md §2. This widget is
+// a near-stateless view that reacts to AppState changes and calls back
+// into AppState for expand / refresh.
 
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
+import '../models.dart';
 import 'file_viewer.dart';
 
 class FilesTab extends StatefulWidget {
@@ -14,31 +20,14 @@ class FilesTab extends StatefulWidget {
   State<FilesTab> createState() => _FilesTabState();
 }
 
-class _Node {
-  final String path;
-  final String name;
-  final bool isDir;
-  bool expanded = false;
-  bool loading = false;
-  String? error;
-  List<_Node>? children;
-
-  _Node({
-    required this.path,
-    required this.name,
-    required this.isDir,
-  });
-}
-
 class _FilesTabState extends State<FilesTab> {
-  String? _rootWorkspaceId;
-  _Node? _root;
+  String? _lastWorkspaceId;
 
   @override
   void initState() {
     super.initState();
     widget.appState.addListener(_onAppStateChanged);
-    _syncRoot();
+    _ensureRoot();
   }
 
   @override
@@ -49,69 +38,22 @@ class _FilesTabState extends State<FilesTab> {
 
   void _onAppStateChanged() {
     final cur = widget.appState.currentWorkspace;
-    if (cur?.id != _rootWorkspaceId) {
-      _syncRoot();
+    if (cur?.id != _lastWorkspaceId) {
+      _ensureRoot();
     }
+    if (mounted) setState(() {});
   }
 
-  void _syncRoot() {
+  void _ensureRoot() {
     final w = widget.appState.currentWorkspace;
-    setState(() {
-      _rootWorkspaceId = w?.id;
-      _root = w == null
-          ? null
-          : _Node(path: w.root, name: w.label, isDir: true);
-    });
-    if (w != null && _root != null) {
-      _toggle(_root!);
+    _lastWorkspaceId = w?.id;
+    if (w == null) return;
+    if (widget.appState.fileTreeFor(w.id) == null) {
+      widget.appState.refreshFileTree(w.id);
     }
   }
 
-  Future<void> _toggle(_Node node) async {
-    if (!node.isDir) return;
-    if (node.expanded) {
-      setState(() => node.expanded = false);
-      return;
-    }
-    if (node.children != null) {
-      setState(() => node.expanded = true);
-      return;
-    }
-    if (_rootWorkspaceId == null) return;
-    setState(() {
-      node.loading = true;
-      node.error = null;
-    });
-    try {
-      final entries = await widget.appState.listDir(
-        path: node.path,
-        workspaceId: _rootWorkspaceId!,
-      );
-      if (!mounted) return;
-      setState(() {
-        node.children = entries
-            .map((e) => _Node(
-                  path: _join(node.path, e.name),
-                  name: e.name,
-                  isDir: e.isDir,
-                ))
-            .toList();
-        node.expanded = true;
-        node.loading = false;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        node.error = e.toString();
-        node.loading = false;
-      });
-    }
-  }
-
-  String _join(String dir, String name) =>
-      dir.endsWith('/') ? '$dir$name' : '$dir/$name';
-
-  Future<void> _openFile(_Node node) async {
+  Future<void> _openFile(FileTreeNode node) async {
     final ws = widget.appState.currentWorkspace;
     if (ws == null) return;
     final navigator = Navigator.of(context);
@@ -132,9 +74,8 @@ class _FilesTabState extends State<FilesTab> {
     }
   }
 
-  List<Widget> _flatten(_Node node, int depth) {
-    final out = <Widget>[];
-    out.add(_buildRow(node, depth));
+  List<Widget> _flatten(FileTreeNode node, int depth) {
+    final out = <Widget>[_buildRow(node, depth)];
     if (node.isDir && node.expanded && node.children != null) {
       for (final c in node.children!) {
         out.addAll(_flatten(c, depth + 1));
@@ -143,9 +84,19 @@ class _FilesTabState extends State<FilesTab> {
     return out;
   }
 
-  Widget _buildRow(_Node node, int depth) {
+  Widget _buildRow(FileTreeNode node, int depth) {
+    final theme = Theme.of(context);
+    final wsId = _lastWorkspaceId;
     return InkWell(
-      onTap: () => node.isDir ? _toggle(node) : _openFile(node),
+      onTap: () {
+        if (node.isDir) {
+          if (wsId != null) {
+            widget.appState.toggleFileTreeNode(wsId, node);
+          }
+        } else {
+          _openFile(node);
+        }
+      },
       child: Padding(
         padding: EdgeInsets.only(
           left: 8.0 + depth * 16.0,
@@ -185,8 +136,8 @@ class _FilesTabState extends State<FilesTab> {
             if (node.error != null)
               Tooltip(
                 message: node.error!,
-                child: const Icon(Icons.error_outline,
-                    size: 16, color: Colors.red),
+                child: Icon(Icons.error_outline,
+                    size: 16, color: theme.colorScheme.error),
               ),
           ],
         ),
@@ -196,7 +147,8 @@ class _FilesTabState extends State<FilesTab> {
 
   @override
   Widget build(BuildContext context) {
-    if (_root == null) {
+    final wsId = _lastWorkspaceId;
+    if (wsId == null) {
       return const Center(
         child: Padding(
           padding: EdgeInsets.all(24),
@@ -208,19 +160,22 @@ class _FilesTabState extends State<FilesTab> {
         ),
       );
     }
-    final rows = _flatten(_root!, 0);
+    final root = widget.appState.fileTreeFor(wsId);
+    if (root == null) {
+      return const Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 12),
+            Text('Loading workspace…'),
+          ],
+        ),
+      );
+    }
+    final rows = _flatten(root, 0);
     return RefreshIndicator(
-      onRefresh: () async {
-        // Drop all caches and re-expand the root.
-        setState(() {
-          _root = _Node(
-            path: _root!.path,
-            name: _root!.name,
-            isDir: true,
-          );
-        });
-        await _toggle(_root!);
-      },
+      onRefresh: () => widget.appState.refreshFileTree(wsId),
       child: ListView(children: rows),
     );
   }

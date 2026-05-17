@@ -1,19 +1,30 @@
 // SSH-bootstrap UI: collect credentials, stream install.sh, surface stderr
 // live, hand the parsed {host, port, token} off to the settings store.
+//
+// The final BootstrapSuccess/BootstrapFailure is stored on AppState so it
+// survives a screen rebuild — see docs/conventions.md §2 (Single source of
+// truth). The streaming status + log lines remain widget-local because they
+// are mid-execution UI state attached to one specific install run.
 
 import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../app_state.dart';
 import '../services/ssh_bootstrap.dart';
 import '../settings_store.dart';
 
 enum _AuthMode { password, key }
 
 class SshBootstrapScreen extends StatefulWidget {
+  final AppState appState;
   final Future<void> Function(Settings) onSettingsSaved;
-  const SshBootstrapScreen({super.key, required this.onSettingsSaved});
+  const SshBootstrapScreen({
+    super.key,
+    required this.appState,
+    required this.onSettingsSaved,
+  });
 
   @override
   State<SshBootstrapScreen> createState() => _SshBootstrapScreenState();
@@ -35,13 +46,18 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
   bool _running = false;
   String _status = '';
   final List<String> _log = [];
-  BootstrapSuccess? _success;
-  BootstrapFailure? _failure;
   StreamSubscription<BootstrapEvent>? _sub;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.appState.addListener(_onAppStateChanged);
+  }
 
   @override
   void dispose() {
     _sub?.cancel();
+    widget.appState.removeListener(_onAppStateChanged);
     _hostCtrl.dispose();
     _portCtrl.dispose();
     _userCtrl.dispose();
@@ -53,15 +69,18 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
     super.dispose();
   }
 
+  void _onAppStateChanged() {
+    if (mounted) setState(() {});
+  }
+
   Future<void> _start() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() {
       _running = true;
       _log.clear();
       _status = 'Starting…';
-      _success = null;
-      _failure = null;
     });
+    widget.appState.setBootstrapResult();
 
     final auth = _authMode == _AuthMode.password
         ? SshPasswordAuth(_passwordCtrl.text)
@@ -83,22 +102,24 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
 
     _sub = stream.listen((event) {
       if (!mounted) return;
-      setState(() {
-        switch (event) {
-          case BootstrapStatus(:final message):
-            _status = message;
-          case BootstrapLog(:final line):
-            _log.add(line);
-          case BootstrapSuccess():
-            _success = event;
+      switch (event) {
+        case BootstrapStatus(:final message):
+          setState(() => _status = message);
+        case BootstrapLog(:final line):
+          setState(() => _log.add(line));
+        case BootstrapSuccess():
+          widget.appState.setBootstrapResult(success: event);
+          setState(() {
             _status = 'Success';
             _running = false;
-          case BootstrapFailure():
-            _failure = event;
+          });
+        case BootstrapFailure():
+          widget.appState.setBootstrapResult(failure: event);
+          setState(() {
             _status = 'Failed';
             _running = false;
-        }
-      });
+          });
+      }
       _autoScroll();
     }, onDone: () {
       if (!mounted) return;
@@ -114,22 +135,25 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
   }
 
   Future<void> _saveAndSwitch() async {
-    final s = _success!;
+    final s = widget.appState.lastBootstrapSuccess;
+    if (s == null) return;
     final settings = Settings(
       host: _hostCtrl.text.trim(),
       port: s.port,
       token: s.token,
     );
+    final navigator = Navigator.of(context);
     await widget.onSettingsSaved(settings);
     if (!mounted) return;
-    Navigator.of(context).pop(settings);
+    navigator.pop(settings);
   }
 
   void _copyLog() {
+    final failure = widget.appState.lastBootstrapFailure;
     final lines = [
       'Status: $_status',
-      if (_failure != null) 'Exit code: ${_failure!.exitCode}',
-      if (_failure != null) 'Reason: ${_failure!.reason}',
+      if (failure != null) 'Exit code: ${failure.exitCode}',
+      if (failure != null) 'Reason: ${failure.reason}',
       '',
       ..._log,
     ];
@@ -141,6 +165,8 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final success = widget.appState.lastBootstrapSuccess;
+    final failure = widget.appState.lastBootstrapFailure;
     return Scaffold(
       appBar: AppBar(title: const Text('Install backend via SSH')),
       body: SingleChildScrollView(
@@ -159,13 +185,13 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
               ),
               const SizedBox(height: 16),
               if (_status.isNotEmpty || _log.isNotEmpty) _progressBlock(),
-              if (_success != null) ...[
+              if (success != null) ...[
                 const SizedBox(height: 16),
-                _successCard(),
+                _successCard(success),
               ],
-              if (_failure != null) ...[
+              if (failure != null) ...[
                 const SizedBox(height: 16),
-                _failureCard(),
+                _failureCard(failure),
               ],
             ],
           ),
@@ -334,8 +360,7 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
     );
   }
 
-  Widget _successCard() {
-    final s = _success!;
+  Widget _successCard(BootstrapSuccess s) {
     return Card(
       color: Theme.of(context).colorScheme.primaryContainer,
       child: Padding(
@@ -364,8 +389,7 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
     );
   }
 
-  Widget _failureCard() {
-    final f = _failure!;
+  Widget _failureCard(BootstrapFailure f) {
     return Card(
       color: Theme.of(context).colorScheme.errorContainer,
       child: Padding(

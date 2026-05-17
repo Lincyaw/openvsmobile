@@ -1,8 +1,11 @@
 // Central reactive state for the app.
 //
-// One [BackendClient], one mirror of the backend's workspace registry, plus
-// per-PTY-session byte buffers so background-workspace terminals keep
-// accruing output while we're focused elsewhere.
+// Every piece of server-derived state lives here: workspaces, terminals,
+// per-PTY byte buffers, the file tree per workspace, the workspace picker's
+// current directory + entries, the SSH bootstrap result, and a mirror of
+// the BackendClient's connection state. Widgets read from AppState; they do
+// not read BackendClient directly. See docs/conventions.md §2 "Single source
+// of truth: AppState".
 //
 // Session persistence (see docs/design/mobile-code-platform.md §5.1):
 // backend PTYs survive client disconnects. On reconnect we fetch each live
@@ -19,19 +22,23 @@ import 'package:xterm/xterm.dart';
 
 import 'backend_client.dart';
 import 'models.dart';
+import 'services/ssh_bootstrap.dart';
 
 class AppState extends ChangeNotifier {
   final BackendClient client;
   StreamSubscription<BackendNotification>? _notifSub;
 
+  // ---- Workspace + recents ----
   List<Workspace> _active = const [];
   List<String> _recents = const [];
   Workspace? _current;
 
+  // ---- Terminals ----
   // Per-workspace terminal session lists (mirror of the backend state).
   final Map<String, List<TerminalSession>> _termsByWorkspace = {};
 
-  // Per-session focused terminal session id within a workspace (UI state).
+  // Per-workspace focused session id (UI state — but workspace-scoped, so it
+  // belongs here rather than in widget state).
   final Map<String, String?> _focusedTermBySpace = {};
 
   // Live xterm Terminal objects keyed by sessionId. We create one lazily on
@@ -59,8 +66,28 @@ class AppState extends ChangeNotifier {
   final Map<String, List<_BacklogChunk>> _backlog = {};
   final Map<String, int> _backlogBytes = {};
 
+  // ---- File tree (per workspace) ----
+  final Map<String, FileTreeNode> _fileTreeByWorkspace = {};
+
+  // ---- Workspace picker (ephemeral) ----
+  PickerState? _pickerState;
+
+  // ---- SSH bootstrap result (survives screen rebuild) ----
+  BootstrapSuccess? _lastBootstrapSuccess;
+  BootstrapFailure? _lastBootstrapFailure;
+
+  // ---- Connection state mirror ----
+  BackendConnectionState _connectionState = BackendConnectionState.disconnected;
+  String? _lastConnectionError;
+
+  // ---- Last operation error (surfaced via SnackBar by the calling screen) ----
+  String? _lastOperationError;
+
   AppState({required this.client}) {
+    _connectionState = client.state.value;
+    _lastConnectionError = client.lastError.value;
     client.state.addListener(_onConnState);
+    client.lastError.addListener(_onConnError);
     _notifSub = client.notifications.listen(_onNotification);
   }
 
@@ -73,8 +100,8 @@ class AppState extends ChangeNotifier {
   /// Backend-reported $HOME (or "/" on older backends). The picker starts
   /// here instead of the phone's $HOME, which has no meaning to the backend.
   String get backendDefaultCwd {
-    final c = client.defaultCwd;
-    return c.isEmpty ? '/' : c;
+    final cwd = client.defaultCwd;
+    return cwd.isEmpty ? '/' : cwd;
   }
 
   /// Terminal sessions belonging to the currently-focused workspace.
@@ -104,6 +131,31 @@ class AppState extends ChangeNotifier {
     // Flush any backlog that accumulated before the Terminal existed.
     _flushBacklog(sessionId, t);
     return t;
+  }
+
+  /// File tree root for [workspaceId], or null if no workspace is open or the
+  /// tree hasn't been initialized yet. Screens call [refreshFileTree] to
+  /// (re)build it.
+  FileTreeNode? fileTreeFor(String workspaceId) =>
+      _fileTreeByWorkspace[workspaceId];
+
+  PickerState? get pickerState => _pickerState;
+
+  BootstrapSuccess? get lastBootstrapSuccess => _lastBootstrapSuccess;
+  BootstrapFailure? get lastBootstrapFailure => _lastBootstrapFailure;
+
+  BackendConnectionState get connectionState => _connectionState;
+  String? get lastConnectionError => _lastConnectionError;
+
+  /// Last error surfaced from a user-initiated operation (openWorkspace,
+  /// createTerminal, etc.). Cleared by [clearLastOperationError] once the UI
+  /// has displayed it.
+  String? get lastOperationError => _lastOperationError;
+
+  void clearLastOperationError() {
+    if (_lastOperationError == null) return;
+    _lastOperationError = null;
+    notifyListeners();
   }
 
   Terminal _buildTerminal(String sessionId) {
@@ -155,16 +207,19 @@ class AppState extends ChangeNotifier {
 
   void _onConnState() {
     final s = client.state.value;
+    _connectionState = s;
     if (s == BackendConnectionState.connected) {
       // Re-fetch workspace + terminal state. With persistent backend state
       // the workspaces and sessions are still there; refreshWorkspaces will
       // replay each session's scrollback so the UI shows continuity.
       unawaited(refreshWorkspaces());
+      notifyListeners();
       return;
     }
     if (s == BackendConnectionState.connecting) {
       // First connect (no prior session). Nothing to clear yet — the
       // upcoming `connected` transition will populate fresh.
+      notifyListeners();
       return;
     }
     // Any non-connected, non-initial state: the client's view of sessionIds
@@ -182,19 +237,25 @@ class AppState extends ChangeNotifier {
     _lastWrittenSeq.clear();
     _backlog.clear();
     _backlogBytes.clear();
+    _fileTreeByWorkspace.clear();
     // Keep recents — they're useful when reconnecting.
+    notifyListeners();
+  }
+
+  void _onConnError() {
+    _lastConnectionError = client.lastError.value;
     notifyListeners();
   }
 
   Future<void> _onNotification(BackendNotification n) async {
     switch (n.method) {
-      case 'terminal.data':
+      case BackendNotifications.terminalData:
         _onTerminalData(n.params as Map<String, dynamic>);
         break;
-      case 'terminal.exit':
+      case BackendNotifications.terminalExit:
         await _onTerminalExit(n.params as Map<String, dynamic>);
         break;
-      case 'workspace.closed':
+      case BackendNotifications.workspaceClosed:
         final id = (n.params as Map<String, dynamic>)['id'] as String;
         _onWorkspaceClosed(id);
         break;
@@ -288,6 +349,7 @@ class AppState extends ChangeNotifier {
     _active = _active.where((w) => w.id != id).toList();
     final sessions = _termsByWorkspace.remove(id) ?? const [];
     _focusedTermBySpace.remove(id);
+    _fileTreeByWorkspace.remove(id);
     // Tear down any per-session local state that was tied to this workspace.
     for (final s in sessions) {
       _xterms.remove(s.id);
@@ -348,8 +410,11 @@ class AppState extends ChangeNotifier {
         }
       }
       notifyListeners();
-    } catch (_) {
+    } catch (e) {
       // Connection probably went away mid-call; _onConnState handles cleanup.
+      // Log so a developer running flutter run sees this — production users
+      // will just see "Connecting…" until the socket comes back.
+      debugPrint('AppState.refreshWorkspaces failed: $e');
     }
   }
 
@@ -385,6 +450,10 @@ class AppState extends ChangeNotifier {
     _flushBacklog(sessionId, term);
   }
 
+  /// Open or focus a workspace rooted at [root]. Returns the resulting
+  /// workspace on success. On failure, stores the error in
+  /// [lastOperationError] and returns null — the caller surfaces it via
+  /// SnackBar.
   Future<Workspace?> openWorkspace(String root) async {
     try {
       final r = await client.call('workspace.open', {'root': root})
@@ -395,14 +464,12 @@ class AppState extends ChangeNotifier {
       }
       _termsByWorkspace.putIfAbsent(ws.id, () => []);
       _current = ws;
-      if (!_recents.contains(root)) {
-        _recents = [root, ..._recents];
-      } else {
-        _recents = [root, ..._recents.where((r) => r != root)];
-      }
+      _recents = [root, ..._recents.where((r) => r != root)];
       notifyListeners();
       return ws;
     } catch (e) {
+      _lastOperationError = 'Failed to open $root: $e';
+      notifyListeners();
       return null;
     }
   }
@@ -413,7 +480,11 @@ class AppState extends ChangeNotifier {
           as Map<String, dynamic>;
       _current = Workspace.fromJson(r['workspace'] as Map<String, dynamic>);
       notifyListeners();
-    } catch (_) {
+    } catch (e) {
+      // Stale id, most likely — refresh and let the UI catch up. Stash the
+      // reason so the user sees *something* instead of a silent no-op.
+      _lastOperationError = 'Could not activate workspace: $e';
+      notifyListeners();
       await refreshWorkspaces();
     }
   }
@@ -422,7 +493,9 @@ class AppState extends ChangeNotifier {
     try {
       await client.call('workspace.close', {'id': id});
       // The backend echoes workspace.closed; _onWorkspaceClosed updates state.
-    } catch (_) {
+    } catch (e) {
+      _lastOperationError = 'Could not close workspace: $e';
+      notifyListeners();
       await refreshWorkspaces();
     }
   }
@@ -455,7 +528,9 @@ class AppState extends ChangeNotifier {
       _lastWrittenSeq[sid] = 0;
       notifyListeners();
       return session;
-    } catch (_) {
+    } catch (e) {
+      _lastOperationError = 'Could not create terminal: $e';
+      notifyListeners();
       return null;
     }
   }
@@ -464,15 +539,117 @@ class AppState extends ChangeNotifier {
     try {
       await client.call('terminal.dispose', {'sessionId': sessionId});
       // terminal.exit notification will arrive and trigger cleanup.
-    } catch (_) {
-      // Already gone; ignore.
+    } catch (e) {
+      // If the session was already gone, the user sees nothing — they
+      // intended to close it and it's closed. Only surface if it looks like
+      // a real failure (anything other than not-found).
+      debugPrint('AppState.disposeTerminal($sessionId) failed: $e');
     }
   }
 
   void focusTerminal(String sessionId) {
+    // Capture the current workspace once: this method runs synchronously,
+    // but capturing makes the intent obvious and matches the discipline
+    // we apply in the async paths.
     final w = _current;
     if (w == null) return;
     _focusedTermBySpace[w.id] = sessionId;
+    notifyListeners();
+  }
+
+  // ---- File tree (per workspace) ----
+
+  /// Discard the cached tree for [workspaceId] and re-fetch the root's
+  /// children. Used by the Files tab's pull-to-refresh.
+  Future<void> refreshFileTree(String workspaceId) async {
+    final ws = _active.firstWhere(
+      (w) => w.id == workspaceId,
+      orElse: () => throw StateError('no such workspace: $workspaceId'),
+    );
+    final root = FileTreeNode(path: ws.root, name: ws.label, isDir: true);
+    _fileTreeByWorkspace[workspaceId] = root;
+    notifyListeners();
+    await toggleFileTreeNode(workspaceId, root);
+  }
+
+  /// Expand or collapse [node] within [workspaceId]'s tree. On first expand
+  /// fetches children lazily. Mutates the node in place and notifies.
+  Future<void> toggleFileTreeNode(String workspaceId, FileTreeNode node) async {
+    if (!node.isDir) return;
+    if (node.expanded) {
+      node.expanded = false;
+      notifyListeners();
+      return;
+    }
+    if (node.children != null) {
+      node.expanded = true;
+      notifyListeners();
+      return;
+    }
+    node.loading = true;
+    node.error = null;
+    notifyListeners();
+    try {
+      final entries = await listDir(path: node.path, workspaceId: workspaceId);
+      node.children = entries
+          .map((e) => FileTreeNode(
+                path: _joinPath(node.path, e.name),
+                name: e.name,
+                isDir: e.isDir,
+              ))
+          .toList();
+      node.expanded = true;
+    } catch (e) {
+      node.error = e.toString();
+    } finally {
+      node.loading = false;
+      notifyListeners();
+    }
+  }
+
+  String _joinPath(String dir, String name) =>
+      dir.endsWith('/') ? '$dir$name' : '$dir/$name';
+
+  // ---- Workspace picker ----
+
+  /// Initialize the picker at [path] (or the backend's $HOME if null). Idempotent.
+  Future<void> openPicker({String? path}) async {
+    final start = path ?? backendDefaultCwd;
+    _pickerState = PickerState(path: start, loading: true);
+    notifyListeners();
+    await navigatePicker(start);
+  }
+
+  /// Move the picker to [path], fetching entries. Mutates [pickerState].
+  Future<void> navigatePicker(String path) async {
+    _pickerState = PickerState(path: path, loading: true);
+    notifyListeners();
+    try {
+      final entries = await pickerListDir(path);
+      _pickerState = PickerState(path: path, entries: entries);
+    } catch (e) {
+      _pickerState = PickerState(path: path, error: e.toString());
+    }
+    notifyListeners();
+  }
+
+  /// Discard the picker state. Called when the screen pops.
+  void closePicker() {
+    if (_pickerState == null) return;
+    _pickerState = null;
+    notifyListeners();
+  }
+
+  // ---- SSH bootstrap result ----
+
+  /// Replace the last bootstrap result. Either success XOR failure is set at
+  /// any given moment; passing both null clears the slot.
+  void setBootstrapResult({
+    BootstrapSuccess? success,
+    BootstrapFailure? failure,
+  }) {
+    _lastBootstrapSuccess = success;
+    _lastBootstrapFailure = failure;
     notifyListeners();
   }
 
@@ -521,6 +698,7 @@ class AppState extends ChangeNotifier {
   @override
   void dispose() {
     client.state.removeListener(_onConnState);
+    client.lastError.removeListener(_onConnError);
     _notifSub?.cancel();
     super.dispose();
   }

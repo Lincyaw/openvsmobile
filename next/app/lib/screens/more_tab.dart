@@ -3,15 +3,18 @@
 
 import 'package:flutter/material.dart';
 
+import '../app_state.dart';
 import '../settings_store.dart';
 import 'settings_screen.dart';
 import 'ssh_bootstrap_screen.dart';
 
 class MoreTab extends StatelessWidget {
+  final AppState appState;
   final Settings currentSettings;
   final Future<void> Function(Settings) onSettingsSaved;
   const MoreTab({
     super.key,
+    required this.appState,
     required this.currentSettings,
     required this.onSettingsSaved,
   });
@@ -31,6 +34,7 @@ class MoreTab extends StatelessWidget {
             Navigator.of(context).push(
               MaterialPageRoute<Settings>(
                 builder: (_) => SshBootstrapScreen(
+                  appState: appState,
                   onSettingsSaved: onSettingsSaved,
                 ),
               ),

@@ -338,9 +338,9 @@ class _KeyBtn extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final padding = const EdgeInsets.symmetric(horizontal: 12);
-    final minSize = const Size(40, 36);
-    final density = VisualDensity.compact;
+    const padding = EdgeInsets.symmetric(horizontal: 12);
+    const minSize = Size(40, 36);
+    const density = VisualDensity.compact;
     final text = Text(label, style: const TextStyle(fontSize: 13));
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 3),

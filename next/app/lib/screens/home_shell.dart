@@ -38,18 +38,25 @@ class _HomeShellState extends State<HomeShell> {
   @override
   void initState() {
     super.initState();
-    widget.appState.addListener(_rebuild);
-    widget.appState.client.state.addListener(_rebuild);
+    widget.appState.addListener(_onAppStateChanged);
   }
 
   @override
   void dispose() {
-    widget.appState.removeListener(_rebuild);
-    widget.appState.client.state.removeListener(_rebuild);
+    widget.appState.removeListener(_onAppStateChanged);
     super.dispose();
   }
 
-  void _rebuild() => setState(() {});
+  void _onAppStateChanged() {
+    final err = widget.appState.lastOperationError;
+    if (err != null && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(err)),
+      );
+      widget.appState.clearLastOperationError();
+    }
+    setState(() {});
+  }
 
   Future<void> _openSwitcher() async {
     await showModalBottomSheet<void>(
@@ -60,7 +67,7 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   Future<void> _openSettings() async {
-    final fresh = await Navigator.of(context).push<Settings>(
+    await Navigator.of(context).push<Settings>(
       MaterialPageRoute(
         builder: (_) => SettingsScreen(
           initial: widget.currentSettings,
@@ -68,16 +75,14 @@ class _HomeShellState extends State<HomeShell> {
         ),
       ),
     );
-    if (fresh != null && mounted) {
-      // Caller's onSettingsSaved already persisted + triggered reconnect;
-      // nothing more to do.
-    }
+    // The settings screen returned. Persisting + reconnecting happens inside
+    // onSave; nothing more to do here.
   }
 
   @override
   Widget build(BuildContext context) {
     final cur = widget.appState.currentWorkspace;
-    final connState = widget.appState.client.state.value;
+    final connState = widget.appState.connectionState;
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
@@ -115,7 +120,7 @@ class _HomeShellState extends State<HomeShell> {
         children: [
           _ConnectionBanner(
             state: connState,
-            client: widget.appState.client,
+            lastError: widget.appState.lastConnectionError,
             onOpenSettings: _openSettings,
           ),
           Expanded(
@@ -125,6 +130,7 @@ class _HomeShellState extends State<HomeShell> {
                 FilesTab(appState: widget.appState),
                 TerminalTab(appState: widget.appState),
                 MoreTab(
+                  appState: widget.appState,
                   currentSettings: widget.currentSettings,
                   onSettingsSaved: widget.onSettingsSaved,
                 ),
@@ -167,11 +173,11 @@ class _HomeShellState extends State<HomeShell> {
 ///     shortcut so the user can fix the only thing that actually broke.
 class _ConnectionBanner extends StatefulWidget {
   final BackendConnectionState state;
-  final BackendClient client;
+  final String? lastError;
   final VoidCallback onOpenSettings;
   const _ConnectionBanner({
     required this.state,
-    required this.client,
+    required this.lastError,
     required this.onOpenSettings,
   });
 
@@ -244,7 +250,7 @@ class _ConnectionBannerState extends State<_ConnectionBanner> {
           children: [
             Expanded(
               child: Text(
-                widget.client.lastError.value ?? 'Connection failed.',
+                widget.lastError ?? 'Connection failed.',
                 style: TextStyle(color: theme.colorScheme.onErrorContainer),
               ),
             ),
@@ -327,6 +333,7 @@ class _WorkspaceSwitcherSheet extends StatelessWidget {
     final recentsOnly =
         appState.recentRoots.where((r) => !activeRoots.contains(r)).toList();
     final cur = appState.currentWorkspace;
+    final theme = Theme.of(context);
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 8),
@@ -359,7 +366,7 @@ class _WorkspaceSwitcherSheet extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                 ),
                 trailing: cur?.id == w.id
-                    ? const Icon(Icons.check, color: Colors.green)
+                    ? Icon(Icons.check, color: theme.colorScheme.primary)
                     : null,
                 enabled: cur?.id != w.id,
                 onTap: () async {
@@ -387,10 +394,7 @@ class _WorkspaceSwitcherSheet extends StatelessWidget {
             for (final r in recentsOnly)
               ListTile(
                 leading: const Icon(Icons.history),
-                title: Text(r.split('/').isNotEmpty
-                    ? r.split('/').lastWhere((s) => s.isNotEmpty,
-                        orElse: () => r)
-                    : r),
+                title: Text(_recentLabel(r)),
                 subtitle: Text(
                   r,
                   maxLines: 1,
@@ -420,5 +424,13 @@ class _WorkspaceSwitcherSheet extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// Last non-empty path segment, falling back to the full path for roots.
+  String _recentLabel(String path) {
+    for (final segment in path.split('/').reversed) {
+      if (segment.isNotEmpty) return segment;
+    }
+    return path;
   }
 }

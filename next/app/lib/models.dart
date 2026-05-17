@@ -57,6 +57,63 @@ class FileContent {
   const FileContent({required this.bytes, required this.isBinary});
 }
 
+/// A node in the per-workspace file tree. Lives in AppState rather than
+/// widget state so the tree (expansion + cached children) survives a tab
+/// switch or a screen rebuild — see docs/conventions.md §2 "Single source
+/// of truth: AppState".
+class FileTreeNode {
+  final String path;
+  final String name;
+  final bool isDir;
+  bool expanded;
+  bool loading;
+  String? error;
+  List<FileTreeNode>? children;
+
+  FileTreeNode({
+    required this.path,
+    required this.name,
+    required this.isDir,
+    this.expanded = false,
+    this.loading = false,
+    this.error,
+    this.children,
+  });
+}
+
+/// State of the step-by-step workspace picker. Holds the current directory,
+/// the entries that path yielded, plus loading/error flags. Cleared when the
+/// picker closes; not persisted.
+class PickerState {
+  final String path;
+  final List<DirEntry>? entries;
+  final bool loading;
+  final String? error;
+
+  const PickerState({
+    required this.path,
+    this.entries,
+    this.loading = false,
+    this.error,
+  });
+
+  PickerState copyWith({
+    String? path,
+    Object? entries = _noChange,
+    bool? loading,
+    Object? error = _noChange,
+  }) {
+    return PickerState(
+      path: path ?? this.path,
+      entries: entries == _noChange ? this.entries : entries as List<DirEntry>?,
+      loading: loading ?? this.loading,
+      error: error == _noChange ? this.error : error as String?,
+    );
+  }
+}
+
+const Object _noChange = Object();
+
 class TerminalSession {
   final String id;
   final String workspaceId;
