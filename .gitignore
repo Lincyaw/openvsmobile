@@ -19,3 +19,6 @@ Thumbs.db
 
 # Local runtime artifacts
 .worktrees/
+
+# Claude Code agent worktrees + state
+.claude/
