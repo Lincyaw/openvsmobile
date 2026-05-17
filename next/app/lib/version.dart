@@ -3,4 +3,4 @@
 //
 // Local debug builds use this value as-is.
 // Release builds via .github/workflows/release.yml substitute it from the v* tag.
-const String kBackendVersion = '0.1.6';
+const String kBackendVersion = '0.1.7';
