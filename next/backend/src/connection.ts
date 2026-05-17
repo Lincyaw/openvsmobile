@@ -63,6 +63,7 @@ export class Connection implements Subscriber {
       state: this.state,
       expectedToken: this.expectedToken,
       serverVersion: this.serverVersion,
+      ws: this.ws,
       markAuthenticated: () => {
         if (this.authed) return;
         this.authed = true;

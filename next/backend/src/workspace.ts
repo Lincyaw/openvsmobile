@@ -18,14 +18,27 @@ import {
   type TerminalDataSink,
   type TerminalExitSink,
 } from "./terminal.js";
+import { WorkspaceModel } from "./workspaceModel.js";
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024; // 2 MiB hard cap on fs.readFile.
 
-export interface DirEntry {
+/// The "version" field returned by fs.listDir when no workspace is in scope
+/// (i.e. picker mode). The protocol carries it so the client can detect "the
+/// listDir result was already stale before I got it" — but the picker has no
+/// model, so it has no version either.
+const PICKER_VERSION = 0;
+
+export interface TreeEntry {
   name: string;
-  type: "file" | "dir";
+  kind: "file" | "dir" | "symlink";
   size?: number;
-  mtime?: number;
+  symlinkTarget?: string;
+  /// Legacy alias for `kind` — older clients (pre-PR-B Flutter) consume
+  /// `type` and only know "file" / "dir". We emit both during the migration
+  /// window so the existing app build keeps working; new code reads `kind`.
+  /// Symlinks surface as `type: "file"` for the legacy reader (it has no
+  /// concept of click-through), matching the old behavior.
+  type: "file" | "dir";
 }
 
 export interface WorkspaceInfo {
@@ -41,6 +54,10 @@ export class ActiveWorkspace {
   public readonly label: string;
   public readonly createdAt: number;
   public readonly terminals: TerminalRegistry;
+  /// Resident workspace model: file tree decorations, HEAD info, journal,
+  /// subscribers. Created in `init()` so the constructor stays synchronous
+  /// (the registry awaits init before exposing the workspace).
+  public model: WorkspaceModel | null = null;
 
   constructor(root: string, onData: TerminalDataSink, onExit: TerminalExitSink) {
     this.id = randomUUID();
@@ -48,6 +65,17 @@ export class ActiveWorkspace {
     this.label = basename(root) || root;
     this.createdAt = Date.now();
     this.terminals = new TerminalRegistry(onData, onExit);
+  }
+
+  /// Construct + start the resident model. Separated from the constructor
+  /// because watcher install + initial `git status` are both async.
+  public async initModel(onInvalidate?: () => void): Promise<void> {
+    this.model = new WorkspaceModel({
+      workspaceId: this.id,
+      root: this.root,
+      ...(onInvalidate !== undefined ? { onInvalidate } : {}),
+    });
+    await this.model.init();
   }
 
   public info(): WorkspaceInfo {
@@ -71,6 +99,13 @@ export class ActiveWorkspace {
 
   public dispose(): void {
     this.terminals.disposeAll();
+    if (this.model !== null) {
+      // Best-effort: chokidar close is async but workspace teardown is sync
+      // in the registry. We fire-and-forget; nothing else holds a reference
+      // to the watcher after this point.
+      void this.model.dispose();
+      this.model = null;
+    }
   }
 }
 
@@ -78,12 +113,23 @@ export class WorkspaceRegistry {
   private readonly active = new Map<string, ActiveWorkspace>();
   private currentId: string | null = null;
   private recents: string[];
+  /// Fired by each workspace's resident model when its diff cache entries
+  /// must be invalidated (head.changed / tree.delta). Configured via
+  /// `setInvalidateHook` so ProcessState can wire ProcessState.diffCache in
+  /// without WorkspaceRegistry depending on ProcessState.
+  private invalidateHook: ((workspaceId: string) => void) | null = null;
 
   constructor(
     private readonly onTerminalData: TerminalDataSink,
     private readonly onTerminalExit: TerminalExitSink,
   ) {
     this.recents = loadRecents();
+  }
+
+  /// Wire the per-workspace invalidate callback. Called once at boot from
+  /// ProcessState; the hook is fired by each ActiveWorkspace's model.
+  public setInvalidateHook(hook: (workspaceId: string) => void): void {
+    this.invalidateHook = hook;
   }
 
   public listActive(): WorkspaceInfo[] {
@@ -113,6 +159,16 @@ export class WorkspaceRegistry {
   ): Promise<ActiveWorkspace> {
     const root = await validatedRoot(rawRoot);
     const ws = new ActiveWorkspace(root, this.onTerminalData, this.onTerminalExit);
+    // initModel installs watchers + runs initial git status. We await before
+    // publishing the workspace so a `workspace.subscribe` immediately after
+    // `workspace.open` sees a populated model — not "no such workspace" or a
+    // half-initialized state with version 0.
+    const hook = this.invalidateHook;
+    if (hook !== null) {
+      await ws.initModel(() => hook(ws.id));
+    } else {
+      await ws.initModel();
+    }
     this.active.set(ws.id, ws);
     const activate = options.activate ?? true;
     if (activate) {
@@ -258,7 +314,7 @@ async function resolveCallerPath(
 export async function listDirAt(
   rawPath: unknown,
   scope: ActiveWorkspace | null,
-): Promise<{ resolved: string; entries: DirEntry[] }> {
+): Promise<{ resolved: string; entries: TreeEntry[]; version: number }> {
   const target = await resolveCallerPath(rawPath, scope);
   let dirents;
   try {
@@ -269,38 +325,65 @@ export async function listDirAt(
       `cannot read directory ${target}: ${(err as Error).message}`,
     );
   }
-  const entries: DirEntry[] = [];
+  const entries: TreeEntry[] = [];
   for (const d of dirents) {
-    // Symlinks / sockets / fifos surface as "file" so the picker still
-    // shows them but doesn't pretend they can be drilled into.
-    const type: "file" | "dir" = d.isDirectory() ? "dir" : "file";
-    const entry: DirEntry = { name: d.name, type };
-    if (type === "file") {
+    const isSymlink = d.isSymbolicLink();
+    const kind: TreeEntry["kind"] = isSymlink
+      ? "symlink"
+      : d.isDirectory()
+        ? "dir"
+        : "file";
+    const entry: TreeEntry = {
+      name: d.name,
+      kind,
+      type: kind === "dir" ? "dir" : "file",
+    };
+    const absChild = resolve(target, d.name);
+    if (kind === "file") {
       try {
-        const st = await fs.stat(resolve(target, d.name));
+        const st = await fs.stat(absChild);
         entry.size = st.size;
-        entry.mtime = st.mtimeMs;
       } catch {
         // Ignore stat failures — we still return the name.
+      }
+    } else if (kind === "symlink") {
+      try {
+        entry.symlinkTarget = await fs.readlink(absChild);
+      } catch {
+        // Broken / unreadable symlink — name only.
       }
     }
     entries.push(entry);
   }
   entries.sort((a, b) => {
-    if (a.type !== b.type) return a.type === "dir" ? -1 : 1;
+    // Directories first, then symlinks, then files. Matches what users expect
+    // and what the previous shape produced.
+    if (a.kind !== b.kind) {
+      const order = (k: TreeEntry["kind"]): number =>
+        k === "dir" ? 0 : k === "symlink" ? 1 : 2;
+      return order(a.kind) - order(b.kind);
+    }
     return a.name.localeCompare(b.name);
   });
-  return { resolved: target, entries };
+  const version = scope !== null && scope.model !== null
+    ? scope.model.currentVersion()
+    : PICKER_VERSION;
+  return { resolved: target, entries, version };
 }
 
 export async function readFileAt(
   rawPath: unknown,
   scope: ActiveWorkspace,
-): Promise<{
-  resolved: string;
-  contentBase64: string;
-  encoding: "utf8" | "binary";
-}> {
+  ifEtag?: string,
+): Promise<
+  | { resolved: string; etag: string; notModified: true }
+  | {
+      resolved: string;
+      etag: string;
+      contentBase64: string;
+      encoding: "utf8" | "binary";
+    }
+> {
   // Order matters: scope check happens INSIDE resolveCallerPath, before
   // we stat/read. Doing IO first would (a) waste cycles on doomed reads
   // and (b) leak the difference between "outside workspace" and
@@ -318,6 +401,12 @@ export async function readFileAt(
   if (!stat.isFile()) {
     throw new RpcError(RPC_ERR.invalidParams, `${target} is not a regular file`);
   }
+  // ETag is `${mtime}-${size}`; we floor mtimeMs to integer because client
+  // ETags round-trip through JSON as numbers without sub-millisecond fidelity.
+  const etag = `${Math.floor(stat.mtimeMs)}-${stat.size}`;
+  if (ifEtag !== undefined && ifEtag === etag) {
+    return { resolved: target, etag, notModified: true };
+  }
   if (stat.size > MAX_FILE_BYTES) {
     throw new RpcError(
       RPC_ERR.invalidParams,
@@ -327,7 +416,12 @@ export async function readFileAt(
   }
   const buf = await fs.readFile(target);
   const encoding = isLikelyBinary(buf) ? "binary" : "utf8";
-  return { resolved: target, contentBase64: buf.toString("base64"), encoding };
+  return {
+    resolved: target,
+    etag,
+    contentBase64: buf.toString("base64"),
+    encoding,
+  };
 }
 
 // Cheap heuristic: a NUL in the first 8 KiB ⇒ binary. Good enough to keep the

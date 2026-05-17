@@ -15,6 +15,8 @@
 import type { WebSocket } from "ws";
 import { listDirAt, readFileAt, type ActiveWorkspace } from "./workspace.js";
 import type { ProcessState } from "./state.js";
+import { diffKind, readLog, runDiff } from "./git.js";
+import { parseUnifiedDiff } from "./diffParser.js";
 
 // -------- 1. Wire types + error catalog --------
 
@@ -51,10 +53,20 @@ export const RPC_ERR = {
   methodNotFound: -32601,
   invalidParams: -32602,
   internal: -32603,
-  // Custom range
+  // Custom range (-32000 to -32099 reserved by the spec for application use)
+  /// -32001: the caller has not been granted the capability they requested.
+  /// Will fire from the plugin host when it lands; currently unused.
   capabilityDenied: -32001,
+  /// -32002: authentication has not happened yet or the token is wrong.
   unauthorized: -32002,
+  /// -32003: requested resource exists but the server is not ready to serve
+  /// it yet (e.g. workspace model still initializing). Distinct from
+  /// invalidParams so the client can choose to retry.
   notReady: -32003,
+  /// -32004: workspace has no resident model — either because the workspace
+  /// id is unknown or because model init has not completed. We use invalidParams
+  /// for the unknown case (same as other workspace lookups) and notReady for
+  /// the half-initialized case.
 } as const;
 
 export class RpcError extends Error {
@@ -225,6 +237,30 @@ function optionalBool(p: ParamBag, key: string): boolean | undefined {
   return v;
 }
 
+function optionalPositiveInt(p: ParamBag, key: string): number | undefined {
+  const v = p[key];
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 1) {
+    throw new RpcError(
+      RPC_ERR.invalidParams,
+      `${key} must be a positive int when provided`,
+    );
+  }
+  return v;
+}
+
+function optionalStringArray(p: ParamBag, key: string): string[] | undefined {
+  const v = p[key];
+  if (v === undefined || v === null) return undefined;
+  if (!Array.isArray(v) || v.some((s) => typeof s !== "string")) {
+    throw new RpcError(
+      RPC_ERR.invalidParams,
+      `${key} must be a string[] when provided`,
+    );
+  }
+  return v as string[];
+}
+
 // -------- 4. RpcContext --------
 
 /// What handlers need from the caller. Intentionally narrow: a handler can
@@ -242,6 +278,12 @@ export interface RpcContext {
   /// Mark this caller as authenticated and register it as a subscriber for
   /// future broadcast notifications.
   markAuthenticated: () => void;
+  /// The underlying WebSocket. Handler-only knowledge — the *dispatcher*
+  /// stays transport-agnostic. Workspace subscription needs to register a
+  /// per-ws subscriber against the workspace model; that's the one place a
+  /// handler legitimately needs the socket handle. Tests inject a
+  /// minimal stub.
+  ws: WebSocket;
 }
 
 const PROTOCOL_VERSION = "1.0";
@@ -300,20 +342,138 @@ methods.set("workspace.current", (ctx) => {
 methods.set("fs.listDir", async (ctx, params) => {
   const p = asBag(params);
   if (p.picker === true) {
-    const { entries } = await listDirAt(p.path, null);
-    return { entries };
+    const { entries, version } = await listDirAt(p.path, null);
+    return { entries, version };
   }
   const ws = ctx.state.workspaces.requireById(p.workspaceId);
-  const { entries } = await listDirAt(p.path, ws);
-  return { entries };
+  const { entries, version } = await listDirAt(p.path, ws);
+  return { entries, version };
 });
 
 methods.set("fs.readFile", async (ctx, params) => {
   const p = asBag(params);
   const ws = ctx.state.workspaces.requireById(p.workspaceId);
-  const { contentBase64, encoding } = await readFileAt(p.path, ws);
-  return { contentBase64, encoding };
+  const ifEtag = optionalString(p, "ifEtag");
+  const result = await readFileAt(p.path, ws, ifEtag);
+  if ("notModified" in result) {
+    return { etag: result.etag, notModified: true };
+  }
+  return {
+    etag: result.etag,
+    contentBase64: result.contentBase64,
+    encoding: result.encoding,
+  };
 });
+
+// ---- Workspace subscription + git ----
+//
+// These methods drive the workspace push surface defined in
+// docs/design/mobile-code-platform.md §4.1. The actual model + watcher logic
+// lives in workspaceModel.ts; handlers are thin glue.
+
+methods.set("workspace.subscribe", (ctx, params) => {
+  const p = asBag(params);
+  const ws = ctx.state.workspaces.requireById(p.workspaceId);
+  const model = ws.model;
+  if (model === null) {
+    throw new RpcError(
+      RPC_ERR.notReady,
+      `workspace ${ws.id} model not yet initialized`,
+    );
+  }
+  const sinceVersion = optionalNonNegativeInt(p, "sinceVersion");
+  const paths = optionalStringArray(p, "paths");
+  const result = model.subscribe(ctx.ws, {
+    ...(sinceVersion !== undefined ? { sinceVersion } : {}),
+    ...(paths !== undefined ? { paths } : {}),
+  });
+  // For snapshot mode, send the decoration snapshot on the next tick so the
+  // subscribe RESPONSE arrives first.
+  if (result.mode === "snapshot") {
+    const entries = model.buildDecorationSnapshot();
+    const version = result.baseVersion;
+    const workspaceId = ws.id;
+    const sock = ctx.ws;
+    queueMicrotask(() => {
+      sendNotification(sock, "workspace.decoration.snapshot", {
+        workspaceId,
+        entries,
+        version,
+      });
+    });
+  }
+  return result;
+});
+
+methods.set("workspace.unsubscribe", (ctx, params) => {
+  const p = asBag(params);
+  const ws = ctx.state.workspaces.requireById(p.workspaceId);
+  if (ws.model !== null) ws.model.unsubscribe(ctx.ws);
+  return {};
+});
+
+methods.set("git.diff", async (ctx, params) => {
+  const p = asBag(params);
+  const ws = ctx.state.workspaces.requireById(p.workspaceId);
+  const path = requireString(p, "path");
+  const baseSha = optionalString(p, "baseSha");
+  const workingHash = optionalString(p, "workingHash");
+  // Cache lookup. Two requests with the same key short-circuit the spawn.
+  const cacheKey = makeDiffCacheKey(ws.id, path, baseSha, workingHash);
+  const cached = ctx.state.diffCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  const kind = await diffKind(ws.root, path, baseSha);
+  let result: unknown;
+  if (kind === "binary") {
+    result = { kind: "binary", meta: { path } };
+  } else if (kind === "deleted") {
+    result = { kind: "deleted", meta: { path } };
+  } else if (kind === "absent") {
+    // No diff to compute — treat as text with zero hunks for the caller.
+    result = { kind: "text", hunks: [] };
+  } else {
+    const { stdout, tooLarge } = await runDiff(ws.root, path, baseSha);
+    if (tooLarge || stdout.length > DIFF_TEXT_LIMIT_BYTES) {
+      result = {
+        kind: "too-large",
+        meta: { path, sizeBytes: stdout.length || -1 },
+      };
+    } else {
+      result = { kind: "text", hunks: parseUnifiedDiff(stdout) };
+    }
+  }
+  ctx.state.diffCache.set(cacheKey, result);
+  return result;
+});
+
+methods.set("git.log", async (ctx, params) => {
+  const p = asBag(params);
+  const ws = ctx.state.workspaces.requireById(p.workspaceId);
+  const path = optionalString(p, "path");
+  const limit = optionalPositiveInt(p, "limit") ?? 50;
+  const beforeSha = optionalString(p, "beforeSha");
+  return readLog(ws.root, {
+    limit,
+    ...(path !== undefined ? { path } : {}),
+    ...(beforeSha !== undefined ? { beforeSha } : {}),
+  });
+});
+
+// Cap unified-diff text at 500KB. Beyond that we surface a `too-large` kind
+// rather than ship a megabyte of patch over a phone link. The cap is
+// intentionally lower than git's own maxBuffer (8 MiB) so the wire payload
+// stays bounded even when git is happy to keep going.
+const DIFF_TEXT_LIMIT_BYTES = 500 * 1024;
+
+function makeDiffCacheKey(
+  workspaceId: string,
+  path: string,
+  baseSha: string | undefined,
+  workingHash: string | undefined,
+): string {
+  return `${workspaceId} ${path} ${baseSha ?? "WT"} ${workingHash ?? ""}`;
+}
 
 // ---- Terminal ----
 

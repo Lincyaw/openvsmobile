@@ -151,8 +151,11 @@ The Android client ships its own GitHub Release on `app-v*` tags via `.github/wo
    (Release tarball build is CI's job — `pkg/build-tarball.sh` is not a local gate.)
 
 2. **Test health** — 100% pass rate on what exists.
-   Measure: `cd next/app && flutter test`
-   (Backend has no test harness yet — a known gap to fix when the v0 surface stabilizes.)
+   Measure: `cd next/app && flutter test && cd ../backend && pnpm test`
+   (Backend now has a vitest harness covering the workspace + git push
+   surface and the unified-diff parser. The terminal / PTY persistence
+   surface is still smoke-only; broaden coverage when that area sees
+   changes.)
 
 3. **Code health** — zero warnings from static analysis.
    Measure: `cd next/app && flutter analyze && cd ../backend && pnpm typecheck`
