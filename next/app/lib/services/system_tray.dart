@@ -32,6 +32,7 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -136,7 +137,7 @@ class SystemTrayController {
   /// Switched at runtime by `useFallbackIcon()` from the diagnostics
   /// screen to test whether a vector-drawable rejection is the reason
   /// posts fail silently on some OEM ROMs.
-  String _smallIcon = 'ic_notification';
+  String _smallIcon = '@mipmap/ic_launcher';
 
   String get currentIcon => _smallIcon;
   bool get isInitialized => _initialized;
@@ -170,7 +171,7 @@ class SystemTrayController {
   Future<void> _init() async {
     if (_initialized) return;
     const initSettings = InitializationSettings(
-      android: AndroidInitializationSettings('ic_notification'),
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
     );
     // The plugin throws `LateInitializationError` in environments where
     // no platform implementation is registered (widget tests, desktop
@@ -204,6 +205,7 @@ class SystemTrayController {
       _initialized = true;
       return;
     }
+    final vibrationPattern = Int64List.fromList([0, 300, 200, 300]);
     await android.createNotificationChannel(AndroidNotificationChannel(
       NotificationChannels.low,
       _channelName(NotificationChannels.low),
@@ -219,6 +221,7 @@ class SystemTrayController {
       importance: Importance.defaultImportance,
       playSound: true,
       enableVibration: true,
+      vibrationPattern: vibrationPattern,
     ));
     await android.createNotificationChannel(AndroidNotificationChannel(
       NotificationChannels.high,
@@ -227,6 +230,7 @@ class SystemTrayController {
       importance: Importance.high,
       playSound: true,
       enableVibration: true,
+      vibrationPattern: vibrationPattern,
     ));
     _log('channels created');
     _initialized = true;
@@ -245,8 +249,8 @@ class SystemTrayController {
   }
 
   void resetIcon() {
-    _smallIcon = 'ic_notification';
-    _log('icon → ic_notification');
+    _smallIcon = '@mipmap/ic_launcher';
+    _log('icon → @mipmap/ic_launcher');
   }
 
   Future<void> testShow() async {
