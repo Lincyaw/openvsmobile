@@ -1,15 +1,20 @@
-// Files tab: lazy-expand tree rooted at the current workspace's root.
-// Tapping a file opens a read-only viewer.
+// Files tab: lazy-expand tree rooted at the current workspace's root, with
+// git decorations (color + status letter) over the entries, a sticky status
+// bar at the top showing branch/ahead/behind/count, and a Changes-view
+// toggle that filters the tree to decorated paths (and their ancestors).
 //
 // The tree shape (expanded/collapsed flags + cached children) lives in
-// AppState, not widget state — see docs/conventions.md §2. This widget is
-// a near-stateless view that reacts to AppState changes and calls back
-// into AppState for expand / refresh.
+// AppState's FileTreeNode; the decoration map / branch info / Changes-view
+// toggle live in AppState's WorkspacesModel. This widget is the view layer
+// — it does not own server-derived state. See docs/conventions.md §2.
 
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
+import '../backend_client.dart';
 import '../models.dart';
+import '../state/workspace_model.dart';
+import 'diff_viewer.dart';
 import 'file_viewer.dart';
 
 class FilesTab extends StatefulWidget {
@@ -53,6 +58,20 @@ class _FilesTabState extends State<FilesTab> {
     }
   }
 
+  /// Workspace-relative path. Tree nodes carry absolute paths (rooted at
+  /// the workspace root). Returns "" for the root.
+  String _relPathFor(String absPath, String workspaceRoot) {
+    if (absPath == workspaceRoot) return '';
+    var rel = absPath;
+    if (rel.startsWith('$workspaceRoot/')) {
+      rel = rel.substring(workspaceRoot.length + 1);
+    } else if (rel.startsWith(workspaceRoot)) {
+      rel = rel.substring(workspaceRoot.length);
+      if (rel.startsWith('/')) rel = rel.substring(1);
+    }
+    return rel;
+  }
+
   Future<void> _openFile(FileTreeNode node) async {
     final ws = widget.appState.currentWorkspace;
     if (ws == null) return;
@@ -74,27 +93,86 @@ class _FilesTabState extends State<FilesTab> {
     }
   }
 
-  List<Widget> _flatten(FileTreeNode node, int depth) {
-    final out = <Widget>[_buildRow(node, depth)];
+  void _openDiff(FileTreeNode node) {
+    final ws = widget.appState.currentWorkspace;
+    if (ws == null) return;
+    final relPath = _relPathFor(node.path, ws.root);
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => DiffViewerScreen(
+          appState: widget.appState,
+          workspaceId: ws.id,
+          path: relPath,
+        ),
+      ),
+    );
+  }
+
+  /// Walk the tree, emitting one row per visible node. In Changes view, a
+  /// node is visible iff it (or any descendant) appears in the decoration
+  /// map. Directory expansion state is consulted in both modes — we never
+  /// force-expand for Changes view, but the existing expanded set survives
+  /// the toggle (it's stored on FileTreeNode, not in this widget).
+  List<Widget> _flatten(
+    FileTreeNode node,
+    int depth,
+    Workspace workspace,
+    WorkspaceState? wsState,
+    bool changesView,
+  ) {
+    final out = <Widget>[];
+    final rel = _relPathFor(node.path, workspace.root);
+    if (changesView && depth > 0) {
+      // Hide nodes with no decorated descendants. The workspace-root row is
+      // always shown so the user has a place to dock.
+      if (!_hasDecorationDescendant(rel, wsState)) {
+        return out;
+      }
+    }
+    out.add(_buildRow(node, depth, workspace, wsState));
     if (node.isDir && node.expanded && node.children != null) {
       for (final c in node.children!) {
-        out.addAll(_flatten(c, depth + 1));
+        out.addAll(_flatten(c, depth + 1, workspace, wsState, changesView));
       }
     }
     return out;
   }
 
-  Widget _buildRow(FileTreeNode node, int depth) {
+  bool _hasDecorationDescendant(String rel, WorkspaceState? wsState) {
+    if (wsState == null) return false;
+    if (rel.isEmpty) return wsState.decorationMap.isNotEmpty;
+    // Direct hit?
+    if (wsState.decorationMap.containsKey(rel)) return true;
+    // Anything under this directory?
+    return (wsState.dirRollup[rel] ?? 0) > 0;
+  }
+
+  Widget _buildRow(
+    FileTreeNode node,
+    int depth,
+    Workspace workspace,
+    WorkspaceState? wsState,
+  ) {
     final theme = Theme.of(context);
-    final wsId = _lastWorkspaceId;
+    final wsId = workspace.id;
+    final rel = _relPathFor(node.path, workspace.root);
+    final decoration = wsState == null
+        ? const WorkspaceDecorationView()
+        : WorkspaceDecorationView(
+            status: wsState.decorationMap[rel],
+            rollupCount: wsState.dirRollup[rel] ?? 0,
+          );
     return InkWell(
       onTap: () {
         if (node.isDir) {
-          if (wsId != null) {
-            widget.appState.toggleFileTreeNode(wsId, node);
-          }
+          widget.appState.toggleFileTreeNode(wsId, node);
         } else {
-          _openFile(node);
+          // In Changes view a file tap opens the diff; otherwise the viewer.
+          if (widget.appState.changesViewActive) {
+            _openDiff(node);
+          } else {
+            _openFile(node);
+          }
         }
       },
       child: Padding(
@@ -139,6 +217,7 @@ class _FilesTabState extends State<FilesTab> {
                 child: Icon(Icons.error_outline,
                     size: 16, color: theme.colorScheme.error),
               ),
+            _DecorationBadge(node: node, decoration: decoration),
           ],
         ),
       ),
@@ -148,7 +227,8 @@ class _FilesTabState extends State<FilesTab> {
   @override
   Widget build(BuildContext context) {
     final wsId = _lastWorkspaceId;
-    if (wsId == null) {
+    final cur = widget.appState.currentWorkspace;
+    if (wsId == null || cur == null) {
       return const Center(
         child: Padding(
           padding: EdgeInsets.all(24),
@@ -160,23 +240,235 @@ class _FilesTabState extends State<FilesTab> {
         ),
       );
     }
+    final wsState = widget.appState.workspaceStateFor(wsId);
+    final connState = widget.appState.connectionState;
     final root = widget.appState.fileTreeFor(wsId);
-    if (root == null) {
-      return const Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 12),
-            Text('Loading workspace…'),
-          ],
+    final changesActive = widget.appState.changesViewActive;
+    return Column(
+      children: [
+        _StatusBar(
+          appState: widget.appState,
+          workspaceState: wsState,
+          changesActive: changesActive,
+          connectionState: connState,
+        ),
+        Expanded(
+          child: root == null
+              ? const Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                      SizedBox(height: 12),
+                      Text('Loading workspace…'),
+                    ],
+                  ),
+                )
+              : RefreshIndicator(
+                  onRefresh: () => widget.appState.refreshFileTree(wsId),
+                  child: ListView(
+                    children:
+                        _flatten(root, 0, cur, wsState, changesActive),
+                  ),
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Sticky status bar: branch, ahead/behind, changed count, filter toggle,
+/// offline pill. Lives at the top of the Files tab.
+class _StatusBar extends StatelessWidget {
+  final AppState appState;
+  final WorkspaceState? workspaceState;
+  final bool changesActive;
+  final BackendConnectionState connectionState;
+  const _StatusBar({
+    required this.appState,
+    required this.workspaceState,
+    required this.changesActive,
+    required this.connectionState,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isOffline = connectionState != BackendConnectionState.connected;
+    final st = workspaceState;
+    final isGit = st != null && st.isGitRepo;
+    final changed = st?.decorationMap.length ?? 0;
+    final bodyStyle = TextStyle(
+      color: theme.colorScheme.onSurface,
+      fontSize: 12,
+    );
+    final monoStyle = TextStyle(
+      color: theme.colorScheme.onSurface,
+      fontSize: 12,
+      fontFamily: 'monospace',
+      fontWeight: FontWeight.w500,
+    );
+    return Material(
+      color: theme.colorScheme.surfaceContainerHighest,
+      child: InkWell(
+        onTap: isGit ? appState.toggleChangesView : null,
+        child: Container(
+          width: double.infinity,
+          height: 32,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Row(
+            children: [
+              if (!isGit && st == null)
+                Text('Loading…', style: bodyStyle)
+              else if (!isGit)
+                Text('Not a git repository', style: bodyStyle)
+              else ...[
+                Icon(
+                  changesActive ? Icons.filter_alt : Icons.account_tree_outlined,
+                  size: 14,
+                  color: theme.colorScheme.onSurface,
+                ),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    st.branch ?? '',
+                    style: monoStyle,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                if (st.ahead > 0 || st.behind > 0) ...[
+                  const SizedBox(width: 8),
+                  Text(
+                    '· ↑${st.ahead} ↓${st.behind}',
+                    style: bodyStyle,
+                  ),
+                ],
+                const SizedBox(width: 8),
+                Text(
+                  changesActive
+                      ? '· Changes · $changed file${changed == 1 ? '' : 's'}'
+                      : '· $changed changed',
+                  style: bodyStyle,
+                ),
+              ],
+              const Spacer(),
+              if (isGit)
+                IconButton(
+                  iconSize: 16,
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(
+                    minWidth: 28,
+                    minHeight: 28,
+                  ),
+                  tooltip: changesActive ? 'Show all files' : 'Show changes only',
+                  icon: Icon(
+                    changesActive ? Icons.filter_alt : Icons.filter_alt_outlined,
+                    color: changesActive
+                        ? theme.colorScheme.primary
+                        : theme.colorScheme.onSurface,
+                  ),
+                  onPressed: appState.toggleChangesView,
+                ),
+              if (isOffline) ...[
+                const SizedBox(width: 4),
+                _OfflinePill(),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _OfflinePill extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.secondaryContainer,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(
+        'offline',
+        style: TextStyle(
+          color: theme.colorScheme.onSecondaryContainer,
+          fontSize: 10,
+        ),
+      ),
+    );
+  }
+}
+
+/// Renders the right-side decoration for one tree row.
+///
+///   * File with status: colored single-letter badge (M / A / D / ? / U).
+///   * Directory with rollupCount > 0: neutral "●K" badge.
+///   * Otherwise: nothing.
+class _DecorationBadge extends StatelessWidget {
+  final FileTreeNode node;
+  final WorkspaceDecorationView decoration;
+  const _DecorationBadge({required this.node, required this.decoration});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    if (!node.isDir) {
+      final status = decoration.status;
+      if (status == null) return const SizedBox.shrink();
+      final Color color;
+      switch (status) {
+        case 'M':
+          color = theme.colorScheme.tertiary;
+          break;
+        case 'A':
+          color = theme.colorScheme.primary;
+          break;
+        case 'D':
+          color = theme.colorScheme.error;
+          break;
+        case '?':
+          color = theme.colorScheme.outline;
+          break;
+        case 'U':
+          // Unmerged — error tone, plus the letter U as differentiator from D.
+          color = theme.colorScheme.error;
+          break;
+        default:
+          color = theme.colorScheme.onSurfaceVariant;
+      }
+      return Padding(
+        padding: const EdgeInsets.only(left: 8),
+        child: Text(
+          status,
+          style: TextStyle(
+            color: color,
+            fontFamily: 'monospace',
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+          ),
         ),
       );
     }
-    final rows = _flatten(root, 0);
-    return RefreshIndicator(
-      onRefresh: () => widget.appState.refreshFileTree(wsId),
-      child: ListView(children: rows),
+    final count = decoration.rollupCount;
+    if (count <= 0) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(left: 8),
+      child: Text(
+        '●$count',
+        style: TextStyle(
+          color: theme.colorScheme.onSurfaceVariant,
+          fontFamily: 'monospace',
+          fontSize: 11,
+        ),
+      ),
     );
   }
 }

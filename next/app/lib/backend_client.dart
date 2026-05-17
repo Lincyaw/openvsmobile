@@ -36,6 +36,12 @@ class BackendNotifications {
   static const String terminalData = 'terminal.data';
   static const String terminalExit = 'terminal.exit';
   static const String workspaceClosed = 'workspace.closed';
+  static const String workspaceTreeDelta = 'workspace.tree.delta';
+  static const String workspaceDecorationDelta = 'workspace.decoration.delta';
+  static const String workspaceDecorationSnapshot =
+      'workspace.decoration.snapshot';
+  static const String workspaceHeadChanged = 'workspace.head.changed';
+  static const String workspaceCommitAdded = 'workspace.commit.added';
 }
 
 /// Permanent-error JSON-RPC code returned by the backend on a failed

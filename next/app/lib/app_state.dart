@@ -19,11 +19,24 @@ import 'backend_client.dart';
 import 'models.dart';
 import 'services/ssh_bootstrap.dart';
 import 'state/terminals_notifier.dart';
+import 'state/workspace_model.dart';
 
 class AppState extends ChangeNotifier {
   final BackendClient client;
   late final TerminalsNotifier _terminals;
+  late final WorkspacesModel _workspacesModel;
   StreamSubscription<BackendNotification>? _notifSub;
+
+  /// Whether the Files tab should filter to the Changes view (decorated
+  /// paths only) instead of the full tree. Lives in AppState rather than
+  /// widget state because it must survive a tab switch (conventions §2:
+  /// "would the state survive remount? if yes, it's in AppState").
+  bool _changesViewActive = false;
+
+  /// Whether the Files tab should reveal .gitignore-matched files (greyed
+  /// out, never participating in rollup). Stored in AppState for the same
+  /// survive-remount reason.
+  bool _showIgnoredFiles = false;
 
   // ---- Workspace + recents ----
   List<Workspace> _active = const [];
@@ -62,6 +75,8 @@ class AppState extends ChangeNotifier {
       reportError: _reportOperationError,
     );
     _terminals.addListener(notifyListeners);
+    _workspacesModel = WorkspacesModel(client: client);
+    _workspacesModel.addListener(notifyListeners);
     client.state.addListener(_onConnState);
     client.lastError.addListener(_onConnError);
     _notifSub = client.notifications.listen(_onNotification);
@@ -107,6 +122,39 @@ class AppState extends ChangeNotifier {
 
   BackendConnectionState get connectionState => _connectionState;
   String? get lastConnectionError => _lastConnectionError;
+
+  /// Composed sub-notifier holding per-workspace git/decoration state. Read
+  /// from widgets via getters below; mutated only via the subscribe lifecycle
+  /// and notification handlers wired here.
+  WorkspacesModel get workspaces => _workspacesModel;
+
+  /// Per-workspace state lookup. Returns null if the workspace hasn't been
+  /// subscribed yet (e.g. between activate and the first event).
+  WorkspaceState? workspaceStateFor(String workspaceId) =>
+      _workspacesModel.stateFor(workspaceId);
+
+  /// Decoration view for a workspace-relative path.
+  WorkspaceDecorationView decorationFor(String workspaceId, String relPath) =>
+      _workspacesModel.decorationFor(workspaceId, relPath);
+
+  bool get changesViewActive => _changesViewActive;
+  bool get showIgnoredFiles => _showIgnoredFiles;
+
+  void toggleChangesView() {
+    _changesViewActive = !_changesViewActive;
+    notifyListeners();
+  }
+
+  void setChangesView(bool active) {
+    if (_changesViewActive == active) return;
+    _changesViewActive = active;
+    notifyListeners();
+  }
+
+  void toggleShowIgnored() {
+    _showIgnoredFiles = !_showIgnoredFiles;
+    notifyListeners();
+  }
 
   /// Last error surfaced from a user-initiated operation (openWorkspace,
   /// createTerminal, etc.). Cleared by [clearLastOperationError] once the UI
@@ -173,6 +221,22 @@ class AppState extends ChangeNotifier {
         final id = (n.params as Map<String, dynamic>)['id'] as String;
         _onWorkspaceClosed(id);
         break;
+      case BackendNotifications.workspaceTreeDelta:
+        _workspacesModel.onTreeDelta(n.params as Map<String, dynamic>);
+        break;
+      case BackendNotifications.workspaceDecorationDelta:
+        _workspacesModel.onDecorationDelta(n.params as Map<String, dynamic>);
+        break;
+      case BackendNotifications.workspaceDecorationSnapshot:
+        _workspacesModel
+            .onDecorationSnapshot(n.params as Map<String, dynamic>);
+        break;
+      case BackendNotifications.workspaceHeadChanged:
+        _workspacesModel.onHeadChanged(n.params as Map<String, dynamic>);
+        break;
+      case BackendNotifications.workspaceCommitAdded:
+        _workspacesModel.onCommitAdded(n.params as Map<String, dynamic>);
+        break;
       default:
         // Ignore unknown notifications (forward-compat).
         break;
@@ -183,6 +247,11 @@ class AppState extends ChangeNotifier {
     _active = _active.where((w) => w.id != id).toList();
     _fileTreeByWorkspace.remove(id);
     _terminals.onWorkspaceClosed(id);
+    // Drop the resident workspace state too; the model will refuse to
+    // route any post-close notifications because the id is no longer
+    // tracked. We do not call workspace.unsubscribe explicitly here
+    // because the backend already disposed the model on close.
+    unawaited(_workspacesModel.unsubscribe(id));
     if (_current?.id == id) {
       _current = _active.isNotEmpty ? _active.first : null;
     }
@@ -214,6 +283,14 @@ class AppState extends ChangeNotifier {
       _current = curRaw == null
           ? null
           : Workspace.fromJson(curRaw as Map<String, dynamic>);
+      // (Re)subscribe to each active workspace so we get the push stream
+      // back after a reconnect. With a non-zero lastSeenVersion the backend
+      // returns mode=current/replay and we keep the existing decoration
+      // map; with lastSeenVersion=0 (first connect or post-snapshot) we
+      // get a fresh snapshot push. Either way the model converges.
+      for (final w in _active) {
+        unawaited(_workspacesModel.subscribe(w.id));
+      }
       for (final w in _active) {
         final tres = await client.call(
           'terminal.list',
@@ -264,6 +341,10 @@ class AppState extends ChangeNotifier {
       }
       _current = ws;
       _recents = [root, ..._recents.where((r) => r != root)];
+      // Open the resident-model push stream for this workspace. Fire-and-
+      // forget: the subscribe handler logs any failure and leaves state
+      // for the next reconnect cycle to retry.
+      unawaited(_workspacesModel.subscribe(ws.id));
       notifyListeners();
       return ws;
     } catch (e) {
@@ -438,14 +519,44 @@ class AppState extends ChangeNotifier {
     required String path,
     required String workspaceId,
   }) async {
-    final r = await client.call('fs.listDir', {
+    // Route through the workspace model's cache so a tree.delta-driven
+    // invalidation actually has somewhere to land. The model never calls
+    // the wire directly — we pass the fetch lambda — so the single RPC
+    // choke point stays here in AppState.
+    return _workspacesModel.listDir(
+      workspaceId: workspaceId,
+      path: path,
+      fetch: () async {
+        final r = await client.call('fs.listDir', {
+          'workspaceId': workspaceId,
+          'path': path,
+        }) as Map<String, dynamic>;
+        return (r['entries'] as List)
+            .cast<Map<String, dynamic>>()
+            .map(DirEntry.fromJson)
+            .toList();
+      },
+    );
+  }
+
+  /// Fetch a unified diff against HEAD for [path] in [workspaceId]. Returns
+  /// the raw JSON response shape: `{kind: "text", hunks: [...]}` for normal
+  /// diffs, `{kind: "binary"|"deleted"|"too-large", meta: {...}}` for the
+  /// placeholder cases. The diff viewer screen consumes this directly.
+  ///
+  /// We return the raw map rather than a typed Diff object so the viewer
+  /// (the one consumer in v0) can branch on `kind` without an
+  /// intermediate model. If a second consumer appears, introduce a typed
+  /// shape at that point.
+  Future<Map<String, dynamic>> gitDiff({
+    required String workspaceId,
+    required String path,
+  }) async {
+    final r = await client.call('git.diff', {
       'workspaceId': workspaceId,
       'path': path,
     }) as Map<String, dynamic>;
-    return (r['entries'] as List)
-        .cast<Map<String, dynamic>>()
-        .map(DirEntry.fromJson)
-        .toList();
+    return r;
   }
 
   Future<List<DirEntry>> pickerListDir(String path) async {
@@ -480,6 +591,8 @@ class AppState extends ChangeNotifier {
     client.lastError.removeListener(_onConnError);
     _terminals.removeListener(notifyListeners);
     _terminals.dispose();
+    _workspacesModel.removeListener(notifyListeners);
+    _workspacesModel.dispose();
     _notifSub?.cancel();
     super.dispose();
   }
