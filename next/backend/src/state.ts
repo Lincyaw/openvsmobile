@@ -47,10 +47,6 @@ export interface ProcessStateOptions {
   /// callers leave this undefined and let `notifications.ts` resolve from
   /// $OPENVSMOBILE_NOTIFICATIONS_DB or the default location.
   notificationDbPath?: string;
-  /// Skip starting the GC sweep timer. Tests use this so they can drive the
-  /// sweep manually via `notificationHub.runGcOnce()`. Production always
-  /// leaves this false.
-  disableGcWorker?: boolean;
 }
 
 export class ProcessState {
@@ -91,9 +87,6 @@ export class ProcessState {
         }),
       deleted: (ids) => this.broadcastNotification("notification.deleted", { ids }),
     });
-    if (opts.disableGcWorker !== true) {
-      this.notificationHub.startGcWorker();
-    }
 
     this.workspaces = new WorkspaceRegistry(
       // terminal data → broadcast to every subscriber.

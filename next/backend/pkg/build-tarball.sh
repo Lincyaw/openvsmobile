@@ -178,7 +178,7 @@ while IFS= read -r link; do
     "$BUILD_DIR/node_modules"/*) ;;  # ok — stays inside
     *) BAD_SYMLINKS+=("$link -> $target (escapes node_modules)") ;;
   esac
-done < <(find "$BUILD_DIR/node_modules" -type l 2>/dev/null)
+done < <(find "$BUILD_DIR/node_modules" -type l || { echo "symlink scan failed" >&2; exit 1; })
 
 if [[ ${#BAD_SYMLINKS[@]} -gt 0 ]]; then
   echo "error: pnpm produced symlinks under node_modules that escape the bundle:" >&2

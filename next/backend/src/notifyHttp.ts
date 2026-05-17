@@ -86,10 +86,13 @@ export async function handleNotifyHttp(
       res.end(JSON.stringify({ error: err.message }));
       return true;
     }
+    // Generic 500 body — don't echo `err.message`, which can leak internal
+    // state (paths, secrets in a stack-stringified error, etc.). The real
+    // error is logged by the index.ts request-level catch via console.error.
+    console.error("[notify] publish failed:", err);
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
-    const message = err instanceof Error ? err.message : "internal error";
-    res.end(JSON.stringify({ error: message }));
+    res.end(JSON.stringify({ error: "internal error" }));
   }
   return true;
 }
@@ -109,18 +112,28 @@ function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let total = 0;
+    let rejected = false;
     req.on("data", (chunk: Buffer) => {
+      if (rejected) return;
       total += chunk.length;
       if (total > MAX_BODY_BYTES) {
+        rejected = true;
+        // Don't push more data into memory; let the request finish so the
+        // response (413) can be delivered cleanly. Destroying the socket
+        // here would race the response write and surface as ECONNRESET on
+        // the client.
+        chunks.length = 0;
         reject(new BodyTooLargeError("body too large"));
-        req.destroy();
         return;
       }
       chunks.push(chunk);
     });
     req.on("end", () => {
+      if (rejected) return;
       resolve(Buffer.concat(chunks).toString("utf8"));
     });
-    req.on("error", (err) => reject(err));
+    req.on("error", (err) => {
+      if (!rejected) reject(err);
+    });
   });
 }

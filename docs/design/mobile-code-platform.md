@@ -773,7 +773,7 @@ CREATE INDEX idx_notifs_source_ts ON notifications(source, timestamp DESC);
 CREATE INDEX idx_notifs_group     ON notifications(group_key);
 ```
 
-A GC worker (hourly) deletes rows where `ttl_until < now AND important = 0 AND superseded_by IS NULL`. Important and superseding-chain history are preserved indefinitely.
+Garbage collection runs opportunistically — at most once per hour on `notification.list` calls, and once per 100 inserts. Backends with no client traffic and no inserts perform no sweep, which is fine since nothing is changing. Sweeps delete rows where `ttl_until < now AND important = 0 AND superseded_by IS NULL`. Important and superseding-chain history are preserved indefinitely.
 
 **`groupKey` semantics:** the client groups consecutive notifications with the same `groupKey` into one collapsible card. Backend does not enforce; render hint only.
 

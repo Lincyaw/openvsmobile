@@ -43,7 +43,6 @@ async function startBackend(): Promise<Harness> {
   const tmpDir = mkdtempSync(join(tmpdir(), "ovsm-notif-"));
   const state = new ProcessState({
     notificationDbPath: join(tmpDir, "notifications.db"),
-    disableGcWorker: true,
   });
   const server = createServer((req, res) => {
     if (req.url === "/notify") {
@@ -277,6 +276,72 @@ describe("NotificationStore (unit, no transport)", () => {
     }
   });
 
+  it("markImportant promote → demote re-anchors ttl at ~now + 7d (original ttl lost)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ovsm-store-"));
+    const store = new NotificationStore({ dbPath: join(dir, "n.db") });
+    try {
+      // Insert with a short explicit ttl so we can tell whether the original
+      // window was preserved (the spec says it was — but the design we
+      // committed to says it's not, since promote nukes ttl_until).
+      const a = store.insert({
+        source: "t",
+        level: "info",
+        title: "p",
+        ttl: 3600, // 1h
+      });
+      expect(store.markImportant(a.notification.id, true)).toBe(true);
+      const before = Date.now();
+      expect(store.markImportant(a.notification.id, false)).toBe(true);
+      const after = Date.now();
+      const { items } = store.list({ limit: 10 });
+      const row = items.find((i) => i.id === a.notification.id)!;
+      expect(typeof row.ttlUntil).toBe("number");
+      const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+      // ttlUntil should be approximately now + 7d, NOT the original (now + 1h).
+      expect(row.ttlUntil).toBeGreaterThanOrEqual(before + sevenDaysMs - 5);
+      expect(row.ttlUntil).toBeLessThanOrEqual(after + sevenDaysMs + 5);
+    } finally {
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("includeRead=false hides rows already read by THIS device, keeps others", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ovsm-store-"));
+    const store = new NotificationStore({ dbPath: join(dir, "n.db") });
+    try {
+      const r1 = store.insert({ source: "t", level: "info", title: "one" });
+      const r2 = store.insert({ source: "t", level: "info", title: "two" });
+      store.markRead([r1.notification.id], "phoneA");
+      // phoneA: should see only the unread row.
+      const fromPhoneA = store.list({
+        limit: 50,
+        includeRead: false,
+        deviceId: "phoneA",
+      });
+      const idsA = fromPhoneA.items.map((i) => i.id);
+      expect(idsA).toContain(r2.notification.id);
+      expect(idsA).not.toContain(r1.notification.id);
+      // tabletB: hasn't read anything yet — should see both.
+      const fromTabletB = store.list({
+        limit: 50,
+        includeRead: false,
+        deviceId: "tabletB",
+      });
+      const idsB = fromTabletB.items.map((i) => i.id);
+      expect(idsB).toContain(r1.notification.id);
+      expect(idsB).toContain(r2.notification.id);
+      // includeRead default (true): everyone sees both.
+      const all = store.list({ limit: 50 });
+      const idsAll = all.items.map((i) => i.id);
+      expect(idsAll).toContain(r1.notification.id);
+      expect(idsAll).toContain(r2.notification.id);
+    } finally {
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("gcExpired deletes only expired non-important non-superseded rows", () => {
     const dir = mkdtempSync(join(tmpdir(), "ovsm-store-"));
     const store = new NotificationStore({ dbPath: join(dir, "n.db") });
@@ -372,6 +437,43 @@ describe("POST /notify (HTTP)", () => {
       title: "x",
     });
     expect(res.status).toBe(400);
+  });
+
+  it("oversized body → 413", async () => {
+    // 2 MiB body — well above MAX_BODY_BYTES (1 MiB) in notifyHttp.ts.
+    const huge = "a".repeat(2 * 1024 * 1024);
+    const res = await fetch(`${h.baseUrl}/notify`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${TOKEN}`,
+      },
+      body: huge,
+    });
+    expect(res.status).toBe(413);
+  });
+
+  it("500 path does not leak error message to client body", async () => {
+    // Monkey-patch the hub's publish to throw an error whose message
+    // contains a sentinel we then assert is NOT in the response body.
+    const hub = h.state.notificationHub;
+    const original = hub.publish.bind(hub);
+    hub.publish = (() => {
+      throw new Error("SECRET_TOKEN_LEAK_abc123");
+    }) as typeof hub.publish;
+    try {
+      const res = await postNotify(h.baseUrl, {
+        source: "t",
+        level: "info",
+        title: "x",
+      });
+      expect(res.status).toBe(500);
+      const bodyText = JSON.stringify(res.body);
+      expect(bodyText).not.toContain("SECRET_TOKEN_LEAK");
+      expect(bodyText).toContain("internal error");
+    } finally {
+      hub.publish = original;
+    }
   });
 
   it("auth fail: wrong token → 401, missing token → 401", async () => {
@@ -530,13 +632,58 @@ describe("markRead / markImportant / delete via RPC", () => {
     }
   });
 
-  it("markImportant on unknown id throws notificationNotFound", async () => {
+  it("markImportant on unknown id returns ok (symmetric with delete)", async () => {
     const a = await RpcClient.connect(h.wsUrl);
     try {
       await a.call("auth.handshake", { token: TOKEN });
-      await expect(
-        a.call("notification.markImportant", { id: "no-such-id", important: true }),
-      ).rejects.toMatchObject({ code: -32010 });
+      const res = await a.call("notification.markImportant", {
+        id: "nonexistent-uuid",
+        important: true,
+      });
+      expect(res).toEqual({ ok: true });
+    } finally {
+      await a.close();
+    }
+  });
+
+  it("delete of unknown id returns ok and emits no broadcast", async () => {
+    const a = await RpcClient.connect(h.wsUrl);
+    try {
+      await a.call("auth.handshake", { token: TOKEN });
+      await a.call("notification.subscribe");
+      const res = await a.call("notification.delete", {
+        ids: ["nonexistent-uuid"],
+      });
+      expect(res).toEqual({ ok: true });
+      // Give any phantom broadcast a moment to land.
+      await new Promise((r) => setTimeout(r, 100));
+      expect(
+        a.notifs.find((n) => n.method === "notification.deleted"),
+      ).toBeUndefined();
+    } finally {
+      await a.close();
+    }
+  });
+
+  it("markRead is idempotent: same device twice keeps read_by length 1", async () => {
+    const a = await RpcClient.connect(h.wsUrl);
+    try {
+      await a.call("auth.handshake", { token: TOKEN, client: { deviceId: "phoneA" } });
+      await a.call("notification.subscribe");
+      const res = await postNotify(h.baseUrl, {
+        source: "t",
+        level: "info",
+        title: "hi",
+      });
+      const { id } = res.body as { id: string };
+      await a.waitNotif("notification.show");
+      await a.call("notification.markRead", { ids: [id] });
+      await a.call("notification.markRead", { ids: [id] });
+      const list = (await a.call("notification.list", { limit: 5 })) as {
+        items: Array<{ id: string; readBy?: string[] }>;
+      };
+      const row = list.items.find((i) => i.id === id)!;
+      expect(row.readBy).toEqual(["phoneA"]);
     } finally {
       await a.close();
     }
@@ -563,7 +710,7 @@ describe("markRead / markImportant / delete via RPC", () => {
   });
 });
 
-describe("GC worker", () => {
+describe("GC sweep (event-driven)", () => {
   let h: Harness;
   beforeAll(async () => {
     h = await startBackend();
@@ -604,6 +751,142 @@ describe("GC worker", () => {
       expect(ev.ids).toContain(expiredId);
     } finally {
       await a.close();
+    }
+  });
+
+  it("notification.list triggers a sweep when lastSweepMs is stale", async () => {
+    // Use a fresh per-test backend so the GC trigger state isn't shared.
+    const local = await startBackend();
+    try {
+      const a = await RpcClient.connect(local.wsUrl);
+      try {
+        await a.call("auth.handshake", { token: TOKEN });
+        await a.call("notification.subscribe");
+
+        // Insert an already-expired row directly through the hub so we
+        // bypass the publish-time GC trigger entirely.
+        const past = Date.now() - 10_000;
+        const { id: expiredId } = local.state.notificationHub.publish({
+          source: "t",
+          level: "info",
+          title: "old",
+          timestamp: past,
+          ttl: 1,
+        });
+        await a.waitNotif("notification.show");
+
+        // lastSweepMs starts at 0; the first list call should fire a sweep.
+        const listRes = (await a.call("notification.list", { limit: 50 })) as {
+          items: Array<{ id: string }>;
+        };
+        // The expired row is gone from the result.
+        expect(listRes.items.find((i) => i.id === expiredId)).toBeUndefined();
+        // ...and a deleted broadcast lands.
+        const ev = (await a.waitNotif("notification.deleted")) as { ids: string[] };
+        expect(ev.ids).toContain(expiredId);
+      } finally {
+        await a.close();
+      }
+    } finally {
+      await local.shutdown();
+    }
+  });
+
+  it("two list calls within GC_MIN_INTERVAL_MS sweep only once", async () => {
+    const local = await startBackend();
+    try {
+      const a = await RpcClient.connect(local.wsUrl);
+      try {
+        await a.call("auth.handshake", { token: TOKEN });
+        await a.call("notification.subscribe");
+
+        // First sweep — set lastSweepMs to "now-ish".
+        local.state.notificationHub.runGcOnce();
+
+        // Insert another already-expired row. Bypass the publish-time
+        // trigger by checking the insertCounter first: we want a clean test
+        // of the list-only trigger. We can do this by inserting fewer than
+        // 100 times so the insert-trigger doesn't fire.
+        local.state.notificationHub.publish({
+          source: "t",
+          level: "info",
+          title: "stale1",
+          timestamp: Date.now() - 10_000,
+          ttl: 1,
+        });
+        await a.waitNotif("notification.show");
+
+        // Two list calls in quick succession — only the first might have
+        // triggered. lastSweepMs was set just above, so neither should
+        // trigger now. The expired row remains visible because we set
+        // includeSuperseded=false default; since superseded_by is NULL it
+        // SHOULD show up if no sweep happened.
+        const r1 = (await a.call("notification.list", { limit: 50 })) as {
+          items: Array<{ id: string }>;
+        };
+        const r2 = (await a.call("notification.list", { limit: 50 })) as {
+          items: Array<{ id: string }>;
+        };
+        // Both responses see the same set — sweep did not fire between them.
+        expect(r1.items.length).toBe(r2.items.length);
+
+        // No notification.deleted broadcasts because no sweep was run.
+        await new Promise((r) => setTimeout(r, 100));
+        expect(
+          a.notifs.find((n) => n.method === "notification.deleted"),
+        ).toBeUndefined();
+      } finally {
+        await a.close();
+      }
+    } finally {
+      await local.shutdown();
+    }
+  });
+
+  it("100 sequential inserts trigger an opportunistic sweep", async () => {
+    const local = await startBackend();
+    try {
+      const a = await RpcClient.connect(local.wsUrl);
+      try {
+        await a.call("auth.handshake", { token: TOKEN });
+        await a.call("notification.subscribe");
+
+        // First, insert one already-expired row to give the GC something
+        // to delete on the eventual sweep.
+        const past = Date.now() - 10_000;
+        local.state.notificationHub.publish({
+          source: "t",
+          level: "info",
+          title: "doomed",
+          timestamp: past,
+          ttl: 1,
+        });
+        // Drain its show.
+        await a.waitNotif("notification.show");
+
+        // Drain notifications by emptying the array.
+        a.notifs.length = 0;
+
+        // Now do 99 more inserts (we already did 1 → counter is 1). The
+        // 100th insert (counter==100) should trigger a sweep.
+        for (let i = 0; i < 99; i++) {
+          local.state.notificationHub.publish({
+            source: "t",
+            level: "info",
+            title: `bump-${i}`,
+          });
+        }
+
+        // Wait a moment for the deleted broadcast to land.
+        const ev = (await a.waitNotif("notification.deleted", 2000)) as {
+          ids: string[];
+        };
+        expect(ev.ids.length).toBeGreaterThanOrEqual(1);
+      } finally {
+        await a.close();
+      }
+    } finally {
+      await local.shutdown();
     }
   });
 });

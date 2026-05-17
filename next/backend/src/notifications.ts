@@ -1,11 +1,12 @@
-// Notification system — schema validation, SQLite persistence, GC worker.
+// Notification system — schema validation, SQLite persistence, event-driven GC.
 //
 // This module owns the data model for §4.5 of the design doc:
 //   * Sender API surface (POST /notify, validated here; HTTP framing lives
 //     in notifyHttp.ts so this file stays transport-agnostic).
 //   * SQLite-backed history (better-sqlite3, synchronous).
 //   * Supersedes-chain bookkeeping.
-//   * TTL GC sweep (hourly).
+//   * TTL GC sweep — opportunistic, driven by `notification.list` calls and
+//     by insert counts; no recurring timers (conventions §1).
 //
 // Anything that *transports* a notification — WebSocket fan-out, JSON-RPC
 // dispatch — is in `state.ts` / `rpc.ts`. This file is pure persistence + a
@@ -25,18 +26,23 @@ import { RpcError, RPC_ERR } from "./rpc.js";
 
 /// Title length cap from §4.5 ("≤80 chars").
 const TITLE_MAX_LEN = 80;
-/// Body soft cap from §4.5 ("no size cap but ≤16KB recommended"). We enforce
-/// it: rejecting a 100 MB markdown blob at the gate is cheap and avoids
-/// hauling it through SQLite into memory for fan-out.
+/// Body cap. Spec phrasing was "recommended"; tightened to hard cap because
+/// oversized JSON in SQLite slows queries — bump if real plugins need more.
 const BODY_MAX_BYTES = 16 * 1024;
 /// Source string cap. Free-form, but a 4 KB tag is almost certainly a bug.
 const SOURCE_MAX_LEN = 256;
 /// Default TTL — 7 days — from §4.5.
 const DEFAULT_TTL_SECONDS = 7 * 24 * 60 * 60;
-/// GC sweep cadence. §1 conventions disallow recurring polling timers, but
-/// explicitly carve out "intermittent intervals for housekeeping". One hour
-/// is the cadence called out in §4.5.
-const GC_INTERVAL_MS = 60 * 60 * 1000;
+/// Minimum interval between opportunistic GC sweeps triggered by
+/// `notification.list`. A backend handling steady traffic still gets at most
+/// one sweep per hour; a quiet backend gets none, which is fine (nothing
+/// expires if nothing is being inserted or queried).
+const GC_MIN_INTERVAL_MS = 60 * 60 * 1000;
+/// Insert-count cadence for the second sweep trigger. Every Nth successful
+/// insert runs a sweep after the row is persisted. 100 was picked so a
+/// chatty plugin (1/sec) gets a sweep every ~2 minutes; a normal one (a
+/// few per hour) is bounded by GC_MIN_INTERVAL_MS via `list` calls.
+const GC_INSERT_PERIOD = 100;
 /// Current schema version recorded in `schema_meta`. Bumped only on a
 /// migration; v0 sits at 1 forever.
 const SCHEMA_VERSION = 1;
@@ -323,7 +329,15 @@ export interface ListQuery {
   since?: number;
   limit: number;
   source?: string;
+  /// Default true. When false, the row is excluded if the caller's
+  /// `deviceId` is already in the row's `read_by` array (i.e. read by THIS
+  /// device). Requires `deviceId` to be set; otherwise the filter is a
+  /// no-op (we have nothing to compare against).
   includeRead?: boolean;
+  /// Identifies the caller for the `includeRead` filter. The RPC layer
+  /// passes `ctx.subscriber.notificationDeviceId`. Undefined when the
+  /// caller never set one (legacy clients pre-`client.deviceId`).
+  deviceId?: string;
   /// If false (default), rows whose `supersededBy` is non-null are hidden —
   /// they are history pointers, not active notifications.
   includeSuperseded?: boolean;
@@ -350,6 +364,11 @@ export class NotificationStore {
   private readonly deleteByIdStmt: Database.Statement;
   private readonly selectExpiredStmt: Database.Statement;
   private readonly deleteExpiredStmt: Database.Statement;
+  /// Counts successful inserts since process start. Used by the hub to
+  /// decide when to fire an opportunistic GC sweep (every Nth insert).
+  /// Not persisted — a process restart is a fine moment to defer the next
+  /// sweep until the count rebuilds.
+  public insertCounter = 0;
 
   constructor(opts: InsertOptions = {}) {
     const dbPath = opts.dbPath ?? defaultDbPath();
@@ -499,6 +518,7 @@ export class NotificationStore {
       });
     });
     insertTx();
+    this.insertCounter++;
 
     const notification: Notification = rowToNotification({
       id,
@@ -539,11 +559,19 @@ export class NotificationStore {
     if (query.includeSuperseded !== true) {
       clauses.push("superseded_by IS NULL");
     }
-    // includeRead=false (default) is a client-side filter today: the row
-    // carries a JSON array of device ids, and "read by THIS device" depends
-    // on the caller. Server-side we just return everything matching the
-    // other filters and let the consumer drop entries it has in its read
-    // set. Persisting per-device read state separately is a v1 task.
+    // includeRead defaults to true. When the caller supplies a deviceId AND
+    // sets includeRead=false, hide rows whose `read_by` array contains that
+    // device. SQLite's json_each lets us probe the array without dragging
+    // the JSON column out into JS for every row. Rows with read_by IS NULL
+    // (no reads yet) never match the exclusion subquery, so they stay.
+    if (query.includeRead === false && typeof query.deviceId === "string") {
+      clauses.push(
+        `(read_by IS NULL OR NOT EXISTS (
+          SELECT 1 FROM json_each(notifications.read_by) WHERE json_each.value = ?
+        ))`,
+      );
+      args.push(query.deviceId);
+    }
     const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
     const sql = `
       SELECT * FROM notifications
@@ -582,10 +610,11 @@ export class NotificationStore {
     return changed;
   }
 
-  /// Toggle the `important` flag. When promoting from non-important to
-  /// important, the TTL is cleared (ttl_until = null) so GC won't touch it.
-  /// When demoting, we re-arm a default TTL anchored at NOW so the row
-  /// doesn't outlive its original window.
+  /// Toggle the `important` flag. Promote → clear `ttl_until` (GC won't
+  /// touch the row). Demote always re-anchors TTL at `now + DEFAULT_TTL_MS`,
+  /// because promote wipes the original. If you need to preserve exact
+  /// original windows, snapshot into a sidecar column on promote — deferred
+  /// to v1.
   public markImportant(id: string, important: boolean): boolean {
     const row = this.selectByIdStmt.get(id) as DbRow | undefined;
     if (row === undefined) return false;
@@ -594,14 +623,10 @@ export class NotificationStore {
       if (important) {
         this.updateTtlUntilStmt.run(null, id);
       } else {
-        // Re-arm TTL only if the row was pinned (had no ttl_until). If it
-        // already had one, keep it — the demote shouldn't extend life.
-        if (row.ttl_until === null) {
-          this.updateTtlUntilStmt.run(
-            Date.now() + DEFAULT_TTL_SECONDS * 1000,
-            id,
-          );
-        }
+        this.updateTtlUntilStmt.run(
+          Date.now() + DEFAULT_TTL_SECONDS * 1000,
+          id,
+        );
       }
     });
     tx();
@@ -695,10 +720,23 @@ export interface NotificationFanOut {
 /// Glue between the persistence layer and the WebSocket fan-out target. The
 /// HTTP `/notify` endpoint and the `notification.*` RPC handlers both go
 /// through this object; the WS fan-out helper is set by `ProcessState`.
+///
+/// GC is event-driven (conventions §1 — no recurring timers): a sweep runs
+/// at most once per GC_MIN_INTERVAL_MS when `list` is called, and again
+/// every GC_INSERT_PERIOD successful inserts. A backend that is neither
+/// queried nor written to performs no sweep, which is correct: nothing is
+/// changing.
 export class NotificationHub {
   private readonly store: NotificationStore;
   private fanOut: NotificationFanOut | null = null;
-  private gcTimer: NodeJS.Timeout | null = null;
+  /// Wall-clock time of the last sweep; 0 means "never". Compared against
+  /// `now - GC_MIN_INTERVAL_MS` in `maybeSweepOnList`.
+  private lastSweepMs = 0;
+  /// Single-flight guard: when `runGcOnce` is already executing (e.g. via a
+  /// reentrant insert callback), skip overlapping calls instead of stacking.
+  /// `gcExpired` is itself a SQLite transaction so the data layer is safe;
+  /// this flag is about not duplicating fan-out broadcasts.
+  private sweeping = false;
 
   constructor(store: NotificationStore) {
     this.store = store;
@@ -710,7 +748,8 @@ export class NotificationHub {
 
   /// Validate-and-persist a sender payload. Broadcasts `superseded` (if
   /// applicable) then `show`. Returns the assigned id so the HTTP endpoint
-  /// can echo it back.
+  /// can echo it back. Every GC_INSERT_PERIOD successful inserts triggers
+  /// an opportunistic sweep after the row is persisted.
   public publish(rawPayload: unknown): { id: string } {
     const input = validateNotificationInput(rawPayload);
     const { notification, supersededOldId } = this.store.insert(input);
@@ -720,10 +759,14 @@ export class NotificationHub {
       }
       this.fanOut.show(notification);
     }
+    if (this.store.insertCounter % GC_INSERT_PERIOD === 0) {
+      this.runGcOnceSafe();
+    }
     return { id: notification.id };
   }
 
   public list(query: ListQuery): { items: Notification[]; cursor?: number } {
+    this.maybeSweepOnList();
     return this.store.list(query);
   }
 
@@ -746,39 +789,45 @@ export class NotificationHub {
   }
 
   /// Run a single GC pass. Exposed so tests can drive it deterministically
-  /// without waiting an hour.
+  /// (the production path is event-driven; tests still want a knob).
+  /// Bypasses the single-flight guard — callers are responsible for
+  /// serialization.
   public runGcOnce(nowMs?: number): string[] {
     const deleted = this.store.gcExpired(nowMs);
+    this.lastSweepMs = nowMs ?? Date.now();
     if (deleted.length > 0 && this.fanOut !== null) {
       this.fanOut.deleted(deleted);
     }
     return deleted;
   }
 
-  /// Wire the hourly GC sweep. `.unref()` so the timer never blocks process
-  /// shutdown. Multiple calls are idempotent.
-  public startGcWorker(): void {
-    if (this.gcTimer !== null) return;
-    this.gcTimer = setInterval(() => {
-      try {
-        this.runGcOnce();
-      } catch (err) {
-        // GC failure must never crash the backend. Log and continue.
-        console.error("[notifications] gc sweep failed:", err);
-      }
-    }, GC_INTERVAL_MS);
-    this.gcTimer.unref();
-  }
-
-  public stopGcWorker(): void {
-    if (this.gcTimer !== null) {
-      clearInterval(this.gcTimer);
-      this.gcTimer = null;
-    }
-  }
-
   public close(): void {
-    this.stopGcWorker();
     this.store.close();
+  }
+
+  /// Sweep on `notification.list` — rate-limited to once per
+  /// GC_MIN_INTERVAL_MS so a flood of list calls doesn't hammer SQLite.
+  /// Single-flighted so overlapping calls don't sweep twice.
+  private maybeSweepOnList(): void {
+    const now = Date.now();
+    if (this.lastSweepMs !== 0 && now - this.lastSweepMs < GC_MIN_INTERVAL_MS) {
+      return;
+    }
+    this.runGcOnceSafe(now);
+  }
+
+  /// Single-flight wrapper around `runGcOnce`. Used by both opportunistic
+  /// trigger paths (insert-count + list-call). Swallows errors after
+  /// logging — GC failure must never crash the backend.
+  private runGcOnceSafe(nowMs?: number): void {
+    if (this.sweeping) return;
+    this.sweeping = true;
+    try {
+      this.runGcOnce(nowMs);
+    } catch (err) {
+      console.error("[notifications] gc sweep failed:", err);
+    } finally {
+      this.sweeping = false;
+    }
   }
 }

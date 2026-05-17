@@ -10,7 +10,7 @@
 //   * Args parsed with node:util parseArgs.
 //   * Config resolution: explicit flags > env vars > config.json > error.
 //   * HTTP POST /notify, Bearer token. 10-second timeout.
-//   * Exit codes: 0 ok / 2 args / 3 network / 4 auth / 5 server error.
+//   * Exit codes: 0 ok / 1 internal / 2 args / 3 network / 4 auth / 5 server error.
 //
 // Reference: docs/design/mobile-code-platform.md §4.5.
 
@@ -21,6 +21,7 @@ import { join } from "node:path";
 import process from "node:process";
 
 const EXIT_OK = 0;
+const EXIT_INTERNAL = 1;
 const EXIT_ARGS = 2;
 const EXIT_NETWORK = 3;
 const EXIT_AUTH = 4;
@@ -188,7 +189,7 @@ async function main() {
     try {
       raw = await readStdin();
     } catch (err) {
-      die(EXIT_NETWORK, `failed to read stdin: ${err.message}`);
+      die(EXIT_INTERNAL, `failed to read stdin: ${err.message}`);
     }
     try {
       payload = JSON.parse(raw);
@@ -199,11 +200,33 @@ async function main() {
       die(EXIT_ARGS, "--from-json: payload must be a JSON object");
     }
     // Allow flag overrides on top of the JSON payload — useful for tweaking
-    // one field without re-emitting the whole blob. Source remains required.
+    // one field without re-emitting the whole blob. Every assemble-mode flag
+    // is honored as an override; sender supplies whichever it wants to
+    // override and leaves the rest unset.
     if (values.source) payload.source = values.source;
     if (values.level) payload.level = values.level;
     if (values.title) payload.title = values.title;
     if (values.body) payload.body = values.body;
+    if (values.field && values.field.length > 0) {
+      payload.fields = values.field.map((s) => parseKv(s, "field"));
+    }
+    if (values.link && values.link.length > 0) {
+      payload.links = values.link.map((s) => {
+        const kv = parseKv(s, "link");
+        return { title: kv.key, url: kv.value };
+      });
+    }
+    if (values.action !== undefined) payload.action = parseAction(values.action);
+    if (values["group-key"] !== undefined) payload.groupKey = values["group-key"];
+    if (values.supersedes !== undefined) payload.supersedes = values.supersedes;
+    if (values.important === true) payload.important = true;
+    if (values.ttl !== undefined) {
+      const n = Number(values.ttl);
+      if (!Number.isFinite(n) || n < 0) {
+        die(EXIT_ARGS, `--ttl must be a non-negative number of seconds: ${values.ttl}`);
+      }
+      payload.ttl = n;
+    }
   } else {
     if (!values.source) die(EXIT_ARGS, "--source required");
     if (!values.title) die(EXIT_ARGS, "--title required");
@@ -320,14 +343,17 @@ Payload:
 
 Exit codes:
   0  success
+  1  internal CLI error (uncaught exception, stdin read failure)
   2  argument error / 4xx payload rejection
   3  network error / timeout
   4  authentication rejected
-  5  server error
+  5  server error (5xx response)
 `;
 }
 
 main().catch((err) => {
+  // Uncaught bug in the CLI itself — distinct from EXIT_SERVER (5), which is
+  // reserved for actual 5xx responses from the backend.
   process.stderr.write(`mobile-notify: ${err && err.stack ? err.stack : err}\n`);
-  process.exit(EXIT_SERVER);
+  process.exit(EXIT_INTERNAL);
 });

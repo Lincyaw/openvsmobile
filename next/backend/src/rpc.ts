@@ -13,6 +13,7 @@
 //   6. dispatch() + runAuthHandshake() entry points.
 
 import type { WebSocket } from "ws";
+import { randomUUID } from "node:crypto";
 import { listDirAt, readFileAt, type ActiveWorkspace } from "./workspace.js";
 import type { ProcessState, Subscriber } from "./state.js";
 import { diffKind, readLog, runDiff } from "./git.js";
@@ -64,11 +65,9 @@ export const RPC_ERR = {
   /// invalidParams so the client can choose to retry.
   notReady: -32003,
   // -32010..-32019 reserved for the notification namespace.
-  /// Returned by `notification.markImportant` / `notification.delete` when
-  /// the supplied id is unknown to the store (already GC'd, never existed,
-  /// or belongs to a different backend). Distinct from invalidParams so the
-  /// client can decide whether to scrub the row from its local cache.
-  notificationNotFound: -32010,
+  // (Previously -32010 was `notificationNotFound`; removed because both
+  // `markImportant` and `delete` now silently no-op on unknown ids, so no
+  // call site emits it. Re-add here if a future RPC needs the distinction.)
 } as const;
 
 export class RpcError extends Error {
@@ -633,6 +632,13 @@ methods.set(METHOD_NOTIFICATION_LIST, (ctx, params) => {
   if (since !== undefined) query.since = since;
   if (source !== undefined) query.source = source;
   if (includeRead !== undefined) query.includeRead = includeRead;
+  // Pass the caller's deviceId through so the store can apply
+  // `includeRead=false` as a per-device filter. Subscriber is always
+  // present on authenticated dispatch.
+  const sub = ctx.subscriber;
+  if (sub?.notificationDeviceId !== undefined) {
+    query.deviceId = sub.notificationDeviceId;
+  }
   return ctx.state.notificationHub.list(query);
 });
 
@@ -644,7 +650,7 @@ methods.set(METHOD_NOTIFICATION_MARK_READ, (ctx, params) => {
   // ephemeral id at subscription time so their reads still hit the DB.
   // Acceptable transition (see task brief §5).
   if (sub.notificationDeviceId === undefined) {
-    sub.notificationDeviceId = `ephemeral-${Math.random().toString(36).slice(2, 10)}`;
+    sub.notificationDeviceId = `ephemeral-${randomUUID()}`;
   }
   ctx.state.notificationHub.markRead(ids, sub.notificationDeviceId);
   return { ok: true };
@@ -664,13 +670,11 @@ methods.set(METHOD_NOTIFICATION_MARK_IMPORTANT, (ctx, params) => {
   if (typeof importantRaw !== "boolean") {
     throw new RpcError(RPC_ERR.invalidParams, "important must be a boolean");
   }
-  const ok = ctx.state.notificationHub.markImportant(id, importantRaw);
-  if (!ok) {
-    throw new RpcError(
-      RPC_ERR.notificationNotFound,
-      `no such notification: ${id}`,
-    );
-  }
+  // Symmetric with `notification.delete`: unknown ids are silently swallowed
+  // (probably already GC'd or never existed on this backend). Returning
+  // `{ ok: true }` lets clients fire-and-forget without needing per-call
+  // error handling.
+  ctx.state.notificationHub.markImportant(id, importantRaw);
   return { ok: true };
 });
 
