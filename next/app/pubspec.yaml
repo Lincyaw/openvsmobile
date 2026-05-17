@@ -59,6 +59,7 @@ dependencies:
   # cold-start (getInitialAppLink) and warm (uriLinkStream) deliveries so
   # main.dart can route to the notification center.
   app_links: ^6.3.2
+  flutter_highlight: ^0.7.0
 
 dev_dependencies:
   flutter_test:

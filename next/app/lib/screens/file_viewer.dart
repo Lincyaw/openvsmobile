@@ -1,10 +1,64 @@
-// Read-only file viewer. Monospace, no syntax highlighting in v0.
+// Read-only file viewer. Monospace, with syntax highlighting when the
+// filename extension maps to a language the `highlight` package knows;
+// plain monospace otherwise.
 
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_highlight/flutter_highlight.dart';
+import 'package:flutter_highlight/themes/monokai-sublime.dart';
 
 import '../models.dart';
+
+const _kCodeTextStyle = TextStyle(
+  fontFamily: 'monospace',
+  fontSize: 13,
+  height: 1.35,
+);
+
+// Extension → highlight.js language id. Anything not in this map renders as
+// plain monospace text (the original v0 behaviour). Keep entries lowercase;
+// lookup normalises to lowercase before indexing.
+//
+// `.toml` maps to `ini` and `.html` maps to `xml` — the `highlight` package
+// doesn't ship dedicated grammars for those, and these are the closest
+// supported substitutes. `.c` / `.h` ride on the `cpp` grammar for the
+// same reason.
+const Map<String, String> _kLanguageByExtension = {
+  'dart': 'dart',
+  'ts': 'typescript',
+  'tsx': 'typescript',
+  'js': 'javascript',
+  'jsx': 'javascript',
+  'json': 'json',
+  'yaml': 'yaml',
+  'yml': 'yaml',
+  'md': 'markdown',
+  'sh': 'bash',
+  'bash': 'bash',
+  'py': 'python',
+  'go': 'go',
+  'html': 'xml',
+  'css': 'css',
+  'toml': 'ini',
+  'xml': 'xml',
+  'kt': 'kotlin',
+  'swift': 'swift',
+  'rs': 'rust',
+  'c': 'cpp',
+  'h': 'cpp',
+  'cpp': 'cpp',
+  'hpp': 'cpp',
+  'java': 'java',
+  'gradle': 'gradle',
+};
+
+String? _languageForPath(String path) {
+  final fileName = path.split('/').last;
+  final dot = fileName.lastIndexOf('.');
+  if (dot <= 0 || dot == fileName.length - 1) return null;
+  return _kLanguageByExtension[fileName.substring(dot + 1).toLowerCase()];
+}
 
 class FileViewerScreen extends StatelessWidget {
   final String path;
@@ -44,20 +98,43 @@ class FileViewerScreen extends StatelessWidget {
                 ),
               ),
             )
-          : SingleChildScrollView(
-              padding: const EdgeInsets.all(12),
-              child: SelectableText(
-                // `allowMalformed: true` papers over a partial UTF-8 truncation
-                // at the file's tail (rare but legitimate, e.g. a large file
-                // clipped at MAX_FILE_BYTES mid-codepoint) instead of throwing.
-                utf8.decode(content.bytes, allowMalformed: true),
-                style: const TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 13,
-                  height: 1.35,
-                ),
-              ),
-            ),
+          : _TextBody(path: path, bytes: content.bytes),
+    );
+  }
+}
+
+class _TextBody extends StatelessWidget {
+  final String path;
+  final List<int> bytes;
+  const _TextBody({required this.path, required this.bytes});
+
+  @override
+  Widget build(BuildContext context) {
+    // `allowMalformed: true` papers over a partial UTF-8 truncation at the
+    // file's tail (rare but legitimate, e.g. a large file clipped at
+    // MAX_FILE_BYTES mid-codepoint) instead of throwing.
+    final text = utf8.decode(bytes, allowMalformed: true);
+    final language = _languageForPath(path);
+
+    if (language == null) {
+      return SingleChildScrollView(
+        padding: const EdgeInsets.all(12),
+        child: SelectableText(text, style: _kCodeTextStyle),
+      );
+    }
+
+    // `HighlightView` renders into a non-selectable `RichText`; wrapping in
+    // `SelectionArea` re-introduces long-press selection + clipboard copy.
+    return SingleChildScrollView(
+      child: SelectionArea(
+        child: HighlightView(
+          text,
+          language: language,
+          theme: monokaiSublimeTheme,
+          padding: const EdgeInsets.all(12),
+          textStyle: _kCodeTextStyle,
+        ),
+      ),
     );
   }
 }
