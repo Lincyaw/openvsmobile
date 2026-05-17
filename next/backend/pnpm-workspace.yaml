@@ -1,3 +1,9 @@
+# Workspace members. The backend's own package.json is the implicit root
+# member; `packages/*` brings the in-repo plugin SDK in alongside so
+# `@openvsmobile/sdk` resolves as a workspace dep instead of an npm fetch.
+packages:
+  - "packages/*"
+
 # pnpm 11+ requires explicit approval for packages that run lifecycle
 # scripts (build/install/postinstall). Without these entries pnpm refuses
 # to compile node-pty's native binding, so the bundled backend would crash

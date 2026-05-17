@@ -1,0 +1,11 @@
+{
+  "id": "hello",
+  "name": "Hello World",
+  "version": "0.1.0",
+  "entry": { "kind": "node", "path": "index.js" },
+  "activation": ["onStartup"],
+  "capabilities": { "ui": true },
+  "contributes": {
+    "commands": [{ "id": "hello.greet", "title": "Greet" }]
+  }
+}
