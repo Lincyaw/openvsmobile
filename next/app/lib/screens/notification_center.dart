@@ -11,6 +11,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../app_state.dart';
 import '../backend_client.dart';
@@ -118,14 +119,36 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
   Future<void> _onAction(NotificationAction action) async {
     switch (action) {
       case OpenUrlAction():
-        // The url_launcher dep isn't in the project; copy as a graceful
-        // fallback and tell the user. Adding url_launcher is a v0.5
-        // follow-up — out of scope per the brief.
-        await Clipboard.setData(ClipboardData(text: action.url));
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Copied URL: ${action.url}')),
-        );
+        // Capture the messenger before the await so we don't reach for
+        // BuildContext after suspension — see conventions §2
+        // "Cancellation discipline".
+        final messenger = ScaffoldMessenger.of(context);
+        Uri? uri;
+        try {
+          uri = Uri.parse(action.url);
+        } on FormatException {
+          uri = null;
+        }
+        var launched = false;
+        if (uri != null) {
+          try {
+            launched = await launchUrl(
+              uri,
+              mode: LaunchMode.externalApplication,
+            );
+          } on PlatformException catch (e) {
+            // No browser, scheme unsupported, etc. — fall through to the
+            // clipboard path so the user still has a way to act.
+            debugPrint('launchUrl failed: $e');
+            launched = false;
+          }
+        }
+        if (!launched) {
+          await Clipboard.setData(ClipboardData(text: action.url));
+          messenger.showSnackBar(
+            SnackBar(content: Text('Could not open, URL copied: ${action.url}')),
+          );
+        }
       case CopyAction():
         await Clipboard.setData(ClipboardData(text: action.text));
         if (!mounted) return;
@@ -270,15 +293,15 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            ListTile(
-              leading: Icon(isRead
-                  ? Icons.mark_email_unread_outlined
-                  : Icons.mark_email_read_outlined),
-              title: Text(isRead ? 'Mark unread' : 'Mark read'),
-              onTap: () => Navigator.of(ctx).pop(
-                isRead ? 'mark-unread' : 'mark-read',
+            // Design §4.5 long-press menu: "mark read / delete / pin /
+            // mute source". No mark-unread — backend has no inverse RPC
+            // in v0, and the design intentionally omits it.
+            if (!isRead)
+              ListTile(
+                leading: const Icon(Icons.mark_email_read_outlined),
+                title: const Text('Mark read'),
+                onTap: () => Navigator.of(ctx).pop('mark-read'),
               ),
-            ),
             ListTile(
               leading: Icon(
                 n.important
@@ -309,16 +332,6 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
     switch (result) {
       case 'mark-read':
         await notifs.markRead([n.id]);
-      case 'mark-unread':
-        // No backend RPC exists for "unread" in v0; surface a hint. Filing
-        // this as an open question for the reviewer.
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Backend does not expose mark-unread yet (open question).',
-            ),
-          ),
-        );
       case 'pin':
         await notifs.markImportant(n.id, true);
       case 'unpin':

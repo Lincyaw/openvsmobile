@@ -41,6 +41,19 @@ dependencies:
   connectivity_plus: ^6.0.5
   dartssh2: ^2.17.1
   flutter_foreground_task: ^9.2.2
+  # Per-event Android system-tray notifications. `flutter_foreground_task`
+  # manages the single persistent service indicator only; per-notification
+  # tray entries come through here. The two plugins coexist by design.
+  flutter_local_notifications: ^19.0.0
+  # POST_NOTIFICATIONS (Android 13+) runtime permission flow. The
+  # foreground_task plugin has its own check/request methods that talk to
+  # the same OS API, but the brief specifies permission_handler as the
+  # canonical surface for *user-driven* requests and for surfacing the
+  # permanently-denied state.
+  permission_handler: ^11.3.1
+  # External-browser launching for OpenUrlAction. Required for the
+  # verification release — clipboard-only is not user-acceptable.
+  url_launcher: ^6.3.0
 
 dev_dependencies:
   flutter_test:
