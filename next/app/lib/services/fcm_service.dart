@@ -32,6 +32,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../backend_client.dart';
 import '../notification.dart';
+import 'fcm_diagnostics.dart';
 import 'notification_foreground_service.dart';
 
 /// SharedPreferences key for the last token we successfully registered
@@ -46,14 +47,15 @@ const String _kLastSentFcmTokenKey = 'fcm.last-sent-token';
 Future<bool> initFirebaseAndFcm() async {
   try {
     await Firebase.initializeApp();
+    FcmDiagnostics.instance.setFirebaseInit(ok: true);
   } catch (e) {
-    debugPrint('FCM: Firebase.initializeApp failed: $e — FCM disabled');
+    FcmDiagnostics.instance.setFirebaseInit(ok: false, error: e.toString());
     return false;
   }
   try {
     FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
   } catch (e) {
-    debugPrint('FCM: onBackgroundMessage register failed: $e');
+    FcmDiagnostics.instance.append('onBackgroundMessage register failed: $e');
   }
   return true;
 }
@@ -210,16 +212,21 @@ class FcmController {
       // Request POST_NOTIFICATIONS on Android 13+. The OS-level prompt
       // is also fired by the foreground service, but doing it here too
       // is harmless and covers the "user disabled FGS but kept FCM" case.
-      await _messaging.requestPermission();
+      final settings = await _messaging.requestPermission();
+      FcmDiagnostics.instance
+          .setPermission(settings.authorizationStatus.toString());
       _msgSub = FirebaseMessaging.onMessage.listen(onForegroundFcmMessage);
       _refreshSub = _messaging.onTokenRefresh.listen((token) {
+        FcmDiagnostics.instance.append('onTokenRefresh fired');
         unawaited(_registerIfChanged(token));
       });
+      FcmDiagnostics.instance.setControllerInit(ok: true);
     } catch (e) {
       // Firebase not initialized (test env / no GMS) — leave _initialized
       // true so we don't retry on every reconnect, and let registerWith-
       // Backend become a no-op.
-      debugPrint('FCM: init failed (FCM transport disabled): $e');
+      FcmDiagnostics.instance
+          .setControllerInit(ok: false, error: e.toString());
     }
   }
 
@@ -227,14 +234,26 @@ class FcmController {
   /// current FCM token and (if it changed since last successful register)
   /// pushes it to the backend.
   Future<void> registerWithBackend() async {
-    if (!_initialized) return;
-    String? token;
-    try {
-      token = await _messaging.getToken();
-    } catch (e) {
-      debugPrint('FCM: getToken failed: $e');
+    if (!_initialized) {
+      FcmDiagnostics.instance
+          .append('registerWithBackend skipped: controller not initialized');
       return;
     }
+    FcmDiagnostics.instance.append('registerWithBackend: calling getToken()…');
+    String? token;
+    try {
+      // getToken() is known to block forever on some Xiaomi devices; cap it
+      // so the diagnostic state moves forward even when FCM is sick.
+      token = await _messaging.getToken().timeout(
+            const Duration(seconds: 20),
+            onTimeout: () => throw TimeoutException(
+                'getToken() did not return within 20s — likely SERVICE_NOT_AVAILABLE'),
+          );
+    } catch (e) {
+      FcmDiagnostics.instance.setToken(error: e.toString());
+      return;
+    }
+    FcmDiagnostics.instance.setToken(token: token);
     if (token == null || token.isEmpty) return;
     await _registerIfChanged(token);
   }
@@ -242,10 +261,19 @@ class FcmController {
   Future<void> _registerIfChanged(String token) async {
     final prefs = await SharedPreferences.getInstance();
     final last = prefs.getString(_kLastSentFcmTokenKey);
-    if (last == token) return;
+    if (last == token) {
+      FcmDiagnostics.instance
+          .setRegister(status: 'skipped: token unchanged since last register');
+      return;
+    }
     final client = _client;
     final deviceId = _deviceId;
-    if (client == null || deviceId == null || deviceId.isEmpty) return;
+    if (client == null || deviceId == null || deviceId.isEmpty) {
+      FcmDiagnostics.instance.setRegister(
+          status:
+              'skipped: client=${client != null} deviceId=${deviceId ?? "null"}');
+      return;
+    }
     try {
       await client.call('notification.registerFcmToken', {
         'token': token,
@@ -253,11 +281,9 @@ class FcmController {
         'platform': 'android',
       });
       await prefs.setString(_kLastSentFcmTokenKey, token);
-      debugPrint('FCM: token registered with backend');
+      FcmDiagnostics.instance.setRegister(status: 'ok');
     } catch (e) {
-      // Backwards-compat: old backends without the method return
-      // method-not-found (-32601). Swallow — the FGS path still works.
-      debugPrint('FCM: registerFcmToken call failed (ignored): $e');
+      FcmDiagnostics.instance.setRegister(status: 'failed: $e');
     }
   }
 

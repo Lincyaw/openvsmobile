@@ -283,6 +283,7 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
                   appState: _appState!,
                   settingsStore: _settingsStore,
                   currentSettings: _settings!,
+                  fcmController: _fcm,
                   onSettingsSaved: _onSettingsSaved,
                   onNotificationPrefsChanged: _onNotificationPrefsChanged,
                 ),

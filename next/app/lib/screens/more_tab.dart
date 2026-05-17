@@ -4,7 +4,9 @@
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
+import '../services/fcm_service.dart';
 import '../settings_store.dart';
+import 'fcm_debug_screen.dart';
 import 'notification_settings_screen.dart';
 import 'settings_screen.dart';
 import 'ssh_bootstrap_screen.dart';
@@ -13,6 +15,7 @@ class MoreTab extends StatelessWidget {
   final AppState appState;
   final Settings currentSettings;
   final SettingsStore settingsStore;
+  final FcmController fcmController;
   final Future<void> Function(Settings) onSettingsSaved;
   final Future<void> Function() onNotificationPrefsChanged;
   const MoreTab({
@@ -20,6 +23,7 @@ class MoreTab extends StatelessWidget {
     required this.appState,
     required this.currentSettings,
     required this.settingsStore,
+    required this.fcmController,
     required this.onSettingsSaved,
     required this.onNotificationPrefsChanged,
   });
@@ -77,6 +81,21 @@ class MoreTab extends StatelessWidget {
                   settingsStore: settingsStore,
                   onChanged: onNotificationPrefsChanged,
                 ),
+              ),
+            );
+          },
+        ),
+        const Divider(height: 1),
+        ListTile(
+          leading: const Icon(Icons.bug_report_outlined),
+          title: const Text('FCM diagnostics'),
+          subtitle: const Text(
+            'Firebase init status, token, register attempts, recent log',
+          ),
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => FcmDebugScreen(controller: fcmController),
               ),
             );
           },
