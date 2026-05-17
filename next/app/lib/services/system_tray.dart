@@ -127,13 +127,23 @@ class SystemTrayController {
       FlutterLocalNotificationsPlugin();
   bool _initialized = false;
 
+  /// In-flight (or completed) initialization future. `show()` and
+  /// `cancel()` await this before touching the plugin so a
+  /// `notification.show` push that arrives during bootstrap doesn't race
+  /// the async channel-creation calls inside `init()`.
+  Future<void>? _ready;
+
   /// Last platform-level failure observed when posting to the tray.
   /// Exposed so future diagnostic surfaces (a Settings → Diagnostics
   /// page) can render it without having to scrape `debugPrint`. Null
   /// means "no error since last successful post / init".
   final ValueNotifier<String?> lastError = ValueNotifier<String?>(null);
 
-  Future<void> init() async {
+  Future<void> init() {
+    return _ready ??= _init();
+  }
+
+  Future<void> _init() async {
     if (_initialized) return;
     const initSettings = InitializationSettings(
       android: AndroidInitializationSettings('ic_notification'),
@@ -209,6 +219,9 @@ class SystemTrayController {
     int quietStartMinutes = -1,
     int quietEndMinutes = -1,
   }) async {
+    // Wait for channel creation to finish — a `notification.show` push
+    // that races bootstrap would otherwise hit an uninitialized plugin.
+    await _ready;
     if (mutedSources.contains(n.source)) {
       debugPrint('SystemTray: suppressing muted source ${n.source}');
       return;
@@ -249,6 +262,7 @@ class SystemTrayController {
   /// `notification.deleted` / `notification.superseded` handlers in
   /// the main isolate.
   Future<void> cancel(String id) async {
+    await _ready;
     try {
       await _notif.cancel(trayIdForNotification(id));
     } on PlatformException catch (e) {
