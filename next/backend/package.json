@@ -2,7 +2,7 @@
   "name": "openvsmobile-next-backend",
   "version": "0.1.1",
   "private": true,
-  "description": "Mobile code platform backend (P1: auth + workspace + fs + terminal).",
+  "description": "openvsmobile backend — workspaces, terminal, fs, git, notifications, plugin host (forthcoming).",
   "type": "module",
   "engines": {
     "node": ">=25"
@@ -15,16 +15,18 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "better-sqlite3": "^12.10.0",
     "chokidar": "^4.0.3",
     "ignore": "^7.0.3",
     "node-pty": "^1.0.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20.14.0",
     "@types/ws": "^8.5.12",
     "tsx": "^4.19.0",
     "typescript": "^5.5.4",
-    "vitest": "^3.0.0"
+    "vitest": "^4.1.6"
   }
 }

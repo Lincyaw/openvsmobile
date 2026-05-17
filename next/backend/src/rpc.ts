@@ -14,7 +14,7 @@
 
 import type { WebSocket } from "ws";
 import { listDirAt, readFileAt, type ActiveWorkspace } from "./workspace.js";
-import type { ProcessState } from "./state.js";
+import type { ProcessState, Subscriber } from "./state.js";
 import { diffKind, readLog, runDiff } from "./git.js";
 import { parseUnifiedDiff } from "./diffParser.js";
 
@@ -63,6 +63,12 @@ export const RPC_ERR = {
   /// it yet (e.g. workspace model still initializing). Distinct from
   /// invalidParams so the client can choose to retry.
   notReady: -32003,
+  // -32010..-32019 reserved for the notification namespace.
+  /// Returned by `notification.markImportant` / `notification.delete` when
+  /// the supplied id is unknown to the store (already GC'd, never existed,
+  /// or belongs to a different backend). Distinct from invalidParams so the
+  /// client can decide whether to scrub the row from its local cache.
+  notificationNotFound: -32010,
 } as const;
 
 export class RpcError extends Error {
@@ -280,6 +286,12 @@ export interface RpcContext {
   /// handler legitimately needs the socket handle. Tests inject a
   /// minimal stub.
   ws: WebSocket;
+  /// The Subscriber object for the caller's WebSocket. Present on every
+  /// authenticated dispatch; absent only during the pre-auth handshake (the
+  /// connection layer doesn't register a subscriber until `markAuthenticated`
+  /// fires). Per-connection notification subscription state and `deviceId`
+  /// live on this object — see state.ts:Subscriber.
+  subscriber?: Subscriber;
 }
 
 const PROTOCOL_VERSION = "1.0";
@@ -543,6 +555,125 @@ function findWorkspaceOwning(
   return ws;
 }
 
+// ---- Notifications ----
+//
+// All under `notification.*`; subscription is per-connection. Fan-out lives
+// in state.ts (consults the per-Subscriber `notificationsSubscribed` flag).
+// See docs/design/mobile-code-platform.md §4.5.
+
+export const METHOD_NOTIFICATION_SUBSCRIBE = "notification.subscribe";
+export const METHOD_NOTIFICATION_UNSUBSCRIBE = "notification.unsubscribe";
+export const METHOD_NOTIFICATION_LIST = "notification.list";
+export const METHOD_NOTIFICATION_MARK_READ = "notification.markRead";
+export const METHOD_NOTIFICATION_DELETE = "notification.delete";
+export const METHOD_NOTIFICATION_MARK_IMPORTANT = "notification.markImportant";
+
+function requireSubscriber(ctx: RpcContext): Subscriber {
+  // Should never trigger: the connection layer always supplies a Subscriber
+  // for authenticated dispatch. Defensive throw so a future refactor doesn't
+  // silently lose subscription state.
+  if (!ctx.subscriber) {
+    throw new RpcError(RPC_ERR.internal, "subscriber missing from context");
+  }
+  return ctx.subscriber;
+}
+
+function requireStringArray(p: ParamBag, key: string): string[] {
+  const v = p[key];
+  if (!Array.isArray(v)) {
+    throw new RpcError(RPC_ERR.invalidParams, `${key} must be an array`);
+  }
+  const out: string[] = [];
+  for (const item of v) {
+    if (typeof item !== "string" || item.length === 0) {
+      throw new RpcError(
+        RPC_ERR.invalidParams,
+        `${key} entries must be non-empty strings`,
+      );
+    }
+    out.push(item);
+  }
+  return out;
+}
+
+methods.set(METHOD_NOTIFICATION_SUBSCRIBE, (ctx) => {
+  const sub = requireSubscriber(ctx);
+  sub.notificationsSubscribed = true;
+  return { ok: true };
+});
+
+methods.set(METHOD_NOTIFICATION_UNSUBSCRIBE, (ctx) => {
+  const sub = requireSubscriber(ctx);
+  sub.notificationsSubscribed = false;
+  return { ok: true };
+});
+
+methods.set(METHOD_NOTIFICATION_LIST, (ctx, params) => {
+  const p = asBag(params);
+  const since = optionalNonNegativeInt(p, "since");
+  const source = optionalString(p, "source");
+  const includeRead = optionalBool(p, "includeRead");
+  const limitRaw = p.limit;
+  let limit = 50;
+  if (limitRaw !== undefined && limitRaw !== null) {
+    if (
+      typeof limitRaw !== "number" ||
+      !Number.isInteger(limitRaw) ||
+      limitRaw < 1 ||
+      limitRaw > 500
+    ) {
+      throw new RpcError(
+        RPC_ERR.invalidParams,
+        "limit must be an integer in [1, 500]",
+      );
+    }
+    limit = limitRaw;
+  }
+  const query: Parameters<typeof ctx.state.notificationHub.list>[0] = { limit };
+  if (since !== undefined) query.since = since;
+  if (source !== undefined) query.source = source;
+  if (includeRead !== undefined) query.includeRead = includeRead;
+  return ctx.state.notificationHub.list(query);
+});
+
+methods.set(METHOD_NOTIFICATION_MARK_READ, (ctx, params) => {
+  const p = asBag(params);
+  const ids = requireStringArray(p, "ids");
+  const sub = requireSubscriber(ctx);
+  // Old clients that didn't supply client.deviceId on handshake get an
+  // ephemeral id at subscription time so their reads still hit the DB.
+  // Acceptable transition (see task brief §5).
+  if (sub.notificationDeviceId === undefined) {
+    sub.notificationDeviceId = `ephemeral-${Math.random().toString(36).slice(2, 10)}`;
+  }
+  ctx.state.notificationHub.markRead(ids, sub.notificationDeviceId);
+  return { ok: true };
+});
+
+methods.set(METHOD_NOTIFICATION_DELETE, (ctx, params) => {
+  const p = asBag(params);
+  const ids = requireStringArray(p, "ids");
+  ctx.state.notificationHub.delete(ids);
+  return { ok: true };
+});
+
+methods.set(METHOD_NOTIFICATION_MARK_IMPORTANT, (ctx, params) => {
+  const p = asBag(params);
+  const id = requireString(p, "id");
+  const importantRaw = p.important;
+  if (typeof importantRaw !== "boolean") {
+    throw new RpcError(RPC_ERR.invalidParams, "important must be a boolean");
+  }
+  const ok = ctx.state.notificationHub.markImportant(id, importantRaw);
+  if (!ok) {
+    throw new RpcError(
+      RPC_ERR.notificationNotFound,
+      `no such notification: ${id}`,
+    );
+  }
+  return { ok: true };
+});
+
 // -------- 6. Entry points --------
 
 /// Resolve `method` on the dispatch table, validate params, run the handler.
@@ -579,7 +710,25 @@ export function runAuthHandshake(ctx: RpcContext, rawParams: unknown): unknown {
   // protocolVersion is currently informational; we just reject malformed
   // values. Future negotiation lives here.
   optionalString(p, "protocolVersion");
+  // Optional `client.deviceId` (additive — old clients omit it). When
+  // present, store on the connection's Subscriber so `markRead` calls write
+  // it into the notification's `read_by` array. See task brief §5.
+  let deviceId: string | undefined;
+  const clientRaw = p.client;
+  if (clientRaw !== undefined && clientRaw !== null) {
+    if (typeof clientRaw !== "object" || Array.isArray(clientRaw)) {
+      throw new RpcError(
+        RPC_ERR.invalidParams,
+        "client must be an object when provided",
+      );
+    }
+    deviceId = optionalString(clientRaw as ParamBag, "deviceId");
+  }
   ctx.markAuthenticated();
+  // markAuthenticated installs the subscriber; bind deviceId after.
+  if (deviceId !== undefined && ctx.subscriber) {
+    ctx.subscriber.notificationDeviceId = deviceId;
+  }
   return {
     ok: true,
     serverVersion: ctx.serverVersion,

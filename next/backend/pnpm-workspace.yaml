@@ -4,5 +4,6 @@
 # the moment it tries to spawn a terminal. esbuild is pulled in transitively
 # by tsx; it just self-extracts a prebuilt binary.
 allowBuilds:
+  better-sqlite3: true
   esbuild: true
   node-pty: true

@@ -10,6 +10,7 @@ import { WebSocketServer } from "ws";
 import { resolveToken } from "./config.js";
 import { Connection } from "./connection.js";
 import { ProcessState } from "./state.js";
+import { handleNotifyHttp } from "./notifyHttp.js";
 import {
   runtimeInfoPath,
   unlinkRuntimeInfo,
@@ -45,6 +46,22 @@ async function main(): Promise<void> {
       res.statusCode = 200;
       res.setHeader("content-type", "text/plain");
       res.end("ok");
+      return;
+    }
+    // POST /notify — sender API for the notification system (§4.5). Mounted
+    // on the same server as /rpc; same bearer token. Async handler returns
+    // true once it has written a response.
+    if (req.url === "/notify") {
+      handleNotifyHttp(req, res, {
+        expectedToken: token,
+        hub: state.notificationHub,
+      }).catch((err) => {
+        console.error("[notify] handler error:", err);
+        if (!res.headersSent) {
+          res.statusCode = 500;
+          res.end();
+        }
+      });
       return;
     }
     res.statusCode = 404;

@@ -45,6 +45,10 @@ silently reinitialized.
   in both directions, exactly as described in §4.1 of the design doc.
   Handshake (`auth.handshake`) must be the first message; the
   connection is closed with code 1008 on a bad token.
+- `POST /notify` — Bearer-token-authed sender API for the notification
+  system (§4.5). Same token as the WebSocket; mounted on the same HTTP
+  server. Body is a `Notification` minus server-assigned fields. See
+  the `mobile-notify` CLI in `bin/` for an out-of-the-box sender.
 
 ### Smoke-testing without the Flutter app
 
@@ -135,6 +139,12 @@ Frontend → Backend:
 | `terminal.dispose`    | `{ sessionId }` → `{}` |
 | `terminal.list`       | `{ workspaceId? }` → `{ sessions }` |
 | `terminal.history`    | `{ sessionId, maxBytes? }` → `{ sessionId, scrollbackBase64, scrollbackOffsetEnd, bytesDropped, lengthBytes }`. Returns the most-recent up-to-`maxBytes` bytes from the per-session scrollback (default cap 1 MiB, override via `OPENVSMOBILE_SCROLLBACK_BYTES`). `scrollbackOffsetEnd` is the running `seqEnd` at the moment the snapshot was assembled; the returned bytes cover `[scrollbackOffsetEnd - lengthBytes, scrollbackOffsetEnd)`. `bytesDropped` is non-zero once the buffer has wrapped. |
+| `notification.subscribe`     | `{}` → `{ ok: true }`. Per-connection toggle; fan-out skips unsubscribed connections. |
+| `notification.unsubscribe`   | `{}` → `{ ok: true }`. |
+| `notification.list`          | `{ since?, limit, source?, includeRead? }` → `{ items, cursor? }`. `cursor` (oldest returned timestamp) only present when the page filled. |
+| `notification.markRead`      | `{ ids }` → `{ ok: true }`. Writes the connection's `deviceId` (from handshake) into each row's `read_by` array; broadcasts `notification.readChanged` to subscribed peers. |
+| `notification.delete`        | `{ ids }` → `{ ok: true }`. Broadcasts `notification.deleted`. |
+| `notification.markImportant` | `{ id, important }` → `{ ok: true }`. Pinning clears the TTL; unpinning a previously-pinned row re-arms a default TTL. Unknown id → `-32010 notificationNotFound`. |
 
 Backend → Frontend (notifications):
 
@@ -143,6 +153,10 @@ Backend → Frontend (notifications):
 | `terminal.data`     | `{ sessionId, workspaceId, dataBase64, seqEnd }`. `seqEnd` is a per-session monotonic byte offset at the *end* of this chunk; clients use it to drop duplicates after a `terminal.history` replay. |
 | `terminal.exit`     | `{ sessionId, workspaceId, exitCode }` |
 | `workspace.closed`  | `{ id }` — broadcast to every subscriber when a workspace is closed (user-initiated or on backend shutdown). |
+| `notification.show`        | `{ notification }` — full Notification, sent on every new POST /notify (including supersedes-driven inserts). |
+| `notification.superseded`  | `{ oldId, newId }` — fires before the matching `notification.show` when the new row has a `supersedes` field. |
+| `notification.readChanged` | `{ ids, readByDevice, ts }` — multi-device read-state sync. |
+| `notification.deleted`     | `{ ids }` — fires on `notification.delete` and on GC sweeps. |
 
 JSON-RPC error code `-32001` ("capability denied") is reserved for the
 future plugin host and unused in this iteration.

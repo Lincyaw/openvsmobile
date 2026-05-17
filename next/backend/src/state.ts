@@ -19,11 +19,38 @@ import {
   type ActiveWorkspace,
 } from "./workspace.js";
 import type { TerminalSnapshot } from "./terminal.js";
+import {
+  NotificationHub,
+  NotificationStore,
+} from "./notifications.js";
 
 /// Each authenticated WebSocket registers a Subscriber. The connection is
 /// responsible for unregistering when the socket closes.
+///
+/// `notificationDeviceId` is set during handshake when the client supplies
+/// `client.deviceId`. Older clients omit it and get an ephemeral per-
+/// connection id so `markRead` calls don't silently no-op — but those reads
+/// don't sync to future deviceId-aware sessions (acceptable transition; see
+/// task brief §5).
+///
+/// `notificationsSubscribed` toggles via `notification.subscribe` /
+/// `unsubscribe`. The fan-out helper consults it on every emit so a freshly-
+/// authenticated connection that hasn't subscribed receives nothing.
 export interface Subscriber {
   readonly ws: WebSocket;
+  notificationDeviceId?: string;
+  notificationsSubscribed?: boolean;
+}
+
+export interface ProcessStateOptions {
+  /// Override the notifications DB path. Tests pass a temp dir; production
+  /// callers leave this undefined and let `notifications.ts` resolve from
+  /// $OPENVSMOBILE_NOTIFICATIONS_DB or the default location.
+  notificationDbPath?: string;
+  /// Skip starting the GC sweep timer. Tests use this so they can drive the
+  /// sweep manually via `notificationHub.runGcOnce()`. Production always
+  /// leaves this false.
+  disableGcWorker?: boolean;
 }
 
 export class ProcessState {
@@ -40,9 +67,34 @@ export class ProcessState {
   /// fine.
   public readonly diffCache = new BoundedMap<string, unknown>(64);
 
+  /// Notification persistence + fan-out hub. Survives client disconnects
+  /// (like everything else owned by ProcessState).
+  public readonly notificationHub: NotificationHub;
+
   private readonly subscribers = new Set<Subscriber>();
 
-  constructor() {
+  constructor(opts: ProcessStateOptions = {}) {
+    const storeOpts = opts.notificationDbPath
+      ? { dbPath: opts.notificationDbPath }
+      : {};
+    const store = new NotificationStore(storeOpts);
+    this.notificationHub = new NotificationHub(store);
+    this.notificationHub.attachFanOut({
+      show: (n) => this.broadcastNotification("notification.show", { notification: n }),
+      superseded: (oldId, newId) =>
+        this.broadcastNotification("notification.superseded", { oldId, newId }),
+      readChanged: (ids, readByDevice, ts) =>
+        this.broadcastNotification("notification.readChanged", {
+          ids,
+          readByDevice,
+          ts,
+        }),
+      deleted: (ids) => this.broadcastNotification("notification.deleted", { ids }),
+    });
+    if (opts.disableGcWorker !== true) {
+      this.notificationHub.startGcWorker();
+    }
+
     this.workspaces = new WorkspaceRegistry(
       // terminal data → broadcast to every subscriber.
       (sessionId, data, seqEnd) => {
@@ -140,6 +192,7 @@ export class ProcessState {
     for (const id of ids) {
       this.broadcastWorkspaceClosed(id);
     }
+    this.notificationHub.close();
   }
 
   /// Drop every cached diff that mentions the given workspace. Called from
@@ -148,6 +201,18 @@ export class ProcessState {
   /// output depends on every blob in the working tree.
   public invalidateDiffsForWorkspace(workspaceId: string): void {
     this.diffCache.deleteWhere((key) => key.startsWith(`${workspaceId} `));
+  }
+
+  /// Broadcast a `notification.*` push frame to every subscriber that has
+  /// called `notification.subscribe`. Unsubscribed connections never see
+  /// these frames — that's how a foreground service can drop notifications
+  /// (e.g. when the user toggles the Settings off) without dropping the
+  /// connection.
+  private broadcastNotification(method: string, params: unknown): void {
+    for (const sub of this.subscribers) {
+      if (sub.notificationsSubscribed !== true) continue;
+      sendNotification(sub.ws, method, params);
+    }
   }
 }
 

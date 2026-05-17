@@ -151,14 +151,38 @@ log "installing production deps for linux-${ARCH} (pnpm, frozen lockfile, hoiste
       --ignore-scripts=false
 )
 
-# Sanity-check that the layout is actually relocatable: with hoisted mode
-# pnpm leaves a tiny `node_modules/.pnpm/lock.yaml` (its own bookkeeping)
-# but should produce NO symlinks. The bundle gets extracted to an
-# arbitrary install path on the target host, so any symlink — relative or
-# absolute — pointing into pnpm's content-addressed store is a bug.
-if [[ -n "$(find "$BUILD_DIR/node_modules" -mindepth 1 -maxdepth 3 -type l -print -quit 2>/dev/null)" ]]; then
-  echo "error: pnpm produced symlinks under node_modules; bundle is not relocatable" >&2
-  find "$BUILD_DIR/node_modules" -mindepth 1 -maxdepth 3 -type l >&2 | head -5
+# Sanity-check that the layout is actually relocatable. The bundle gets
+# extracted to an arbitrary install path on the target host, so any symlink
+# pointing into pnpm's content-addressed store (which lives outside the
+# extraction root) is a bug. Relative symlinks that stay *inside*
+# node_modules are fine — npm/yarn-classic both produce these for `.bin/`
+# entries, and they resolve correctly post-relocation.
+BAD_SYMLINKS=()
+while IFS= read -r link; do
+  target="$(readlink "$link")"
+  # Absolute target → definitely points outside the bundle.
+  if [[ "$target" = /* ]]; then
+    BAD_SYMLINKS+=("$link -> $target (absolute)")
+    continue
+  fi
+  # Relative target — resolve against the link's parent and confirm it
+  # stays under $BUILD_DIR/node_modules.
+  parent="$(dirname "$link")"
+  resolved="$(cd "$parent" && readlink -f "$target" 2>/dev/null || true)"
+  if [[ -z "$resolved" ]]; then
+    # Dangling — bundle won't work either way.
+    BAD_SYMLINKS+=("$link -> $target (dangling)")
+    continue
+  fi
+  case "$resolved" in
+    "$BUILD_DIR/node_modules"/*) ;;  # ok — stays inside
+    *) BAD_SYMLINKS+=("$link -> $target (escapes node_modules)") ;;
+  esac
+done < <(find "$BUILD_DIR/node_modules" -type l 2>/dev/null)
+
+if [[ ${#BAD_SYMLINKS[@]} -gt 0 ]]; then
+  echo "error: pnpm produced symlinks under node_modules that escape the bundle:" >&2
+  printf '  %s\n' "${BAD_SYMLINKS[@]:0:10}" >&2
   exit 1
 fi
 
@@ -195,6 +219,20 @@ cp -R "$COMPILE_DIR/dist" "$BUNDLE_DIR/dist"
 
 # Production node_modules
 cp -R "$BUILD_DIR/node_modules" "$BUNDLE_DIR/node_modules"
+
+# CLI tools (mobile-notify et al). Single-file ESM scripts that import only
+# node:* builtins — no dependency on the compiled dist/. Users invoke them
+# directly with the bundled portable Node:
+#   ~/.local/share/openvsmobile/current/node/bin/node \
+#       ~/.local/share/openvsmobile/current/bin/mobile-notify.mjs ...
+# (install.sh symlinks bin/ onto $PATH; see docs/design §4.5.)
+if [[ -d "$BACKEND_DIR/bin" ]]; then
+  mkdir -p "$BUNDLE_DIR/bin"
+  cp -R "$BACKEND_DIR/bin/." "$BUNDLE_DIR/bin/"
+  # Ensure every script in bin/ is executable in the staged copy — git's
+  # filemode bit may have been lost during checkout on some hosts.
+  find "$BUNDLE_DIR/bin" -type f -name '*.mjs' -exec chmod +x {} +
+fi
 
 # A "production-mode" package.json — same content, but stripped of
 # devDependencies and scripts that aren't useful at runtime.

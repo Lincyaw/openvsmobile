@@ -33,6 +33,14 @@ export interface ConnectionDeps {
 
 export class Connection implements Subscriber {
   public readonly ws: WebSocket;
+  /// Set during `auth.handshake` when the client supplies
+  /// `client.deviceId`. Reads from `notification.markRead` use this as the
+  /// reader id; absent clients get an ephemeral id at first markRead call.
+  public notificationDeviceId?: string;
+  /// Per-connection notification subscription. Off until the client calls
+  /// `notification.subscribe`; fan-out helper in state.ts skips any
+  /// subscriber where this is not strictly `true`.
+  public notificationsSubscribed?: boolean;
   private readonly state: ProcessState;
   private readonly expectedToken: string;
   private readonly serverVersion: string;
@@ -71,6 +79,11 @@ export class Connection implements Subscriber {
         // must never receive notifications.
         this.state.addSubscriber(this);
       },
+      // The Connection itself implements Subscriber, so handlers can update
+      // per-connection notification flags (subscribed / deviceId) by mutating
+      // this object directly. Only visible to authenticated dispatch — pre-
+      // auth handshake doesn't surface subscriber state to handlers.
+      subscriber: this,
     };
   }
 
