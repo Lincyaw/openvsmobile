@@ -65,11 +65,27 @@ it is either deferred or assigned to a plugin.
    via a list of currently-open workspaces, a recents dropdown, or a
    step-by-step directory picker. The client never asks the user to
    type a raw filesystem path.
-2. **File browser + git decorations** — directory tree with
-   mobile-appropriate gestures; git status decorates entries in place
-   (modified / added / deleted / untracked badges). Tapping a changed
-   file offers a `git diff` view. Write operations (commit / push /
-   branch) are deferred or pushed to a plugin.
+2. **File browser + git decorations + diff viewer.** The Files tab
+   renders a single directory tree fed by `fs.listDir`; git status
+   decorates each file in place (M / A / D / ? / U badges; folder
+   entries show a neutral count badge — see §4.1 "Decoration is
+   file-level"). A thin status bar at the top reads
+   `<branch> · ↑N ↓M · K changed`; non-git workspaces show
+   `Not a git repository` and the bar is inert. **The status bar is not
+   a control surface** — branch switches, commits, fetches, pulls all
+   happen in the terminal (first principle #6); the bar exists to
+   observe, not to act. Tapping the bar enters a **Changes view**:
+   same tree, filtered to changed files and their ancestor chains,
+   with directory expansion state preserved across the toggle. Tapping
+   a file in Changes view opens the diff (unified, hunks default
+   expanded, binary / >500KB / deleted files render an explanatory
+   placeholder, not the diff). Tapping a file in normal view opens
+   the read-only viewer — to see a diff, enter Changes view. **No
+   write operations** (commit / push / branch / stage / unstage /
+   stash) live in the app's core; an opinionated git workflow is a
+   plugin's job. **No git-log UI in v0**: the `git.log` RPC exists for
+   future plugin consumers but no core UI exposes it; users wanting
+   history run `git log` in the terminal.
 3. **Code viewer** — syntax-highlighted read-mostly viewer with
    selection; selection becomes a structured context object that any
    plugin can consume.
