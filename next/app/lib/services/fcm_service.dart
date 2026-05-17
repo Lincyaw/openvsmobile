@@ -33,7 +33,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../backend_client.dart';
 import '../notification.dart';
 import 'fcm_diagnostics.dart';
-import 'notification_foreground_service.dart';
+import 'system_tray.dart';
 
 /// SharedPreferences key for the last token we successfully registered
 /// with the backend. We avoid re-registering on every launch by diffing

@@ -8,7 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:openvsmobile_next/notification.dart';
-import 'package:openvsmobile_next/services/notification_foreground_service.dart';
+import 'package:openvsmobile_next/services/system_tray.dart';
 import 'package:openvsmobile_next/settings_store.dart';
 
 void main() {
