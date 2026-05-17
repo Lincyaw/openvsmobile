@@ -59,6 +59,15 @@ class TerminalsNotifier extends ChangeNotifier {
         _currentWorkspaceId = currentWorkspaceId,
         _reportError = reportError;
 
+  /// Bumps on every per-session preview-buffer mutation. The Terminal-tab
+  /// session list listens to this for cheap repaints without going through
+  /// AppState's broader notifyListeners cascade (which would rebuild every
+  /// other tab on every PTY byte). Repaints are batched within a frame
+  /// because the ValueNotifier only fires distinct values, but we increment
+  /// per chunk so a test pumping a single frame after one chunk sees the
+  /// update.
+  final ValueNotifier<int> previewVersion = ValueNotifier<int>(0);
+
   // Per-workspace terminal session lists (mirror of the backend state).
   final Map<String, List<TerminalSession>> _termsByWorkspace = {};
 
@@ -92,6 +101,15 @@ class TerminalsNotifier extends ChangeNotifier {
   final Map<String, List<_BacklogChunk>> _backlog = {};
   final Map<String, int> _backlogBytes = {};
 
+  // Per-session preview ring buffer. Holds the last ~512 bytes of raw output
+  // so the session-list "last message" preview can ANSI-strip and pick the
+  // tail line. The xterm Terminal owns its own scrollback; this buffer feeds
+  // ONLY the list-view preview (issue #63 implementation note: "keep a small
+  // ring buffer ... sample the tail").
+  static const int _previewBufferCap = 512;
+  final Map<String, Uint8List> _previewBuffer = {};
+  final Map<String, int> _previewLastDataAt = {};
+
   // ---- Getters ----
 
   /// Terminal sessions belonging to the currently-focused workspace.
@@ -121,6 +139,17 @@ class TerminalsNotifier extends ChangeNotifier {
     // Flush any backlog that accumulated before the Terminal existed.
     _flushBacklog(sessionId, t);
     return t;
+  }
+
+  /// Last-line preview for [sessionId]'s session-list row. Returns null when
+  /// the session has produced no output yet. The shape is intentionally
+  /// minimal: the widget formats `text` (already ANSI-stripped and
+  /// truncated) and `lastDataAt` (epoch ms, last byte arrival) for display.
+  TerminalPreview previewFor(String sessionId) {
+    final buffer = _previewBuffer[sessionId];
+    final ts = _previewLastDataAt[sessionId];
+    final text = buffer == null ? null : extractPreviewLine(buffer);
+    return TerminalPreview(text: text, lastDataAt: ts);
   }
 
   // ---- Snapshot installation (called from AppState.refreshWorkspaces) ----
@@ -168,6 +197,10 @@ class TerminalsNotifier extends ChangeNotifier {
     final term = _buildTerminal(sessionId);
     if (bytes.isNotEmpty) {
       term.write(utf8.decode(bytes, allowMalformed: true));
+      // Seed the preview from history so the list-view row shows the
+      // session's last output immediately after a reconnect-replay,
+      // without waiting for a fresh live chunk.
+      _appendPreview(sessionId, Uint8List.fromList(bytes));
     }
     // Replace any previous Terminal for this session and bump the generation
     // so the UI rebuilds the TerminalView (it keys on sessionId + gen).
@@ -193,6 +226,8 @@ class TerminalsNotifier extends ChangeNotifier {
     _lastWrittenSeq.clear();
     _backlog.clear();
     _backlogBytes.clear();
+    _previewBuffer.clear();
+    _previewLastDataAt.clear();
     notifyListeners();
   }
 
@@ -284,6 +319,7 @@ class TerminalsNotifier extends ChangeNotifier {
     final sessionId = p['sessionId'] as String;
     final dataB64 = p['dataBase64'] as String;
     final bytes = Uint8List.fromList(base64Decode(dataB64));
+    _appendPreview(sessionId, bytes);
     // seqEnd is required by the post-P1.5 backend. Older backends without it
     // will emit null/undefined; we tolerate that by falling back to a running
     // counter derived from chunk length so dedupe still does *something*
@@ -341,6 +377,8 @@ class TerminalsNotifier extends ChangeNotifier {
     _lastWrittenSeq.remove(sessionId);
     _backlog.remove(sessionId);
     _backlogBytes.remove(sessionId);
+    _previewBuffer.remove(sessionId);
+    _previewLastDataAt.remove(sessionId);
     if (wsId != null) {
       final list = _termsByWorkspace[wsId];
       if (list != null) {
@@ -372,6 +410,8 @@ class TerminalsNotifier extends ChangeNotifier {
       _lastWrittenSeq.remove(s.id);
       _backlog.remove(s.id);
       _backlogBytes.remove(s.id);
+      _previewBuffer.remove(s.id);
+      _previewLastDataAt.remove(s.id);
     }
     notifyListeners();
   }
@@ -422,6 +462,88 @@ class TerminalsNotifier extends ChangeNotifier {
     }
     if (newLast > lastSeq) _lastWrittenSeq[sessionId] = newLast;
   }
+
+  /// Append [bytes] to the per-session preview ring buffer, trim to the cap,
+  /// stamp the last-data clock, and bump `previewVersion` so list rows
+  /// repaint. Kept separate from the xterm write path because preview
+  /// updates fan out to a dedicated listenable — they must not piggyback on
+  /// the broader AppState notify cascade.
+  void _appendPreview(String sessionId, Uint8List bytes) {
+    if (bytes.isEmpty) return;
+    final existing = _previewBuffer[sessionId];
+    Uint8List merged;
+    if (existing == null || existing.isEmpty) {
+      merged = bytes;
+    } else {
+      final combined = Uint8List(existing.length + bytes.length)
+        ..setRange(0, existing.length, existing)
+        ..setRange(existing.length, existing.length + bytes.length, bytes);
+      merged = combined;
+    }
+    if (merged.length > _previewBufferCap) {
+      merged = merged.sublist(merged.length - _previewBufferCap);
+    }
+    _previewBuffer[sessionId] = merged;
+    _previewLastDataAt[sessionId] = DateTime.now().millisecondsSinceEpoch;
+    previewVersion.value = previewVersion.value + 1;
+  }
+
+  /// Test seam: feed bytes through the preview pipeline without involving
+  /// the xterm Terminal or a base64 wrap. Production code drives this via
+  /// `onTerminalData`. Not marked `@visibleForTesting` because AppState
+  /// re-exports it through its own `@visibleForTesting` wrapper; the
+  /// `debug` prefix signals the intent.
+  void debugInjectOutput(String sessionId, List<int> bytes) {
+    _appendPreview(sessionId, Uint8List.fromList(bytes));
+  }
+
+  @override
+  void dispose() {
+    previewVersion.dispose();
+    super.dispose();
+  }
+}
+
+/// Last-line snapshot for the session-list preview row. Both fields can be
+/// null when the session has produced no output yet.
+@immutable
+class TerminalPreview {
+  /// ANSI-stripped, truncated last non-empty line. Null when there's nothing
+  /// to show yet.
+  final String? text;
+
+  /// Epoch ms of the most recent byte that fed the preview buffer.
+  final int? lastDataAt;
+
+  const TerminalPreview({required this.text, required this.lastDataAt});
+}
+
+/// Strip ANSI escape sequences from [bytes] (interpreted as UTF-8) and
+/// return the last non-empty line, truncated to [maxLen] graphemes with an
+/// ellipsis. Pure / no I/O — exposed at top level so tests can pin the
+/// stripping behavior without instantiating a TerminalsNotifier.
+String? extractPreviewLine(Uint8List bytes, {int maxLen = 60}) {
+  if (bytes.isEmpty) return null;
+  final raw = utf8.decode(bytes, allowMalformed: true);
+  // Order matters: OSC first (it embeds CSI-like chars), then CSI, then
+  // single-byte ESC introducers. Carriage returns inside a line collapse to
+  // empty so a `progress…\r` doesn't leave the cursor return as the
+  // "preview".
+  final stripped = raw
+      .replaceAll(RegExp(r'\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)'), '')
+      .replaceAll(RegExp(r'\x1B\[[0-9;?]*[ -/]*[@-~]'), '')
+      .replaceAll(RegExp(r'\x1B[@-Z\\-_]'), '')
+      .replaceAll(RegExp(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]'), '');
+  final lines = stripped.split('\n');
+  for (var i = lines.length - 1; i >= 0; i--) {
+    final line = lines[i].replaceAll('\r', '').trimRight();
+    if (line.trim().isEmpty) continue;
+    if (line.length <= maxLen) return line;
+    // Truncate at the maxLen boundary; the ellipsis itself counts toward
+    // the cap so the displayed string never exceeds maxLen chars.
+    return '${line.substring(0, maxLen - 1)}…';
+  }
+  return null;
 }
 
 class _BacklogChunk {

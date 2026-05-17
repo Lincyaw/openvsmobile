@@ -125,6 +125,19 @@ class AppState extends ChangeNotifier {
   Terminal terminalFor(String sessionId) =>
       _terminals.terminalFor(sessionId);
 
+  /// Listenable that fires whenever any session's preview ring buffer
+  /// changes. The Terminal-tab list view listens to this for cheap
+  /// per-chunk repaints — using AppState.notifyListeners would rebuild
+  /// every other tab/screen on every PTY byte. See
+  /// `TerminalsNotifier.previewVersion`.
+  Listenable get terminalPreviewChanges => _terminals.previewVersion;
+
+  /// Snapshot of the last-line preview for [sessionId]. Returns an empty
+  /// snapshot (text + ts both null) for sessions that haven't produced
+  /// output yet.
+  TerminalPreview terminalPreviewFor(String sessionId) =>
+      _terminals.previewFor(sessionId);
+
   /// File tree root for [workspaceId], or null if no workspace is open or the
   /// tree hasn't been initialized yet. Screens call [refreshFileTree] to
   /// (re)build it.
@@ -740,6 +753,21 @@ class AppState extends ChangeNotifier {
     _active = [ws];
     _current = ws;
     notifyListeners();
+  }
+
+  /// Test-only seam: seed the terminal session list for [workspaceId]
+  /// without going over the wire. The Terminal-tab widget tests need a
+  /// known set of sessions to render rows against.
+  @visibleForTesting
+  void debugSeedTerminals(String workspaceId, List<TerminalSession> sessions) {
+    _terminals.setSessionsForWorkspace(workspaceId, sessions);
+  }
+
+  /// Test-only seam: feed bytes through a session's preview pipeline.
+  /// Production drives this via `terminal.data` notifications.
+  @visibleForTesting
+  void debugInjectTerminalOutput(String sessionId, List<int> bytes) {
+    _terminals.debugInjectOutput(sessionId, bytes);
   }
 
   @override
