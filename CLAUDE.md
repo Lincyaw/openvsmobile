@@ -8,6 +8,8 @@ A **mobile-native code workbench** with a plugin platform. The phone-side surfac
 
 The canonical design lives at [`docs/design/mobile-code-platform.md`](docs/design/mobile-code-platform.md). When this file and the design doc disagree, **the design doc wins.**
 
+Project-specific conventions for both code and review are at [`docs/conventions.md`](docs/conventions.md). Both human and agent reviewers apply that rulebook to anything under `next/`.
+
 **Hard non-goals:**
 - A mobile rendering of desktop VSCode.
 - Running VSCode extension `.js` code or stubbing `vscode.*`. (We borrow VSCode's *data formats* — themes, grammars — not its runtime.)
