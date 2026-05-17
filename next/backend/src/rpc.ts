@@ -581,6 +581,8 @@ export const METHOD_NOTIFICATION_LIST = "notification.list";
 export const METHOD_NOTIFICATION_MARK_READ = "notification.markRead";
 export const METHOD_NOTIFICATION_DELETE = "notification.delete";
 export const METHOD_NOTIFICATION_MARK_IMPORTANT = "notification.markImportant";
+export const METHOD_NOTIFICATION_REGISTER_FCM_TOKEN =
+  "notification.registerFcmToken";
 
 function requireSubscriber(ctx: RpcContext): Subscriber {
   // Should never trigger: the connection layer always supplies a Subscriber
@@ -675,6 +677,20 @@ methods.set(METHOD_NOTIFICATION_DELETE, (ctx, params) => {
   const p = asBag(params);
   const ids = requireStringArray(p, "ids");
   ctx.state.notificationHub.delete(ids);
+  return { ok: true };
+});
+
+methods.set(METHOD_NOTIFICATION_REGISTER_FCM_TOKEN, (ctx, params) => {
+  // Phone-side registration of the device's FCM token. Called on app
+  // startup after handshake and again on `onTokenRefresh`. Persisted by
+  // deviceId so re-registration from the same device overwrites. Backends
+  // without FCM credentials still accept the call (it just sits in the
+  // table unused) — the app shouldn't have to probe for support.
+  const p = asBag(params);
+  const token = requireString(p, "token");
+  const deviceId = requireString(p, "deviceId");
+  const platform = requireString(p, "platform");
+  ctx.state.notificationHub.registerFcmToken({ deviceId, token, platform });
   return { ok: true };
 });
 

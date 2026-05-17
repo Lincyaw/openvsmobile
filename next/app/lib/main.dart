@@ -2,6 +2,8 @@
 // wires connectivity + app-lifecycle to the always-on reconnect loop, and
 // drops the user into either the home shell or the first-run settings prompt.
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
@@ -11,14 +13,19 @@ import 'screens/home_shell.dart';
 import 'screens/notification_center.dart';
 import 'screens/settings_screen.dart';
 import 'services/connectivity_probe.dart';
+import 'services/fcm_service.dart';
 import 'services/notification_foreground_service.dart';
 import 'settings_store.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
   // The foreground-service ↔ main-isolate SendPort must be wired before
   // `runApp` so that taps on tray notifications posted while the app was
   // dead are still routed correctly when the app launches.
   FlutterForegroundTask.initCommunicationPort();
+  // Best-effort FCM init — failures (e.g. no GMS / missing config) are
+  // logged and ignored. The foreground-service path keeps working.
+  await initFirebaseAndFcm();
   runApp(const OpenVsMobileApp());
 }
 
@@ -36,8 +43,10 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
       BackendClient(probe: ConnectivityPlusProbe());
   final NotificationServiceController _fgService =
       NotificationServiceController();
+  final FcmController _fcm = FcmController();
   final GlobalKey<NavigatorState> _navKey = GlobalKey<NavigatorState>();
   AppState? _appState;
+  bool _fcmListenerWired = false;
 
   Settings? _settings;
   String? _deviceId;
@@ -73,12 +82,35 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
       );
       await _client.start();
       await _maybeStartForegroundService();
+      await _initFcm(did);
     }
     // If we were launched by a tap on a tray notification, route to the
     // notification center after the first frame.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _consumePendingTapIfAny();
     });
+  }
+
+  /// Wire FCM once we have a deviceId. The token-register call is fired on
+  /// every backend (re)connect (and on token rotation), so it survives
+  /// transient drops without re-init. Safe to call multiple times.
+  Future<void> _initFcm(String deviceId) async {
+    await _fcm.init(client: _client, deviceId: deviceId);
+    if (!_fcmListenerWired) {
+      _fcmListenerWired = true;
+      _client.state.addListener(_onClientStateForFcm);
+    }
+    // Fire once now in case we're already past the connected transition
+    // (race between bootstrap and the first ws handshake).
+    if (_client.state.value == BackendConnectionState.connected) {
+      unawaited(_fcm.registerWithBackend());
+    }
+  }
+
+  void _onClientStateForFcm() {
+    if (_client.state.value == BackendConnectionState.connected) {
+      unawaited(_fcm.registerWithBackend());
+    }
   }
 
   Future<void> _maybeStartForegroundService() async {
@@ -111,6 +143,20 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
       if (!mounted) return;
       setState(() => _notifPrefs = prefs.copyWith(backgroundEnabled: false));
       return;
+    }
+    // Without battery-optimization exemption, Doze freezes the service
+    // isolate's WebSocket after a few minutes of background — the persistent
+    // tray notification keeps showing (Android renders it from a snapshot)
+    // but `notification.show` pushes never reach `_handleShow`. We prompt
+    // once; if the user declines we still start the service so foreground
+    // delivery keeps working.
+    final ignoringBattery =
+        await FlutterForegroundTask.isIgnoringBatteryOptimizations;
+    debugPrint('FGS: isIgnoringBatteryOptimizations=$ignoringBattery');
+    if (!ignoringBattery) {
+      final granted =
+          await FlutterForegroundTask.requestIgnoreBatteryOptimization();
+      debugPrint('FGS: requestIgnoreBatteryOptimization=$granted');
     }
     debugPrint('FGS: calling _fgService.start...');
     final ok = await _fgService.start(
@@ -160,6 +206,10 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
       // Restart the service with new params, if it's running or should be.
       await _fgService.stop();
       await _maybeStartForegroundService();
+      final did = _deviceId;
+      if (did != null && did.isNotEmpty) {
+        await _initFcm(did);
+      }
     }
   }
 
@@ -202,6 +252,10 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    if (_fcmListenerWired) {
+      _client.state.removeListener(_onClientStateForFcm);
+    }
+    unawaited(_fcm.dispose());
     _appState?.dispose();
     _client.dispose();
     super.dispose();

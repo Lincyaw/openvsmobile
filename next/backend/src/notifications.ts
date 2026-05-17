@@ -364,6 +364,9 @@ export class NotificationStore {
   private readonly deleteByIdStmt: Database.Statement;
   private readonly selectExpiredStmt: Database.Statement;
   private readonly deleteExpiredStmt: Database.Statement;
+  private readonly upsertFcmTokenStmt: Database.Statement;
+  private readonly selectAllFcmTokensStmt: Database.Statement;
+  private readonly deleteFcmTokenStmt: Database.Statement;
   /// Counts successful inserts since process start. Used by the hub to
   /// decide when to fire an opportunistic GC sweep (every Nth insert).
   /// Not persisted — a process restart is a fine moment to defer the next
@@ -423,6 +426,23 @@ export class NotificationStore {
         AND important = 0
         AND superseded_by IS NULL
     `);
+    // FCM token registry. Keyed by deviceId so re-registration from the same
+    // device replaces (one device → one current token; an old token from
+    // the same device is invalid by definition after the OS rotates it).
+    this.upsertFcmTokenStmt = this.db.prepare(`
+      INSERT INTO fcm_tokens (device_id, token, platform, updated_at)
+      VALUES (@device_id, @token, @platform, @updated_at)
+      ON CONFLICT(device_id) DO UPDATE SET
+        token = excluded.token,
+        platform = excluded.platform,
+        updated_at = excluded.updated_at
+    `);
+    this.selectAllFcmTokensStmt = this.db.prepare(`
+      SELECT token FROM fcm_tokens
+    `);
+    this.deleteFcmTokenStmt = this.db.prepare(`
+      DELETE FROM fcm_tokens WHERE token = ?
+    `);
   }
 
   private initSchema(): void {
@@ -452,6 +472,12 @@ export class NotificationStore {
       CREATE INDEX IF NOT EXISTS idx_notifs_ts        ON notifications(timestamp DESC);
       CREATE INDEX IF NOT EXISTS idx_notifs_source_ts ON notifications(source, timestamp DESC);
       CREATE INDEX IF NOT EXISTS idx_notifs_group     ON notifications(group_key);
+      CREATE TABLE IF NOT EXISTS fcm_tokens (
+        device_id  TEXT PRIMARY KEY,
+        token      TEXT NOT NULL,
+        platform   TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
     `);
     const setVersion = this.db.prepare(
       `INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', ?)`,
@@ -661,6 +687,40 @@ export class NotificationStore {
     return ids;
   }
 
+  // ----- FCM token registry -----
+  //
+  // One token per device. The phone calls `notification.registerFcmToken` on
+  // startup and on `onTokenRefresh`; we upsert by deviceId so the latest
+  // token wins. `allTokens()` is the fan-out target; `removeTokens` is the
+  // pruning hook after firebase-admin reports
+  // `messaging/registration-token-not-registered`.
+
+  public registerFcmToken(args: {
+    deviceId: string;
+    token: string;
+    platform: string;
+  }): void {
+    this.upsertFcmTokenStmt.run({
+      device_id: args.deviceId,
+      token: args.token,
+      platform: args.platform,
+      updated_at: Date.now(),
+    });
+  }
+
+  public allFcmTokens(): string[] {
+    const rows = this.selectAllFcmTokensStmt.all() as Array<{ token: string }>;
+    return rows.map((r) => r.token);
+  }
+
+  public removeFcmTokens(tokens: string[]): void {
+    if (tokens.length === 0) return;
+    const tx = this.db.transaction(() => {
+      for (const t of tokens) this.deleteFcmTokenStmt.run(t);
+    });
+    tx();
+  }
+
   public close(): void {
     this.db.close();
   }
@@ -717,6 +777,18 @@ export interface NotificationFanOut {
   deleted: (ids: string[]) => void;
 }
 
+/// Optional second-transport sender. When attached, `publish()` fires the
+/// notification to FCM in parallel with the WS broadcast. Fire-and-forget;
+/// invalid tokens reported back are pruned from the store. Implemented in
+/// `fcm.ts`; left as an interface so a backend without FCM credentials
+/// (no `FCM_SERVICE_ACCOUNT_JSON`) simply doesn't attach one.
+export interface NotificationFcmSender {
+  sendToTokens: (
+    tokens: string[],
+    notification: Notification,
+  ) => Promise<{ invalidTokens: string[] }>;
+}
+
 /// Glue between the persistence layer and the WebSocket fan-out target. The
 /// HTTP `/notify` endpoint and the `notification.*` RPC handlers both go
 /// through this object; the WS fan-out helper is set by `ProcessState`.
@@ -729,6 +801,7 @@ export interface NotificationFanOut {
 export class NotificationHub {
   private readonly store: NotificationStore;
   private fanOut: NotificationFanOut | null = null;
+  private fcm: NotificationFcmSender | null = null;
   /// Wall-clock time of the last sweep; 0 means "never". Compared against
   /// `now - GC_MIN_INTERVAL_MS` in `maybeSweepOnList`.
   private lastSweepMs = 0;
@@ -746,6 +819,22 @@ export class NotificationHub {
     this.fanOut = fanOut;
   }
 
+  /// Wire in a second-transport sender (FCM). Optional — when no service
+  /// account is configured the backend simply doesn't call attachFcmSender
+  /// and FCM delivery is silently skipped. Pruning of invalid tokens is
+  /// part of the same fire-and-forget path.
+  public attachFcmSender(sender: NotificationFcmSender): void {
+    this.fcm = sender;
+  }
+
+  public registerFcmToken(args: {
+    deviceId: string;
+    token: string;
+    platform: string;
+  }): void {
+    this.store.registerFcmToken(args);
+  }
+
   /// Validate-and-persist a sender payload. Broadcasts `superseded` (if
   /// applicable) then `show`. Returns the assigned id so the HTTP endpoint
   /// can echo it back. Every GC_INSERT_PERIOD successful inserts triggers
@@ -761,6 +850,26 @@ export class NotificationHub {
     }
     if (this.store.insertCounter % GC_INSERT_PERIOD === 0) {
       this.runGcOnceSafe();
+    }
+    // Second transport: FCM. Fire-and-forget — errors are logged in the
+    // sender, invalid tokens are pruned from the store. The WS broadcast
+    // above is the primary path; FCM is for the case where the phone has
+    // frozen the foreground-service isolate (MIUI/EMUI).
+    if (this.fcm !== null) {
+      const sender = this.fcm;
+      const tokens = this.store.allFcmTokens();
+      if (tokens.length > 0) {
+        void sender
+          .sendToTokens(tokens, notification)
+          .then((result) => {
+            if (result.invalidTokens.length > 0) {
+              this.store.removeFcmTokens(result.invalidTokens);
+            }
+          })
+          .catch((err) => {
+            console.error("[notifications] fcm send failed:", err);
+          });
+      }
     }
     return { id: notification.id };
   }

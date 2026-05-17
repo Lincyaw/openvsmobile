@@ -1,4 +1,4 @@
-package dev.openvsmobile.openvsmobile_next
+package dev.lincyaw.mobilecode
 
 import io.flutter.embedding.android.FlutterActivity
 

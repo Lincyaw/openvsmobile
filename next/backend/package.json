@@ -17,6 +17,7 @@
   "dependencies": {
     "better-sqlite3": "^12.10.0",
     "chokidar": "^4.0.3",
+    "firebase-admin": "^13.0.2",
     "ignore": "^7.0.3",
     "node-pty": "^1.0.0",
     "ws": "^8.18.0"

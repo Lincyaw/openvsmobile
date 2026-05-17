@@ -5,6 +5,11 @@ plugins {
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+    // Firebase / Google services. Reads `app/google-services.json` at build
+    // time and emits the generated resources that firebase-core needs. The
+    // file is git-ignored (see .gitignore); see docs/release.md or
+    // docs/design/mobile-code-platform.md §4.5 for how to obtain it.
+    id("com.google.gms.google-services")
 }
 
 // Optional release signing. If `android/key.properties` exists, use it; else
@@ -19,7 +24,7 @@ if (hasReleaseSigning) {
 }
 
 android {
-    namespace = "dev.openvsmobile.openvsmobile_next"
+    namespace = "dev.lincyaw.mobilecode"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -38,7 +43,7 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "dev.openvsmobile.openvsmobile_next"
+        applicationId = "dev.lincyaw.mobilecode"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion

@@ -17,6 +17,7 @@ import {
   writeRuntimeInfo,
 } from "./runtimeInfo.js";
 import { readPackageVersion } from "./version.js";
+import { initFcmSender } from "./fcm.js";
 
 const DEFAULT_PORT = 7860;
 const SHUTDOWN_HARD_EXIT_MS = 3000;
@@ -40,6 +41,15 @@ async function main(): Promise<void> {
   const version = readPackageVersion();
 
   const state = new ProcessState();
+
+  // FCM is the second notification transport (the first being the
+  // in-process WS fan-out). When $FCM_SERVICE_ACCOUNT_JSON is unset or the
+  // file is missing, initFcmSender returns null and we simply don't attach
+  // — backends without FCM keep working unchanged.
+  const fcmSender = await initFcmSender();
+  if (fcmSender !== null) {
+    state.notificationHub.attachFcmSender(fcmSender);
+  }
 
   const httpServer = createServer((req, res) => {
     if (req.url === "/healthz") {

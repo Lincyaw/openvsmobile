@@ -11,6 +11,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- Asks the user to whitelist the app from Doze / battery optimization
+         so the foreground service's WebSocket isn't frozen while the app is
+         backgrounded. On stock Android this is enough; on MIUI/EMUI the
+         vendor's own "autostart" / "no restrictions" toggles must still be
+         set by hand — there is no public API for those. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
     <application
         android:label="openvsmobile_next"
         android:name="${applicationName}"
