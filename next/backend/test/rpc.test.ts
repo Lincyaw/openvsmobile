@@ -309,21 +309,36 @@ describe("git.diff", () => {
 });
 
 describe("git.log", () => {
-  it("returns commit entries oldest-newest in reverse order", async () => {
+  type LogEntry = {
+    sha: string;
+    parents: string[];
+    authorName: string;
+    authorEmail: string;
+    authorDate: string;
+    committerDate: string;
+    subject: string;
+    body?: string;
+  };
+  type LogResp = { entries: LogEntry[]; nextCursor?: string };
+
+  it("returns commit entries newest-first with the rich LogEntry shape", async () => {
     const opened = await call<{ workspace: { id: string } }>("workspace.open", {
       root: repoDir,
     });
     await writeWorkspaceFile(repoDir, "a.txt", "a\n");
     await git(repoDir, ["add", "-A"]);
     await git(repoDir, ["commit", "-q", "-m", "second"]);
-    const log = await call<
-      Array<{ sha: string; subject: string; author: string; date: string }>
-    >("git.log", { workspaceId: opened.workspace.id, limit: 10 });
-    expect(log.length).toBeGreaterThanOrEqual(2);
-    // git log returns newest-first by default.
-    expect(log[0].subject).toBe("second");
-    expect(log[1].subject).toBe("first");
-    expect(log[0].sha).toMatch(/^[0-9a-f]{40}$/);
+    const log = await call<LogResp>("git.log", {
+      workspaceId: opened.workspace.id,
+      limit: 10,
+    });
+    expect(log.entries.length).toBeGreaterThanOrEqual(2);
+    expect(log.entries[0].subject).toBe("second");
+    expect(log.entries[1].subject).toBe("first");
+    expect(log.entries[0].sha).toMatch(/^[0-9a-f]{40}$/);
+    expect(log.entries[0].authorName).toBeTruthy();
+    expect(log.entries[0].authorEmail).toContain("@");
+    expect(Array.isArray(log.entries[0].parents)).toBe(true);
   });
 });
 

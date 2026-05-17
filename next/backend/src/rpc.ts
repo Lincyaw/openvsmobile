@@ -23,7 +23,7 @@ import {
   pathInIndex,
   pathInTree,
   readHeadInfo,
-  readLog,
+  readLogPage,
   readStatus,
   resolveRef,
   runDiffArgs,
@@ -248,6 +248,18 @@ function optionalNonNegativeInt(p: ParamBag, key: string): number | undefined {
   return v;
 }
 
+function optionalPositiveInt(p: ParamBag, key: string): number | undefined {
+  const v = p[key];
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 1) {
+    throw new RpcError(
+      RPC_ERR.invalidParams,
+      `${key} must be a positive integer when provided`,
+    );
+  }
+  return v;
+}
+
 function optionalBool(p: ParamBag, key: string): boolean | undefined {
   const v = p[key];
   if (v === undefined || v === null) return undefined;
@@ -255,18 +267,6 @@ function optionalBool(p: ParamBag, key: string): boolean | undefined {
     throw new RpcError(
       RPC_ERR.invalidParams,
       `${key} must be a boolean when provided`,
-    );
-  }
-  return v;
-}
-
-function optionalPositiveInt(p: ParamBag, key: string): number | undefined {
-  const v = p[key];
-  if (v === undefined || v === null) return undefined;
-  if (typeof v !== "number" || !Number.isInteger(v) || v < 1) {
-    throw new RpcError(
-      RPC_ERR.invalidParams,
-      `${key} must be a positive int when provided`,
     );
   }
   return v;
@@ -570,14 +570,108 @@ methods.set("git.diff", async (ctx, params) => {
   return result;
 });
 
+// `git.log` page size bounds. The upper cap keeps a single response within
+// a reasonable wire payload (a 200-entry page with bodies is well under
+// 1 MiB in practice); the floor exists because `0` or negative is treated
+// as "I don't care, give me the default" rather than as an error.
+const GIT_LOG_MAX_LIMIT = 200;
+const GIT_LOG_DEFAULT_LIMIT = 50;
+
 methods.set("git.log", async (ctx, params) => {
   const p = asBag(params);
   const ws = ctx.state.workspaces.requireById(p.workspaceId);
   const path = optionalString(p, "path");
-  const limit = optionalPositiveInt(p, "limit") ?? 50;
-  const beforeSha = optionalString(p, "beforeSha");
-  return readLog(ws.root, { limit, path, beforeSha });
+  const cursor = optionalString(p, "cursor");
+  const decoded = decodeLogCursor(cursor);
+  // Clamp limit per the brief: [1, 200], default to 50 on 0/negative/missing.
+  const rawLimit = p.limit;
+  let limit: number;
+  if (rawLimit === undefined || rawLimit === null) {
+    limit = GIT_LOG_DEFAULT_LIMIT;
+  } else if (typeof rawLimit !== "number" || !Number.isFinite(rawLimit)) {
+    throw new RpcError(RPC_ERR.invalidParams, "limit must be a number");
+  } else {
+    const n = Math.trunc(rawLimit);
+    limit = n <= 0 ? GIT_LOG_DEFAULT_LIMIT : Math.min(n, GIT_LOG_MAX_LIMIT);
+  }
+  const opts: { path?: string; limit: number; skip?: number; pinnedSha?: string } = { limit };
+  if (path !== undefined) opts.path = path;
+  if (decoded !== null) {
+    opts.skip = decoded.offset;
+    opts.pinnedSha = decoded.pinnedSha;
+  }
+  const entries = await readLogPage(ws.root, opts);
+  // No entries + no cursor → either a non-git workspace, an empty repo, or
+  // a path that has never been touched. Per the brief, that surfaces as
+  // `{ entries: [] }` (no error, no cursor).
+  if (entries.length === 0) {
+    return { entries };
+  }
+  // Pin to the head of *this* walk. On the first page the head is just
+  // entries[0]. On subsequent pages it's whatever the cursor carried —
+  // never re-resolve HEAD inside a walk, that's how you get duplicates
+  // when new commits land mid-pagination.
+  const pinnedSha = decoded !== null ? decoded.pinnedSha : entries[0].sha;
+  const previousOffset = decoded !== null ? decoded.offset : 0;
+  const nextOffset = previousOffset + entries.length;
+  // Fewer rows than asked-for means git has nothing else to give us, so
+  // we drop the cursor to signal end-of-stream. A full page might or
+  // might not have more; emit a cursor and let the next call return an
+  // empty page if it turns out to be the boundary.
+  if (entries.length < limit) {
+    return { entries };
+  }
+  return { entries, nextCursor: encodeLogCursor(pinnedSha, nextOffset) };
 });
+
+interface DecodedLogCursor {
+  pinnedSha: string;
+  offset: number;
+}
+
+/// `git.log` cursors are opaque on the wire. Today they're a base64-encoded
+/// JSON blob `{ h: <sha>, o: <skipCount> }`; the encoding is *not* part of
+/// the protocol contract — a future change can swap the strategy without
+/// breaking clients as long as the same opaque-token round-trip semantics
+/// hold.
+function encodeLogCursor(pinnedSha: string, offset: number): string {
+  const payload = JSON.stringify({ h: pinnedSha, o: offset });
+  return Buffer.from(payload, "utf8").toString("base64");
+}
+
+function decodeLogCursor(cursor: string | undefined): DecodedLogCursor | null {
+  if (cursor === undefined || cursor.length === 0) return null;
+  let raw: string;
+  try {
+    raw = Buffer.from(cursor, "base64").toString("utf8");
+  } catch {
+    throw new RpcError(RPC_ERR.invalidParams, "cursor is not valid base64");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new RpcError(RPC_ERR.invalidParams, "cursor is malformed");
+  }
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    Array.isArray(parsed)
+  ) {
+    throw new RpcError(RPC_ERR.invalidParams, "cursor is malformed");
+  }
+  const obj = parsed as { h?: unknown; o?: unknown };
+  if (
+    typeof obj.h !== "string" ||
+    obj.h.length === 0 ||
+    typeof obj.o !== "number" ||
+    !Number.isInteger(obj.o) ||
+    obj.o < 0
+  ) {
+    throw new RpcError(RPC_ERR.invalidParams, "cursor is malformed");
+  }
+  return { pinnedSha: obj.h, offset: obj.o };
+}
 
 // Cap unified-diff text at 500 KiB. Beyond that we surface `tooLarge: true`
 // rather than ship the patch over a phone link. The cap matches design-doc

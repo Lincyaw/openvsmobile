@@ -36,9 +36,18 @@ export interface GitStatusEntry {
 
 export interface GitLogEntry {
   sha: string;
-  author: string;
-  date: string;     // ISO-8601 with tz offset
+  /// Parent commit SHAs in the order git reported them. Empty for the root
+  /// commit; length > 1 for merges. We don't special-case merges — callers
+  /// inspect `parents.length` if they care.
+  parents: string[];
+  authorName: string;
+  authorEmail: string;
+  authorDate: string;        // ISO-8601 with tz offset
+  committerDate: string;     // ISO-8601 with tz offset
   subject: string;
+  /// Commit body sans the subject line. Omitted entirely when empty so the
+  /// wire payload stays tight for the common "subject-only" case.
+  body?: string;
 }
 
 /// Resolve current branch + HEAD sha + upstream tracking divergence in a
@@ -187,19 +196,33 @@ export async function pathInIndex(cwd: string, path: string): Promise<boolean> {
   return out !== null && out.trim().length > 0;
 }
 
-/// `git log` for a workspace or path. Output formatted as `<sha>\x01<author>\x01<date>\x01<subject>`
-/// per line so we don't have to escape paths.
-export async function readLog(
+/// `git log` paginated reader, used by the `git.log` RPC.
+///
+/// Output is requested with `-z` so each commit record is NUL-terminated
+/// (avoiding any escape dance around subjects/bodies that contain newlines)
+/// and internal fields are split on the `\x01` byte (which never legally
+/// appears in any of the fields we read).
+///
+/// Pagination is "skip N commits within a pinned starting commit": the
+/// caller passes the same `pinnedSha` for every page in a walk, and we
+/// hand git `--skip=<N>` between pages. This pins the snapshot — new
+/// commits landing on HEAD between page fetches do not shift or duplicate
+/// the entries we've already returned.
+export async function readLogPage(
   cwd: string,
-  options: { path?: string; limit: number; beforeSha?: string },
+  options: { path?: string; limit: number; skip?: number; pinnedSha?: string },
 ): Promise<GitLogEntry[]> {
   const args = [
     "log",
     `--max-count=${options.limit}`,
-    "--pretty=format:%H%x01%an%x01%aI%x01%s",
+    "-z",
+    "--pretty=format:%H%x01%P%x01%an%x01%ae%x01%aI%x01%cI%x01%s%x01%b",
   ];
-  if (options.beforeSha !== undefined && options.beforeSha.length > 0) {
-    args.push(`${options.beforeSha}~1`);
+  if (options.skip !== undefined && options.skip > 0) {
+    args.push(`--skip=${options.skip}`);
+  }
+  if (options.pinnedSha !== undefined && options.pinnedSha.length > 0) {
+    args.push(options.pinnedSha);
   }
   if (options.path !== undefined && options.path.length > 0) {
     args.push("--", options.path);
@@ -207,16 +230,39 @@ export async function readLog(
   const out = await runGitOptional(args, cwd);
   if (out === null) return [];
   const entries: GitLogEntry[] = [];
-  for (const line of out.split("\n")) {
-    if (line.length === 0) continue;
-    const parts = line.split("\x01");
-    if (parts.length < 4) continue;
-    entries.push({
-      sha: parts[0],
-      author: parts[1],
-      date: parts[2],
-      subject: parts.slice(3).join("\x01"),
-    });
+  // `-z` terminates each commit's output with NUL; split by NUL to get
+  // individual records. The final record may or may not have a trailing
+  // NUL depending on git version, so empty fragments are skipped.
+  for (const record of out.split("\0")) {
+    if (record.length === 0) continue;
+    const parts = record.split("\x01");
+    if (parts.length < 7) continue;
+    const sha = parts[0];
+    const parentsRaw = parts[1];
+    const authorName = parts[2];
+    const authorEmail = parts[3];
+    const authorDate = parts[4];
+    const committerDate = parts[5];
+    const subject = parts[6];
+    // Body (`%b`) is everything after the subject field separator. Rejoin
+    // in case a body somehow contained a `\x01` byte (paranoia — git
+    // doesn't, but defensive coding here costs nothing).
+    const body = parts.slice(7).join("\x01");
+    const parents =
+      parentsRaw.length > 0
+        ? parentsRaw.split(" ").filter((s) => s.length > 0)
+        : [];
+    const entry: GitLogEntry = {
+      sha,
+      parents,
+      authorName,
+      authorEmail,
+      authorDate,
+      committerDate,
+      subject,
+    };
+    if (body.length > 0) entry.body = body;
+    entries.push(entry);
   }
   return entries;
 }
