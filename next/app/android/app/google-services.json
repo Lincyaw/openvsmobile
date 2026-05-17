@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "472763146190",
+    "project_id": "mobilecode-dcbd5",
+    "storage_bucket": "mobilecode-dcbd5.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:472763146190:android:c9bb46620276aaf4a9159f",
+        "android_client_info": {
+          "package_name": "dev.lincyaw.mobilecode"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAlvdZuy7BDPzk0MfagKBYlkQr24QPjJiw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,16 +1,5 @@
-# Flutter
-app/.dart_tool/
-app/.packages
-app/build/
-app/.flutter-plugins
-app/.flutter-plugins-dependencies
 *.iml
 package-lock.json
-
-# Go
-server/bin/
-server/server_bin
-server/vendor/
 
 # IDE
 .idea/
@@ -30,12 +19,3 @@ Thumbs.db
 
 # Local runtime artifacts
 .worktrees/
-server.log
-server/server.log
-server_bin
-
-# Firebase config — single-user self-hosted project, the user supplies
-# their own Firebase project's google-services.json (see CLAUDE.md for
-# how this fits the FCM transport). Backend's matching service-account
-# JSON is also user-supplied via the FCM_SERVICE_ACCOUNT_JSON env var.
-next/app/android/app/google-services.json

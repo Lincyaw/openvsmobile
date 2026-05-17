@@ -7,7 +7,6 @@ The rulebook both humans and review agents apply when reviewing code under `next
 ## Scope
 
 - These rules apply to everything under `next/`.
-- `server/`, `openvscode-server/`, `app/` are legacy and frozen. Read-only history.
 - Plugin code (when the plugin host lands) lives outside this repo. Plugin **contract** rules in §3 still apply.
 
 ---

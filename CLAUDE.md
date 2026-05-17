@@ -48,11 +48,6 @@ next/
 │              stdio JSON-RPC channel per spawned plugin process.
 └── app/       Flutter Android client. Always-on WebSocket with reconnect;
               declarative widget renderer for plugin UI (§4.3 of design).
-
-server/, openvscode-server/, app/   ← LEGACY (Go + OpenVSCode-fork era).
-                                      Kept side-by-side until P6 cutover.
-                                      Do NOT edit. Do NOT reintroduce
-                                      code from them into next/.
 ```
 
 ### Bottom navigation: 4 tabs (settled)
@@ -123,7 +118,6 @@ Backend tarballs (linux x64 + arm64) and Android APKs (per-ABI + universal) are 
 - **Settings is a top-level tab, not a More-tab sub-entry.** The current "More tab" is a transient layout artifact during migration.
 - **Workspaces are UUID-keyed**, not path-keyed. Same path closed and re-opened gets a fresh id.
 - **No raw filesystem path text input anywhere in the UI.** Workspace switcher uses recents list + step-by-step picker.
-- **`server/`, `openvscode-server/`, `app/` are legacy** and kept side-by-side with `next/` until P6 cutover. Do not edit. Do not reintroduce code that was deleted from them.
 - **Plugin install is filesystem-only.** Users put a `<plugin-id>/` directory under `~/.local/share/openvsmobile-next/plugins/`. No marketplace, no URL install, no `plugin.install` RPC that pulls from the network. Single-user system; the user trusts their own plugins by virtue of having put them there.
 - **No client-side plugin approval flow.** Capability declarations in `plugin.json` are accident-prevention and documentation, not a consent UI. Host enforces silently — calls outside declared capabilities return `RpcError -32011 capabilityNotDeclared`.
 - **One process per plugin; no automatic restart on crash.** A crashed plugin freezes its last `ui.tree` and overlays a `[View log] [Reload]` banner. Automatic restart would hide bugs and burn battery.
@@ -138,7 +132,7 @@ Backend tarballs (linux x64 + arm64) and Android APKs (per-ABI + universal) are 
 - Formatting: `dart format` (app), Prettier-defaults are fine in backend.
 - Validation gate (before committing): `cd next/app && flutter analyze && cd ../backend && pnpm typecheck` must pass.
 - Language: discussion in Chinese, code/comments/docs in English.
-- All new code lives under `next/`. Treat `server/`, `openvscode-server/`, `app/` as read-only history.
+- All code lives under `next/`. The legacy Go-server / OpenVSCode-fork / pre-`next` Flutter tree has been removed; if you need to reference past behavior, use `git log`.
 
 ## Active skills
 
