@@ -19,9 +19,12 @@ import type { ProcessState, Subscriber } from "./state.js";
 import {
   hashWorkingFile,
   indexBlobSha,
+  isGitRepo,
   pathInIndex,
   pathInTree,
+  readHeadInfo,
   readLog,
+  readStatus,
   resolveRef,
   runDiffArgs,
 } from "./git.js";
@@ -450,6 +453,34 @@ methods.set("workspace.unsubscribe", (ctx, params) => {
   const ws = ctx.state.workspaces.requireById(p.workspaceId);
   if (ws.model !== null) ws.model.unsubscribe(ctx.ws);
   return {};
+});
+
+// Pull RPC for the working-tree status. Pairs with the workspace.subscribe
+// push surface (which carries deltas); callers use this when they need a
+// full snapshot on demand outside the subscribe path.
+methods.set("git.status", async (ctx, params) => {
+  const p = asBag(params);
+  const ws = ctx.state.workspaces.requireById(p.workspaceId);
+  if (!(await isGitRepo(ws.root))) {
+    return {
+      isGitRepo: false,
+      branch: null,
+      ahead: 0,
+      behind: 0,
+      entries: [],
+    };
+  }
+  const [head, entries] = await Promise.all([
+    readHeadInfo(ws.root),
+    readStatus(ws.root),
+  ]);
+  return {
+    isGitRepo: true,
+    branch: head?.branch ?? null,
+    ahead: head?.ahead ?? 0,
+    behind: head?.behind ?? 0,
+    entries: entries.map((e) => ({ path: e.path, status: e.status })),
+  };
 });
 
 methods.set("git.diff", async (ctx, params) => {
