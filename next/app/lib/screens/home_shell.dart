@@ -21,12 +21,17 @@ class HomeShell extends StatefulWidget {
   final SettingsStore settingsStore;
   final Settings currentSettings;
   final Future<void> Function(Settings) onSettingsSaved;
+
+  /// Called when the notification preferences screen saves a change.
+  /// `main.dart` uses this to (re)start or stop the foreground service.
+  final Future<void> Function() onNotificationPrefsChanged;
   const HomeShell({
     super.key,
     required this.appState,
     required this.settingsStore,
     required this.currentSettings,
     required this.onSettingsSaved,
+    required this.onNotificationPrefsChanged,
   });
 
   @override
@@ -139,6 +144,8 @@ class _HomeShellState extends State<HomeShell> {
                   currentSettings: widget.currentSettings,
                   settingsStore: widget.settingsStore,
                   onSettingsSaved: widget.onSettingsSaved,
+                  onNotificationPrefsChanged:
+                      widget.onNotificationPrefsChanged,
                 ),
               ],
             ),

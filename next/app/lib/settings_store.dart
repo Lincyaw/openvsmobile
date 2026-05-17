@@ -120,6 +120,19 @@ class SettingsStore {
     return id;
   }
 
+  /// Generic kebab-case bool flag. Used for transient onboarding flags
+  /// (e.g. `background-onboarded`) where adding a typed field on a
+  /// settings struct is overkill.
+  Future<bool?> getBool(String key) async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(key);
+  }
+
+  Future<void> setBool(String key, bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(key, value);
+  }
+
   Future<NotificationPrefs> loadNotificationPrefs() async {
     final prefs = await SharedPreferences.getInstance();
     final muteRaw = prefs.getString(_kMutedSources);

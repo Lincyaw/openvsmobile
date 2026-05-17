@@ -14,12 +14,14 @@ class MoreTab extends StatelessWidget {
   final Settings currentSettings;
   final SettingsStore settingsStore;
   final Future<void> Function(Settings) onSettingsSaved;
+  final Future<void> Function() onNotificationPrefsChanged;
   const MoreTab({
     super.key,
     required this.appState,
     required this.currentSettings,
     required this.settingsStore,
     required this.onSettingsSaved,
+    required this.onNotificationPrefsChanged,
   });
 
   @override
@@ -73,6 +75,7 @@ class MoreTab extends StatelessWidget {
                 builder: (_) => NotificationSettingsScreen(
                   appState: appState,
                   settingsStore: settingsStore,
+                  onChanged: onNotificationPrefsChanged,
                 ),
               ),
             );

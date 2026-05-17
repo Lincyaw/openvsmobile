@@ -26,6 +26,10 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // Required by flutter_local_notifications for `java.time.*` on
+        // older Android API levels. The plugin's AAR metadata refuses to
+        // build without this flag set.
+        isCoreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {
@@ -71,4 +75,11 @@ android {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // Pairs with `isCoreLibraryDesugaringEnabled = true` above — provides
+    // the java.time backport that flutter_local_notifications needs on
+    // pre-API-26 devices.
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }

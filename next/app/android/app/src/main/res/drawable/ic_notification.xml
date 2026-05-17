@@ -1,0 +1,21 @@
+<!--
+  Monochrome notification icon for openvsmobile-next. Required by Android
+  to be a tint-able single-color drawable; the system applies the channel
+  color and the system theme. A colored / multi-color icon renders as a
+  blank white square on Android 5.0+ — see the official guidance:
+  https://developer.android.com/develop/ui/views/notifications#small-icons
+
+  Shape: a simple bell silhouette, matching the in-app bell icon used in
+  the app-bar (Material `notifications_outlined`). Filled paths so the
+  icon is legible at status-bar size.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="?android:attr/colorPrimary">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,22c1.1,0 2,-0.9 2,-2h-4c0,1.1 0.89,2 2,2zM18,16v-5c0,-3.07 -1.63,-5.64 -4.5,-6.32V4c0,-0.83 -0.67,-1.5 -1.5,-1.5s-1.5,0.67 -1.5,1.5v0.68C7.64,5.36 6,7.92 6,11v5l-2,2v1h16v-1l-2,-2z"/>
+</vector>
