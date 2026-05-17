@@ -1,5 +1,16 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Foreground service for notification delivery (design §4.5). The
+         service holds an always-on WS so backend notifications reach the
+         system tray even when the app is backgrounded. POST_NOTIFICATIONS
+         is Android 13+ runtime permission; FOREGROUND_SERVICE_* is the
+         per-type declaration required on Android 14+. The plugin itself
+         declares its base service in its own manifest; we add the
+         permissions here. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <application
         android:label="openvsmobile_next"
         android:name="${applicationName}"

@@ -5,17 +5,20 @@ import 'package:flutter/material.dart';
 
 import '../app_state.dart';
 import '../settings_store.dart';
+import 'notification_settings_screen.dart';
 import 'settings_screen.dart';
 import 'ssh_bootstrap_screen.dart';
 
 class MoreTab extends StatelessWidget {
   final AppState appState;
   final Settings currentSettings;
+  final SettingsStore settingsStore;
   final Future<void> Function(Settings) onSettingsSaved;
   const MoreTab({
     super.key,
     required this.appState,
     required this.currentSettings,
+    required this.settingsStore,
     required this.onSettingsSaved,
   });
 
@@ -52,6 +55,24 @@ class MoreTab extends StatelessWidget {
                 builder: (_) => SettingsScreen(
                   initial: currentSettings,
                   onSave: onSettingsSaved,
+                ),
+              ),
+            );
+          },
+        ),
+        const Divider(height: 1),
+        ListTile(
+          leading: const Icon(Icons.notifications_outlined),
+          title: const Text('Notifications'),
+          subtitle: const Text(
+            'Background service, per-source mute, quiet hours, TTL',
+          ),
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => NotificationSettingsScreen(
+                  appState: appState,
+                  settingsStore: settingsStore,
                 ),
               ),
             );

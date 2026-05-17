@@ -17,14 +17,21 @@ import 'package:xterm/xterm.dart';
 
 import 'backend_client.dart';
 import 'models.dart';
+import 'notification.dart';
 import 'services/ssh_bootstrap.dart';
+import 'state/notifications_model.dart';
 import 'state/terminals_notifier.dart';
 import 'state/workspace_model.dart';
 
 class AppState extends ChangeNotifier {
   final BackendClient client;
+
+  /// Stable per-install identifier — see SettingsStore.loadOrCreateDeviceId.
+  /// Used by the notification system for multi-device read sync.
+  final String deviceId;
   late final TerminalsNotifier _terminals;
   late final WorkspacesModel _workspacesModel;
+  late final NotificationsModel _notifications;
   StreamSubscription<BackendNotification>? _notifSub;
 
   /// Whether the Files tab should filter to the Changes view (decorated
@@ -55,7 +62,7 @@ class AppState extends ChangeNotifier {
   // ---- Last operation error (surfaced via SnackBar by the calling screen) ----
   String? _lastOperationError;
 
-  AppState({required this.client}) {
+  AppState({required this.client, this.deviceId = ''}) {
     _connectionState = client.state.value;
     _lastConnectionError = client.lastError.value;
     _terminals = TerminalsNotifier(
@@ -72,6 +79,12 @@ class AppState extends ChangeNotifier {
     _terminals.addListener(notifyListeners);
     _workspacesModel = WorkspacesModel(client: client);
     _workspacesModel.addListener(notifyListeners);
+    _notifications = NotificationsModel(
+      client: client,
+      deviceId: () => deviceId,
+      reportError: _reportOperationError,
+    );
+    _notifications.addListener(notifyListeners);
     client.state.addListener(_onConnState);
     client.lastError.addListener(_onConnError);
     _notifSub = client.notifications.listen(_onNotification);
@@ -123,6 +136,10 @@ class AppState extends ChangeNotifier {
   /// and notification handlers wired here.
   WorkspacesModel get workspaces => _workspacesModel;
 
+  /// Notification surface (design §4.5). Composed under AppState so the bell
+  /// icon, badge count, and notification center read from a single source.
+  NotificationsModel get notifications => _notifications;
+
   /// Per-workspace state lookup. Returns null if the workspace hasn't been
   /// subscribed yet (e.g. between activate and the first event).
   WorkspaceState? workspaceStateFor(String workspaceId) =>
@@ -171,6 +188,13 @@ class AppState extends ChangeNotifier {
       // the workspaces and sessions are still there; refreshWorkspaces will
       // replay each session's scrollback so the UI shows continuity.
       unawaited(refreshWorkspaces());
+      // (Re)subscribe to notifications and pull the recent backlog so the
+      // bell icon's unread badge is accurate immediately. Failures
+      // self-log; the connection banner is the user-visible signal for any
+      // link issue. Last-known notification state is preserved across the
+      // reconnect (first principle #4: disconnect never clears the UI).
+      unawaited(_notifications.subscribe());
+      unawaited(_notifications.refresh());
       notifyListeners();
       return;
     }
@@ -225,6 +249,37 @@ class AppState extends ChangeNotifier {
         break;
       case BackendNotifications.workspaceCommitAdded:
         _workspacesModel.onCommitAdded(n.params as Map<String, dynamic>);
+        break;
+      case BackendNotifications.notificationShow:
+        final p = n.params as Map<String, dynamic>;
+        final raw = p['notification'];
+        if (raw is Map<String, dynamic>) {
+          _notifications.onShow(AppNotification.fromJson(raw));
+        }
+        break;
+      case BackendNotifications.notificationReadChanged:
+        final p = n.params as Map<String, dynamic>;
+        final ids = (p['ids'] as List?)?.whereType<String>().toList() ??
+            const <String>[];
+        final by = p['readByDevice'];
+        final ts = (p['ts'] as num?)?.toInt() ?? 0;
+        if (by is String) {
+          _notifications.onReadChanged(ids, by, ts);
+        }
+        break;
+      case BackendNotifications.notificationDeleted:
+        final p = n.params as Map<String, dynamic>;
+        final ids = (p['ids'] as List?)?.whereType<String>().toList() ??
+            const <String>[];
+        _notifications.onDeleted(ids);
+        break;
+      case BackendNotifications.notificationSuperseded:
+        final p = n.params as Map<String, dynamic>;
+        final oldId = p['oldId'];
+        final newId = p['newId'];
+        if (oldId is String && newId is String) {
+          _notifications.onSuperseded(oldId, newId);
+        }
         break;
       default:
         // Ignore unknown notifications (forward-compat).
@@ -639,6 +694,8 @@ class AppState extends ChangeNotifier {
     _terminals.dispose();
     _workspacesModel.removeListener(notifyListeners);
     _workspacesModel.dispose();
+    _notifications.removeListener(notifyListeners);
+    _notifications.dispose();
     _notifSub?.cancel();
     super.dispose();
   }

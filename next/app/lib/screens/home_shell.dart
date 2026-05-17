@@ -11,6 +11,7 @@ import '../models.dart';
 import '../settings_store.dart';
 import 'files_tab.dart';
 import 'more_tab.dart';
+import 'notification_center.dart';
 import 'settings_screen.dart';
 import 'terminal_tab.dart';
 import 'workspace_picker.dart';
@@ -109,6 +110,10 @@ class _HomeShellState extends State<HomeShell> {
           ),
         ),
         actions: [
+          _BellIconAction(
+            appState: widget.appState,
+            settingsStore: widget.settingsStore,
+          ),
           IconButton(
             tooltip: 'Settings',
             icon: const Icon(Icons.settings),
@@ -132,6 +137,7 @@ class _HomeShellState extends State<HomeShell> {
                 MoreTab(
                   appState: widget.appState,
                   currentSettings: widget.currentSettings,
+                  settingsStore: widget.settingsStore,
                   onSettingsSaved: widget.onSettingsSaved,
                 ),
               ],
@@ -432,5 +438,45 @@ class _WorkspaceSwitcherSheet extends StatelessWidget {
       if (segment.isNotEmpty) return segment;
     }
     return path;
+  }
+}
+
+/// Bell icon for the notification center. Chrome-level — visible from every
+/// tab. Hidden only when both disconnected AND zero unread, since neither
+/// surface needs the user's attention in that case (the connection banner
+/// already signals offline).
+class _BellIconAction extends StatelessWidget {
+  final AppState appState;
+  final SettingsStore settingsStore;
+  const _BellIconAction({
+    required this.appState,
+    required this.settingsStore,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final unread = appState.notifications.unreadCount;
+    final connected =
+        appState.connectionState == BackendConnectionState.connected;
+    if (!connected && unread == 0) return const SizedBox.shrink();
+    return IconButton(
+      tooltip: 'Notifications',
+      icon: unread > 0
+          ? Badge.count(
+              count: unread,
+              child: const Icon(Icons.notifications_outlined),
+            )
+          : const Icon(Icons.notifications_outlined),
+      onPressed: () {
+        Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => NotificationCenterScreen(
+              appState: appState,
+              settingsStore: settingsStore,
+            ),
+          ),
+        );
+      },
+    );
   }
 }

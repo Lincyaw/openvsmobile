@@ -42,6 +42,10 @@ class BackendNotifications {
       'workspace.decoration.snapshot';
   static const String workspaceHeadChanged = 'workspace.head.changed';
   static const String workspaceCommitAdded = 'workspace.commit.added';
+  static const String notificationShow = 'notification.show';
+  static const String notificationReadChanged = 'notification.readChanged';
+  static const String notificationDeleted = 'notification.deleted';
+  static const String notificationSuperseded = 'notification.superseded';
 }
 
 /// Permanent-error JSON-RPC code returned by the backend on a failed
@@ -147,6 +151,7 @@ class BackendClient {
   String? _host;
   int? _port;
   String? _token;
+  String? _deviceId;
 
   // --- Socket / RPC plumbing ---
   WebSocketChannel? _channel;
@@ -178,10 +183,21 @@ class BackendClient {
     required String host,
     required int port,
     required String token,
+    String? deviceId,
   }) {
     _host = host;
     _port = port;
     _token = token;
+    _deviceId = deviceId;
+  }
+
+  /// Update the device id passed in `auth.handshake.client.deviceId`.
+  /// Safe to call before [start]; if called after a successful handshake the
+  /// new id only takes effect on the next reconnect (the backend reads
+  /// deviceId once per connection — see notifications design §4.5).
+  // ignore: avoid_setters_without_getters
+  set deviceId(String? id) {
+    _deviceId = id;
   }
 
   /// Begin (or restart) the auto-reconnect loop. Idempotent.
@@ -297,12 +313,24 @@ class BackendClient {
     );
 
     try {
+      final clientInfo = <String, dynamic>{
+        'name': 'openvsmobile-flutter',
+        // `version` mirrors the kBackendVersion constant so it stays in
+        // lockstep with the release tag; no second source of truth.
+        'version': kBackendVersion,
+      };
+      // `deviceId` is a stable per-install UUID used by the notification
+      // system to sync read state across reconnects and across devices. The
+      // backend reads it from `client.deviceId` on the handshake. See
+      // design §4.5 "Multi-device semantics".
+      final did = _deviceId;
+      if (did != null && did.isNotEmpty) {
+        clientInfo['deviceId'] = did;
+      }
       final hsResult = await _rawCall('auth.handshake', {
         'token': token,
         'protocolVersion': '1.0',
-        // `version` mirrors the kBackendVersion constant so it stays in
-        // lockstep with the release tag; no second source of truth.
-        'client': {'name': 'openvsmobile-flutter', 'version': kBackendVersion},
+        'client': clientInfo,
       }) as Map<String, dynamic>;
       final cwd = hsResult['defaultCwd'];
       defaultCwd = cwd is String ? cwd : '/';

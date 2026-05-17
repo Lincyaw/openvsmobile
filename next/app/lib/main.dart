@@ -27,9 +27,10 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
   final SettingsStore _settingsStore = SettingsStore();
   late final BackendClient _client =
       BackendClient(probe: ConnectivityPlusProbe());
-  late final AppState _appState = AppState(client: _client);
+  AppState? _appState;
 
   Settings? _settings;
+  String? _deviceId;
   bool _loadingSettings = true;
 
   @override
@@ -41,13 +42,21 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
 
   Future<void> _bootstrap() async {
     final s = await _settingsStore.load();
+    final did = await _settingsStore.loadOrCreateDeviceId();
     if (!mounted) return;
     setState(() {
       _settings = s;
+      _deviceId = did;
+      _appState = AppState(client: _client, deviceId: did);
       _loadingSettings = false;
     });
     if (s.isComplete) {
-      _client.configure(host: s.host, port: s.port, token: s.token);
+      _client.configure(
+        host: s.host,
+        port: s.port,
+        token: s.token,
+        deviceId: did,
+      );
       await _client.start();
     }
   }
@@ -58,7 +67,12 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
     setState(() => _settings = s);
     await _client.userDisconnect();
     if (s.isComplete) {
-      _client.configure(host: s.host, port: s.port, token: s.token);
+      _client.configure(
+        host: s.host,
+        port: s.port,
+        token: s.token,
+        deviceId: _deviceId,
+      );
       await _client.start();
     }
   }
@@ -75,7 +89,7 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _appState.dispose();
+    _appState?.dispose();
     _client.dispose();
     super.dispose();
   }
@@ -88,7 +102,7 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
         useMaterial3: true,
       ),
-      home: _loadingSettings
+      home: _loadingSettings || _appState == null
           ? const _BootSplash()
           : (_settings == null || !_settings!.isComplete)
               ? SettingsScreen(
@@ -98,7 +112,7 @@ class _OpenVsMobileAppState extends State<OpenVsMobileApp>
                   onSave: _onSettingsSaved,
                 )
               : HomeShell(
-                  appState: _appState,
+                  appState: _appState!,
                   settingsStore: _settingsStore,
                   currentSettings: _settings!,
                   onSettingsSaved: _onSettingsSaved,
