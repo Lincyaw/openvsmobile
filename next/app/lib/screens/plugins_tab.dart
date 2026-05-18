@@ -14,6 +14,7 @@
 // matching `plugin.stateChanged` push to flip the wire-state.
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../app_state.dart';
 import '../state/plugins_model.dart';
@@ -122,15 +123,15 @@ class PluginsTab extends StatelessWidget {
           Navigator.of(sheetContext).pop();
           await _onToggle(context, info, false);
         },
-        onOpenInTerminal: () {
+        onOpenInTerminal: () async {
           Navigator.of(sheetContext).pop();
-          ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-            SnackBar(
-              content: Text(
-                'Open a terminal and run: cd $_kFilesystemPluginsDir${info.id}',
-              ),
-            ),
-          );
+          final cmd = 'cd $_kFilesystemPluginsDir${info.id}';
+          await Clipboard.setData(ClipboardData(text: cmd));
+          if (context.mounted) {
+            ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+              SnackBar(content: Text('Copied to clipboard: $cmd')),
+            );
+          }
         },
       ),
     );
@@ -417,7 +418,7 @@ class _PluginActionSheet extends StatelessWidget {
             key: ValueKey<String>(
                 'plugin-sheet-terminal:${info.id}'),
             leading: const Icon(Icons.terminal),
-            title: const Text('Open in terminal'),
+            title: const Text('Copy cd command'),
             subtitle: Text(
               '$_kFilesystemPluginsDir${info.id}',
               style: AppText.mono(
@@ -504,15 +505,6 @@ class PluginInfoView extends StatelessWidget {
                             color: AppColors.onSurfaceVariant,
                           ),
                         ),
-                        if (info.author != null && info.author!.isNotEmpty) ...[
-                          const SizedBox(width: AppSpacing.sm),
-                          Text(
-                            '· ${info.author}',
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: AppColors.onSurfaceVariant,
-                            ),
-                          ),
-                        ],
                       ],
                     ),
                   ],
@@ -521,10 +513,6 @@ class PluginInfoView extends StatelessWidget {
             ],
           ),
           const SizedBox(height: AppSpacing.lg),
-          if (info.description != null && info.description!.isNotEmpty) ...[
-            Text(info.description!, style: theme.textTheme.bodyMedium),
-            const SizedBox(height: AppSpacing.lg),
-          ],
           SizedBox(
             width: double.infinity,
             child: FilledButton(

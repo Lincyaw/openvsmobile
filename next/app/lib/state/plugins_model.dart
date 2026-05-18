@@ -69,13 +69,6 @@ class PluginInfo {
   /// (`fs`/`terminal`/`network`/`secrets`/`ui`) and ignores the rest.
   final Map<String, dynamic> capabilities;
 
-  /// Optional human-facing fields. Neither is part of the v0 manifest
-  /// schema today, but the backend round-trips unknown top-level keys
-  /// verbatim — when a plugin author writes `"description"` / `"author"`
-  /// they surface here. Absent → null; the detail screen omits the row.
-  final String? description;
-  final String? author;
-
   const PluginInfo({
     required this.id,
     required this.name,
@@ -85,8 +78,6 @@ class PluginInfo {
     required this.panels,
     required this.commands,
     this.capabilities = const <String, dynamic>{},
-    this.description,
-    this.author,
   });
 
   factory PluginInfo.fromJson(Map<String, dynamic> json) {
@@ -138,8 +129,6 @@ class PluginInfo {
       panels: panels,
       commands: commands,
       capabilities: caps,
-      description: json['description'] as String?,
-      author: json['author'] as String?,
     );
   }
 
@@ -158,8 +147,6 @@ class PluginInfo {
       panels: panels,
       commands: commands,
       capabilities: capabilities,
-      description: description,
-      author: author,
     );
   }
 }
