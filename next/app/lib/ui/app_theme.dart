@@ -189,6 +189,18 @@ class AppTheme {
       iconTheme: IconThemeData(size: AppIconSize.md, color: p.onSurface),
       visualDensity: const VisualDensity(horizontal: 0, vertical: -1),
       splashFactory: InkRipple.splashFactory,
+      // Page transitions: opt out of the default ZoomPageTransitionsBuilder
+      // on Android. Zoom participates in Android 14+ predictive-back, so a
+      // slow edge-swipe drags the top route under the user's finger before
+      // it commits — we want back to be binary (fires or cancels), with no
+      // intermediate visual. FadeForwardsPageTransitionsBuilder is M3-spec
+      // and does not implement predictive-back, so the gesture commits or
+      // is dropped without a follow-finger preview.
+      pageTransitionsTheme: const PageTransitionsTheme(
+        builders: {
+          TargetPlatform.android: FadeForwardsPageTransitionsBuilder(),
+        },
+      ),
       // Flat chrome — no Material elevation drops. Layers separate via
       // 1px outline borders and surface-container tints, not shadows.
       appBarTheme: AppBarTheme(
