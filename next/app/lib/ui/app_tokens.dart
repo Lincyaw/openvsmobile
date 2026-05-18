@@ -145,8 +145,30 @@ class AppColorsLight {
 /// branches, shas, terminal labels, diff content). Always prefer this
 /// over `fontFamily: 'monospace'`, which silently picks an unpredictable
 /// platform monospace and breaks the visual contract.
+///
+/// Also owns the UI font-family fallback chain. Inter (and JetBrains
+/// Mono) have no CJK glyph coverage, so without a fallback Han text
+/// falls through to whatever the Android system picks — often a heavier
+/// sans that clashes with Inter's weight. Layering Noto Sans SC as a
+/// fallback gives a PingFang-SC-like look on all devices.
 class AppText {
   const AppText._();
+
+  /// Family name used as a per-`TextStyle` `fontFamilyFallback` so CJK
+  /// glyphs render with Noto Sans SC instead of the system default. Read
+  /// off a live `GoogleFonts.notoSansSc()` style so the runtime-cached
+  /// family name (which `google_fonts` mangles with a hash) stays in
+  /// sync with what the loader registered.
+  static List<String> get uiFontFamilyFallback {
+    final fam = GoogleFonts.notoSansSc().fontFamily;
+    return fam == null ? const <String>[] : <String>[fam];
+  }
+
+  /// Mono counterpart: when a code surface mixes Han characters (path
+  /// comments, CJK strings in source), fall back to Noto Sans SC so the
+  /// glyphs stay visually compatible with the surrounding UI font. The
+  /// Latin/mono characters still render through JetBrains Mono.
+  static List<String> get monoFontFamilyFallback => uiFontFamilyFallback;
 
   static TextStyle mono({
     double? fontSize,
@@ -167,6 +189,6 @@ class AppText {
       decorationColor: decorationColor,
       decorationThickness: decorationThickness,
       fontStyle: fontStyle,
-    );
+    ).copyWith(fontFamilyFallback: monoFontFamilyFallback);
   }
 }

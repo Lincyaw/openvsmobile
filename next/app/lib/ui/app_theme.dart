@@ -173,10 +173,99 @@ class AppTheme {
     // active brightness — Google Fonts' default `interTextTheme()`
     // returns black-on-everything which is unreadable on a near-black
     // background and over-bold on a near-white one.
+    //
+    // On top of the Inter base we bump body/title/label roles roughly
+    // one step in size + weight so the UI reads at "macOS Finder list"
+    // density rather than Material-default airy-and-thin, and we layer
+    // Noto Sans SC as `fontFamilyFallback` so CJK glyphs render with a
+    // PingFang-SC-like face instead of whatever the OS picks.
     final baseTextTheme = ThemeData(brightness: p.brightness).textTheme;
-    final textTheme = GoogleFonts.interTextTheme(
-      baseTextTheme,
-    ).apply(bodyColor: p.onSurface, displayColor: p.onSurface);
+    final interTextTheme = GoogleFonts.interTextTheme(baseTextTheme);
+    final cjkFallback = AppText.uiFontFamilyFallback;
+    TextStyle? bump(
+      TextStyle? style, {
+      required double sizeDelta,
+      required FontWeight weight,
+    }) {
+      if (style == null) return null;
+      final base = style.fontSize ?? 14;
+      return style.copyWith(
+        fontSize: base + sizeDelta,
+        fontWeight: weight,
+        fontFamilyFallback: cjkFallback,
+      );
+    }
+
+    final tunedTextTheme = interTextTheme.copyWith(
+      // Display + headline keep Material's geometry; just wire fallback.
+      displayLarge: interTextTheme.displayLarge?.copyWith(
+        fontFamilyFallback: cjkFallback,
+      ),
+      displayMedium: interTextTheme.displayMedium?.copyWith(
+        fontFamilyFallback: cjkFallback,
+      ),
+      displaySmall: interTextTheme.displaySmall?.copyWith(
+        fontFamilyFallback: cjkFallback,
+      ),
+      headlineLarge: interTextTheme.headlineLarge?.copyWith(
+        fontFamilyFallback: cjkFallback,
+      ),
+      headlineMedium: interTextTheme.headlineMedium?.copyWith(
+        fontFamilyFallback: cjkFallback,
+      ),
+      headlineSmall: interTextTheme.headlineSmall?.copyWith(
+        fontFamilyFallback: cjkFallback,
+      ),
+      titleLarge: bump(
+        interTextTheme.titleLarge,
+        sizeDelta: 1,
+        weight: FontWeight.w600,
+      ),
+      titleMedium: bump(
+        interTextTheme.titleMedium,
+        sizeDelta: 1,
+        weight: FontWeight.w600,
+      ),
+      titleSmall: bump(
+        interTextTheme.titleSmall,
+        sizeDelta: 1,
+        weight: FontWeight.w600,
+      ),
+      bodyLarge: bump(
+        interTextTheme.bodyLarge,
+        sizeDelta: 0,
+        weight: FontWeight.w500,
+      ),
+      bodyMedium: bump(
+        interTextTheme.bodyMedium,
+        sizeDelta: 1,
+        weight: FontWeight.w500,
+      ),
+      bodySmall: bump(
+        interTextTheme.bodySmall,
+        sizeDelta: 1,
+        weight: FontWeight.w500,
+      ),
+      labelLarge: bump(
+        interTextTheme.labelLarge,
+        sizeDelta: 1,
+        weight: FontWeight.w600,
+      ),
+      labelMedium: bump(
+        interTextTheme.labelMedium,
+        sizeDelta: 1,
+        weight: FontWeight.w600,
+      ),
+      labelSmall: bump(
+        interTextTheme.labelSmall,
+        sizeDelta: 1,
+        weight: FontWeight.w600,
+      ),
+    );
+    final textTheme = tunedTextTheme.apply(
+      bodyColor: p.onSurface,
+      displayColor: p.onSurface,
+    );
 
     return ThemeData(
       useMaterial3: true,

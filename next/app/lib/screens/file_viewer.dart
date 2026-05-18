@@ -11,7 +11,7 @@ import '../models.dart';
 import '../ui/app_tokens.dart';
 import '../ui/highlight_theme.dart';
 
-final _kCodeTextStyle = AppText.mono(fontSize: 13, height: 1.35);
+final _kCodeTextStyle = AppText.mono(fontSize: 14, height: 1.4);
 
 /// Files larger than this render as plain monospace text. Highlighting is
 /// synchronous and would block the UI thread for big files; pure
