@@ -443,11 +443,8 @@ function buildReviewBodySheet(action, replyToAuthor) {
       id: "prcomp-review-body-col",
       gap: "md",
       children: [
-        ui.text({
-          id: "prcomp-review-body-heading",
-          text: reviewSheetHeading(action, replyToAuthor),
-          style: "title",
-        }),
+        // Heading comes from the bottom-sheet's native `title` slot;
+        // no inline ui.text dupe needed.
         ui.textField({
           id: NODE_REVIEW_BODY_FIELD,
           label: "Body",
@@ -498,16 +495,19 @@ async function openReviewActionSheet(ctx) {
  */
 async function openReviewBodySheet(ctx, opts) {
   reviewBodyBuffer = opts.prefillBody ?? "";
+  // github.js writes don't carry an AbortSignal (only the reads do), so
+  // a slow POST has no upper bound — an unconditional reset here would
+  // let a double-tap-then-reopen sequence fire a second POST while the
+  // first is still in flight. Only clear the guard when the prior
+  // context already resolved (submitReviewBody's `finally` clears
+  // reviewSubmitContext to null).
+  if (reviewSubmitContext === null) {
+    reviewSubmitPending = false;
+  }
   reviewSubmitContext = {
     action: opts.action,
     ...(opts.replyToId !== undefined ? { replyToId: opts.replyToId } : {}),
   };
-  // Each open clears any stale pending guard from a previous attempt.
-  // The submit handler is the only path that flips `reviewSubmitPending
-  // = true`; if we got back to "user is opening a fresh sheet", any
-  // half-finished prior attempt either resolved or timed out at the
-  // fetch layer (github.js has a 10s timeout).
-  reviewSubmitPending = false;
   await ctx.showBottomSheet(
     DETAIL_PANEL,
     buildReviewBodySheet(opts.action, opts.replyToAuthor ?? null),
@@ -673,13 +673,17 @@ async function handlePhase4ReviewEvent(ctx, event) {
     return true;
   }
 
-  // Per-comment reply (swipe action OR row tap, both carry the same
-  // eventId prefix). Look up the cached comment to seed the quote
-  // prefill; if the comment isn't cached (race with PR switch), fall
-  // back to an empty body — the user can still reply, they just don't
-  // get the quote.
-  if (typeof event.type === "string" && event.type.startsWith(conversationEvents.REPLY_PREFIX)) {
-    const idStr = event.type.slice(conversationEvents.REPLY_PREFIX.length);
+  // Per-comment reply button. Button widgets fire {type:'tap', nodeId},
+  // so we match on the node id prefix (`prcomp-detail-conv-reply-btn-`).
+  // Look up the cached comment to seed the quote prefill; if the
+  // comment isn't cached (race with PR switch), fall back to an empty
+  // body — the user can still reply, they just don't get the quote.
+  if (
+    event.type === "tap" &&
+    typeof event.nodeId === "string" &&
+    event.nodeId.startsWith("prcomp-detail-conv-reply-btn-")
+  ) {
+    const idStr = event.nodeId.slice("prcomp-detail-conv-reply-btn-".length);
     const commentId = Number(idStr);
     if (!Number.isInteger(commentId) || commentId <= 0) {
       ctx.log("warn", `prcomp: bad reply comment id ${idStr}`);

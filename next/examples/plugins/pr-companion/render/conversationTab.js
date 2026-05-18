@@ -108,38 +108,52 @@ export function buildConversationTabBody({ pr, comments, error, nowMs }) {
     for (const c of topLevel) {
       const cBody = typeof c.body === "string" ? c.body.trim() : "";
       // === Phase 4 additions ===
-      // Comments rendered as listTile (not section/card) so they pick up
-      // swipe-to-reply via UiListTile.swipeActions — UiSection doesn't
-      // expose that slot. This trades full markdown rendering for a
-      // tappable + swipeable shape; the body is collapsed into a
-      // subtitle string. The full body is one tap away (the reply sheet
-      // pre-fills it as a quote block), and the rich render returns in
-      // a future "tap to expand" phase if the regression bites.
+      // Section/card with full ui.markdown body preserves the Phase-3
+      // render (no truncation, full markdown). A "Reply" secondary
+      // button at the foot of each card carries the gesture — same
+      // pattern as filesTab.js's section + button rows. Loses the
+      // swipe affordance, but keeps reading comments as the primary
+      // path (which is the common case).
       const when = formatRelative(c.createdAt, nowMs);
-      const title = when.length > 0 ? `${c.user.login} · ${when}` : c.user.login;
-      const subtitle =
-        cBody.length > 0
-          ? cBody.split("\n")[0].slice(0, 140)
-          : "(empty comment)";
+      const headerLine = when.length > 0 ? `${c.user.login} · ${when}` : c.user.login;
       items.push(
-        ui.listTile({
+        ui.section({
           id: `prcomp-detail-conv-comment-${c.id}`,
-          title,
-          subtitle,
-          leading: ui.avatar({
-            id: `prcomp-detail-conv-comment-${c.id}-avatar`,
-            src: c.user.avatarUrl,
-            size: "sm",
-          }),
-          // Both gestures route to the same reply sheet so phone users
-          // can choose whichever feels natural. The id suffix is the
-          // GitHub comment id; index.js parses it back out.
-          onTapEvent: `${conversationEvents.REPLY_PREFIX}${c.id}`,
-          swipeActions: [
-            {
+          variant: "card",
+          children: [
+            ui.row({
+              id: `prcomp-detail-conv-comment-${c.id}-header`,
+              gap: "sm",
+              children: [
+                ui.avatar({
+                  id: `prcomp-detail-conv-comment-${c.id}-avatar`,
+                  src: c.user.avatarUrl,
+                  size: "sm",
+                }),
+                ui.text({
+                  id: `prcomp-detail-conv-comment-${c.id}-author`,
+                  text: headerLine,
+                  style: "caption",
+                }),
+              ],
+            }),
+            cBody.length > 0
+              ? ui.markdown({
+                  id: `prcomp-detail-conv-comment-${c.id}-md`,
+                  markdown: cBody,
+                })
+              : ui.text({
+                  id: `prcomp-detail-conv-comment-${c.id}-empty`,
+                  text: "(empty comment)",
+                  style: "caption",
+                }),
+            // Reply button — id suffix is the GitHub comment id;
+            // index.js parses it back out from event.nodeId.
+            ui.button({
+              id: `prcomp-detail-conv-reply-btn-${c.id}`,
               label: "Reply",
-              eventId: `${conversationEvents.REPLY_PREFIX}${c.id}`,
-            },
+              style: "secondary",
+            }),
           ],
         }),
       );
