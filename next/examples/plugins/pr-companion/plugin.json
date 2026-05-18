@@ -1,0 +1,14 @@
+{
+  "id": "pr-companion",
+  "name": "PR Companion",
+  "version": "0.1.0",
+  "entry": { "kind": "node", "path": "index.js" },
+  "activation": ["onStartup"],
+  "capabilities": { "ui": true, "network": true, "fs": "readwrite" },
+  "contributes": {
+    "panels": [
+      { "id": "inbox", "title": "PRs" },
+      { "id": "detail", "title": "PR Detail" }
+    ]
+  }
+}
