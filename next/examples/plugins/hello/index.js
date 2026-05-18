@@ -21,6 +21,22 @@
 //     plugin author would write to recreate the panel. `language:
 //     javascript` activates the highlight stack the app already
 //     ships for the read-only file viewer.
+//
+// Batch 5 (§4.3) layout-widget dogfood: this panel additionally
+// exercises four pure-layout widgets that don't have dedicated demos
+// elsewhere. We bunch them up here on purpose — sysinfo / notes are
+// task-shaped plugins and would feel contrived hosting these:
+//   * `ui.aspect` — pins the brand logo to a 1:1 box so the icon
+//     shape stays consistent regardless of the surrounding row size.
+//   * `ui.stack` — overlays a "DEMO" badge in the top-right of the
+//     aspect-clamped logo to prove z-axis stacking works against an
+//     image child.
+//   * `ui.flex` — inside the "Layout demo" section, a row splits a
+//     label (flex:2) and value (flex:1) so the proportional sizing
+//     contract is visible.
+//   * `ui.scroll` — a horizontal carousel of accent-tagged badges
+//     sized past the viewport width, scrollable inside the panel's
+//     vertical scroller.
 
 import { createPlugin, ui } from "@openvsmobile/sdk";
 
@@ -76,11 +92,32 @@ function renderHome(ctx) {
                 // Brand-color tile sourced from a `data:image/png;…`
                 // URL — proves the inline-image path works without any
                 // network access or `fs` capability.
-                ui.image({
-                  id: "home-logo",
-                  src: BRAND_LOGO_PNG,
-                  fit: "cover",
-                  size: "lg",
+                //
+                // Wrapped in `ui.stack` to overlay a "DEMO" badge on
+                // top, and the image itself is wrapped in `ui.aspect`
+                // so the tile stays a strict 1:1 box regardless of the
+                // row's cross-axis height.
+                ui.stack({
+                  id: "home-logo-stack",
+                  alignment: "topEnd",
+                  children: [
+                    ui.aspect({
+                      id: "home-logo-aspect",
+                      ratio: 1,
+                      child: ui.image({
+                        id: "home-logo",
+                        src: BRAND_LOGO_PNG,
+                        fit: "cover",
+                        size: "lg",
+                      }),
+                    }),
+                    ui.badge({
+                      id: "home-logo-badge",
+                      text: "DEMO",
+                      accent: "brand",
+                      variant: "pill",
+                    }),
+                  ],
                 }),
                 ui.text({
                   id: "greeting",
@@ -151,6 +188,70 @@ function renderHome(ctx) {
                 { value: "light", label: "Light" },
                 { value: "dark", label: "Dark" },
               ],
+            }),
+          ],
+        }),
+        // Layout demo — exercises `ui.flex` and `ui.scroll` in their
+        // canonical use shapes. Bundled here (rather than scattered
+        // through other plugins) so the dogfood stays grouped with
+        // the other widget showcases.
+        ui.section({
+          id: "home-layout-demo",
+          title: "Layout demo",
+          variant: "card",
+          children: [
+            // Flex split: label claims 2/3 of the row, value claims 1/3.
+            ui.row({
+              id: "home-flex-row",
+              gap: "sm",
+              children: [
+                ui.flex({
+                  id: "home-flex-label",
+                  flex: 2,
+                  child: ui.text({
+                    id: "home-flex-label-text",
+                    text: "Active name",
+                    style: "caption",
+                  }),
+                }),
+                ui.flex({
+                  id: "home-flex-value",
+                  flex: 1,
+                  child: ui.text({
+                    id: "home-flex-value-text",
+                    text: name.length > 0 ? name : "(empty)",
+                    style: "mono",
+                  }),
+                }),
+              ],
+            }),
+            // Horizontal carousel: a row of accent badges wider than
+            // the viewport, wrapped in `ui.scroll { axis: 'horizontal' }`
+            // so the panel's vertical scroller stays out of the way.
+            ui.scroll({
+              id: "home-accents-scroll",
+              axis: "horizontal",
+              child: ui.row({
+                id: "home-accents-row",
+                gap: "sm",
+                children: [
+                  "brand",
+                  "info",
+                  "success",
+                  "warning",
+                  "danger",
+                  "muted",
+                  "info",
+                  "success",
+                ].map((accent, i) =>
+                  ui.badge({
+                    id: `home-accent-${i}`,
+                    text: accent,
+                    accent,
+                    variant: "pill",
+                  }),
+                ),
+              }),
             }),
           ],
         }),

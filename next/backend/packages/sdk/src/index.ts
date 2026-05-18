@@ -1111,6 +1111,8 @@ export interface PluginContext {
   /// pick comes back through `onUiEvent` carrying the picked action's
   /// `eventId`. If `dismissible: false`, the dialog is modal — only the
   /// action buttons can resolve it.
+  // Resolves once the host has broadcast the modal — does NOT wait for
+  // the user to pick. Wire user choices via onUiEvent.
   showAlert(
     panelId: string,
     alert: UiAlertDialog,
@@ -1119,6 +1121,8 @@ export interface PluginContext {
   /// modal-bottom-sheet list on Android). The user's pick comes back
   /// through `onUiEvent`; tap-outside / back-press fires
   /// `dismissEventId` if configured, otherwise silently dismisses.
+  // Resolves once the host has broadcast the modal — does NOT wait for
+  // the user to pick. Wire user choices via onUiEvent.
   showActionSheet(
     panelId: string,
     sheet: UiActionSheet,
@@ -1128,6 +1132,9 @@ export interface PluginContext {
   /// fs-capability gate to the child tree at this entry point — a
   /// BottomSheet child that points outside the active workspace will
   /// be rejected before the push is broadcast.
+  // Resolves once the host has broadcast the modal — does NOT wait for
+  // the user to pick. Wire user choices via onUiEvent.
+  // TODO(v1): ui.dismissModal(modalId) — plugin-driven close path.
   showBottomSheet(
     panelId: string,
     sheet: UiBottomSheet,

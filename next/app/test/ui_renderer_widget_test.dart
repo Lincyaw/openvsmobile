@@ -1077,6 +1077,32 @@ void main() {
     expect(find.text('plain text'), findsOneWidget);
   });
 
+  // Regression guard: a CodeBlock dropped directly into a Row with
+  // auto-sizing children must not blow up layout. The CodeBlock has an
+  // inner horizontal scroller — without an outer width constraint, an
+  // unbounded Row child would assert. Asserting `takeException()` is
+  // null covers any future regression where the constraint disappears.
+  testWidgets('UiCodeBlock inside UiRow lays out under bounded constraints',
+      (tester) async {
+    final tree = UiRow(id: 'row-cb', children: [
+      UiCodeBlock(id: 'cb-row', code: 'x' * 200),
+    ]);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 320,
+              height: 200,
+              child: UiRenderer(tree: tree, onEvent: (_) {}),
+            ),
+          ),
+        ),
+      ),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('UiProgress determinate linear renders LinearProgressIndicator',
       (tester) async {
     const tree = UiProgress(id: 'pg', value: 0.4, label: '40%');

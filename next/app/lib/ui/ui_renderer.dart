@@ -340,7 +340,7 @@ class UiRenderer extends StatelessWidget {
     // surface reads as "tinted" rather than "loud" — matches the
     // iOS/Material 3 notification-banner pattern.
     final wash = Color.alphaBlend(
-      accent.withAlpha(38), // ~15% alpha
+      accent.withAlpha(AppBannerOpacity.wash),
       scheme.surface,
     );
     final iconName = _bannerIconName(node.accent);
@@ -357,7 +357,10 @@ class UiRenderer extends StatelessWidget {
         decoration: BoxDecoration(
           color: wash,
           borderRadius: BorderRadius.circular(AppRadius.md),
-          border: Border.all(color: accent.withAlpha(102), width: 1),
+          border: Border.all(
+            color: accent.withAlpha(AppBannerOpacity.border),
+            width: 1,
+          ),
         ),
         padding: const EdgeInsets.symmetric(
           horizontal: AppSpacing.md,
@@ -1022,18 +1025,34 @@ class UiRenderer extends StatelessWidget {
         ),
       );
     }
-    return Container(
+    // The inner SingleChildScrollView reports an unbounded intrinsic
+    // width along the main axis, so dropping a CodeBlock into a Row
+    // without a width constraint would blow up layout. LayoutBuilder
+    // pins the outer width to whatever the parent provides; when the
+    // parent supplies infinity (e.g. a `Row { mainAxisSize: min }`),
+    // we fall back to a sensible default so the panel still renders
+    // instead of asserting.
+    return LayoutBuilder(
       key: key,
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerHigh,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(color: scheme.outline, width: 1),
-      ),
-      padding: const EdgeInsets.all(AppSpacing.sm),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: body,
-      ),
+      builder: (context, constraints) {
+        final maxW =
+            constraints.maxWidth.isFinite ? constraints.maxWidth : 320.0;
+        return ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: maxW),
+          child: Container(
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainerHigh,
+              borderRadius: BorderRadius.circular(AppRadius.sm),
+              border: Border.all(color: scheme.outline, width: 1),
+            ),
+            padding: const EdgeInsets.all(AppSpacing.sm),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: body,
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -1130,6 +1149,8 @@ class UiRenderer extends StatelessWidget {
             crossAxisCount: columns,
             mainAxisSpacing: gap,
             crossAxisSpacing: gap,
+            // Square cells read as dashboard tiles; not a token
+            // (renderer-local choice).
             childAspectRatio: 1,
           ),
           itemCount: node.children.length,
@@ -1176,6 +1197,10 @@ class UiRenderer extends StatelessWidget {
     // inactive tabs are bare label rows. Tap → fire onChangeEvent with
     // payload { tabId }. Switching content is the plugin's job.
     final scheme = Theme.of(context).colorScheme;
+    // Defense-in-depth: the parser requires `activeId` to be a non-empty
+    // string but does not cross-check it against the `tabs` list, so a
+    // plugin can emit a stale id and we render the first tab instead of
+    // an unselected segmented control.
     final activeId = node.tabs.any((t) => t.id == node.activeId)
         ? node.activeId
         : node.tabs.first.id;

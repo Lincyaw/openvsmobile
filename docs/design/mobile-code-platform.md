@@ -595,7 +595,7 @@ interface UiSpacer  extends UiBase { type: "spacer";  size?: SpacingToken }    /
 **2. Container** — visual grouping with surface.
 
 ```ts
-interface UiSection extends UiBase { type: "section"; title?: string; child: UiNode; collapsible?: boolean; variant?: 'plain'|'card'|'inset'; style?: StyleSlot }   // [shipped, expand]
+interface UiSection extends UiBase { type: "section"; title?: string; children: UiNode[]; collapsible?: boolean; variant?: 'plain'|'card'|'inset'; style?: StyleSlot }   // [shipped, expand]
 interface UiDivider extends UiBase { type: "divider"; orientation?: 'horizontal'|'vertical' }    // [spec]
 ```
 

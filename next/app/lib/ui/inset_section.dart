@@ -50,7 +50,10 @@ class InsetSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final dividerColor = scheme.outline;
+    // `outlineVariant` is the M3 token tuned for in-surface separators
+    // (lighter than `outline`, which is calibrated for strokes/borders);
+    // matches the iOS-hairline weight we want for inset row dividers.
+    final dividerColor = scheme.outlineVariant;
 
     // Inject hairline dividers between adjacent rows so the inset
     // surface reads as a grouped list. We don't draw separators above

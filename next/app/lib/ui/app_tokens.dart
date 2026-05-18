@@ -35,6 +35,23 @@ class AppDensity {
   static const double statusBarHeight = 32;
 }
 
+/// Alpha channels used by the inline-banner builder (Batch 2 §4.3).
+/// Both surfaces are derived from the banner's accent color: `wash` is
+/// the low-opacity fill so the banner reads as "tinted" rather than
+/// "loud", and `border` is the slightly stronger 1px hairline that
+/// keeps the banner edge visible against `scheme.surface`. Promoted to
+/// constants so a future palette pass has a single source of truth
+/// instead of two magic alphas drifting through the renderer.
+class AppBannerOpacity {
+  const AppBannerOpacity._();
+
+  /// ~15% — accent washed over surface for the banner background.
+  static const int wash = 38;
+
+  /// ~40% — accent at slightly higher opacity for the 1px border.
+  static const int border = 102;
+}
+
 /// Project color palette — dark variant.
 ///
 /// Hex values are settled in CLAUDE.md and the design tasks; consumers
