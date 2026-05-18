@@ -405,19 +405,27 @@ background poll with `notification.show` fan-out.
 Each phase is a separate dev-worker dispatch; each gets a code-review
 pass before the next starts.
 
-## Open questions for sign-off
+## Resolved design choices
 
-1. **Notification API vs GraphQL Search.** Notifications API is cheaper
-   but limited to things you're participating in; Search (`is:pr
-   review-requested:@me`) is broader but rate-limit-heavy. Default:
-   Notifications API for v0; revisit if "Assigned" tab feels too narrow.
-2. **PR detail panel registration.** Dynamically registering per-PR
-   panels keeps the panel list tidy but means panel ids aren't stable
-   across reconnect (so deep-link notifications can't target them). The
-   alternative — one fixed "PR detail" panel that swaps content based on
-   in-plugin navigation state — is simpler but loses panel-level
-   addressability. Lean: fixed panel, in-plugin navigation. Decision
-   needed.
-3. **Hunk language inference.** Use file extension only, or a tiny
-   builtin map (the same one the Files tab uses)? Lean: reuse if it's
-   exported; otherwise hardcode the 10 most common.
+1. **Notifications API, not Search.** Notifications API is cheap
+   (`If-Modified-Since` → `304 Not Modified`), naturally scopes to
+   what the user actively participates in, and dovetails with the
+   "mark as read" gesture. GraphQL Search (`is:pr review-requested:@me`)
+   is broader but eats rate-limit fast and adds latency we don't want
+   on a 60-second poll. Revisit only if the "Assigned" tab is
+   demonstrably starved.
+2. **Single fixed PR-detail panel + in-plugin navigation.** The plugin
+   contributes one `panels.detail` entry, and which PR it shows is
+   internal plugin state. Pro: panel ids are stable across reconnect;
+   simpler `panels:` manifest; tighter UI list. Con: notification deep-
+   links can only target the panel id, not a specific PR — we accept
+   this and have the plugin pre-load the corresponding PR when the
+   user follows a notification, by stashing "next PR to focus" in
+   memory before pushing.
+3. **Hunk language inference: reuse Files-tab map if exported, else a
+   ~10-extension hardcoded fallback.** Files-tab map lives in
+   `next/app/lib/ui/highlight_theme.dart` (filename → language) — that
+   one is app-side. For plugin-side language hint, ship a small JS
+   object covering js/ts/dart/py/go/rs/java/kt/swift/sh/md plus a
+   `null` fallback. Centralizing the map across app + plugin is v1
+   work, not blocking.
