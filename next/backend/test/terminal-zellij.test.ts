@@ -667,13 +667,10 @@ describe("TerminalRegistry hydrate + lazy attach", () => {
     expect(snap.lengthBytes).toBe(0);
   });
 
-  it("dispose of a hydrated entry wipes the DB row WITHOUT calling kill-session", async () => {
-    // Explicit dispose IS a destroy intent — the user clicked the X,
-    // so the DB row goes away. But we never had a zellij client of
-    // our own (the entry was still lazy), so we don't issue
-    // kill-session: the zellij server may have older clients the
-    // user wants to reach via the zellij CLI. That asymmetry is
-    // documented in TerminalRegistry.dispose.
+  it("dispose of a hydrated entry wipes the DB row AND calls kill-session", async () => {
+    // The chip IS the user's mental model of the zellij session.
+    // Tapping X on a hydrated chip should leave no ghost — DB row goes,
+    // zellij server session goes. Same destroy semantics as live dispose.
     const opts = await tempDbPath();
     const persistence = new TerminalPersistence(opts);
     persistence.recordCreate({
@@ -701,11 +698,12 @@ describe("TerminalRegistry hydrate + lazy attach", () => {
     reg.hydrateFromPersistence(new Set());
     reg.dispose("lazy-1");
     await new Promise((r) => setImmediate(r));
-    // No kill-session for a hydrated dispose.
-    expect(execCalls).toHaveLength(0);
-    // DB row is gone — the user explicitly chose to wipe this chip.
+    expect(execCalls).toHaveLength(1);
+    expect(execCalls[0]).toMatchObject({
+      command: "zellij",
+      args: ["kill-session", "ovsm-lazy-1"],
+    });
     expect(persistence.loadByWorkspaceRoot("/work")).toEqual([]);
-    // And the registry is empty.
     expect(reg.list()).toEqual([]);
     persistence.close();
   });

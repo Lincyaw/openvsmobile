@@ -229,6 +229,7 @@ export interface TerminalRegistryOptions {
 
 export class TerminalRegistry {
   private readonly sessions = new Map<string, Entry>();
+  private shuttingDown = false;
   private readonly multiplexer: MultiplexerInfo;
   private readonly workspaceRoot: string;
   private readonly persistence: TerminalPersistenceHook | null;
@@ -482,6 +483,11 @@ export class TerminalRegistry {
       this.onData(id, chunk, seqEnd);
     });
     pty.onExit(({ exitCode }) => {
+      // detachAll() flips shuttingDown before killing PTYs; the kill
+      // triggers this callback asynchronously, and without the guard
+      // we'd race and wipe the DB row that the shutdown path
+      // deliberately preserved.
+      if (this.shuttingDown) return;
       this.sessions.delete(id);
       if (this.persistence !== null) this.persistence.recordDispose(id);
       this.onExit(id, exitCode);
@@ -537,31 +543,21 @@ export class TerminalRegistry {
   public dispose(id: string): void {
     const entry = this.sessions.get(id);
     if (!entry) return;
-    // Hydrated entries never had a client attached, so there's no PTY
-    // to kill and no zellij CLIENT to detach. Wipe the in-memory + DB
-    // record and stop — we deliberately do NOT call kill-session
-    // because the zellij SERVER session may be exactly what the user
-    // wanted to keep around. If they want to bin it too they can do so
-    // explicitly via `zellij delete-session`.
-    if (entry.state === "hydrated") {
-      this.sessions.delete(id);
-      if (this.persistence !== null) this.persistence.recordDispose(id);
-      return;
-    }
-    try {
-      (entry.pty as IPty).kill();
-    } catch {
-      // Already gone; ignore.
+    // User tapping X on a chip is an explicit destroy intent for the
+    // whole logical session — the chip *is* the user's mental model of
+    // the zellij session. Both live and hydrated paths must kill the
+    // server-side session, otherwise we leave a ghost only
+    // `zellij delete-session` from the terminal can reclaim. Live path
+    // also kills the local PTY to detach the client first.
+    if (entry.state === "live" && entry.pty !== null) {
+      try {
+        entry.pty.kill();
+      } catch {
+        // Already gone; ignore.
+      }
     }
     this.sessions.delete(id);
     if (this.persistence !== null) this.persistence.recordDispose(id);
-    // Killing the PTY only detaches the zellij CLIENT — the zellij
-    // SERVER side of this session keeps running and would linger as a
-    // ghost until the user typed `zellij delete-session` manually. Fire
-    // the explicit kill-session so the user-facing `dispose` actually
-    // disposes. Best-effort: errors (session already gone, zellij
-    // crashed) are logged inside `killZellijSession` and swallowed —
-    // dispose must not fail because of a stale multiplexer.
     if (entry.externalSessionId !== null) {
       void killZellijSession(entry.externalSessionId, this.execRunner);
     }
@@ -596,6 +592,7 @@ export class TerminalRegistry {
   /// touch — the row is meaningless and `loadByWorkspaceRoot` filters
   /// it out at hydrate time.
   public detachAll(): void {
+    this.shuttingDown = true;
     for (const entry of this.sessions.values()) {
       if (entry.state === "live" && entry.pty !== null) {
         try {
