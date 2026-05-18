@@ -10,6 +10,7 @@
 // truth: AppState".
 
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -51,6 +52,22 @@ class AppState extends ChangeNotifier {
 
   // ---- File tree (per workspace) ----
   final Map<String, FileTreeNode> _fileTreeByWorkspace = {};
+
+  // ---- Diff result LRU cache (issue #55) ----
+  //
+  // Per first principle #3, `git.diff` is content-addressed: the same
+  // `(workspaceId, baseSha, headSha, path)` tuple resolves to the same bytes,
+  // forever. We piggy-back on that to skip re-RPC when the user taps the same
+  // changed file twice in quick succession (e.g. back-then-forward through
+  // the diff viewer). LinkedHashMap gives us LRU for free: re-insert on hit,
+  // evict from the head when we exceed the cap.
+  //
+  // The cap is intentionally small — diffs can be hundreds of KiB each and
+  // we'd rather rebuild from the backend (which has its own cache) than hold
+  // megabytes of patch text on a phone.
+  static const int _kDiffCacheCap = 32;
+  final LinkedHashMap<String, Map<String, dynamic>> _diffCache =
+      LinkedHashMap<String, Map<String, dynamic>>();
 
   // ---- Workspace picker (ephemeral) ----
   PickerState? _pickerState;
@@ -246,6 +263,7 @@ class AppState extends ChangeNotifier {
     _active = const [];
     _current = null;
     _fileTreeByWorkspace.clear();
+    _diffCache.clear();
     _terminals.resetAll();
     // Keep recents — they're useful when reconnecting.
     notifyListeners();
@@ -678,23 +696,102 @@ class AppState extends ChangeNotifier {
   }
 
   /// Fetch a unified diff against HEAD for [path] in [workspaceId]. Returns
-  /// the raw JSON response shape: `{kind: "text", hunks: [...]}` for normal
-  /// diffs, `{kind: "binary"|"deleted"|"too-large", meta: {...}}` for the
-  /// placeholder cases. The diff viewer screen consumes this directly.
+  /// the raw JSON response: `{hunks, baseSha, headSha, isBinary, tooLarge?}`
+  /// per the backend's git.diff RPC. The diff viewer screen consumes this
+  /// directly and branches on the `isBinary` / `tooLarge` flags.
+  ///
+  /// Results are LRU-cached per `(workspaceId, baseSha, headSha, path)` so a
+  /// second view of the same file inside the same HEAD short-circuits the
+  /// round trip (issue #55, first principle #3).
   ///
   /// We return the raw map rather than a typed Diff object so the viewer
-  /// (the one consumer in v0) can branch on `kind` without an
-  /// intermediate model. If a second consumer appears, introduce a typed
-  /// shape at that point.
+  /// (the one consumer in v0) can branch directly on response fields. If a
+  /// second consumer appears, introduce a typed shape at that point.
   Future<Map<String, dynamic>> gitDiff({
     required String workspaceId,
     required String path,
   }) async {
+    // Fast path: if we know the current headSha for this workspace, see if a
+    // prior result for `(workspaceId, base=HEAD, headSha, path)` is still
+    // cached. We use the live HEAD as the key because the request omits
+    // `base`/`head` and the backend defaults base to "HEAD" and head to null
+    // (working tree) — see git.diff handler. baseSha is folded into the key
+    // implicitly: if HEAD moves, the cached entry's stored baseSha won't
+    // match what the backend would compute now, so we discard rather than
+    // serve potentially-stale bytes.
+    final workspaceHead = workspaceStateFor(workspaceId)?.headSha;
+    if (workspaceHead != null) {
+      final probeKey = _diffProbeKey(workspaceId, workspaceHead, path);
+      final hit = _diffCache.remove(probeKey);
+      if (hit != null) {
+        _diffCache[probeKey] = hit; // re-insert for LRU recency
+        return hit;
+      }
+    }
     final r = await client.call('git.diff', {
       'workspaceId': workspaceId,
       'path': path,
     }) as Map<String, dynamic>;
+    // Store under two aliasing keys (same underlying map):
+    //   * probe key from the workspace's commit-level HEAD — what gitDiff
+    //     looks up on its next call when HEAD has not moved.
+    //   * content-addressed key from the response's baseSha + headSha —
+    //     per spec wording, and useful if a HEAD revert lands back on a
+    //     previously-cached commit.
+    if (workspaceHead != null) {
+      _putDiffCache(_diffProbeKey(workspaceId, workspaceHead, path), r);
+    }
+    final baseSha = r['baseSha'] as String?;
+    final headSha = r['headSha'] as String?;
+    if (baseSha != null && headSha != null) {
+      _putDiffCache(
+        _diffContentKey(workspaceId, baseSha, headSha, path),
+        r,
+      );
+    }
     return r;
+  }
+
+  void _putDiffCache(String key, Map<String, dynamic> value) {
+    _diffCache.remove(key);
+    _diffCache[key] = value;
+    while (_diffCache.length > _kDiffCacheCap) {
+      _diffCache.remove(_diffCache.keys.first);
+    }
+  }
+
+  /// Probe key — derived from the workspace's commit-level HEAD sha. The
+  /// space separator can't appear in a sha or workspaceId; paths with
+  /// spaces still produce distinct keys because the prefix length pins
+  /// the workspaceId+sha components in fixed positions.
+  static String _diffProbeKey(
+    String workspaceId,
+    String workspaceHead,
+    String path,
+  ) =>
+      'h $workspaceId $workspaceHead $path';
+
+  /// Content-addressed key — derived from the per-blob baseSha + headSha
+  /// returned by the backend. Per first principle #3.
+  static String _diffContentKey(
+    String workspaceId,
+    String baseSha,
+    String headSha,
+    String path,
+  ) =>
+      'c $workspaceId $baseSha $headSha $path';
+
+  /// Number of cached diff results. Test hook for the LRU contract; widgets
+  /// have no reason to read this.
+  @visibleForTesting
+  int get diffCacheSize => _diffCache.length;
+
+  /// Drop every entry from the diff cache. Test hook; production
+  /// invalidation is implicit (a HEAD move shifts the lookup key so old
+  /// entries simply stop being hit and age out via LRU pressure).
+  @visibleForTesting
+  void debugClearDiffCache() {
+    _diffCache.clear();
   }
 
   Future<List<DirEntry>> pickerListDir(String path) async {
