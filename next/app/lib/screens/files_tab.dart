@@ -358,8 +358,8 @@ class _FilesTabState extends State<FilesTab> {
         padding: EdgeInsets.only(
           left: AppSpacing.sm + depth * AppSpacing.lg,
           right: AppSpacing.sm,
-          top: AppSpacing.xs + 2,
-          bottom: AppSpacing.xs + 2,
+          top: AppSpacing.sm,
+          bottom: AppSpacing.sm,
         ),
         child: Row(
           children: [
@@ -909,7 +909,7 @@ class _OfflinePill extends StatelessWidget {
     final theme = Theme.of(context);
     return Container(
       padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.sm - 2, vertical: 2),
+          horizontal: AppSpacing.xs, vertical: AppSpacing.xs),
       decoration: BoxDecoration(
         color: theme.colorScheme.secondaryContainer,
         borderRadius: BorderRadius.circular(AppRadius.md),

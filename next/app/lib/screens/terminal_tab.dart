@@ -241,14 +241,14 @@ class _SessionTile extends StatelessWidget {
       onLongPress: onLongPress,
       child: Padding(
         padding: const EdgeInsets.symmetric(
-            horizontal: AppSpacing.lg, vertical: AppSpacing.sm + 2),
+            horizontal: AppSpacing.lg, vertical: AppSpacing.md),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             Icon(
               Icons.terminal_outlined,
               color: dim,
-              size: AppIconSize.md - 2,
+              size: AppIconSize.md,
             ),
             const SizedBox(width: AppSpacing.md),
             Expanded(
@@ -320,7 +320,7 @@ class _NewSessionTile extends StatelessWidget {
       onTap: onTap,
       child: Padding(
         padding: const EdgeInsets.symmetric(
-            horizontal: AppSpacing.lg, vertical: AppSpacing.md + 2),
+            horizontal: AppSpacing.lg, vertical: AppSpacing.md),
         child: Row(
           children: [
             Icon(Icons.add, color: theme.colorScheme.primary),
