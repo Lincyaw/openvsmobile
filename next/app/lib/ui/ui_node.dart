@@ -56,6 +56,22 @@ class SizeSlot {
 /// Discriminant for [UiBadge].
 enum UiBadgeVariant { dot, pill }
 
+/// Visual variant of [UiSection] (Batch 2 — §4.3).
+/// * [plain]  — no surface, just title + children (the pre-Batch-2 default)
+/// * [card]   — Material-flavor rounded card with subtle border
+/// * [inset]  — iOS Settings inset-grouped style; carries the
+///   Settings-app visual identity.
+/// Omitted/null on the wire = [plain] so pre-Batch-2 trees keep rendering.
+enum UiSectionVariant { plain, card, inset }
+
+/// Accent for [UiInlineBanner] — narrower than [AccentToken] because a
+/// "you should notice this" surface only ships in info / success /
+/// warning / danger tones.
+enum UiInlineBannerAccent { info, success, warning, danger }
+
+/// Orientation for [UiDivider].
+enum UiDividerOrientation { horizontal, vertical }
+
 /// Base type for every node in the descriptor tree. Every concrete node
 /// carries an `id` which is mandatory and must be unique within the
 /// tree — that uniqueness is enforced server-side; the renderer relies
@@ -93,6 +109,7 @@ sealed class UiNode {
         return UiSection(
           id: id,
           title: _asString(raw['title']),
+          variant: _sectionVariant(raw['variant']),
           children: _children(raw['children']),
         );
       case 'Card':
@@ -182,6 +199,68 @@ sealed class UiNode {
           columns: _asInt(raw['columns']),
           onLaunchEvent: _asString(raw['onLaunchEvent']),
         );
+      case 'Switch':
+        final value = raw['value'];
+        if (value is! bool) {
+          throw const FormatException('UiSwitch.value must be a bool');
+        }
+        return UiSwitch(
+          id: id,
+          value: value,
+          label: _asString(raw['label']),
+          onChangeEvent: _asString(raw['onChangeEvent']),
+        );
+      case 'Select':
+        return UiSelect(
+          id: id,
+          options: _selectOptions(raw['options']),
+          label: _asString(raw['label']),
+          value: _asString(raw['value']),
+          onChangeEvent: _asString(raw['onChangeEvent']),
+        );
+      case 'Banner':
+        final title = raw['title'];
+        if (title is! String || title.isEmpty) {
+          throw const FormatException(
+            'UiInlineBanner.title must be a non-empty string',
+          );
+        }
+        final accentRaw = raw['accent'];
+        final accent = _bannerAccent(accentRaw);
+        Object? actionRaw = raw['action'];
+        UiInlineBannerAction? action;
+        if (actionRaw is Map<String, dynamic>) {
+          final aLabel = actionRaw['label'];
+          final aEventId = actionRaw['eventId'];
+          if (aLabel is! String || aLabel.isEmpty) {
+            throw const FormatException(
+              'UiInlineBanner.action.label must be a non-empty string',
+            );
+          }
+          if (aEventId is! String || aEventId.isEmpty) {
+            throw const FormatException(
+              'UiInlineBanner.action.eventId must be a non-empty string',
+            );
+          }
+          action = UiInlineBannerAction(label: aLabel, eventId: aEventId);
+        } else if (actionRaw != null) {
+          throw const FormatException(
+            'UiInlineBanner.action must be a JSON object when provided',
+          );
+        }
+        return UiInlineBanner(
+          id: id,
+          title: title,
+          accent: accent,
+          body: _asString(raw['body']),
+          action: action,
+          dismissEventId: _asString(raw['dismissEventId']),
+        );
+      case 'Divider':
+        return UiDivider(
+          id: id,
+          orientation: _dividerOrientation(raw['orientation']),
+        );
       default:
         throw FormatException('UiNode: unknown kind "$kind"');
     }
@@ -243,6 +322,83 @@ sealed class UiNode {
         return UiBadgeVariant.pill;
     }
     throw FormatException('UiBadge: unknown variant "$raw"');
+  }
+
+  static UiSectionVariant? _sectionVariant(Object? raw) {
+    if (raw == null) return null;
+    if (raw is! String) {
+      throw const FormatException('UiSection.variant must be a string');
+    }
+    switch (raw) {
+      case 'plain':
+        return UiSectionVariant.plain;
+      case 'card':
+        return UiSectionVariant.card;
+      case 'inset':
+        return UiSectionVariant.inset;
+    }
+    throw FormatException('UiSection: unknown variant "$raw"');
+  }
+
+  static List<UiSelectOption> _selectOptions(Object? raw) {
+    if (raw is! List) {
+      throw const FormatException('UiSelect.options must be a JSON array');
+    }
+    final out = <UiSelectOption>[];
+    for (final entry in raw) {
+      if (entry is! Map<String, dynamic>) {
+        throw const FormatException(
+          'UiSelect.options[*] must be a JSON object',
+        );
+      }
+      final value = entry['value'];
+      final label = entry['label'];
+      if (value is! String || value.isEmpty) {
+        throw const FormatException(
+          'UiSelect.options[*].value must be a non-empty string',
+        );
+      }
+      if (label is! String || label.isEmpty) {
+        throw const FormatException(
+          'UiSelect.options[*].label must be a non-empty string',
+        );
+      }
+      out.add(UiSelectOption(value: value, label: label));
+    }
+    return out;
+  }
+
+  static UiInlineBannerAccent _bannerAccent(Object? raw) {
+    if (raw is! String) {
+      throw const FormatException(
+        'UiInlineBanner.accent must be one of info|success|warning|danger',
+      );
+    }
+    switch (raw) {
+      case 'info':
+        return UiInlineBannerAccent.info;
+      case 'success':
+        return UiInlineBannerAccent.success;
+      case 'warning':
+        return UiInlineBannerAccent.warning;
+      case 'danger':
+        return UiInlineBannerAccent.danger;
+    }
+    throw FormatException('UiInlineBanner: unknown accent "$raw"');
+  }
+
+  static UiDividerOrientation? _dividerOrientation(Object? raw) {
+    if (raw == null) return null;
+    if (raw is! String) {
+      throw const FormatException('UiDivider.orientation must be a string');
+    }
+    switch (raw) {
+      case 'horizontal':
+        return UiDividerOrientation.horizontal;
+      case 'vertical':
+        return UiDividerOrientation.vertical;
+    }
+    throw FormatException('UiDivider: unknown orientation "$raw"');
   }
 
   static List<UiSwipeAction>? _swipeActions(Object? raw) {
@@ -321,9 +477,14 @@ class UiRow extends UiNode {
 
 class UiSection extends UiNode {
   final String? title;
+  final UiSectionVariant? variant;
   final List<UiNode> children;
-  const UiSection({required String id, this.title, required this.children})
-      : super(id);
+  const UiSection({
+    required String id,
+    this.title,
+    this.variant,
+    required this.children,
+  }) : super(id);
 }
 
 class UiCard extends UiNode {
@@ -540,6 +701,79 @@ class UiAppGrid extends UiNode {
     this.columns,
     this.onLaunchEvent,
   }) : super(id);
+}
+
+/// Two-state toggle (Batch 2). The plugin owns canonical state; the
+/// renderer fires `onChangeEvent` with `payload: { value: bool }` the
+/// moment the user flips it and tracks the gesture optimistically.
+class UiSwitch extends UiNode {
+  final String? label;
+  final bool value;
+  final String? onChangeEvent;
+  const UiSwitch({
+    required String id,
+    required this.value,
+    this.label,
+    this.onChangeEvent,
+  }) : super(id);
+}
+
+@immutable
+class UiSelectOption {
+  final String value;
+  final String label;
+  const UiSelectOption({required this.value, required this.label});
+}
+
+/// Single-choice picker (Batch 2). Always renders as a modal
+/// bottom-sheet picker on mobile — no dropdown menus. The host fires
+/// `onChangeEvent` with `payload: { value: String }` when the user
+/// commits a pick.
+class UiSelect extends UiNode {
+  final String? label;
+  final List<UiSelectOption> options;
+  final String? value;
+  final String? onChangeEvent;
+  const UiSelect({
+    required String id,
+    required this.options,
+    this.label,
+    this.value,
+    this.onChangeEvent,
+  }) : super(id);
+}
+
+@immutable
+class UiInlineBannerAction {
+  final String label;
+  final String eventId;
+  const UiInlineBannerAction({required this.label, required this.eventId});
+}
+
+/// Persistent in-flow status surface (Batch 2). Lives in the declarative
+/// tree — unlike imperative `ui.showAlert` (Batch 4).
+class UiInlineBanner extends UiNode {
+  final String title;
+  final String? body;
+  final UiInlineBannerAccent accent;
+  final UiInlineBannerAction? action;
+  final String? dismissEventId;
+  const UiInlineBanner({
+    required String id,
+    required this.title,
+    required this.accent,
+    this.body,
+    this.action,
+    this.dismissEventId,
+  }) : super(id);
+}
+
+/// Explicit divider (Batch 2). The inset section variant paints its
+/// own row separators internally; this widget is for placement
+/// **outside** that context.
+class UiDivider extends UiNode {
+  final UiDividerOrientation? orientation;
+  const UiDivider({required String id, this.orientation}) : super(id);
 }
 
 /// What the renderer fires when the user interacts with a leaf widget.

@@ -71,6 +71,25 @@ const ACCENT_TOKENS: ReadonlySet<string> = new Set([
   "muted",
 ]);
 const BADGE_VARIANTS: ReadonlySet<string> = new Set(["dot", "pill"]);
+const SECTION_VARIANTS: ReadonlySet<string> = new Set([
+  "plain",
+  "card",
+  "inset",
+]);
+/// Banner accent is the {info, success, warning, danger} slice of
+/// AccentToken — `brand` / `muted` aren't meaningful for a "you should
+/// notice this" surface, and the doc spec calls out the four-value union
+/// directly.
+const BANNER_ACCENTS: ReadonlySet<string> = new Set([
+  "info",
+  "success",
+  "warning",
+  "danger",
+]);
+const DIVIDER_ORIENTATIONS: ReadonlySet<string> = new Set([
+  "horizontal",
+  "vertical",
+]);
 
 export interface UiColumn {
   kind: "Column";
@@ -84,12 +103,24 @@ export interface UiRow {
   children: UiNode[];
   gap?: StyleSlot<SpacingToken>;
 }
+/// Container with three visual variants (Batch 2 — §4.3):
+///   * `plain` (default) — no surface, just title + children stacked
+///   * `card` — Material-flavor rounded card with subtle border
+///   * `inset` — iOS Settings inset-grouped: one rounded surface with
+///     dividers between rows; title rendered above in caption type
+/// `variant` is optional and omitted-equals-plain so pre-Batch-2 trees
+/// keep rendering identically.
+export type UiSectionVariant = "plain" | "card" | "inset";
 export interface UiSection {
   kind: "Section";
   id: string;
   title?: string;
+  variant?: UiSectionVariant;
   children: UiNode[];
 }
+/// Deprecated alias kept for one minor version: behaves exactly like
+/// `UiSection { variant: "card", children }`. New code should emit a
+/// Section directly; the host renders both paths through the same code.
 export interface UiCard {
   kind: "Card";
   id: string;
@@ -192,6 +223,75 @@ export interface UiAppGrid {
   onLaunchEvent?: string;
 }
 
+// ---- Batch 2 new widgets (§4.3) ----
+
+/// Two-state toggle. The plugin owns canonical state; the host fires
+/// `onChangeEvent` with `payload: { value: boolean }` the moment the
+/// user flips it. Renderer applies the new value optimistically so the
+/// thumb tracks the gesture; the plugin's next render is authoritative.
+export interface UiSwitch {
+  kind: "Switch";
+  id: string;
+  label?: string;
+  value: boolean;
+  onChangeEvent?: string;
+}
+
+/// One option in a [UiSelect]. The `value` is the wire identifier sent
+/// back in `payload.value`; `label` is the human-readable text shown in
+/// the picker.
+export interface UiSelectOption {
+  value: string;
+  label: string;
+}
+
+/// Single-choice picker. Always renders as a modal bottom-sheet picker
+/// on mobile (the doc spec is explicit about this — no dropdown menus
+/// on a touch surface). When the user commits a pick, the host fires
+/// `onChangeEvent` with `payload: { value: string }`.
+export interface UiSelect {
+  kind: "Select";
+  id: string;
+  label?: string;
+  options: UiSelectOption[];
+  value?: string;
+  onChangeEvent?: string;
+}
+
+/// In-flow status surface — "you're offline", "syncing 3/12 files".
+/// Lives in the declarative tree (unlike `ui.showAlert`, which is
+/// imperative and Batch 4). The four-value `accent` union maps onto the
+/// info / success / warning / danger tones; brand / muted aren't useful
+/// for a "you should notice this" surface.
+export type UiInlineBannerAccent = "info" | "success" | "warning" | "danger";
+export interface UiInlineBannerAction {
+  label: string;
+  eventId: string;
+}
+export interface UiInlineBanner {
+  kind: "Banner";
+  id: string;
+  title: string;
+  body?: string;
+  accent: UiInlineBannerAccent;
+  action?: UiInlineBannerAction;
+  /// Optional dismiss eventId. When set, the renderer shows a close
+  /// affordance and fires this event on tap; the plugin removes the
+  /// banner from its next render. Omitted = persistent until the
+  /// plugin re-renders without it.
+  dismissEventId?: string;
+}
+
+/// Explicit divider. Inset sections render their own row separators
+/// internally; this widget is for **outside** that context (e.g.
+/// between two cards, or as a vertical rule inside a Row).
+export type UiDividerOrientation = "horizontal" | "vertical";
+export interface UiDivider {
+  kind: "Divider";
+  id: string;
+  orientation?: UiDividerOrientation;
+}
+
 export type UiNode =
   | UiColumn
   | UiRow
@@ -205,7 +305,11 @@ export type UiNode =
   | UiIcon
   | UiBadge
   | UiListTile
-  | UiAppGrid;
+  | UiAppGrid
+  | UiSwitch
+  | UiSelect
+  | UiInlineBanner
+  | UiDivider;
 
 /// Thrown by `validateUiTree` for any structural problem (unknown kind,
 /// missing required field, duplicate id). The host translates this into
@@ -263,6 +367,14 @@ function parseNode(raw: unknown, seen: Set<string>, path: string): UiNode {
       return parseListTile(r, seen, path, id);
     case "AppGrid":
       return parseAppGrid(r, path, id);
+    case "Switch":
+      return parseSwitch(r, path, id);
+    case "Select":
+      return parseSelect(r, path, id);
+    case "Banner":
+      return parseBanner(r, path, id);
+    case "Divider":
+      return parseDivider(r, path, id);
     default:
       throw new UiValidationError(
         `${path}: unknown node kind ${JSON.stringify(kind)}`,
@@ -310,6 +422,15 @@ function parseSection(
   const out: UiSection = { kind: "Section", id, children };
   const title = optString(r.title, path, "title");
   if (title !== undefined) out.title = title;
+  const variant = r.variant;
+  if (variant !== undefined && variant !== null) {
+    if (typeof variant !== "string" || !SECTION_VARIANTS.has(variant)) {
+      throw new UiValidationError(
+        `${path}.variant: must be "plain" | "card" | "inset"`,
+      );
+    }
+    out.variant = variant as UiSectionVariant;
+  }
   return out;
 }
 
@@ -597,6 +718,152 @@ function parseAppTile(raw: unknown, path: string): UiAppTile {
   }
   const accent = optAccent(r.accent, path, "accent");
   if (accent !== undefined) out.accent = accent;
+  return out;
+}
+
+function parseSwitch(
+  r: Record<string, unknown>,
+  path: string,
+  id: string,
+): UiSwitch {
+  const value = r.value;
+  if (typeof value !== "boolean") {
+    throw new UiValidationError(`${path}.value: must be a boolean`);
+  }
+  const out: UiSwitch = { kind: "Switch", id, value };
+  const label = optString(r.label, path, "label");
+  if (label !== undefined) out.label = label;
+  const onChangeEvent = optString(r.onChangeEvent, path, "onChangeEvent");
+  if (onChangeEvent !== undefined) out.onChangeEvent = onChangeEvent;
+  return out;
+}
+
+function parseSelect(
+  r: Record<string, unknown>,
+  path: string,
+  id: string,
+): UiSelect {
+  const rawOptions = r.options;
+  if (!Array.isArray(rawOptions)) {
+    throw new UiValidationError(`${path}.options: must be an array`);
+  }
+  const options: UiSelectOption[] = [];
+  const seenValues = new Set<string>();
+  for (let i = 0; i < rawOptions.length; i++) {
+    const raw = rawOptions[i];
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new UiValidationError(`${path}.options[${i}]: must be an object`);
+    }
+    const o = raw as Record<string, unknown>;
+    const value = o.value;
+    if (typeof value !== "string" || value.length === 0) {
+      throw new UiValidationError(
+        `${path}.options[${i}].value: must be a non-empty string`,
+      );
+    }
+    const label = o.label;
+    if (typeof label !== "string" || label.length === 0) {
+      throw new UiValidationError(
+        `${path}.options[${i}].label: must be a non-empty string`,
+      );
+    }
+    // Duplicate option values are a plugin-author bug — the picker would
+    // be unable to disambiguate which one matched the selected `value`.
+    if (seenValues.has(value)) {
+      throw new UiValidationError(
+        `${path}.options[${i}]: duplicate option value "${value}"`,
+      );
+    }
+    seenValues.add(value);
+    options.push({ value, label });
+  }
+  const out: UiSelect = { kind: "Select", id, options };
+  const label = optString(r.label, path, "label");
+  if (label !== undefined) out.label = label;
+  const value = optString(r.value, path, "value");
+  if (value !== undefined) {
+    // A `value` outside the option set would render an empty picker
+    // trigger — surface that as an error so the plugin author notices
+    // the typo at validation time instead of from a confused user.
+    if (!seenValues.has(value)) {
+      throw new UiValidationError(
+        `${path}.value: must match one of the options' value`,
+      );
+    }
+    out.value = value;
+  }
+  const onChangeEvent = optString(r.onChangeEvent, path, "onChangeEvent");
+  if (onChangeEvent !== undefined) out.onChangeEvent = onChangeEvent;
+  return out;
+}
+
+function parseBanner(
+  r: Record<string, unknown>,
+  path: string,
+  id: string,
+): UiInlineBanner {
+  const title = r.title;
+  if (typeof title !== "string" || title.length === 0) {
+    throw new UiValidationError(`${path}.title: must be a non-empty string`);
+  }
+  const accentRaw = r.accent;
+  if (typeof accentRaw !== "string" || !BANNER_ACCENTS.has(accentRaw)) {
+    throw new UiValidationError(
+      `${path}.accent: must be "info" | "success" | "warning" | "danger"`,
+    );
+  }
+  const out: UiInlineBanner = {
+    kind: "Banner",
+    id,
+    title,
+    accent: accentRaw as UiInlineBannerAccent,
+  };
+  const body = optString(r.body, path, "body");
+  if (body !== undefined) out.body = body;
+  if (r.action !== undefined && r.action !== null) {
+    if (typeof r.action !== "object" || Array.isArray(r.action)) {
+      throw new UiValidationError(
+        `${path}.action: must be { label, eventId } when provided`,
+      );
+    }
+    const ar = r.action as Record<string, unknown>;
+    const aLabel = ar.label;
+    const aEventId = ar.eventId;
+    if (typeof aLabel !== "string" || aLabel.length === 0) {
+      throw new UiValidationError(
+        `${path}.action.label: must be a non-empty string`,
+      );
+    }
+    if (typeof aEventId !== "string" || aEventId.length === 0) {
+      throw new UiValidationError(
+        `${path}.action.eventId: must be a non-empty string`,
+      );
+    }
+    out.action = { label: aLabel, eventId: aEventId };
+  }
+  const dismissEventId = optString(r.dismissEventId, path, "dismissEventId");
+  if (dismissEventId !== undefined) out.dismissEventId = dismissEventId;
+  return out;
+}
+
+function parseDivider(
+  r: Record<string, unknown>,
+  path: string,
+  id: string,
+): UiDivider {
+  const out: UiDivider = { kind: "Divider", id };
+  const orientation = r.orientation;
+  if (orientation !== undefined && orientation !== null) {
+    if (
+      typeof orientation !== "string" ||
+      !DIVIDER_ORIENTATIONS.has(orientation)
+    ) {
+      throw new UiValidationError(
+        `${path}.orientation: must be "horizontal" | "vertical"`,
+      );
+    }
+    out.orientation = orientation as UiDividerOrientation;
+  }
   return out;
 }
 

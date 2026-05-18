@@ -146,6 +146,11 @@ void main() {
       // index should not snap back to 0.
       await tester.tap(find.byIcon(Icons.settings_outlined));
       await tester.pumpAndSettle();
+      // Settings tab is now an inset-grouped scrolling list (Batch 2
+      // visual rework); the About tile may land below the 800x600 test
+      // viewport, so scroll it into view before tapping.
+      await tester.scrollUntilVisible(find.text('About'), 200);
+      await tester.pumpAndSettle();
       await tester.tap(find.text('About'));
       await tester.pumpAndSettle();
       expect(find.byType(AboutScreen), findsOneWidget);

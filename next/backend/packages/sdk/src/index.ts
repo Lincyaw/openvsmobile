@@ -88,12 +88,23 @@ export interface UiRow {
   children: UiNode[];
   gap?: StyleSlot<SpacingToken>;
 }
+/// Container with three visual variants (Batch 2 — §4.3):
+///   * `plain` (default) — no surface, just title + children stacked
+///   * `card` — Material-flavor rounded card with subtle border
+///   * `inset` — iOS Settings inset-grouped: one rounded surface with
+///     dividers between rows; title rendered above in caption type
+/// Omitted = plain so pre-Batch-2 callers keep rendering identically.
+export type UiSectionVariant = "plain" | "card" | "inset";
 export interface UiSection {
   kind: "Section";
   id: string;
   title?: string;
+  variant?: UiSectionVariant;
   children: UiNode[];
 }
+/// Deprecated alias for `UiSection { variant: "card" }`. Kept for one
+/// minor version so existing example plugins (clock / notes / sysinfo /
+/// hello) keep rendering; new code should emit a Section directly.
 export interface UiCard {
   kind: "Card";
   id: string;
@@ -202,6 +213,69 @@ export interface UiAppGrid {
   onLaunchEvent?: string;
 }
 
+// ---- Batch 2 new widgets (§4.3) ----
+
+/// Two-state toggle. The plugin owns canonical state; the host fires
+/// `onChangeEvent` with `payload: { value: boolean }` the instant the
+/// user flips it. The renderer applies the new value optimistically so
+/// the thumb follows the gesture; the plugin's next render is
+/// authoritative.
+export interface UiSwitch {
+  kind: "Switch";
+  id: string;
+  label?: string;
+  value: boolean;
+  onChangeEvent?: string;
+}
+
+export interface UiSelectOption {
+  value: string;
+  label: string;
+}
+
+/// Single-choice picker. Always renders as a modal bottom-sheet picker
+/// on mobile — no dropdown menus, by spec. The host fires
+/// `onChangeEvent` with `payload: { value: string }` once the user
+/// commits a pick.
+export interface UiSelect {
+  kind: "Select";
+  id: string;
+  label?: string;
+  options: UiSelectOption[];
+  value?: string;
+  onChangeEvent?: string;
+}
+
+/// Accent for [UiInlineBanner] — narrower than the full [AccentToken]
+/// union because `brand` / `muted` don't carry a "you should notice
+/// this" meaning.
+export type UiInlineBannerAccent = "info" | "success" | "warning" | "danger";
+export interface UiInlineBannerAction {
+  label: string;
+  eventId: string;
+}
+export interface UiInlineBanner {
+  kind: "Banner";
+  id: string;
+  title: string;
+  body?: string;
+  accent: UiInlineBannerAccent;
+  action?: UiInlineBannerAction;
+  /// Optional dismiss eventId. When set the renderer shows a close
+  /// affordance and fires this event on tap; the plugin's next render
+  /// removes the banner.
+  dismissEventId?: string;
+}
+
+export type UiDividerOrientation = "horizontal" | "vertical";
+/// Explicit divider. The inset section variant already paints its own
+/// internal separators; this widget is for outside that context.
+export interface UiDivider {
+  kind: "Divider";
+  id: string;
+  orientation?: UiDividerOrientation;
+}
+
 export type UiNode =
   | UiColumn
   | UiRow
@@ -215,7 +289,11 @@ export type UiNode =
   | UiIcon
   | UiBadge
   | UiListTile
-  | UiAppGrid;
+  | UiAppGrid
+  | UiSwitch
+  | UiSelect
+  | UiInlineBanner
+  | UiDivider;
 
 /// Constructors mirroring the §4.3 widget vocabulary. IDs may be
 /// omitted; an omitted id is replaced with `crypto.randomUUID()` so the
@@ -253,6 +331,7 @@ export const ui = {
   section(p: {
     id?: string;
     title?: string;
+    variant?: UiSectionVariant;
     children: UiNode[];
   }): UiSection {
     const out: UiSection = {
@@ -261,6 +340,7 @@ export const ui = {
       children: p.children,
     };
     if (p.title !== undefined) out.title = p.title;
+    if (p.variant !== undefined) out.variant = p.variant;
     return out;
   },
   card(p: { id?: string; children: UiNode[] }): UiCard {
@@ -368,6 +448,65 @@ export const ui = {
     };
     if (p.columns !== undefined) out.columns = p.columns;
     if (p.onLaunchEvent !== undefined) out.onLaunchEvent = p.onLaunchEvent;
+    return out;
+  },
+  // `switch` is a TS reserved word — `toggle` is the natural alternative
+  // and matches the doc-spec aside ("was UiToggle"). Plugins read
+  // `ui.toggle({ ... })`; the wire kind stays `Switch`.
+  toggle(p: {
+    id?: string;
+    label?: string;
+    value: boolean;
+    onChangeEvent?: string;
+  }): UiSwitch {
+    const out: UiSwitch = {
+      kind: "Switch",
+      id: ensureId(p.id),
+      value: p.value,
+    };
+    if (p.label !== undefined) out.label = p.label;
+    if (p.onChangeEvent !== undefined) out.onChangeEvent = p.onChangeEvent;
+    return out;
+  },
+  select(p: {
+    id?: string;
+    label?: string;
+    options: UiSelectOption[];
+    value?: string;
+    onChangeEvent?: string;
+  }): UiSelect {
+    const out: UiSelect = {
+      kind: "Select",
+      id: ensureId(p.id),
+      options: p.options,
+    };
+    if (p.label !== undefined) out.label = p.label;
+    if (p.value !== undefined) out.value = p.value;
+    if (p.onChangeEvent !== undefined) out.onChangeEvent = p.onChangeEvent;
+    return out;
+  },
+  banner(p: {
+    id?: string;
+    title: string;
+    body?: string;
+    accent: UiInlineBannerAccent;
+    action?: UiInlineBannerAction;
+    dismissEventId?: string;
+  }): UiInlineBanner {
+    const out: UiInlineBanner = {
+      kind: "Banner",
+      id: ensureId(p.id),
+      title: p.title,
+      accent: p.accent,
+    };
+    if (p.body !== undefined) out.body = p.body;
+    if (p.action !== undefined) out.action = p.action;
+    if (p.dismissEventId !== undefined) out.dismissEventId = p.dismissEventId;
+    return out;
+  },
+  divider(p: { id?: string; orientation?: UiDividerOrientation } = {}): UiDivider {
+    const out: UiDivider = { kind: "Divider", id: ensureId(p.id) };
+    if (p.orientation !== undefined) out.orientation = p.orientation;
     return out;
   },
 };

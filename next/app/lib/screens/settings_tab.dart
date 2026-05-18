@@ -1,13 +1,25 @@
-// Settings tab: list of entry tiles for backend management, SSH bootstrap,
-// notification preferences, diagnostics, and About. Per design doc / issue
-// C5 this replaces the transitional More tab. Each tile pushes a dedicated
-// screen — Settings itself is intentionally not a long scroll of controls.
+// Settings tab: iOS-Settings-style inset-grouped list of entry tiles for
+// backend management, SSH bootstrap, notification preferences, diagnostics,
+// and About. Per design doc / issue C5 this replaces the transitional More
+// tab. Each tile pushes a dedicated screen — Settings itself is intentionally
+// not a long scroll of controls.
+//
+// Visual rework (Batch 2 — §4.3): the surface now uses the same
+// `InsetSection` primitive the plugin UI renderer uses when a plugin
+// author emits `UiSection { variant: 'inset' }`. Tiles are normal
+// `ListTile`s wrapped in that surface; the picker for Theme stays a
+// dialog (it's a tri-state radio, and turning it into a `UiSelect`
+// would require either a host-side widget shim or driving Settings
+// through `UiRenderer` — that's the heavier Option 2, out of scope for
+// this batch).
 
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
 import '../services/system_tray.dart';
 import '../settings_store.dart';
+import '../ui/app_tokens.dart';
+import '../ui/inset_section.dart';
 import 'about_screen.dart';
 import 'notification_settings_screen.dart';
 import 'ssh_bootstrap_screen.dart';
@@ -143,51 +155,82 @@ class SettingsTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Grouped into three inset sections so the reader's eye finds related
+    // concerns together: Connection (Backends + SSH bootstrap), Appearance
+    // (Theme), and System (Notifications + Diagnostics + About). Same row
+    // primitive everywhere — a Material ListTile inside `InsetSection`.
     return ListView(
+      padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
       children: [
-        ListTile(
-          leading: const Icon(Icons.dns_outlined),
-          title: const Text('Backends'),
-          subtitle: const Text('Add, switch, rename, or remove servers'),
-          onTap: onOpenBackends,
+        InsetSection(
+          title: 'Connection',
+          surfaceKey: const ValueKey<String>('settings-section:connection'),
+          children: [
+            ListTile(
+              key: const ValueKey<String>('settings-tile-backends'),
+              leading: const Icon(Icons.dns_outlined),
+              title: const Text('Backends'),
+              subtitle: const Text('Add, switch, rename, or remove servers'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: onOpenBackends,
+            ),
+            ListTile(
+              key: const ValueKey<String>('settings-tile-ssh-bootstrap'),
+              leading: const Icon(Icons.cloud_download_outlined),
+              title: const Text('SSH bootstrap'),
+              subtitle: const Text(
+                'Install a backend on a remote host via SSH',
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _openSshBootstrap(context),
+            ),
+          ],
         ),
-        const Divider(height: 1),
-        ListTile(
-          key: const ValueKey<String>('settings-theme-tile'),
-          leading: const Icon(Icons.brightness_6_outlined),
-          title: const Text('Theme'),
-          subtitle: Text(_describeThemeMode(themeMode)),
-          onTap: () => _openThemePicker(context),
+        InsetSection(
+          title: 'Appearance',
+          surfaceKey: const ValueKey<String>('settings-section:appearance'),
+          children: [
+            ListTile(
+              key: const ValueKey<String>('settings-theme-tile'),
+              leading: const Icon(Icons.brightness_6_outlined),
+              title: const Text('Theme'),
+              subtitle: Text(_describeThemeMode(themeMode)),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _openThemePicker(context),
+            ),
+          ],
         ),
-        const Divider(height: 1),
-        ListTile(
-          leading: const Icon(Icons.cloud_download_outlined),
-          title: const Text('SSH bootstrap'),
-          subtitle: const Text('Install a backend on a remote host via SSH'),
-          onTap: () => _openSshBootstrap(context),
-        ),
-        const Divider(height: 1),
-        ListTile(
-          leading: const Icon(Icons.notifications_outlined),
-          title: const Text('Notifications'),
-          subtitle: const Text(
-            'Background service, per-source mute, quiet hours, TTL',
-          ),
-          onTap: () => _openNotifications(context),
-        ),
-        const Divider(height: 1),
-        ListTile(
-          leading: const Icon(Icons.bug_report_outlined),
-          title: const Text('Diagnostics'),
-          subtitle: const Text('System status, send test notification'),
-          onTap: () => _openDiagnostics(context),
-        ),
-        const Divider(height: 1),
-        ListTile(
-          leading: const Icon(Icons.info_outline),
-          title: const Text('About'),
-          subtitle: const Text('Version, license, project links'),
-          onTap: () => _openAbout(context),
+        InsetSection(
+          title: 'System',
+          surfaceKey: const ValueKey<String>('settings-section:system'),
+          children: [
+            ListTile(
+              key: const ValueKey<String>('settings-tile-notifications'),
+              leading: const Icon(Icons.notifications_outlined),
+              title: const Text('Notifications'),
+              subtitle: const Text(
+                'Background service, per-source mute, quiet hours, TTL',
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _openNotifications(context),
+            ),
+            ListTile(
+              key: const ValueKey<String>('settings-tile-diagnostics'),
+              leading: const Icon(Icons.bug_report_outlined),
+              title: const Text('Diagnostics'),
+              subtitle: const Text('System status, send test notification'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _openDiagnostics(context),
+            ),
+            ListTile(
+              key: const ValueKey<String>('settings-tile-about'),
+              leading: const Icon(Icons.info_outline),
+              title: const Text('About'),
+              subtitle: const Text('Version, license, project links'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _openAbout(context),
+            ),
+          ],
         ),
       ],
     );

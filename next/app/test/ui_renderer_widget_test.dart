@@ -569,6 +569,335 @@ void main() {
     expect(resolvePluginThemeColor('chartreuse'), isNull);
   });
 
+  // ---- Batch 2 widgets (§4.3) ----
+
+  testWidgets('UiSection variant=plain renders title + children stacked',
+      (tester) async {
+    const tree = UiSection(
+      id: 's',
+      title: 'Plain section',
+      variant: UiSectionVariant.plain,
+      children: [UiText(id: 's.t', text: 'inside')],
+    );
+    await tester.pumpWidget(_host(tree));
+    expect(tester.takeException(), isNull);
+    expect(find.text('Plain section'), findsOneWidget);
+    expect(find.text('inside'), findsOneWidget);
+    // No Card surface in the plain branch.
+    expect(find.byType(Card), findsNothing);
+  });
+
+  testWidgets(
+      'UiSection variant=null behaves identically to plain (pre-Batch-2 compat)',
+      (tester) async {
+    const tree = UiSection(
+      id: 's',
+      title: 'Compat',
+      children: [UiText(id: 's.t', text: 'inside')],
+    );
+    await tester.pumpWidget(_host(tree));
+    expect(tester.takeException(), isNull);
+    expect(find.text('Compat'), findsOneWidget);
+    expect(find.text('inside'), findsOneWidget);
+    expect(find.byType(Card), findsNothing);
+  });
+
+  testWidgets('UiSection variant=card wraps children in a Material Card',
+      (tester) async {
+    const tree = UiSection(
+      id: 's',
+      title: 'Card section',
+      variant: UiSectionVariant.card,
+      children: [UiText(id: 's.t', text: 'inside')],
+    );
+    await tester.pumpWidget(_host(tree));
+    expect(tester.takeException(), isNull);
+    expect(find.byType(Card), findsOneWidget);
+    expect(find.text('inside'), findsOneWidget);
+  });
+
+  testWidgets(
+      'UiCard (deprecated alias) renders through the same path as variant=card',
+      (tester) async {
+    const tree = UiCard(
+      id: 'c',
+      children: [UiText(id: 'c.t', text: 'inside-card')],
+    );
+    await tester.pumpWidget(_host(tree));
+    expect(tester.takeException(), isNull);
+    // Acceptance per Batch 2: existing UiCard nodes from older plugins
+    // (clock/notes/sysinfo/hello prior to migration) must keep rendering.
+    expect(find.byType(Card), findsOneWidget);
+    expect(find.text('inside-card'), findsOneWidget);
+  });
+
+  testWidgets(
+      'UiSection variant=inset renders dividers between adjacent rows',
+      (tester) async {
+    const tree = UiSection(
+      id: 's',
+      title: 'Inset',
+      variant: UiSectionVariant.inset,
+      children: [
+        UiText(id: 'r1', text: 'first row'),
+        UiText(id: 'r2', text: 'second row'),
+        UiText(id: 'r3', text: 'third row'),
+      ],
+    );
+    await tester.pumpWidget(_host(tree));
+    expect(tester.takeException(), isNull);
+    expect(find.text('first row'), findsOneWidget);
+    expect(find.text('third row'), findsOneWidget);
+    // Exactly N-1 dividers between N rows — no leading/trailing separator.
+    expect(
+      find.byKey(const ValueKey<String>('inset-section-divider:1')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('inset-section-divider:2')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('inset-section-divider:3')),
+      findsNothing,
+    );
+  });
+
+  testWidgets('UiSection variant=inset paints title as caption above surface',
+      (tester) async {
+    const tree = UiSection(
+      id: 's',
+      title: 'Connection',
+      variant: UiSectionVariant.inset,
+      children: [UiText(id: 'r', text: 'row')],
+    );
+    await tester.pumpWidget(_host(tree));
+    // Title is rendered uppercase per the iOS-Settings inset convention.
+    expect(find.text('CONNECTION'), findsOneWidget);
+  });
+
+  testWidgets('UiSwitch flips locally and emits onChangeEvent payload',
+      (tester) async {
+    final events = <UiNodeEvent>[];
+    const tree = UiSwitch(
+      id: 'sw',
+      label: 'Private',
+      value: false,
+      onChangeEvent: 'toggled',
+    );
+    await tester.pumpWidget(_host(tree, onEvent: events.add));
+    expect(find.text('Private'), findsOneWidget);
+    await tester.tap(find.byType(Switch));
+    await tester.pumpAndSettle();
+    expect(events, hasLength(1));
+    expect(events.single.nodeId, 'sw');
+    expect(events.single.type, 'toggled');
+    expect(events.single.payload, {'value': true});
+    // Local state followed the tap (optimistic update).
+    final swWidget = tester.widget<Switch>(find.byType(Switch));
+    expect(swWidget.value, isTrue);
+  });
+
+  testWidgets('UiSwitch syncs local value when the wire value changes',
+      (tester) async {
+    // Authority loop: plugin re-renders to "reject" the user's flip; the
+    // renderer must adopt the wire value rather than stick with its local
+    // optimistic state.
+    UiNode tree(bool v) => UiSwitch(id: 'sw', value: v);
+    await tester.pumpWidget(_host(tree(false)));
+    expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse);
+    await tester.tap(find.byType(Switch));
+    await tester.pumpAndSettle();
+    expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
+    // Plugin re-renders with value: false — local must follow.
+    await tester.pumpWidget(_host(tree(false)));
+    expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse);
+  });
+
+  testWidgets('UiSelect opens a modal bottom sheet picker on tap',
+      (tester) async {
+    final events = <UiNodeEvent>[];
+    const tree = UiSelect(
+      id: 'sel',
+      label: 'Theme',
+      value: 'system',
+      onChangeEvent: 'pick',
+      options: [
+        UiSelectOption(value: 'system', label: 'System'),
+        UiSelectOption(value: 'light', label: 'Light'),
+        UiSelectOption(value: 'dark', label: 'Dark'),
+      ],
+    );
+    await tester.pumpWidget(_host(tree, onEvent: events.add));
+    // Trigger row shows current label.
+    expect(find.text('Theme'), findsOneWidget);
+    expect(find.text('System'), findsOneWidget);
+    await tester.tap(find.text('System'));
+    await tester.pumpAndSettle();
+    // Bottom sheet exposes all options.
+    expect(
+      find.byKey(const ValueKey<String>('select-option:sel/light')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('select-option:sel/dark')),
+      findsOneWidget,
+    );
+    // Pick "Dark".
+    await tester.tap(find.byKey(const ValueKey<String>('select-option:sel/dark')));
+    await tester.pumpAndSettle();
+    expect(events, hasLength(1));
+    expect(events.single.type, 'pick');
+    expect(events.single.payload, {'value': 'dark'});
+    // Trigger row reflects the new pick.
+    expect(find.text('Dark'), findsOneWidget);
+  });
+
+  testWidgets('UiInlineBanner paints with the accent color and an icon',
+      (tester) async {
+    const tree = UiInlineBanner(
+      id: 'b',
+      title: 'Heads up',
+      body: 'Something happened.',
+      accent: UiInlineBannerAccent.warning,
+    );
+    await tester.pumpWidget(_host(tree));
+    expect(tester.takeException(), isNull);
+    expect(find.text('Heads up'), findsOneWidget);
+    expect(find.text('Something happened.'), findsOneWidget);
+    // Warning icon is the standard alert-triangle from the catalog.
+    final iconData = resolveIconByName('alert-triangle');
+    expect(find.byIcon(iconData!), findsOneWidget);
+  });
+
+  testWidgets('UiInlineBanner action fires the configured eventId',
+      (tester) async {
+    final events = <UiNodeEvent>[];
+    const tree = UiInlineBanner(
+      id: 'b',
+      title: 'Unsaved',
+      accent: UiInlineBannerAccent.warning,
+      action: UiInlineBannerAction(label: 'Save', eventId: 'saveNow'),
+    );
+    await tester.pumpWidget(_host(tree, onEvent: events.add));
+    await tester.tap(find.text('Save'));
+    await tester.pump();
+    expect(events, hasLength(1));
+    expect(events.single.nodeId, 'b');
+    expect(events.single.type, 'saveNow');
+  });
+
+  testWidgets('UiInlineBanner dismiss button fires dismissEventId',
+      (tester) async {
+    final events = <UiNodeEvent>[];
+    const tree = UiInlineBanner(
+      id: 'b',
+      title: 'FYI',
+      accent: UiInlineBannerAccent.info,
+      dismissEventId: 'dismiss',
+    );
+    await tester.pumpWidget(_host(tree, onEvent: events.add));
+    await tester.tap(find.byType(IconButton));
+    await tester.pump();
+    expect(events.single.type, 'dismiss');
+  });
+
+  testWidgets('UiDivider horizontal renders a Material Divider',
+      (tester) async {
+    const tree = UiColumn(id: 'c', children: [
+      UiText(id: 't1', text: 'above'),
+      UiDivider(id: 'div'),
+      UiText(id: 't2', text: 'below'),
+    ]);
+    await tester.pumpWidget(_host(tree));
+    expect(tester.takeException(), isNull);
+    expect(find.byKey(const ValueKey<String>('ui:div')), findsOneWidget);
+    expect(find.byType(Divider), findsWidgets);
+  });
+
+  testWidgets('UiDivider vertical renders a VerticalDivider',
+      (tester) async {
+    const tree = UiDivider(id: 'div', orientation: UiDividerOrientation.vertical);
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: SizedBox(
+          height: 50,
+          child: Row(children: [
+            const Text('a'),
+            UiRenderer(tree: tree, onEvent: (_) {}),
+            const Text('b'),
+          ]),
+        ),
+      ),
+    ));
+    expect(find.byType(VerticalDivider), findsOneWidget);
+  });
+
+  test('UiNode.fromJson parses Section.variant', () {
+    final inset = UiNode.fromJson(<String, dynamic>{
+      'kind': 'Section',
+      'id': 's',
+      'variant': 'inset',
+      'children': <Map<String, dynamic>>[],
+    });
+    expect((inset as UiSection).variant, UiSectionVariant.inset);
+    final plainOmitted = UiNode.fromJson(<String, dynamic>{
+      'kind': 'Section',
+      'id': 's2',
+      'children': <Map<String, dynamic>>[],
+    });
+    expect((plainOmitted as UiSection).variant, isNull);
+  });
+
+  test('UiNode.fromJson parses UiSwitch / UiSelect / UiInlineBanner / UiDivider',
+      () {
+    final sw = UiNode.fromJson(<String, dynamic>{
+      'kind': 'Switch',
+      'id': 'sw',
+      'value': true,
+      'label': 'On',
+      'onChangeEvent': 'flip',
+    });
+    expect((sw as UiSwitch).value, true);
+    expect(sw.label, 'On');
+    expect(sw.onChangeEvent, 'flip');
+
+    final sel = UiNode.fromJson(<String, dynamic>{
+      'kind': 'Select',
+      'id': 'sel',
+      'label': 'Theme',
+      'value': 'dark',
+      'onChangeEvent': 'picked',
+      'options': <Map<String, dynamic>>[
+        <String, dynamic>{'value': 'light', 'label': 'Light'},
+        <String, dynamic>{'value': 'dark', 'label': 'Dark'},
+      ],
+    });
+    expect((sel as UiSelect).options.length, 2);
+    expect(sel.options[1].value, 'dark');
+    expect(sel.value, 'dark');
+
+    final banner = UiNode.fromJson(<String, dynamic>{
+      'kind': 'Banner',
+      'id': 'b',
+      'title': 'x',
+      'body': 'y',
+      'accent': 'success',
+      'action': <String, dynamic>{'label': 'Go', 'eventId': 'go'},
+      'dismissEventId': 'no',
+    });
+    expect((banner as UiInlineBanner).accent, UiInlineBannerAccent.success);
+    expect(banner.action?.eventId, 'go');
+    expect(banner.dismissEventId, 'no');
+
+    final div = UiNode.fromJson(<String, dynamic>{
+      'kind': 'Divider',
+      'id': 'd',
+      'orientation': 'vertical',
+    });
+    expect((div as UiDivider).orientation, UiDividerOrientation.vertical);
+  });
+
   test('icon catalog covers a few essential names', () {
     // Quick smoke test that the curated subset is wired up. We don't
     // assert the full list — that lives in the source file.

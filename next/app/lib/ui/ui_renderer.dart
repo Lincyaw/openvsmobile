@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 
 import 'app_tokens.dart';
 import 'icon_catalog.dart';
+import 'inset_section.dart';
 
 import 'ui_node.dart';
 
@@ -75,38 +76,24 @@ class UiRenderer extends StatelessWidget {
             axis: Axis.horizontal,
           ),
         );
-      case UiSection(:final title, :final children):
-        return Padding(
-          key: key,
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (title != null && title.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: Text(
-                    title,
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                ),
-              ...children.map((c) => _render(context, c)),
-            ],
-          ),
-        );
+      case UiSection(:final title, :final variant, :final children):
+        // Dispatch on the optional `variant`. Omitted → `plain` so any
+        // pre-Batch-2 tree (no variant on the wire) renders identically
+        // to the old Section path. `card` reuses the renderer's Card
+        // branch so the visual stays one source of truth.
+        switch (variant ?? UiSectionVariant.plain) {
+          case UiSectionVariant.plain:
+            return _buildPlainSection(context, key, title, children);
+          case UiSectionVariant.card:
+            return _buildCardSection(context, key, title, children);
+          case UiSectionVariant.inset:
+            return _buildInsetSection(context, key, title, children);
+        }
       case UiCard(:final children):
-        return Card(
-          key: key,
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              mainAxisSize: MainAxisSize.min,
-              children: children.map((c) => _render(context, c)).toList(),
-            ),
-          ),
-        );
+        // Deprecated alias kept for one minor version. Delegates through
+        // the same code path as `UiSection { variant: 'card' }` so a
+        // future removal touches one place.
+        return _buildCardSection(context, key, null, children);
       case UiList(:final items):
         // Non-scrollable: a `UiList` typically sits inside a Column whose
         // own scroll parent (or the panel host) provides the viewport.
@@ -147,6 +134,248 @@ class UiRenderer extends StatelessWidget {
         return _buildListTile(context, key, node);
       case UiAppGrid():
         return _buildAppGrid(context, key, node);
+      case UiSwitch():
+        return _UiSwitchRenderer(
+          key: key,
+          node: node,
+          onEvent: onEvent,
+        );
+      case UiSelect():
+        return _UiSelectRenderer(
+          key: key,
+          node: node,
+          onEvent: onEvent,
+        );
+      case UiInlineBanner():
+        return _buildBanner(context, key, node);
+      case UiDivider():
+        return _buildDivider(context, key, node);
+    }
+  }
+
+  // ---- Batch 2 container helpers ----
+
+  Widget _buildPlainSection(
+    BuildContext context,
+    Key key,
+    String? title,
+    List<UiNode> children,
+  ) {
+    return Padding(
+      key: key,
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (title != null && title.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                title,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ),
+          ...children.map((c) => _render(context, c)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCardSection(
+    BuildContext context,
+    Key key,
+    String? title,
+    List<UiNode> children,
+  ) {
+    return Padding(
+      key: key,
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (title != null && title.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8, left: 4),
+              child: Text(
+                title,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                mainAxisSize: MainAxisSize.min,
+                children: children.map((c) => _render(context, c)).toList(),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInsetSection(
+    BuildContext context,
+    Key key,
+    String? title,
+    List<UiNode> children,
+  ) {
+    return InsetSection(
+      key: key,
+      title: title,
+      children: children.map((c) => _render(context, c)).toList(),
+    );
+  }
+
+  // ---- Batch 2 leaf helpers ----
+
+  Widget _buildBanner(BuildContext context, Key key, UiInlineBanner node) {
+    final scheme = Theme.of(context).colorScheme;
+    final accent = _bannerAccentColor(context, node.accent);
+    // Banner backgrounds are a low-opacity wash of the accent so the
+    // surface reads as "tinted" rather than "loud" — matches the
+    // iOS/Material 3 notification-banner pattern.
+    final wash = Color.alphaBlend(
+      accent.withAlpha(38), // ~15% alpha
+      scheme.surface,
+    );
+    final iconName = _bannerIconName(node.accent);
+    final iconData = resolveIconByName(iconName) ?? Icons.info_outline;
+    final dismissId = node.dismissEventId;
+    final action = node.action;
+    return Padding(
+      key: key,
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.md,
+        vertical: AppSpacing.xs,
+      ),
+      child: Container(
+        decoration: BoxDecoration(
+          color: wash,
+          borderRadius: BorderRadius.circular(AppRadius.md),
+          border: Border.all(color: accent.withAlpha(102), width: 1),
+        ),
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.md,
+          vertical: AppSpacing.sm,
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(top: 2, right: AppSpacing.sm),
+              child: Icon(iconData, color: accent, size: AppIconSize.md),
+            ),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    node.title,
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          fontWeight: FontWeight.w600,
+                          color: scheme.onSurface,
+                        ),
+                  ),
+                  if (node.body != null && node.body!.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                        node.body!,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: scheme.onSurfaceVariant,
+                            ),
+                      ),
+                    ),
+                  if (action != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: AppSpacing.xs),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton(
+                          style: TextButton.styleFrom(
+                            foregroundColor: accent,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: AppSpacing.sm,
+                              vertical: 0,
+                            ),
+                            minimumSize: const Size(0, 32),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                          onPressed: () => onEvent(UiNodeEvent(
+                            nodeId: node.id,
+                            type: action.eventId,
+                          )),
+                          child: Text(action.label),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            if (dismissId != null)
+              IconButton(
+                tooltip: 'Dismiss',
+                icon: Icon(
+                  resolveIconByName('x') ?? Icons.close,
+                  size: AppIconSize.sm,
+                  color: scheme.onSurfaceVariant,
+                ),
+                onPressed: () => onEvent(UiNodeEvent(
+                  nodeId: node.id,
+                  type: dismissId,
+                )),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDivider(BuildContext context, Key key, UiDivider node) {
+    final orientation = node.orientation ?? UiDividerOrientation.horizontal;
+    final scheme = Theme.of(context).colorScheme;
+    switch (orientation) {
+      case UiDividerOrientation.horizontal:
+        return Divider(key: key, height: 1, thickness: 1, color: scheme.outline);
+      case UiDividerOrientation.vertical:
+        return VerticalDivider(
+          key: key,
+          width: 1,
+          thickness: 1,
+          color: scheme.outline,
+        );
+    }
+  }
+
+  Color _bannerAccentColor(BuildContext context, UiInlineBannerAccent accent) {
+    switch (accent) {
+      case UiInlineBannerAccent.info:
+        return StyleSlotResolver.accent(context, AccentToken.info);
+      case UiInlineBannerAccent.success:
+        return StyleSlotResolver.accent(context, AccentToken.success);
+      case UiInlineBannerAccent.warning:
+        return StyleSlotResolver.accent(context, AccentToken.warning);
+      case UiInlineBannerAccent.danger:
+        return StyleSlotResolver.accent(context, AccentToken.danger);
+    }
+  }
+
+  String _bannerIconName(UiInlineBannerAccent accent) {
+    switch (accent) {
+      case UiInlineBannerAccent.info:
+        return 'info';
+      case UiInlineBannerAccent.success:
+        return 'check-circle';
+      case UiInlineBannerAccent.warning:
+        return 'alert-triangle';
+      case UiInlineBannerAccent.danger:
+        return 'alert-octagon';
     }
   }
 
@@ -540,6 +769,221 @@ class _UiTextFieldRendererState extends State<_UiTextFieldRenderer> {
         isDense: true,
       ),
       onChanged: widget.onChanged,
+    );
+  }
+}
+
+/// Stateful inner renderer for `UiSwitch`. Tracks the optimistic
+/// value locally so the thumb follows the gesture instantly — the
+/// plugin's next render is authoritative and we sync the local value
+/// when the wire value changes (this also lets a plugin "reject" a
+/// toggle by re-rendering with the prior value).
+class _UiSwitchRenderer extends StatefulWidget {
+  final UiSwitch node;
+  final void Function(UiNodeEvent event) onEvent;
+  const _UiSwitchRenderer({
+    super.key,
+    required this.node,
+    required this.onEvent,
+  });
+
+  @override
+  State<_UiSwitchRenderer> createState() => _UiSwitchRendererState();
+}
+
+class _UiSwitchRendererState extends State<_UiSwitchRenderer> {
+  late bool _value;
+
+  @override
+  void initState() {
+    super.initState();
+    _value = widget.node.value;
+  }
+
+  @override
+  void didUpdateWidget(_UiSwitchRenderer old) {
+    super.didUpdateWidget(old);
+    // The plugin's next render is authoritative: if the incoming wire
+    // value disagrees with our optimistic local value, the wire wins.
+    // This covers both "plugin confirms the flip" (no-op) and "plugin
+    // rejects the flip / re-renders with the previous value" (snap
+    // back). We compare against `widget.node.value` (not old.node) so
+    // a re-render with the same wire value still snaps a divergent
+    // local back into sync.
+    if (widget.node.value != _value) {
+      _value = widget.node.value;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final label = widget.node.label;
+    final theSwitch = Switch(
+      value: _value,
+      onChanged: (next) {
+        setState(() => _value = next);
+        final evt = widget.node.onChangeEvent;
+        if (evt != null) {
+          widget.onEvent(UiNodeEvent(
+            nodeId: widget.node.id,
+            type: evt,
+            payload: {'value': next},
+          ));
+        }
+      },
+    );
+    if (label == null || label.isEmpty) return theSwitch;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Expanded(child: Text(label)),
+        theSwitch,
+      ],
+    );
+  }
+}
+
+/// Stateful inner renderer for `UiSelect`. Renders as a tappable row
+/// (label + current option label + chevron) that opens a modal
+/// bottom-sheet picker — the doc spec is explicit that mobile never
+/// drops a desktop-style dropdown.
+class _UiSelectRenderer extends StatefulWidget {
+  final UiSelect node;
+  final void Function(UiNodeEvent event) onEvent;
+  const _UiSelectRenderer({
+    super.key,
+    required this.node,
+    required this.onEvent,
+  });
+
+  @override
+  State<_UiSelectRenderer> createState() => _UiSelectRendererState();
+}
+
+class _UiSelectRendererState extends State<_UiSelectRenderer> {
+  String? _value;
+
+  @override
+  void initState() {
+    super.initState();
+    _value = widget.node.value;
+  }
+
+  @override
+  void didUpdateWidget(_UiSelectRenderer old) {
+    super.didUpdateWidget(old);
+    // Wire value wins on any re-render where it disagrees with our
+    // optimistic local pick — matches the Switch contract above.
+    if (widget.node.value != _value) {
+      _value = widget.node.value;
+    }
+  }
+
+  String _displayLabel() {
+    final v = _value;
+    if (v == null) return 'Select…';
+    for (final opt in widget.node.options) {
+      if (opt.value == v) return opt.label;
+    }
+    return v; // value not in options: show the raw value as a soft fallback
+  }
+
+  Future<void> _openPicker(BuildContext context) async {
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetCtx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (widget.node.label != null && widget.node.label!.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    AppSpacing.lg,
+                    AppSpacing.sm,
+                    AppSpacing.lg,
+                    AppSpacing.sm,
+                  ),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      widget.node.label!,
+                      style: Theme.of(sheetCtx).textTheme.titleMedium,
+                    ),
+                  ),
+                ),
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: widget.node.options.length,
+                  itemBuilder: (ctx, i) {
+                    final opt = widget.node.options[i];
+                    final selected = opt.value == _value;
+                    return ListTile(
+                      key: ValueKey<String>(
+                        'select-option:${widget.node.id}/${opt.value}',
+                      ),
+                      title: Text(opt.label),
+                      trailing: selected
+                          ? Icon(
+                              Icons.check,
+                              color: Theme.of(ctx).colorScheme.primary,
+                            )
+                          : null,
+                      onTap: () => Navigator.of(sheetCtx).pop(opt.value),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    if (picked == null) return;
+    setState(() => _value = picked);
+    final evt = widget.node.onChangeEvent;
+    if (evt != null) {
+      widget.onEvent(UiNodeEvent(
+        nodeId: widget.node.id,
+        type: evt,
+        payload: {'value': picked},
+      ));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final label = widget.node.label;
+    return InkWell(
+      onTap: () => _openPicker(context),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.md,
+          vertical: AppSpacing.sm,
+        ),
+        child: Row(
+          children: [
+            if (label != null && label.isNotEmpty)
+              Expanded(child: Text(label)),
+            if (label == null || label.isEmpty) const Spacer(),
+            Text(
+              _displayLabel(),
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+            ),
+            const SizedBox(width: AppSpacing.xs),
+            Icon(
+              Icons.chevron_right,
+              color: scheme.onSurfaceVariant,
+              size: AppIconSize.sm,
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

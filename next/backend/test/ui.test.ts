@@ -338,6 +338,175 @@ describe("validateUiTree", () => {
       }),
     ).toThrow(/gap/);
   });
+
+  // ---- Batch 2 widgets (§4.3) ----
+
+  it("Section.variant defaults to undefined for pre-Batch-2 trees", () => {
+    const tree = validateUiTree({
+      kind: "Section",
+      id: "s",
+      title: "Settings",
+      children: [{ kind: "Text", id: "t", text: "hi" }],
+    });
+    if (tree.kind !== "Section") throw new Error("unreachable");
+    expect(tree.variant).toBeUndefined();
+  });
+
+  it("Section.variant accepts plain | card | inset", () => {
+    for (const variant of ["plain", "card", "inset"] as const) {
+      const tree = validateUiTree({
+        kind: "Section",
+        id: `s-${variant}`,
+        variant,
+        children: [],
+      });
+      if (tree.kind !== "Section") throw new Error("unreachable");
+      expect(tree.variant).toBe(variant);
+    }
+  });
+
+  it("rejects Section.variant outside the accepted union", () => {
+    expect(() =>
+      validateUiTree({
+        kind: "Section",
+        id: "s2",
+        variant: "elevated",
+        children: [],
+      }),
+    ).toThrow(/variant/);
+  });
+
+  it("UiSwitch requires a boolean value", () => {
+    const tree = validateUiTree({
+      kind: "Switch",
+      id: "sw",
+      label: "Private",
+      value: true,
+      onChangeEvent: "toggle",
+    });
+    if (tree.kind !== "Switch") throw new Error("unreachable");
+    expect(tree.value).toBe(true);
+    expect(tree.label).toBe("Private");
+    expect(tree.onChangeEvent).toBe("toggle");
+  });
+
+  it("rejects UiSwitch with a missing value", () => {
+    expect(() =>
+      validateUiTree({ kind: "Switch", id: "sw2", label: "x" }),
+    ).toThrow(/value/);
+  });
+
+  it("rejects UiSwitch with non-boolean value", () => {
+    expect(() =>
+      validateUiTree({ kind: "Switch", id: "sw3", value: "yes" }),
+    ).toThrow(/value/);
+  });
+
+  it("UiSelect parses options + label + value + onChangeEvent", () => {
+    const tree = validateUiTree({
+      kind: "Select",
+      id: "sel",
+      label: "Theme",
+      options: [
+        { value: "system", label: "System" },
+        { value: "light", label: "Light" },
+        { value: "dark", label: "Dark" },
+      ],
+      value: "dark",
+      onChangeEvent: "themeChanged",
+    });
+    if (tree.kind !== "Select") throw new Error("unreachable");
+    expect(tree.options).toHaveLength(3);
+    expect(tree.options[1].label).toBe("Light");
+    expect(tree.value).toBe("dark");
+    expect(tree.onChangeEvent).toBe("themeChanged");
+  });
+
+  it("rejects UiSelect with duplicate option values", () => {
+    expect(() =>
+      validateUiTree({
+        kind: "Select",
+        id: "sel2",
+        options: [
+          { value: "x", label: "A" },
+          { value: "x", label: "B" },
+        ],
+      }),
+    ).toThrow(/duplicate option value/);
+  });
+
+  it("rejects UiSelect with a value that no option carries", () => {
+    expect(() =>
+      validateUiTree({
+        kind: "Select",
+        id: "sel3",
+        options: [{ value: "a", label: "A" }],
+        value: "z",
+      }),
+    ).toThrow(/value/);
+  });
+
+  it("UiInlineBanner accepts the four-accent union with optional action", () => {
+    const tree = validateUiTree({
+      kind: "Banner",
+      id: "ban",
+      title: "Heads up",
+      body: "Things changed.",
+      accent: "warning",
+      action: { label: "Apply", eventId: "apply" },
+      dismissEventId: "dismiss",
+    });
+    if (tree.kind !== "Banner") throw new Error("unreachable");
+    expect(tree.title).toBe("Heads up");
+    expect(tree.accent).toBe("warning");
+    expect(tree.action).toEqual({ label: "Apply", eventId: "apply" });
+    expect(tree.dismissEventId).toBe("dismiss");
+  });
+
+  it("rejects UiInlineBanner with accent outside info|success|warning|danger", () => {
+    expect(() =>
+      validateUiTree({
+        kind: "Banner",
+        id: "ban2",
+        title: "x",
+        accent: "brand",
+      }),
+    ).toThrow(/accent/);
+  });
+
+  it("rejects UiInlineBanner with action missing eventId", () => {
+    expect(() =>
+      validateUiTree({
+        kind: "Banner",
+        id: "ban3",
+        title: "x",
+        accent: "info",
+        action: { label: "Apply" },
+      }),
+    ).toThrow(/eventId/);
+  });
+
+  it("UiDivider accepts an optional orientation", () => {
+    const tree = validateUiTree({
+      kind: "Divider",
+      id: "d",
+      orientation: "vertical",
+    });
+    if (tree.kind !== "Divider") throw new Error("unreachable");
+    expect(tree.orientation).toBe("vertical");
+  });
+
+  it("UiDivider defaults orientation to undefined (renderer picks horizontal)", () => {
+    const tree = validateUiTree({ kind: "Divider", id: "d2" });
+    if (tree.kind !== "Divider") throw new Error("unreachable");
+    expect(tree.orientation).toBeUndefined();
+  });
+
+  it("rejects UiDivider with unknown orientation", () => {
+    expect(() =>
+      validateUiTree({ kind: "Divider", id: "d3", orientation: "diagonal" }),
+    ).toThrow(/orientation/);
+  });
 });
 
 describe("UiPanelRegistry", () => {

@@ -26,9 +26,14 @@ import {
   type UiAppGrid,
   type UiAppTile,
   type UiBadge,
+  type UiDivider,
   type UiEventInput,
   type UiIcon,
+  type UiInlineBanner,
   type UiListTile,
+  type UiSection,
+  type UiSelect,
+  type UiSwitch,
 } from "../src/index.js";
 
 interface Harness {
@@ -246,6 +251,80 @@ describe("Batch 1 widgets (UiIcon / UiBadge / UiListTile / UiAppGrid)", () => {
     expect(col.gap).toBe("sm");
     const colNum = ui.column({ id: "c2", gap: 8, children: [] });
     expect(colNum.gap).toBe(8);
+  });
+
+  it("ui.section.variant round-trips plain | card | inset", () => {
+    const plain: UiSection = ui.section({ id: "p", children: [] });
+    const card: UiSection = ui.section({
+      id: "c",
+      variant: "card",
+      children: [],
+    });
+    const inset: UiSection = ui.section({
+      id: "i",
+      variant: "inset",
+      title: "Settings",
+      children: [],
+    });
+    expect(plain.variant).toBeUndefined();
+    expect(card.variant).toBe("card");
+    expect(inset.variant).toBe("inset");
+    expect(inset.title).toBe("Settings");
+  });
+
+  it("ui.toggle emits kind=Switch with value + label + onChangeEvent", () => {
+    const sw: UiSwitch = ui.toggle({
+      id: "sw",
+      label: "Private",
+      value: true,
+      onChangeEvent: "toggled",
+    });
+    expect(sw.kind).toBe("Switch");
+    expect(sw.value).toBe(true);
+    expect(sw.label).toBe("Private");
+    expect(sw.onChangeEvent).toBe("toggled");
+  });
+
+  it("ui.select carries options + label + value + onChangeEvent", () => {
+    const sel: UiSelect = ui.select({
+      id: "sel",
+      label: "Theme",
+      options: [
+        { value: "system", label: "System" },
+        { value: "light", label: "Light" },
+        { value: "dark", label: "Dark" },
+      ],
+      value: "light",
+      onChangeEvent: "themePicked",
+    });
+    expect(sel.kind).toBe("Select");
+    expect(sel.options).toHaveLength(3);
+    expect(sel.value).toBe("light");
+    expect(sel.onChangeEvent).toBe("themePicked");
+  });
+
+  it("ui.banner requires title + accent and accepts action + dismissEventId", () => {
+    const b: UiInlineBanner = ui.banner({
+      id: "b",
+      title: "Unsaved",
+      body: "Save before navigating away.",
+      accent: "warning",
+      action: { label: "Save", eventId: "save" },
+      dismissEventId: "dismiss",
+    });
+    expect(b.kind).toBe("Banner");
+    expect(b.title).toBe("Unsaved");
+    expect(b.accent).toBe("warning");
+    expect(b.action?.eventId).toBe("save");
+    expect(b.dismissEventId).toBe("dismiss");
+  });
+
+  it("ui.divider defaults orientation to undefined", () => {
+    const d: UiDivider = ui.divider();
+    expect(d.kind).toBe("Divider");
+    expect(d.orientation).toBeUndefined();
+    const v: UiDivider = ui.divider({ orientation: "vertical" });
+    expect(v.orientation).toBe("vertical");
   });
 
   it("ui.column / ui.row / ui.spacer accept a bare token string for gap/size", () => {
