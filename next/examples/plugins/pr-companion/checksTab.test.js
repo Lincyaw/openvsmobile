@@ -50,7 +50,7 @@ describe("formatDuration", () => {
 describe("iconForStatus", () => {
   it("maps completed/success → check-circle success", () => {
     expect(iconForStatus({ status: "completed", conclusion: "success" })).toEqual({
-      name: "feather:check-circle",
+      name: "check-circle",
       accent: "success",
     });
   });
@@ -58,7 +58,7 @@ describe("iconForStatus", () => {
   it("maps completed/failure-like → x-circle danger", () => {
     for (const conclusion of ["failure", "timed_out", "action_required"]) {
       expect(iconForStatus({ status: "completed", conclusion })).toEqual({
-        name: "feather:x-circle",
+        name: "x-circle",
         accent: "danger",
       });
     }
@@ -67,7 +67,7 @@ describe("iconForStatus", () => {
   it("maps completed/neutral-like → minus-circle muted", () => {
     for (const conclusion of ["neutral", "cancelled", "skipped"]) {
       expect(iconForStatus({ status: "completed", conclusion })).toEqual({
-        name: "feather:minus-circle",
+        name: "minus-circle",
         accent: "muted",
       });
     }
@@ -76,7 +76,7 @@ describe("iconForStatus", () => {
   it("maps in-flight states → clock info", () => {
     for (const status of ["in_progress", "queued", "pending"]) {
       expect(iconForStatus({ status, conclusion: null })).toEqual({
-        name: "feather:clock",
+        name: "clock",
         accent: "info",
       });
     }
@@ -84,15 +84,15 @@ describe("iconForStatus", () => {
 
   it("falls back to alert-circle warning for unknown shapes", () => {
     expect(iconForStatus({ status: "completed", conclusion: null })).toEqual({
-      name: "feather:alert-circle",
+      name: "alert-circle",
       accent: "warning",
     });
     expect(iconForStatus({ status: "completed", conclusion: "stale" })).toEqual({
-      name: "feather:alert-circle",
+      name: "alert-circle",
       accent: "warning",
     });
     expect(iconForStatus({ status: "weird", conclusion: null })).toEqual({
-      name: "feather:alert-circle",
+      name: "alert-circle",
       accent: "warning",
     });
   });

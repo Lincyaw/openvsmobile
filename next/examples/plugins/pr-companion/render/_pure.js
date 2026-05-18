@@ -153,28 +153,28 @@ export function iconForStatus(run) {
   const conclusion = run.conclusion;
   if (status === "completed") {
     if (conclusion === "success") {
-      return { name: "feather:check-circle", accent: "success" };
+      return { name: "check-circle", accent: "success" };
     }
     if (
       conclusion === "failure" ||
       conclusion === "timed_out" ||
       conclusion === "action_required"
     ) {
-      return { name: "feather:x-circle", accent: "danger" };
+      return { name: "x-circle", accent: "danger" };
     }
     if (
       conclusion === "neutral" ||
       conclusion === "cancelled" ||
       conclusion === "skipped"
     ) {
-      return { name: "feather:minus-circle", accent: "muted" };
+      return { name: "minus-circle", accent: "muted" };
     }
-    return { name: "feather:alert-circle", accent: "warning" };
+    return { name: "alert-circle", accent: "warning" };
   }
   if (status === "in_progress" || status === "queued" || status === "pending") {
-    return { name: "feather:clock", accent: "info" };
+    return { name: "clock", accent: "info" };
   }
-  return { name: "feather:alert-circle", accent: "warning" };
+  return { name: "alert-circle", accent: "warning" };
 }
 
 /**

@@ -64,35 +64,9 @@ function buildRow(run, idx) {
   const { name, accent } = iconForStatus(run);
   const rowId = `prcomp-detail-check-${idx}`;
   const caption = captionForRun(run);
-  /** @type {import("@openvsmobile/sdk").UiNode[]} */
-  const children = [
-    ui.icon({
-      id: `${rowId}-icon`,
-      name,
-      accent,
-    }),
-    ui.text({
-      id: `${rowId}-name`,
-      text: run.name,
-    }),
-  ];
-  if (caption.length > 0) {
-    children.push(
-      ui.text({
-        id: `${rowId}-caption`,
-        text: caption,
-        style: "caption",
-      }),
-    );
-  }
   return ui.listTile({
     id: rowId,
     title: run.name,
-    // ListTile is the only widget in the SDK that carries onTapEvent;
-    // we keep the row visually as a row of children via `leading` /
-    // `trailing`. The design-doc tree shows `ui.row` inside `ui.list`,
-    // but `ui.list` items render as ListTiles in this SDK — the
-    // semantic content is identical (icon · name · caption).
     leading: ui.icon({ id: `${rowId}-leading`, name, accent }),
     subtitle: caption.length > 0 ? caption : undefined,
     onTapEvent: `detail-check-tapped:${idx}`,
