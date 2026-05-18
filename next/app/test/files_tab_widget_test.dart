@@ -232,6 +232,238 @@ void main() {
   );
 
   testWidgets(
+    'M file row renders M badge in the Files tab tree',
+    (tester) async {
+      final appState = AppState(client: BackendClient());
+      addTearDown(appState.dispose);
+      final ws = _testWorkspace();
+      appState.debugSetActiveWorkspace(ws);
+      // Pre-build a tree with one modified file under the workspace root so
+      // the row is mounted without any RPC plumbing.
+      appState.debugSetFileTree(
+        ws.id,
+        FileTreeNode(
+          path: ws.root,
+          name: ws.label,
+          isDir: true,
+          expanded: true,
+          children: [
+            FileTreeNode(
+              path: '${ws.root}/a.dart',
+              name: 'a.dart',
+              isDir: false,
+            ),
+          ],
+        ),
+      );
+      // Feed a head.changed so the workspace registers as a git repo, plus a
+      // decoration snapshot marking a.dart as modified.
+      appState.workspaces.onHeadChanged({
+        'workspaceId': ws.id,
+        'version': 1,
+        'branch': 'main',
+        'headSha': 'abc',
+        'ahead': 0,
+        'behind': 0,
+      });
+      appState.workspaces.onDecorationSnapshot({
+        'workspaceId': ws.id,
+        'version': 1,
+        'entries': [
+          {'path': 'a.dart', 'status': 'M'},
+        ],
+      });
+
+      await _pumpFilesTab(tester, appState);
+      await tester.pumpAndSettle();
+
+      // The `M` letter appears in the badge column next to a.dart.
+      expect(find.text('a.dart'), findsOneWidget);
+      expect(find.text('M'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'directory with 3 modified files shows count 3 badge + status bar reads '
+    '"main · ↑0 ↓0 · 3 changed"',
+    (tester) async {
+      final appState = AppState(client: BackendClient());
+      addTearDown(appState.dispose);
+      final ws = _testWorkspace();
+      appState.debugSetActiveWorkspace(ws);
+      // src/ holds three modified files. We pre-expand src so its children
+      // render too, but the dir badge is computed off the rollup map and
+      // doesn't require children to be visible.
+      appState.debugSetFileTree(
+        ws.id,
+        FileTreeNode(
+          path: ws.root,
+          name: ws.label,
+          isDir: true,
+          expanded: true,
+          children: [
+            FileTreeNode(
+              path: '${ws.root}/src',
+              name: 'src',
+              isDir: true,
+              expanded: true,
+              children: [
+                FileTreeNode(
+                  path: '${ws.root}/src/a.dart',
+                  name: 'a.dart',
+                  isDir: false,
+                ),
+                FileTreeNode(
+                  path: '${ws.root}/src/b.dart',
+                  name: 'b.dart',
+                  isDir: false,
+                ),
+                FileTreeNode(
+                  path: '${ws.root}/src/c.dart',
+                  name: 'c.dart',
+                  isDir: false,
+                ),
+              ],
+            ),
+          ],
+        ),
+      );
+      appState.workspaces.onHeadChanged({
+        'workspaceId': ws.id,
+        'version': 1,
+        'branch': 'main',
+        'headSha': 'abc',
+        'ahead': 0,
+        'behind': 0,
+      });
+      appState.workspaces.onDecorationSnapshot({
+        'workspaceId': ws.id,
+        'version': 1,
+        'entries': [
+          {'path': 'src/a.dart', 'status': 'M'},
+          {'path': 'src/b.dart', 'status': 'M'},
+          {'path': 'src/c.dart', 'status': 'M'},
+        ],
+      });
+
+      await _pumpFilesTab(tester, appState);
+      await tester.pumpAndSettle();
+
+      // Directory badge "●3" appears on both the workspace root row and the
+      // src/ row — every directory ancestor accumulates the recursive count.
+      // The src/ child row carrying the same number is the assertion-of-
+      // interest; the root row is correctly redundant with the status bar.
+      expect(find.text('●3'), findsNWidgets(2));
+      // The status bar text segments. Substring matches because the bar
+      // renders them as separate Text widgets joined visually.
+      expect(find.text('main'), findsOneWidget);
+      expect(find.text('· ↑0 ↓0'), findsOneWidget);
+      expect(find.text('· 3 changed'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'untracked-only directory shows no count badge (non-? rollup)',
+    (tester) async {
+      final appState = AppState(client: BackendClient());
+      addTearDown(appState.dispose);
+      final ws = _testWorkspace();
+      appState.debugSetActiveWorkspace(ws);
+      appState.debugSetFileTree(
+        ws.id,
+        FileTreeNode(
+          path: ws.root,
+          name: ws.label,
+          isDir: true,
+          expanded: true,
+          children: [
+            FileTreeNode(
+              path: '${ws.root}/scratch',
+              name: 'scratch',
+              isDir: true,
+              expanded: false,
+            ),
+          ],
+        ),
+      );
+      appState.workspaces.onHeadChanged({
+        'workspaceId': ws.id,
+        'version': 1,
+        'branch': 'main',
+        'headSha': 'abc',
+        'ahead': 0,
+        'behind': 0,
+      });
+      // Two untracked files inside scratch/. No non-? entries anywhere.
+      appState.workspaces.onDecorationSnapshot({
+        'workspaceId': ws.id,
+        'version': 1,
+        'entries': [
+          {'path': 'scratch/note.txt', 'status': '?'},
+          {'path': 'scratch/tmp.dart', 'status': '?'},
+        ],
+      });
+
+      await _pumpFilesTab(tester, appState);
+      await tester.pumpAndSettle();
+
+      // Per issue #54: `?`-only directories show no badge. No "●K" text
+      // should appear anywhere in the tree.
+      expect(find.textContaining('●'), findsNothing);
+      // The status bar's "K changed" segment also excludes `?` entries.
+      expect(find.text('· 0 changed'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'non-git workspace: status bar reads "Not a git repository", no badges',
+    (tester) async {
+      final appState = AppState(client: BackendClient());
+      addTearDown(appState.dispose);
+      final ws = _testWorkspace();
+      appState.debugSetActiveWorkspace(ws);
+      appState.debugSetFileTree(
+        ws.id,
+        FileTreeNode(
+          path: ws.root,
+          name: ws.label,
+          isDir: true,
+          expanded: true,
+          children: [
+            FileTreeNode(
+              path: '${ws.root}/README.md',
+              name: 'README.md',
+              isDir: false,
+            ),
+          ],
+        ),
+      );
+      // Mirror what the backend does for non-git workspaces: a snapshot-mode
+      // subscribe still emits `workspace.decoration.snapshot` (with empty
+      // entries) but skips `workspace.head.changed`. The client model
+      // populates a WorkspaceState whose branch stays null → isGitRepo
+      // false → status bar reads "Not a git repository".
+      appState.workspaces.onDecorationSnapshot({
+        'workspaceId': ws.id,
+        'version': 0,
+        'entries': const [],
+      });
+
+      await _pumpFilesTab(tester, appState);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Not a git repository'), findsOneWidget);
+      // None of the status-bar git fragments should appear.
+      expect(find.text('main'), findsNothing);
+      expect(find.textContaining('↑'), findsNothing);
+      expect(find.textContaining('changed'), findsNothing);
+      // No file/dir badges either.
+      expect(find.text('M'), findsNothing);
+      expect(find.textContaining('●'), findsNothing);
+    },
+  );
+
+  testWidgets(
     'stale search results are dropped when a newer keystroke wins',
     (tester) async {
       final appState = AppState(client: BackendClient());

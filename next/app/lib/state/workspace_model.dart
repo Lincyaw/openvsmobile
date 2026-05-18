@@ -46,12 +46,20 @@ class _ListDirCacheEntry {
 }
 
 /// Returned to the UI by [WorkspaceModel.statusFor]. Bundles the decoration
-/// letter (or null for clean) and the rollup count for directories so the
-/// view layer can render both cases off one lookup.
+/// letter (or null for clean), the all-decorations rollup count for
+/// directories (used by the Changes-view filter), and a separate
+/// changed-only rollup that excludes untracked (`?`) entries — that's the
+/// number rendered in the directory badge per issue #54: untracked-only
+/// directories must show no badge.
 class WorkspaceDecorationView {
   final String? status;
   final int rollupCount;
-  const WorkspaceDecorationView({this.status, this.rollupCount = 0});
+  final int changedCount;
+  const WorkspaceDecorationView({
+    this.status,
+    this.rollupCount = 0,
+    this.changedCount = 0,
+  });
 }
 
 /// Server-derived state for one workspace. One instance per open workspace,
@@ -90,10 +98,30 @@ class WorkspaceState {
   UnmodifiableMapView<String, String> get decorationMap =>
       UnmodifiableMapView(_decorationMap);
 
-  /// Directory path → count of decorated descendants. Recomputed by
-  /// [WorkspacesModel] on every decoration change.
+  /// Directory path → count of decorated descendants (all statuses,
+  /// including untracked). Used by the Changes-view filter so that a
+  /// directory containing only untracked files still appears in the
+  /// filtered tree.
   UnmodifiableMapView<String, int> get dirRollup =>
       UnmodifiableMapView(_dirRollup);
+
+  /// Directory path → count of *changed* descendants, i.e. M/A/D/U only —
+  /// `?` (untracked) entries do not contribute. This is what the directory
+  /// row's numeric badge renders, per issue #54: "count of changed entries
+  /// (any non-`?` status) under this directory recursively. `?`-only
+  /// directories show no badge."
+  UnmodifiableMapView<String, int> get changedRollup =>
+      UnmodifiableMapView(_changedRollup);
+
+  /// Total number of changed entries (non-`?`) for this workspace. Rendered
+  /// as the "K changed" segment of the Files-tab status bar.
+  int get changedCount {
+    var n = 0;
+    for (final s in _decorationMap.values) {
+      if (s != '?') n++;
+    }
+    return n;
+  }
 
   /// Monotonic version of the last event we successfully integrated. The
   /// next event MUST have version == lastSeenVersion + 1; if not we
@@ -104,6 +132,7 @@ class WorkspaceState {
 
   final Map<String, String> _decorationMap = {};
   final Map<String, int> _dirRollup = {};
+  final Map<String, int> _changedRollup = {};
   int _lastSeenVersion = 0;
 
   /// Cached `fs.listDir` responses keyed by directory path. Cleared
@@ -150,7 +179,12 @@ class WorkspacesModel extends ChangeNotifier {
     if (st == null) return const WorkspaceDecorationView();
     final status = st.decorationMap[relPath];
     final rollup = st.dirRollup[relPath] ?? 0;
-    return WorkspaceDecorationView(status: status, rollupCount: rollup);
+    final changed = st.changedRollup[relPath] ?? 0;
+    return WorkspaceDecorationView(
+      status: status,
+      rollupCount: rollup,
+      changedCount: changed,
+    );
   }
 
   /// All decorated paths for [workspaceId]. Order is insertion order — fine
@@ -164,6 +198,11 @@ class WorkspacesModel extends ChangeNotifier {
 
   int decoratedCount(String workspaceId) =>
       _states[workspaceId]?._decorationMap.length ?? 0;
+
+  /// Count of *changed* (non-`?`) entries for [workspaceId]. Used by the
+  /// Files-tab status bar's `K changed` segment.
+  int changedCount(String workspaceId) =>
+      _states[workspaceId]?.changedCount ?? 0;
 
   // ---- Subscribe / unsubscribe lifecycle ----
 
@@ -454,11 +493,16 @@ class WorkspacesModel extends ChangeNotifier {
 
   void _recomputeRollup(WorkspaceState st) {
     st._dirRollup.clear();
-    for (final path in st._decorationMap.keys) {
+    st._changedRollup.clear();
+    for (final entry in st._decorationMap.entries) {
       // Walk up ancestor chain. Workspace root (empty path) gets the total.
-      var cursor = _parentDir(path);
+      var cursor = _parentDir(entry.key);
+      final isChanged = entry.value != '?';
       while (true) {
         st._dirRollup.update(cursor, (v) => v + 1, ifAbsent: () => 1);
+        if (isChanged) {
+          st._changedRollup.update(cursor, (v) => v + 1, ifAbsent: () => 1);
+        }
         if (cursor.isEmpty) break;
         cursor = _parentDir(cursor);
       }

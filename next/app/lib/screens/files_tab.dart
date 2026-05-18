@@ -335,6 +335,11 @@ class _FilesTabState extends State<FilesTab> {
     final wsId = workspace.id;
     final rel = _relPathFor(node.path, workspace.root);
     final decoration = widget.appState.decorationFor(wsId, rel);
+    // Per issue #54: "filename text colour ALSO shifts (subtle tint, not the
+    // full badge colour) so the row reads at-a-glance from across the
+    // screen." The tint only applies to file rows; directories keep the
+    // default colour.
+    final nameStyle = _filenameStyle(theme, node, decoration.status);
     return InkWell(
       onTap: () {
         if (node.isDir) {
@@ -374,7 +379,7 @@ class _FilesTabState extends State<FilesTab> {
             Expanded(
               child: Text(
                 node.name,
-                style: const TextStyle(fontSize: 14),
+                style: nameStyle,
                 overflow: TextOverflow.ellipsis,
               ),
             ),
@@ -394,6 +399,27 @@ class _FilesTabState extends State<FilesTab> {
           ],
         ),
       ),
+    );
+  }
+
+  /// Compute the filename TextStyle for a tree row. File rows with a
+  /// status get a subtle tint (Color.lerp with the badge color at 35%) so
+  /// the row reads from a distance without overpowering the badge itself.
+  /// Deleted rows additionally get strikethrough to mirror the badge state
+  /// — the file is gone, the name should look gone. Directories always
+  /// render with the default text style (issue #54 explicitly defers
+  /// folder-level color tint to a future change).
+  TextStyle _filenameStyle(ThemeData theme, FileTreeNode node, String? status) {
+    const baseStyle = TextStyle(fontSize: 14);
+    if (node.isDir || status == null) return baseStyle;
+    final base = theme.colorScheme.onSurface;
+    final accent = _statusColor(theme, status);
+    final tinted = Color.lerp(base, accent, 0.35) ?? base;
+    return baseStyle.copyWith(
+      color: tinted,
+      decoration: status == 'D' ? TextDecoration.lineThrough : null,
+      decorationColor: status == 'D' ? accent : null,
+      decorationThickness: status == 'D' ? 2 : null,
     );
   }
 
@@ -774,9 +800,16 @@ class _StatusBar extends StatelessWidget {
     final isOffline = connectionState != BackendConnectionState.connected;
     final st = workspaceState;
     final isGit = st != null && st.isGitRepo;
-    final changed = st?.decorationMap.length ?? 0;
+    // "K changed" excludes untracked entries per issue #54 — directories
+    // with only `?` should not contribute to the displayed count.
+    final changed = st?.changedCount ?? 0;
     final bodyStyle = TextStyle(
-      color: theme.colorScheme.onSurface,
+      // Non-git case is "slightly dimmed" per issue #54; we apply that by
+      // shifting the text role from onSurface → onSurfaceVariant. Material 3
+      // guarantees both meet WCAG AA on surfaceContainerHighest.
+      color: isGit
+          ? theme.colorScheme.onSurface
+          : theme.colorScheme.onSurfaceVariant,
       fontSize: 12,
     );
     final monoStyle = TextStyle(
@@ -787,6 +820,11 @@ class _StatusBar extends StatelessWidget {
     );
     return Material(
       color: theme.colorScheme.surfaceContainerHighest,
+      // The bar tap toggles the Changes view (filtered tree). On non-git
+      // workspaces the bar is inert per CLAUDE.md "the bar is NOT a control
+      // surface" — issue #54 explicitly keeps a no-op tap until the Changes
+      // view wires up properly; here we already have the toggle handler from
+      // the prior PR, but it's gated to git repos so non-git stays inert.
       child: InkWell(
         onTap: isGit ? appState.toggleChangesView : null,
         child: Container(
@@ -813,13 +851,14 @@ class _StatusBar extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                if (st.ahead > 0 || st.behind > 0) ...[
-                  const SizedBox(width: 8),
-                  Text(
-                    '· ↑${st.ahead} ↓${st.behind}',
-                    style: bodyStyle,
-                  ),
-                ],
+                const SizedBox(width: 8),
+                // Always show `· ↑N ↓M` (zero values included) so the bar
+                // has a stable shape and matches the issue spec's exact
+                // format string `<branch> · ↑N ↓M · K changed`.
+                Text(
+                  '· ↑${st.ahead} ↓${st.behind}',
+                  style: bodyStyle,
+                ),
                 const SizedBox(width: 8),
                 Text(
                   changesActive
@@ -880,10 +919,41 @@ class _OfflinePill extends StatelessWidget {
   }
 }
 
+/// Status-letter → semantic Material color. Single source of truth for both
+/// the badge color and the row's filename tint so they always agree.
+///
+/// Picks are deliberately chosen from Material 3 ColorScheme roles rather
+/// than hard-coded hex values: Material's scheme generation guarantees the
+/// pair `<role>/onSurface` meets WCAG AA contrast on both light and dark
+/// themes, which lets us inherit that contract instead of re-validating per
+/// PR (see PR description for the WCAG audit). The user-facing mapping:
+///   * M (modified) → tertiary  — typically a yellow/amber tone.
+///   * A (added)    → primary   — typically a brand/green tone.
+///   * D (deleted)  → error     — red, plus strikethrough on the letter.
+///   * U (unmerged) → error     — red (letter `U` differentiates from `D`).
+///   * ? (untracked)→ outline   — neutral gray that fades vs. clean rows.
+Color _statusColor(ThemeData theme, String status) {
+  switch (status) {
+    case 'M':
+      return theme.colorScheme.tertiary;
+    case 'A':
+      return theme.colorScheme.primary;
+    case 'D':
+    case 'U':
+      return theme.colorScheme.error;
+    case '?':
+      return theme.colorScheme.outline;
+    default:
+      return theme.colorScheme.onSurfaceVariant;
+  }
+}
+
 /// Renders the right-side decoration for one tree row.
 ///
 ///   * File with status: colored single-letter badge (M / A / D / ? / U).
-///   * Directory with rollupCount > 0: neutral "●K" badge.
+///     `D` is additionally rendered with strikethrough.
+///   * Directory with changedCount > 0: neutral "●K" badge counting M/A/D/U
+///     only — `?`-only directories show no badge per issue #54.
 ///   * Otherwise: nothing.
 class _DecorationBadge extends StatelessWidget {
   final FileTreeNode node;
@@ -896,27 +966,7 @@ class _DecorationBadge extends StatelessWidget {
     if (!node.isDir) {
       final status = decoration.status;
       if (status == null) return const SizedBox.shrink();
-      final Color color;
-      switch (status) {
-        case 'M':
-          color = theme.colorScheme.tertiary;
-          break;
-        case 'A':
-          color = theme.colorScheme.primary;
-          break;
-        case 'D':
-          color = theme.colorScheme.error;
-          break;
-        case '?':
-          color = theme.colorScheme.outline;
-          break;
-        case 'U':
-          // Unmerged — error tone, plus the letter U as differentiator from D.
-          color = theme.colorScheme.error;
-          break;
-        default:
-          color = theme.colorScheme.onSurfaceVariant;
-      }
+      final color = _statusColor(theme, status);
       return Padding(
         padding: const EdgeInsets.only(left: 8),
         child: Text(
@@ -926,11 +976,14 @@ class _DecorationBadge extends StatelessWidget {
             fontFamily: 'monospace',
             fontSize: 12,
             fontWeight: FontWeight.bold,
+            decoration: status == 'D' ? TextDecoration.lineThrough : null,
+            decorationColor: status == 'D' ? color : null,
+            decorationThickness: status == 'D' ? 2 : null,
           ),
         ),
       );
     }
-    final count = decoration.rollupCount;
+    final count = decoration.changedCount;
     if (count <= 0) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.only(left: 8),
