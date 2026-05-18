@@ -517,64 +517,301 @@ This is the most novel piece. Plugins describe UI as a **typed widget
 tree**; Flutter renders each node as a native widget. Updates are
 explicit patches against node ids.
 
-#### Widget vocabulary (v0)
+#### Cross-cutting principles
 
-The vocabulary is deliberately small. Adding a widget type is cheap on
-the protocol side but expensive on the Flutter renderer side, so v0
-covers what's needed for three reference plugin shapes (chat, settings,
-status feed) and nothing more. `UiImage`, `UiTabs`, `UiChip`,
-`UiAvatar`, `UiDialog` are explicitly deferred; modal interactions go
-through the imperative `ui.showMessage` / `ui.showQuickPick` API rather
-than the declarative tree.
+These bind every widget below; once accepted, individual widget APIs
+follow mechanically.
+
+**Style slots — tokens only.** Every widget accepts an optional
+`style` object that overrides visual defaults, but only via token
+enums. Plugins cannot pass raw pixel values, hex colors, or font
+names. This is the single most important guardrail against design
+drift across the plugin ecosystem — without it, every plugin author
+invents their own spacing scale and the app fractures.
 
 ```ts
-type UiNode =
-  | UiColumn | UiRow | UiSection | UiCard | UiDivider | UiSpacer
-  | UiText | UiMarkdown | UiCodeBlock | UiStatusRow | UiIcon
-  | UiButton | UiTextField | UiToggle | UiChoice
-  | UiList | UiListItem
-  | UiSpinner | UiProgress;
+interface StyleSlot {
+  padding?: SpacingToken;       // outer breathing room
+  gap?: SpacingToken;           // between own children (where applicable)
+  radius?: RadiusToken;
+  surface?: SurfaceToken;       // background fill
+  accent?: AccentToken;         // tint for marks, borders, focus rings
+}
 
-interface UiBase { id?: string }   // id is required for any node that emits events
-
-interface UiColumn  extends UiBase { type: "column"; children: UiNode[]; spacing?: number; padding?: number }
-interface UiRow     extends UiBase { type: "row";    children: UiNode[]; spacing?: number; align?: "start"|"center"|"end" }
-// section: titled, optionally collapsible — for organizing forms / grouping by topic
-interface UiSection extends UiBase { type: "section"; title: string; child: UiNode; collapsible?: boolean }
-// card: pure visual grouping with no semantic structure — for list items, alerts, ad-hoc containers
-interface UiCard    extends UiBase { type: "card";    child: UiNode; tone?: SemanticColor }
-interface UiDivider extends UiBase { type: "divider" }
-interface UiSpacer  extends UiBase { type: "spacer"; size?: number }
-
-interface UiText      extends UiBase { type: "text"; text: string; style?: "body"|"title"|"subtitle"|"caption"|"code"; color?: SemanticColor }
-interface UiMarkdown  extends UiBase { type: "markdown"; markdown: string; codeTheme?: string }
-interface UiCodeBlock extends UiBase { type: "codeBlock"; code: string; language?: string }
-interface UiStatusRow extends UiBase { type: "statusRow"; label: string; value: string; tone?: SemanticColor }
-// icon: drawn from the bundled curated icon set; plugins reference icons by name, not by URL
-interface UiIcon      extends UiBase { type: "icon"; name: string; size?: number; tone?: SemanticColor }
-
-// button: at least one of icon or label must be present; icon-only and label-only buttons share this type
-interface UiButton    extends UiBase { type: "button"; id: string; label?: string; icon?: string; style?: "primary"|"secondary"|"destructive"; onTapEvent?: string; enabled?: boolean }
-// textField: v0 only surfaces onSubmitEvent. onChangeEvent (per-keystroke) is deferred until a plugin needs it; clients will be expected to debounce when it lands.
-interface UiTextField extends UiBase { type: "textField"; id: string; label?: string; value?: string; placeholder?: string; multiline?: boolean; onSubmitEvent?: string }
-interface UiToggle    extends UiBase { type: "toggle"; id: string; label: string; value: boolean; onChangeEvent?: string }
-interface UiChoice    extends UiBase { type: "choice"; id: string; label?: string; options: { value: string; label: string }[]; value?: string; onChangeEvent?: string }
-
-interface UiList     extends UiBase { type: "list"; children: UiListItem[] }
-interface UiListItem extends UiBase { type: "listItem"; id: string; title: string; subtitle?: string; trailing?: UiNode; onTapEvent?: string }
-
-interface UiSpinner  extends UiBase { type: "spinner"; label?: string }
-interface UiProgress extends UiBase { type: "progress"; value: number; label?: string }
-
-type SemanticColor = "neutral" | "info" | "success" | "warning" | "danger";
+type SpacingToken = 'none' | 'xs' | 'sm' | 'md' | 'lg' | 'xl';
+type RadiusToken  = 'none' | 'sm' | 'md' | 'lg' | 'pill';
+type SurfaceToken = 'default' | 'elevated' | 'muted' | 'inverse';
+type AccentToken  = 'brand' | 'info' | 'success' | 'warning' | 'danger' | 'muted';
+type SizeToken    = 'xs' | 'sm' | 'md' | 'lg' | 'xl';   // used by Icon / Avatar / Image
 ```
 
-IDs are **plugin-assigned**. Backend does not generate them and does
-not enforce uniqueness across plugins — collisions inside a single
-plugin's panel are the plugin's bug, and `panelId` scopes the namespace
-between plugins. The handshake's `protocolVersion` covers vocabulary
-changes; older clients render unknown node types as a placeholder card
-with the unrecognized type label.
+Host owns the token → pixel/color mapping; it varies by light/dark
+theme and density.
+
+**Plugin theme color.** A plugin's `plugin.json` may declare
+`themeColor: 'teal' | 'blue' | 'green' | 'orange' | 'red' | 'purple' | 'mono'`.
+Host derives the `brand` accent inside that plugin's panel from this
+preset. Fixed palette only — `themeColor: "#ff0000"` is not allowed.
+Plugins with no declaration inherit the host's accent. A panel may
+override its plugin's default via `UiPanel.themeColor` for that one
+surface (rarely needed).
+
+**Density.** Host supports `compact | comfortable | spacious` as a
+user-level setting; plugins may set the panel root's density for one
+panel. Spacing/typography tokens are scaled by the active density.
+
+**Reconciliation.** Every widget has `id?: string`. The SDK
+auto-generates a UUID when omitted so the host's "every node has a
+unique id" invariant always holds. Plugin-supplied ids are the only
+way to preserve focus, scroll, and animation state across
+re-renders — supply them for any node a user can interact with.
+
+#### Widget vocabulary (target spec)
+
+Organized in 8 categories. Implementation status legend:
+**[shipped]** = currently in SDK + renderer ·
+**[spec]** = appears here but not yet implemented (host renders an
+"unknown widget" placeholder) ·
+**[new]** = added in this revision.
+
+The shipped surface today is `Column / Row / Spacer / Section / Card /
+List / Text / TextField / Button` — 9 widgets, all in the [shipped]
+column. The expansion below is the target every plugin can rely on
+once the implementation order at the end of this section completes.
+
+**1. Layout** — positioning, no visual surface.
+
+```ts
+interface UiColumn  extends UiBase { type: "column";  children: UiNode[]; gap?: SpacingToken; align?: 'start'|'center'|'end'|'stretch'; style?: StyleSlot }   // [shipped, expand]
+interface UiRow     extends UiBase { type: "row";     children: UiNode[]; gap?: SpacingToken; align?: 'start'|'center'|'end'|'baseline'; wrap?: boolean; style?: StyleSlot }   // [shipped, expand]
+interface UiGrid    extends UiBase { type: "grid";    children: UiNode[]; columns: number | 'adaptive'; gap?: SpacingToken; style?: StyleSlot }   // [new]
+interface UiStack   extends UiBase { type: "stack";   children: UiNode[]; alignment?: 'topStart'|'topCenter'|'topEnd'|'centerStart'|'center'|'centerEnd'|'bottomStart'|'bottomCenter'|'bottomEnd' }   // [new]
+interface UiAspect  extends UiBase { type: "aspect";  ratio: number; child: UiNode }   // [new]
+interface UiFlex    extends UiBase { type: "flex";    flex: number; child: UiNode }    // [new] — inside Row/Column, claims `flex` share of remaining space
+interface UiScroll  extends UiBase { type: "scroll";  axis?: 'vertical'|'horizontal'; child: UiNode; style?: StyleSlot }   // [new] — explicit scroll region when the panel root scroll isn't enough
+interface UiSpacer  extends UiBase { type: "spacer";  size?: SpacingToken }    // [shipped] — number variant deprecated; renderer accepts both for one minor version then drops number
+```
+
+**2. Container** — visual grouping with surface.
+
+```ts
+interface UiSection extends UiBase { type: "section"; title?: string; child: UiNode; collapsible?: boolean; variant?: 'plain'|'card'|'inset'; style?: StyleSlot }   // [shipped, expand]
+interface UiDivider extends UiBase { type: "divider"; orientation?: 'horizontal'|'vertical' }    // [spec]
+```
+
+`UiCard` (currently shipped as a separate type) folds into
+`UiSection { variant: 'card' }`. Three variants:
+
+- `plain` — no surface, just title + children (default for content grouping)
+- `card` — Material-flavor rounded card with subtle border, no elevation
+- `inset` — iOS Settings inset-grouped style: single rounded surface
+  containing children, dividers between them, title rendered above in
+  caption type
+
+The `inset` variant carries the "Settings-app / mini-program"
+visual identity; it is the right default for any list of toggles,
+selections, or detail rows.
+
+Backwards-compat note: SDK keeps `UiCard` as a deprecated alias of
+`UiSection { variant: 'card' }` for one minor version.
+
+**3. Content** — display primitives.
+
+```ts
+interface UiText      extends UiBase { type: "text"; text: string; role?: UiTextRole; emphasis?: 'normal'|'strong'|'muted'; maxLines?: number; align?: 'start'|'center'|'end'; style?: StyleSlot }    // [shipped, expand]
+interface UiMarkdown  extends UiBase { type: "markdown"; markdown: string; style?: StyleSlot }   // [spec]
+interface UiCodeBlock extends UiBase { type: "codeBlock"; code: string; language?: string; style?: StyleSlot }   // [spec]
+interface UiIcon      extends UiBase { type: "icon"; name: string; size?: SizeToken; accent?: AccentToken }   // [spec]
+interface UiImage     extends UiBase { type: "image"; src: string; fit?: 'cover'|'contain'|'fill'; size?: SizeToken; style?: StyleSlot }   // [new]
+interface UiAvatar    extends UiBase { type: "avatar"; src?: string; initial?: string; size?: SizeToken; accent?: AccentToken }   // [new]
+interface UiBadge     extends UiBase { type: "badge"; text?: string; count?: number; accent?: AccentToken; variant?: 'dot'|'pill' }   // [new]
+interface UiChip      extends UiBase { type: "chip"; label: string; icon?: string; selected?: boolean; accent?: AccentToken; onTapEvent?: string }   // [new]
+interface UiProgress  extends UiBase { type: "progress"; value?: number; variant?: 'linear'|'circular'; label?: string; accent?: AccentToken }   // [spec, expand]
+interface UiSpinner   extends UiBase { type: "spinner"; label?: string; size?: SizeToken }   // [spec]
+interface UiStatusRow extends UiBase { type: "statusRow"; label: string; value: string; accent?: AccentToken }   // [spec]
+
+type UiTextRole = 'display' | 'title' | 'subtitle' | 'body' | 'caption' | 'mono' | 'code';
+```
+
+Notes:
+
+- `UiIcon.name` references a curated icon set bundled with the host.
+  v1 uses the **Feather** icon set (~280 icons, ~24kb, MIT). Plugins
+  cannot supply raw SVG/PNG to `UiIcon` — bundled names are the only
+  values accepted. Single source of truth lives in
+  `next/app/lib/ui/icon_catalog.dart`.
+- `UiImage.src` accepts `https://…`, `file://…` (workspace-scoped,
+  gated by `fs` capability), or `data:image/…;base64,…`.
+- `UiAvatar` with no `src` falls back to rendering `initial` (first
+  1–2 chars) on a deterministic color hashed from `initial` — same
+  convention as Linear / Telegram.
+- `UiMarkdown` parses a strict subset: headings (h1–h4), paragraphs,
+  lists (ordered/unordered, nested), code blocks + inline code,
+  links, bold, italic, blockquotes, horizontal rules. **No raw HTML,
+  no tables, no images, no nested HTML in markdown.** Out-of-subset
+  constructs render as plain text.
+
+**4. Input** — single source of state is the plugin; host emits
+events to the plugin.
+
+```ts
+interface UiButton      extends UiBase { type: "button"; label?: string; icon?: string; variant?: 'primary'|'secondary'|'ghost'|'danger'; loading?: boolean; enabled?: boolean; onTapEvent?: string }    // [shipped, expand]
+interface UiTextField   extends UiBase { type: "textField"; label?: string; value?: string; placeholder?: string; multiline?: boolean; obscure?: boolean; onSubmitEvent?: string; onChangeEvent?: string }   // [shipped, expand]
+interface UiSearchField extends UiBase { type: "searchField"; value?: string; placeholder?: string; onChangeEvent?: string }   // [new]
+interface UiSwitch      extends UiBase { type: "switch"; label?: string; value: boolean; onChangeEvent?: string }   // [spec; was UiToggle]
+interface UiCheckbox    extends UiBase { type: "checkbox"; label?: string; value: boolean; onChangeEvent?: string }   // [new]
+interface UiRadioGroup  extends UiBase { type: "radioGroup"; options: { value: string; label: string }[]; value?: string; onChangeEvent?: string }   // [new]
+interface UiSelect      extends UiBase { type: "select"; label?: string; options: { value: string; label: string }[]; value?: string; onChangeEvent?: string }   // [spec; was UiChoice; on mobile always renders as bottom-sheet picker]
+interface UiSlider      extends UiBase { type: "slider"; min: number; max: number; step?: number; value: number; onChangeEvent?: string }   // [new]
+```
+
+Notes:
+
+- `UiTextField.onChangeEvent` is debounced on the host side
+  (default 200ms) so plugins don't have to filter per-keystroke
+  spam.
+- `UiSelect` always renders as a modal bottom-sheet picker on
+  mobile — no desktop-style dropdown menu. Touch-target appropriate.
+- `UiButton.loading: true` disables tap and replaces icon/label
+  with a spinner of the same dimensions.
+
+**5. List** — the highest-leverage category for the "Settings/launcher
+feel."
+
+```ts
+interface UiList      extends UiBase { type: "list"; children: UiListTile[]; loading?: boolean; empty?: UiEmpty }   // [shipped, narrow child type]
+interface UiListTile  extends UiBase { type: "listTile"; title: string; subtitle?: string; leading?: UiNode; trailing?: UiNode; onTapEvent?: string; swipeActions?: UiSwipeAction[] }   // [new]
+interface UiAppGrid   extends UiBase { type: "appGrid"; items: UiAppTile[]; columns?: number; onLaunchEvent?: string }   // [new]
+
+interface UiAppTile     { id: string; name: string; icon: string | { uri: string }; badge?: { count?: number; text?: string }; accent?: AccentToken }   // [new]
+interface UiEmpty       { icon?: string; title: string; hint?: string; action?: { label: string; eventId: string } }   // [new]
+interface UiSwipeAction { label: string; icon?: string; accent?: AccentToken; eventId: string }   // [new]
+```
+
+Notes:
+
+- `UiListTile` is the workhorse for Settings / Files / per-plugin
+  detail pages. `leading` and `trailing` accept any `UiNode`, so
+  callers freely put an icon, avatar, image, switch, badge, or
+  chevron in either slot.
+- `UiAppGrid` is the **only** widget where a plugin may supply a
+  bundled raster/vector image as its tile icon (via
+  `icon: { uri: "./icon.png" }`, resolved against the plugin's
+  install dir). Everywhere else `icon` is a Feather name. This is
+  the controlled escape hatch for "every plugin gets a real-looking
+  app icon on the launcher" without opening arbitrary image use
+  across the vocabulary. Tile geometry is fixed by the renderer
+  (48–56px icon + caption beneath).
+- `UiEmpty` is rendered by the host when `children` is empty;
+  standardizing the empty state across plugins prevents bland
+  "暂无数据" surfaces — every empty state has an icon, a one-line
+  hint, and an optional action.
+
+**6. Feedback** — transient and modal.
+
+These are **imperative** (plugin calls `ui.showAlert` /
+`ui.showActionSheet` / `ui.showBottomSheet` instead of including them
+in the declarative tree), matching the existing
+`ui.showMessage` / `ui.showQuickPick` direction. The host returns a
+fresh `ui.event` when the user picks an action.
+
+```ts
+interface UiAlertDialog { id: string; title: string; body?: string; actions: { label: string; eventId: string; variant?: 'primary'|'danger' }[]; dismissible?: boolean }   // [new]
+interface UiActionSheet { id: string; title?: string; actions: { label: string; icon?: string; eventId: string; accent?: AccentToken }[]; dismissEventId?: string }   // [new]
+interface UiBottomSheet { id: string; title?: string; child: UiNode; dismissEventId?: string }   // [new]
+```
+
+The one declarative feedback widget — for persistent in-flow status
+("you're offline", "syncing 3/12 files") — lives in the tree:
+
+```ts
+interface UiInlineBanner extends UiBase { type: "banner"; title: string; body?: string; accent: 'info'|'success'|'warning'|'danger'; action?: { label: string; eventId: string }; dismissEventId?: string }   // [new]
+```
+
+**7. Navigation** — panel-internal only; host owns chrome.
+
+```ts
+interface UiTabBar extends UiBase { type: "tabBar"; tabs: { id: string; label: string; icon?: string }[]; activeId: string; onChangeEvent?: string }   // [new]
+```
+
+Plugins **must not** draw their own back button or app bar. The
+panel may declare `trailingActions` (see `UiPanel` below) and the
+host renders them into the app bar's right side; the host's back
+button is the only back button.
+
+**8. Mobile-specific patterns**
+
+`UiSwipeAction` (declared above as a property of `UiListTile`) is
+the swipe-from-right action pattern familiar from iOS Mail /
+Things 3 / Lemon. Optional `accent` colors the action background;
+`eventId` fires once the user commits the swipe past the threshold.
+
+Pull-to-refresh is **not** in the vocabulary. By first principle #1,
+content freshness is push-based — if the user perceives staleness,
+the push path is broken, not the lack of a refresh affordance.
+
+#### Implementation status snapshot
+
+| Category | Today (SDK) | Spec'd-only | New in this revision |
+|---|---|---|---|
+| Layout | Column / Row / Spacer | — | Grid / Stack / Aspect / Flex / Scroll |
+| Container | Section / Card | Divider | (Card folds into Section.variant) |
+| Content | Text | Markdown / CodeBlock / Icon / Progress / Spinner / StatusRow | Image / Avatar / Badge / Chip |
+| Input | TextField / Button | Switch (was Toggle) / Select (was Choice) | SearchField / Checkbox / RadioGroup / Slider |
+| List | List | ListItem | ListTile (richer) / AppGrid / Empty / SwipeAction |
+| Feedback | (host-side toast) | — | AlertDialog / ActionSheet / BottomSheet / InlineBanner |
+| Navigation | — | — | TabBar / trailingActions on Panel |
+
+#### Implementation order
+
+Five batches, each one PR with at least one example plugin updated
+to exercise the new widgets end-to-end. Order picked to unlock the
+most visible UX redesigns first.
+
+1. **Plugins launcher** — `UiAppGrid` + `UiListTile` + `UiIcon` +
+   `UiBadge` + `StyleSlot` + plugin-level `themeColor`. Reworks the
+   Plugins tab launcher and detail screens. Unblocks: "Plugins tab
+   feels like a mini-program home."
+2. **Settings & forms** — `UiSection { variant: 'inset' }` +
+   `UiSwitch` + `UiSelect` + `UiInlineBanner` + `UiDivider`.
+   Reworks the Settings tab and the notes example plugin's detail
+   screen. Unblocks: "Settings/forms feel like iOS Settings."
+3. **Rich display** — `UiImage` + `UiAvatar` + `UiMarkdown` +
+   `UiCodeBlock` + `UiProgress` + `UiSpinner`. Unblocks chat-style
+   and richer-content plugins (the AI-assistant plugin target).
+4. **Modal feedback** — `ui.showAlert` + `ui.showActionSheet` +
+   `ui.showBottomSheet` + `UiSwipeAction`. Plugin-driven
+   modal/transient interactions.
+5. **Long tail** — `UiTabBar` + `UiCollapsible` (via
+   `UiSection.collapsible`) + `UiGrid` + `UiStack` + `UiAspect` +
+   `UiFlex` + `UiSearchField` + `UiRadioGroup` + `UiSlider` +
+   `UiCheckbox` + `UiScroll`. Fill out the remaining surface.
+
+Reference precedents consulted in this design:
+
+- **iOS Settings / Files** — inset-grouped lists, leading-icon
+  affordance, trailing chevron/value pattern (basis for
+  `UiSection.variant: 'inset'` + `UiListTile`).
+- **WeChat 小程序 WXML** — overall coverage and the discipline of
+  a small fixed vocabulary; not the rendering technology.
+- **iOS Home / WeChat services grid** — `UiAppGrid` tile geometry.
+- **Linear / Telegram** — `UiAvatar` initial-fallback convention,
+  empty-state design.
+- **Material 3** — Snackbar / Chip variants, Filled vs Outlined
+  Card affordance distinction.
+- **Feather Icons** — bundled icon-set choice (consistency over
+  raw count).
+- **iOS UIAlertController** — Alert vs ActionSheet split.
+
+IDs may be plugin-assigned or omitted. The SDK generates a stable
+UUID when omitted, so the renderer's "every node has a unique id"
+invariant always holds, but only plugin-supplied ids survive across
+re-renders — supply them explicitly for any node holding focus,
+scroll, or animation state. `panelId` scopes ids across plugins, so
+id collisions are only a concern within a single panel. The
+handshake's `protocolVersion` covers vocabulary changes; older
+clients render unknown node types as a placeholder card with the
+unrecognized type label.
 
 A **panel** is the top-level addressable unit:
 
@@ -601,7 +838,7 @@ interface UiPanel {
           { "type": "list", "id": "messages", "children": [] },
           { "type": "row", "children": [
             { "type": "textField", "id": "input", "placeholder": "Ask Claude…", "onSubmitEvent": "submit" },
-            { "type": "iconButton", "id": "send", "icon": "send", "onTapEvent": "submit" }
+            { "type": "button", "id": "send", "icon": "send", "variant": "primary", "onTapEvent": "submit" }
           ]}
         ]
       }
