@@ -136,6 +136,30 @@ if [[ -f "$BACKEND_DIR/pnpm-workspace.yaml" ]]; then
   cp "$BACKEND_DIR/pnpm-workspace.yaml" "$BUILD_DIR/"
 fi
 
+# The backend depends on `@openvsmobile/sdk` via `workspace:*`, so pnpm
+# will materialise it as a symlink into `packages/sdk`. Stage the SDK
+# alongside (with its TypeScript already compiled) so the symlink
+# resolves during install; we'll replace it with a real copy below.
+if [[ -d "$BACKEND_DIR/packages/sdk" ]]; then
+  log "building @openvsmobile/sdk"
+  (
+    cd "$BACKEND_DIR/packages/sdk"
+    npm install --no-audit --no-fund --no-package-lock --no-save typescript@5 >/dev/null
+    npx --no-install tsc
+  )
+  mkdir -p "$BUILD_DIR/packages"
+  # `cp -R` follows the dist/runtime layout; we explicitly skip node_modules
+  # from the SDK to keep it lean — the SDK has no runtime npm deps.
+  rm -rf "$BUILD_DIR/packages/sdk"
+  mkdir -p "$BUILD_DIR/packages/sdk"
+  cp -R \
+    "$BACKEND_DIR/packages/sdk/package.json" \
+    "$BACKEND_DIR/packages/sdk/dist" \
+    "$BACKEND_DIR/packages/sdk/runtime" \
+    "$BACKEND_DIR/packages/sdk/src" \
+    "$BUILD_DIR/packages/sdk/"
+fi
+
 log "installing production deps for linux-${ARCH} (pnpm, frozen lockfile, hoisted)"
 (
   cd "$BUILD_DIR"
@@ -150,6 +174,18 @@ log "installing production deps for linux-${ARCH} (pnpm, frozen lockfile, hoiste
       --node-linker=hoisted \
       --ignore-scripts=false
 )
+
+# Dereference the workspace `@openvsmobile/sdk` symlink into a real
+# directory under node_modules. pnpm always materialises workspace deps as
+# symlinks even with --node-linker=hoisted; the bundle is extracted to an
+# arbitrary path on the target host without `packages/sdk/` alongside, so
+# the symlink would dangle. Copy in the staged SDK and rewrite the link.
+SDK_LINK="$BUILD_DIR/node_modules/@openvsmobile/sdk"
+if [[ -L "$SDK_LINK" ]]; then
+  log "materialising @openvsmobile/sdk into node_modules"
+  rm "$SDK_LINK"
+  cp -R "$BUILD_DIR/packages/sdk" "$SDK_LINK"
+fi
 
 # Sanity-check that the layout is actually relocatable. The bundle gets
 # extracted to an arbitrary install path on the target host, so any symlink
@@ -192,7 +228,23 @@ COMPILE_DIR="$STAGING_ROOT/compile"
 mkdir -p "$COMPILE_DIR"
 cp -R "$BACKEND_DIR/src" "$COMPILE_DIR/"
 cp "$BACKEND_DIR/tsconfig.json" "$COMPILE_DIR/"
-cp "$BACKEND_DIR/package.json" "$COMPILE_DIR/"
+# Strip `workspace:*` deps from the compile-step package.json — npm
+# (used here to fetch typescript) rejects them with EUNSUPPORTEDPROTOCOL.
+# The backend source doesn't import `@openvsmobile/sdk` at TS level
+# (it's loaded by plugin child processes via runtime resolve), so tsc
+# is fine without it on the typeRoots.
+node -e "
+  const fs = require('fs');
+  const pkg = require('$BACKEND_DIR/package.json');
+  for (const field of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
+    const obj = pkg[field];
+    if (!obj) continue;
+    for (const k of Object.keys(obj)) {
+      if (typeof obj[k] === 'string' && obj[k].startsWith('workspace:')) delete obj[k];
+    }
+  }
+  fs.writeFileSync('$COMPILE_DIR/package.json', JSON.stringify(pkg, null, 2) + '\n');
+"
 # We use the project's own typescript devDep — install it locally for
 # the compile step only (small, doesn't end up in the tarball).
 (
