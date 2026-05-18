@@ -543,6 +543,56 @@ export type UiNode =
   | UiRadioGroup
   | UiSlider;
 
+// ---- Batch 4 imperative modals (§4.3) ----
+//
+// These live OFF the declarative `ui.tree`. The plugin calls one of the
+// three `showAlert` / `showActionSheet` / `showBottomSheet` methods on
+// `PluginContext`, the host pushes a `ui.modal` notification to the app,
+// and the user's pick comes back through the regular `onUiEvent` flow
+// (carrying the `eventId` configured on the picked action).
+
+export type UiAlertActionVariant = "primary" | "danger";
+
+export interface UiAlertAction {
+  label: string;
+  eventId: string;
+  variant?: UiAlertActionVariant;
+}
+
+export interface UiAlertDialog {
+  id: string;
+  title: string;
+  body?: string;
+  actions: UiAlertAction[];
+  /// Default `true`. Set to `false` to block tap-outside / back-press
+  /// dismissal — only the configured action buttons can resolve the
+  /// dialog (typical for "data will be lost" confirmations).
+  dismissible?: boolean;
+}
+
+export interface UiActionSheetAction {
+  label: string;
+  icon?: string;
+  eventId: string;
+  accent?: AccentToken;
+}
+
+export interface UiActionSheet {
+  id: string;
+  title?: string;
+  actions: UiActionSheetAction[];
+  /// Optional eventId fired on tap-outside / back-press. Omitted =
+  /// silent dismiss.
+  dismissEventId?: string;
+}
+
+export interface UiBottomSheet {
+  id: string;
+  title?: string;
+  child: UiNode;
+  dismissEventId?: string;
+}
+
 /// Constructors mirroring the §4.3 widget vocabulary. IDs may be
 /// omitted; an omitted id is replaced with `crypto.randomUUID()` so the
 /// host's "every node must have a unique id" validation always
@@ -966,6 +1016,52 @@ export const ui = {
     if (p.onChangeEvent !== undefined) out.onChangeEvent = p.onChangeEvent;
     return out;
   },
+
+  // ---- Batch 4 modal constructors ----
+  alertDialog(p: {
+    id?: string;
+    title: string;
+    body?: string;
+    actions: UiAlertAction[];
+    dismissible?: boolean;
+  }): UiAlertDialog {
+    const out: UiAlertDialog = {
+      id: ensureId(p.id),
+      title: p.title,
+      actions: p.actions,
+    };
+    if (p.body !== undefined) out.body = p.body;
+    if (p.dismissible !== undefined) out.dismissible = p.dismissible;
+    return out;
+  },
+  actionSheet(p: {
+    id?: string;
+    title?: string;
+    actions: UiActionSheetAction[];
+    dismissEventId?: string;
+  }): UiActionSheet {
+    const out: UiActionSheet = {
+      id: ensureId(p.id),
+      actions: p.actions,
+    };
+    if (p.title !== undefined) out.title = p.title;
+    if (p.dismissEventId !== undefined) out.dismissEventId = p.dismissEventId;
+    return out;
+  },
+  bottomSheet(p: {
+    id?: string;
+    title?: string;
+    child: UiNode;
+    dismissEventId?: string;
+  }): UiBottomSheet {
+    const out: UiBottomSheet = {
+      id: ensureId(p.id),
+      child: p.child,
+    };
+    if (p.title !== undefined) out.title = p.title;
+    if (p.dismissEventId !== undefined) out.dismissEventId = p.dismissEventId;
+    return out;
+  },
 };
 
 function ensureId(id: string | undefined): string {
@@ -1010,6 +1106,32 @@ export interface PluginContext {
     commandId: string,
     args?: unknown,
   ): Promise<unknown>;
+  /// Open a Material AlertDialog. The host returns `{ delivered: true }`
+  /// once the push has been broadcast to subscribed clients; the user's
+  /// pick comes back through `onUiEvent` carrying the picked action's
+  /// `eventId`. If `dismissible: false`, the dialog is modal — only the
+  /// action buttons can resolve it.
+  showAlert(
+    panelId: string,
+    alert: UiAlertDialog,
+  ): Promise<{ delivered: boolean }>;
+  /// Open a platform-native action sheet (iOS-style on iOS,
+  /// modal-bottom-sheet list on Android). The user's pick comes back
+  /// through `onUiEvent`; tap-outside / back-press fires
+  /// `dismissEventId` if configured, otherwise silently dismisses.
+  showActionSheet(
+    panelId: string,
+    sheet: UiActionSheet,
+  ): Promise<{ delivered: boolean }>;
+  /// Open a generic modal bottom sheet rendering an arbitrary [UiNode]
+  /// `child` via `UiRenderer`. The host re-applies the Batch-3 `file://`
+  /// fs-capability gate to the child tree at this entry point — a
+  /// BottomSheet child that points outside the active workspace will
+  /// be rejected before the push is broadcast.
+  showBottomSheet(
+    panelId: string,
+    sheet: UiBottomSheet,
+  ): Promise<{ delivered: boolean }>;
 }
 
 export interface PluginConfig {
@@ -1118,7 +1240,40 @@ export function createPlugin(config: PluginConfig): PluginRunner {
             });
           });
         },
+        showAlert(panelId, alert): Promise<{ delivered: boolean }> {
+          return sendShowRequest("ui.showAlert", { panelId, alert });
+        },
+        showActionSheet(panelId, sheet): Promise<{ delivered: boolean }> {
+          return sendShowRequest("ui.showActionSheet", { panelId, sheet });
+        },
+        showBottomSheet(panelId, sheet): Promise<{ delivered: boolean }> {
+          return sendShowRequest("ui.showBottomSheet", { panelId, sheet });
+        },
       };
+
+      // Shared sender for the three imperative-modal RPCs. They all
+      // share the same request/response wire shape (params object →
+      // `{ delivered: true }` on success, JSON-RPC error otherwise), so
+      // factoring out the framing keeps the three thin context methods
+      // above readable.
+      function sendShowRequest(
+        method: string,
+        params: Record<string, unknown>,
+      ): Promise<{ delivered: boolean }> {
+        return new Promise<{ delivered: boolean }>((resolve, reject) => {
+          const id = nextOutboundId++;
+          pendingInvokes.set(id, {
+            resolve: (v) => resolve(v as { delivered: boolean }),
+            reject,
+          });
+          writeMessage({
+            jsonrpc: "2.0",
+            id,
+            method,
+            params,
+          });
+        });
+      }
 
       // Inbound: newline-delimited JSON. The host's FrameCodec
       // auto-detects on our first byte, so as long as our first frame

@@ -1428,3 +1428,326 @@ class UiNodeEvent {
   final Map<String, Object?>? payload;
   const UiNodeEvent({required this.nodeId, required this.type, this.payload});
 }
+
+// ---- Batch 4 imperative modal types (§4.3) ----
+//
+// These ride a separate `ui.modal` notification from the backend. They
+// are NOT part of the declarative `ui.tree` and have no monotonic
+// version — the host pushes one event per modal, the user picks (or
+// dismisses), and the picked action's `eventId` flows back through the
+// regular `ui.event` channel. Cancellation = host emits no follow-up;
+// the modal is gone the instant the user resolves it.
+
+enum UiAlertActionVariant { primary, danger }
+
+@immutable
+class UiAlertAction {
+  final String label;
+  final String eventId;
+  final UiAlertActionVariant? variant;
+  const UiAlertAction({
+    required this.label,
+    required this.eventId,
+    this.variant,
+  });
+
+  factory UiAlertAction.fromJson(Map<String, dynamic> raw) {
+    final label = raw['label'];
+    if (label is! String || label.isEmpty) {
+      throw const FormatException(
+        'UiAlertAction.label must be a non-empty string',
+      );
+    }
+    final eventId = raw['eventId'];
+    if (eventId is! String || eventId.isEmpty) {
+      throw const FormatException(
+        'UiAlertAction.eventId must be a non-empty string',
+      );
+    }
+    UiAlertActionVariant? variant;
+    final rawVariant = raw['variant'];
+    if (rawVariant != null) {
+      if (rawVariant is! String) {
+        throw const FormatException('UiAlertAction.variant must be a string');
+      }
+      switch (rawVariant) {
+        case 'primary':
+          variant = UiAlertActionVariant.primary;
+          break;
+        case 'danger':
+          variant = UiAlertActionVariant.danger;
+          break;
+        default:
+          throw FormatException(
+            'UiAlertAction: unknown variant "$rawVariant"',
+          );
+      }
+    }
+    return UiAlertAction(label: label, eventId: eventId, variant: variant);
+  }
+}
+
+@immutable
+class UiAlertDialog {
+  final String id;
+  final String title;
+  final String? body;
+  final List<UiAlertAction> actions;
+  /// Default `true`. `false` blocks tap-outside / back-press; only the
+  /// action buttons resolve the dialog.
+  final bool dismissible;
+  const UiAlertDialog({
+    required this.id,
+    required this.title,
+    required this.actions,
+    this.body,
+    this.dismissible = true,
+  });
+
+  factory UiAlertDialog.fromJson(Map<String, dynamic> raw) {
+    final id = raw['id'];
+    if (id is! String || id.isEmpty) {
+      throw const FormatException(
+        'UiAlertDialog.id must be a non-empty string',
+      );
+    }
+    final title = raw['title'];
+    if (title is! String || title.isEmpty) {
+      throw const FormatException(
+        'UiAlertDialog.title must be a non-empty string',
+      );
+    }
+    final rawActions = raw['actions'];
+    if (rawActions is! List || rawActions.isEmpty) {
+      throw const FormatException(
+        'UiAlertDialog.actions must be a non-empty array',
+      );
+    }
+    final actions = <UiAlertAction>[];
+    for (final a in rawActions) {
+      if (a is! Map<String, dynamic>) {
+        throw const FormatException(
+          'UiAlertDialog.actions[*] must be a JSON object',
+        );
+      }
+      actions.add(UiAlertAction.fromJson(a));
+    }
+    final body = raw['body'];
+    final rawDismissible = raw['dismissible'];
+    return UiAlertDialog(
+      id: id,
+      title: title,
+      actions: actions,
+      body: body is String ? body : null,
+      dismissible: rawDismissible is bool ? rawDismissible : true,
+    );
+  }
+}
+
+@immutable
+class UiActionSheetAction {
+  final String label;
+  final String eventId;
+  final String? icon;
+  final AccentToken? accent;
+  const UiActionSheetAction({
+    required this.label,
+    required this.eventId,
+    this.icon,
+    this.accent,
+  });
+
+  factory UiActionSheetAction.fromJson(Map<String, dynamic> raw) {
+    final label = raw['label'];
+    if (label is! String || label.isEmpty) {
+      throw const FormatException(
+        'UiActionSheetAction.label must be a non-empty string',
+      );
+    }
+    final eventId = raw['eventId'];
+    if (eventId is! String || eventId.isEmpty) {
+      throw const FormatException(
+        'UiActionSheetAction.eventId must be a non-empty string',
+      );
+    }
+    final icon = raw['icon'];
+    if (icon != null && icon is! String) {
+      throw const FormatException('UiActionSheetAction.icon must be a string');
+    }
+    final accent = raw['accent'];
+    if (accent != null && accent is! String) {
+      throw const FormatException(
+        'UiActionSheetAction.accent must be a string',
+      );
+    }
+    return UiActionSheetAction(
+      label: label,
+      eventId: eventId,
+      icon: icon is String ? icon : null,
+      accent: accentTokenFromString(accent is String ? accent : null),
+    );
+  }
+}
+
+@immutable
+class UiActionSheet {
+  final String id;
+  final String? title;
+  final List<UiActionSheetAction> actions;
+  final String? dismissEventId;
+  const UiActionSheet({
+    required this.id,
+    required this.actions,
+    this.title,
+    this.dismissEventId,
+  });
+
+  factory UiActionSheet.fromJson(Map<String, dynamic> raw) {
+    final id = raw['id'];
+    if (id is! String || id.isEmpty) {
+      throw const FormatException(
+        'UiActionSheet.id must be a non-empty string',
+      );
+    }
+    final rawActions = raw['actions'];
+    if (rawActions is! List || rawActions.isEmpty) {
+      throw const FormatException(
+        'UiActionSheet.actions must be a non-empty array',
+      );
+    }
+    final actions = <UiActionSheetAction>[];
+    for (final a in rawActions) {
+      if (a is! Map<String, dynamic>) {
+        throw const FormatException(
+          'UiActionSheet.actions[*] must be a JSON object',
+        );
+      }
+      actions.add(UiActionSheetAction.fromJson(a));
+    }
+    final title = raw['title'];
+    final dismissEventId = raw['dismissEventId'];
+    return UiActionSheet(
+      id: id,
+      actions: actions,
+      title: title is String ? title : null,
+      dismissEventId: dismissEventId is String ? dismissEventId : null,
+    );
+  }
+}
+
+@immutable
+class UiBottomSheet {
+  final String id;
+  final String? title;
+  final UiNode child;
+  final String? dismissEventId;
+  const UiBottomSheet({
+    required this.id,
+    required this.child,
+    this.title,
+    this.dismissEventId,
+  });
+
+  factory UiBottomSheet.fromJson(Map<String, dynamic> raw) {
+    final id = raw['id'];
+    if (id is! String || id.isEmpty) {
+      throw const FormatException(
+        'UiBottomSheet.id must be a non-empty string',
+      );
+    }
+    final rawChild = raw['child'];
+    if (rawChild == null) {
+      throw const FormatException('UiBottomSheet.child is required');
+    }
+    final child = UiNode.fromJson(rawChild);
+    final title = raw['title'];
+    final dismissEventId = raw['dismissEventId'];
+    return UiBottomSheet(
+      id: id,
+      child: child,
+      title: title is String ? title : null,
+      dismissEventId: dismissEventId is String ? dismissEventId : null,
+    );
+  }
+}
+
+/// One inbound `ui.modal` push. Discriminated on `kind` so the renderer
+/// can switch on the modal type without unwrapping in the model layer.
+@immutable
+sealed class UiModalPush {
+  final String pluginId;
+  final String panelId;
+  const UiModalPush({required this.pluginId, required this.panelId});
+
+  /// Parse a raw `ui.modal` notification payload. Returns null for an
+  /// unrecognized / malformed push so the model layer can drop it
+  /// without crashing the whole receiver.
+  static UiModalPush? tryFromJson(Map<String, dynamic> raw) {
+    final pluginId = raw['pluginId'];
+    final panelId = raw['panelId'];
+    final kind = raw['kind'];
+    if (pluginId is! String || panelId is! String || kind is! String) {
+      return null;
+    }
+    try {
+      switch (kind) {
+        case 'alert':
+          final alert = raw['alert'];
+          if (alert is! Map<String, dynamic>) return null;
+          return UiAlertPush(
+            pluginId: pluginId,
+            panelId: panelId,
+            alert: UiAlertDialog.fromJson(alert),
+          );
+        case 'actionSheet':
+          final sheet = raw['sheet'];
+          if (sheet is! Map<String, dynamic>) return null;
+          return UiActionSheetPush(
+            pluginId: pluginId,
+            panelId: panelId,
+            sheet: UiActionSheet.fromJson(sheet),
+          );
+        case 'bottomSheet':
+          final sheet = raw['sheet'];
+          if (sheet is! Map<String, dynamic>) return null;
+          return UiBottomSheetPush(
+            pluginId: pluginId,
+            panelId: panelId,
+            sheet: UiBottomSheet.fromJson(sheet),
+          );
+        default:
+          return null;
+      }
+    } catch (e) {
+      debugPrint('UiModalPush.fromJson: malformed push: $e');
+      return null;
+    }
+  }
+}
+
+class UiAlertPush extends UiModalPush {
+  final UiAlertDialog alert;
+  const UiAlertPush({
+    required super.pluginId,
+    required super.panelId,
+    required this.alert,
+  });
+}
+
+class UiActionSheetPush extends UiModalPush {
+  final UiActionSheet sheet;
+  const UiActionSheetPush({
+    required super.pluginId,
+    required super.panelId,
+    required this.sheet,
+  });
+}
+
+class UiBottomSheetPush extends UiModalPush {
+  final UiBottomSheet sheet;
+  const UiBottomSheetPush({
+    required super.pluginId,
+    required super.panelId,
+    required this.sheet,
+  });
+}

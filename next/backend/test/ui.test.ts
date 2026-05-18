@@ -30,8 +30,12 @@ import { PluginHost } from "../src/plugins/host.js";
 import {
   UiPanelRegistry,
   UiValidationError,
+  validateActionSheet,
+  validateAlertDialog,
+  validateBottomSheet,
   validateFileUrlsAgainstWorkspace,
   validateUiTree,
+  type UiModalPush,
   type UiPanelSnapshot,
 } from "../src/plugins/ui.js";
 
@@ -1675,6 +1679,289 @@ describe("plugin exit lifecycle", () => {
     } finally {
       harness.host.shutdown();
     }
+  });
+});
+
+// ---- Batch 4 imperative modal validators ----
+
+describe("validateAlertDialog (Batch 4)", () => {
+  it("accepts a well-formed dialog with primary + danger actions", () => {
+    const alert = validateAlertDialog({
+      id: "confirm-delete",
+      title: "Delete note?",
+      body: "This cannot be undone.",
+      actions: [
+        { label: "Cancel", eventId: "cancel" },
+        { label: "Delete", eventId: "delete", variant: "danger" },
+      ],
+      dismissible: false,
+    });
+    expect(alert.id).toBe("confirm-delete");
+    expect(alert.actions).toHaveLength(2);
+    expect(alert.actions[1].variant).toBe("danger");
+    expect(alert.dismissible).toBe(false);
+  });
+
+  it("rejects an empty actions list", () => {
+    expect(() =>
+      validateAlertDialog({ id: "x", title: "t", actions: [] }),
+    ).toThrow(/actions/);
+  });
+
+  it("rejects duplicate action eventIds", () => {
+    expect(() =>
+      validateAlertDialog({
+        id: "x",
+        title: "t",
+        actions: [
+          { label: "A", eventId: "same" },
+          { label: "B", eventId: "same" },
+        ],
+      }),
+    ).toThrow(/duplicate eventId/);
+  });
+
+  it("rejects an unknown variant", () => {
+    expect(() =>
+      validateAlertDialog({
+        id: "x",
+        title: "t",
+        actions: [{ label: "Go", eventId: "go", variant: "warning" }],
+      }),
+    ).toThrow(/variant/);
+  });
+
+  it("rejects a missing title", () => {
+    expect(() =>
+      validateAlertDialog({
+        id: "x",
+        actions: [{ label: "A", eventId: "a" }],
+      }),
+    ).toThrow(/title/);
+  });
+});
+
+describe("validateActionSheet (Batch 4)", () => {
+  it("accepts a sheet with icon + accent on actions", () => {
+    const sheet = validateActionSheet({
+      id: "refresh-picker",
+      title: "Refresh interval",
+      actions: [
+        { label: "15s", eventId: "set:15", icon: "clock", accent: "info" },
+        { label: "30s", eventId: "set:30", icon: "clock" },
+      ],
+      dismissEventId: "cancel",
+    });
+    expect(sheet.actions).toHaveLength(2);
+    expect(sheet.actions[0].icon).toBe("clock");
+    expect(sheet.actions[0].accent).toBe("info");
+    expect(sheet.dismissEventId).toBe("cancel");
+  });
+
+  it("rejects empty actions", () => {
+    expect(() =>
+      validateActionSheet({ id: "x", actions: [] }),
+    ).toThrow(/actions/);
+  });
+
+  it("rejects duplicate eventIds across sheet actions", () => {
+    expect(() =>
+      validateActionSheet({
+        id: "x",
+        actions: [
+          { label: "A", eventId: "go" },
+          { label: "B", eventId: "go" },
+        ],
+      }),
+    ).toThrow(/duplicate eventId/);
+  });
+});
+
+describe("validateBottomSheet (Batch 4)", () => {
+  it("accepts a sheet whose child is a UiNode tree", () => {
+    const sheet = validateBottomSheet({
+      id: "details",
+      title: "Note details",
+      child: {
+        kind: "Column",
+        id: "bs-col",
+        children: [{ kind: "Text", id: "bs-text", text: "hi" }],
+      },
+      dismissEventId: "close",
+    });
+    expect(sheet.id).toBe("details");
+    expect(sheet.child.kind).toBe("Column");
+    expect(sheet.dismissEventId).toBe("close");
+  });
+
+  it("rejects a missing child", () => {
+    expect(() => validateBottomSheet({ id: "x" })).toThrow(/child/);
+  });
+
+  it("propagates UiNode validation errors from child", () => {
+    expect(() =>
+      validateBottomSheet({
+        id: "x",
+        child: { kind: "Unknown", id: "y" },
+      }),
+    ).toThrow(/unknown node kind/);
+  });
+});
+
+describe("ui.showAlert / showActionSheet / showBottomSheet broadcast", () => {
+  it("broadcasts ui.modal to every subscriber and returns delivered=true", async () => {
+    // Drive the broadcast directly through the registry. We don't need
+    // a child plugin process for this — the registry's `broadcastModal`
+    // contract is the seam tested here; the host-level capability gating
+    // is covered by ui.test.ts's existing pluginRpc end-to-end fixture.
+    const pushes: { method: string; params: unknown }[] = [];
+    const registry = new UiPanelRegistry((_, method, params) =>
+      pushes.push({ method, params }),
+    );
+    const subA = new FakeWebSocket();
+    const subB = new FakeWebSocket();
+    registry.subscribe(subA as unknown as WebSocket);
+    registry.subscribe(subB as unknown as WebSocket);
+    const reach = registry.broadcastModal({
+      kind: "alert",
+      pluginId: "p",
+      panelId: "home",
+      alert: {
+        id: "a1",
+        title: "T",
+        actions: [{ label: "OK", eventId: "ok" }],
+      },
+    });
+    expect(reach).toBe(2);
+    expect(pushes).toHaveLength(2);
+    for (const p of pushes) {
+      expect(p.method).toBe("ui.modal");
+      const params = p.params as UiModalPush;
+      expect(params.kind).toBe("alert");
+      expect(params.pluginId).toBe("p");
+      expect(params.panelId).toBe("home");
+      if (params.kind !== "alert") throw new Error("unreachable");
+      expect(params.alert.title).toBe("T");
+    }
+  });
+});
+
+describe("ui.showAlert end-to-end via fixture", () => {
+  it("plugin's ui.showAlert returns { delivered: true } and pushes ui.modal", async () => {
+    const harness = await buildHarness(["uimodals"]);
+    try {
+      // Subscribe so the fixture's broadcast lands on our socket.
+      await call(harness.ctx, "ui.subscribe");
+      // The fixture's stderr surfaces the host's response to its
+      // `ui.showAlert` request as <<ALERTRESP>>{json}<<END>>.
+      const logPath = join(harness.logDir, "uimodals.stderr.log");
+      const respLine = await waitFor(async () => {
+        let raw: string;
+        try {
+          raw = await readFile(logPath, "utf8");
+        } catch {
+          return undefined;
+        }
+        const m = /<<ALERTRESP>>(.*?)<<END>>/s.exec(raw);
+        return m?.[1];
+      }, 3000);
+      const resp = JSON.parse(respLine) as {
+        id: number;
+        result?: { delivered: boolean };
+        error?: { code: number; message: string };
+      };
+      expect(resp.id).toBe(101);
+      expect(resp.error).toBeUndefined();
+      expect(resp.result?.delivered).toBe(true);
+      // The subscribed socket must have received the ui.modal push.
+      const modals = harness.sock.notifications("ui.modal");
+      // The fixture races against subscribe — sub may have landed after
+      // the modal push. waitFor a moment so it lands.
+      const found = await waitFor(() => {
+        const m = harness.sock.notifications("ui.modal");
+        if (m.length === 0) return undefined;
+        return m[0];
+      }, 3000).catch(() => modals[0]);
+      expect(found).toBeDefined();
+      const payload = found.params as UiModalPush;
+      expect(payload.kind).toBe("alert");
+      if (payload.kind !== "alert") throw new Error("unreachable");
+      expect(payload.pluginId).toBe("uimodals");
+      expect(payload.panelId).toBe("home");
+      expect(payload.alert.title).toBe("Delete note?");
+      expect(payload.alert.actions).toHaveLength(2);
+      expect(payload.alert.actions[1].variant).toBe("danger");
+    } finally {
+      harness.host.shutdown();
+    }
+  });
+});
+
+describe("ui.showBottomSheet file:// gate (Batch 4)", () => {
+  // The Batch-3 file:// gate runs on `ui.render` panel trees only.
+  // Batch 4 re-runs the gate on a BottomSheet's `child` at the
+  // `ui.showBottomSheet` entry point, so a plugin can't ship
+  // `/etc/passwd` via a BottomSheet to bypass the workspace boundary.
+  // These three tests reuse validateFileUrlsAgainstWorkspace on the
+  // BottomSheet child directly — same code path the host calls.
+
+  let ws: string;
+  let outside: string;
+
+  beforeEach(async () => {
+    ws = await makeTempDir("openvsmobile-bsgate-ws-");
+    outside = await makeTempDir("openvsmobile-bsgate-out-");
+    await writeFile(join(ws, "logo.png"), "p");
+    await writeFile(join(outside, "secret"), "s");
+  });
+
+  afterEach(async () => {
+    await rmTempDir(ws);
+    await rmTempDir(outside);
+  });
+
+  it("rejects BottomSheet child with file:// outside workspace", async () => {
+    const sheet = validateBottomSheet({
+      id: "bs-evil",
+      child: { kind: "Image", id: "bs-img", src: `file://${outside}/secret` },
+    });
+    const res = await validateFileUrlsAgainstWorkspace(
+      sheet.child,
+      "read",
+      ws,
+    );
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error("unreachable");
+    expect(res.code).toBe("outsideWorkspace");
+  });
+
+  it("rejects BottomSheet child via symlink escape", async () => {
+    await symlink(join(outside, "secret"), join(ws, "evil"));
+    const sheet = validateBottomSheet({
+      id: "bs-escape",
+      child: { kind: "Image", id: "bs-img", src: `file://${ws}/evil` },
+    });
+    const res = await validateFileUrlsAgainstWorkspace(
+      sheet.child,
+      "read",
+      ws,
+    );
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error("unreachable");
+    expect(res.code).toBe("outsideWorkspace");
+  });
+
+  it("accepts BottomSheet child with valid file:// + fs:read", async () => {
+    const sheet = validateBottomSheet({
+      id: "bs-ok",
+      child: { kind: "Image", id: "bs-img", src: `file://${ws}/logo.png` },
+    });
+    const res = await validateFileUrlsAgainstWorkspace(
+      sheet.child,
+      "read",
+      ws,
+    );
+    expect(res.ok).toBe(true);
   });
 });
 

@@ -8,7 +8,7 @@
 // design (see CLAUDE.md "One process per plugin; no automatic restart
 // on crash"), and we'd rather surface the message than disappear.
 //
-// Batch 2 (§4.3) widget dogfood: this panel now demonstrates the four
+// Batch 2 (§4.3) widget dogfood: this panel demonstrates the four
 // new vocabulary additions in their natural setting:
 //   * `ui.section { variant: 'inset' }` for the iOS-Settings-style
 //     editor group + the metadata group below it.
@@ -21,8 +21,22 @@
 //   * `ui.divider` between the editor section and the metadata section
 //     when the panel is in its "dirty" state — pure-decoration, but
 //     shows the widget rendering outside an inset context.
+//
+// Batch 4 (§4.3) widget dogfood: three new pieces here:
+//   * `UiListTile.swipeActions` — the "Recent notes" list (one row per
+//     persisted note title) gets Archive + Delete swipe actions. Archive
+//     is a no-op stub for now (logged via host.log); Delete confirms
+//     through `ctx.showAlert` with a `variant: 'danger'` action before
+//     actually removing the note.
+//   * `ctx.showAlert` — destructive-action confirmation. The danger
+//     variant on the Delete button is what makes the confirm
+//     visually distinct from "Cancel".
+//   * `ctx.showBottomSheet` — "Note info" affordance on the metadata
+//     row that surfaces the file path + last-saved timestamp + a
+//     word-count caption in a draggable sheet (a natural place for
+//     "tap-for-more-detail" without bloating the main panel).
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -53,6 +67,9 @@ function ownerInitial() {
 // without a separate flag. `lastSavedIso` is the canonical "Last saved"
 // timestamp; `statusMessage` overrides the metadata caption when set
 // and is used to surface fs errors without losing the rest of the panel.
+//
+// `archived` is a transient set of "archived" titles — Archive is a
+// stub that just moves a row out of the recent list until next reload.
 const state = {
   buffer: "",
   lastSavedSnapshot: "",
@@ -64,6 +81,9 @@ const state = {
   // ship) so the filter has something concrete to operate on; tapping
   // a snippet appends its body to the buffer.
   snippetQuery: "",
+  // Batch 4 dogfood: set of archived note titles so the Recent list
+  // can hide them after a swipe-Archive action.
+  archived: new Set(),
 };
 
 const SNIPPETS = [
@@ -92,6 +112,34 @@ function metadataCaption() {
   if (state.statusMessage !== null) return state.statusMessage;
   if (state.lastSavedIso !== null) return `Last saved: ${state.lastSavedIso}`;
   return `Saved to ${NOTES_PATH}`;
+}
+
+// Synthesize a per-line "recent notes" list from the saved buffer.
+// Real Notes apps store one file per note; this scratch plugin only
+// owns a single file, so we split on blank-line boundaries to get
+// note-shaped rows for the swipe-action dogfood. Empty buffer → no
+// rows (the swipe-action demo is just absent when there's nothing
+// to swipe on).
+function recentNoteTitles() {
+  const blocks = state.lastSavedSnapshot
+    .split(/\n\s*\n/)
+    .map((b) => b.trim())
+    .filter((b) => b.length > 0);
+  const titles = [];
+  for (const b of blocks) {
+    const first = b.split("\n", 1)[0].trim();
+    if (first.length === 0) continue;
+    if (state.archived.has(first)) continue;
+    titles.push(first);
+    if (titles.length >= 6) break;
+  }
+  return titles;
+}
+
+function wordCount(s) {
+  const trimmed = s.trim();
+  if (trimmed.length === 0) return 0;
+  return trimmed.split(/\s+/).length;
 }
 
 function buildTree() {
@@ -153,10 +201,10 @@ function buildTree() {
     }),
   );
 
-  // Explicit divider between the editor and the metadata block — the
-  // dividers inside `inset` are internal-only, so we use the standalone
-  // `ui.divider` here to show the spec-defined separator outside that
-  // context.
+  // Explicit divider between the editor and the recent-notes block —
+  // the dividers inside `inset` are internal-only, so we use the
+  // standalone `ui.divider` here to show the spec-defined separator
+  // outside that context.
   children.push(ui.divider({ id: "notes-section-divider" }));
 
   // Snippets list with a SearchField filter on top. Tap a snippet
@@ -201,14 +249,50 @@ function buildTree() {
     }),
   );
 
-  // Metadata as a second inset section. Caption type for the status
+  // Recent-notes list. Each row is a ListTile carrying two
+  // swipeActions: Archive (info) and Delete (danger). Delete fires a
+  // confirm via `ctx.showAlert` before actually removing the note.
+  // The list only appears when there's something to show — an empty
+  // recent list would just look like a styling bug.
+  const titles = recentNoteTitles();
+  if (titles.length > 0) {
+    children.push(
+      ui.section({
+        id: "notes-recent-section",
+        title: "Recent",
+        variant: "inset",
+        children: titles.map((title) =>
+          ui.listTile({
+            id: `notes-recent-${title}`,
+            title,
+            swipeActions: [
+              {
+                label: "Archive",
+                icon: "folder",
+                eventId: `archive:${title}`,
+                accent: "info",
+              },
+              {
+                label: "Delete",
+                icon: "trash-2",
+                eventId: `delete:${title}`,
+                accent: "danger",
+              },
+            ],
+          }),
+        ),
+      }),
+    );
+  }
+
+  // Metadata as a final inset section. Caption type for the status
   // line — `text` with `style: 'caption'` carries the muted /
   // secondary-text role that pairs naturally with the inset surface.
   // Batch 3 dogfood: an avatar derived from the host user's initial
   // sits as the leading element of a ListTile so the metadata row
-  // looks like an iOS Settings "signed in as" header. The avatar's
-  // color is hashed from the initial, so the same machine always
-  // shows the same hue.
+  // looks like an iOS Settings "signed in as" header.
+  // Batch 4 dogfood: tapping the row opens a "Note info" bottom sheet
+  // with details (path / last saved / word count).
   children.push(
     ui.section({
       id: "notes-meta-section",
@@ -224,6 +308,7 @@ function buildTree() {
             initial: ownerInitial(),
             size: "md",
           }),
+          onTapEvent: "show-info",
         }),
       ],
     }),
@@ -264,6 +349,87 @@ async function save(ctx) {
     state.statusMessage = `Save failed: ${err.message ?? String(err)}`;
     ctx.log("warn", state.statusMessage);
   }
+}
+
+// Remove a note from the persisted buffer by stripping the block whose
+// first line matches `title`. The split-rejoin mirrors `recentNoteTitles`
+// so a row removed here will not re-appear on the next render.
+async function deleteNote(ctx, title) {
+  const blocks = state.lastSavedSnapshot
+    .split(/\n\s*\n/)
+    .map((b) => b.trim())
+    .filter((b) => b.length > 0);
+  const filtered = blocks.filter(
+    (b) => b.split("\n", 1)[0].trim() !== title,
+  );
+  state.lastSavedSnapshot = filtered.join("\n\n");
+  state.buffer = state.lastSavedSnapshot;
+  await save(ctx);
+}
+
+async function showNoteInfo(ctx) {
+  // The bottom sheet's child is a small composed widget tree: file
+  // path (mono), last-saved timestamp, word-count caption. Building it
+  // with the SDK constructors guarantees the host validator passes
+  // without us hand-rolling the wire shape.
+  let mtimeIso = "(not yet saved)";
+  let size = 0;
+  try {
+    const st = await stat(NOTES_PATH);
+    mtimeIso = st.mtime.toISOString();
+    size = st.size;
+  } catch {
+    // First-run / ENOENT — the defaults above are correct.
+  }
+  await ctx.showBottomSheet(PANEL_ID, {
+    id: "notes-info-sheet",
+    title: "Note info",
+    child: ui.column({
+      id: "notes-info-col",
+      gap: "md",
+      children: [
+        ui.text({
+          id: "notes-info-path",
+          text: `path  ${NOTES_PATH}`,
+          style: "mono",
+        }),
+        ui.text({
+          id: "notes-info-mtime",
+          text: `last saved  ${mtimeIso}`,
+          style: "mono",
+        }),
+        ui.text({
+          id: "notes-info-size",
+          text: `${wordCount(state.lastSavedSnapshot)} words · ${size} bytes`,
+          style: "caption",
+        }),
+      ],
+    }),
+    dismissEventId: "info-dismissed",
+  });
+}
+
+async function confirmDelete(ctx, title) {
+  // Imperative alert with a danger-variant Delete action. The user's
+  // pick comes back through `onUiEvent` as one of two eventIds:
+  //   * 'cancel'        → no-op
+  //   * `confirm:<title>` → the actual delete happens
+  // We encode the title inside the eventId so the on-pick handler
+  // doesn't need to remember which row we asked about.
+  await ctx.showAlert(PANEL_ID, {
+    id: `notes-confirm-delete:${title}`,
+    title: "Delete this note?",
+    body: `"${title}" will be permanently removed.`,
+    actions: [
+      { label: "Cancel", eventId: "cancel" },
+      {
+        label: "Delete",
+        eventId: `confirm:${title}`,
+        variant: "danger",
+      },
+    ],
+    dismissible: true,
+  });
 }
 
 const plugin = createPlugin({
@@ -328,6 +494,41 @@ const plugin = createPlugin({
     if (event.nodeId === "save-btn" && event.type === "tap") {
       await save(ctx);
       render(ctx);
+      return;
+    }
+    // Batch 4 paths -----------------------------------------------
+    if (event.nodeId === "notes-owner-tile" && event.type === "show-info") {
+      await showNoteInfo(ctx);
+      return;
+    }
+    // Swipe actions on recent-notes rows. The event.type carries the
+    // op + title encoded as "archive:Foo" or "delete:Foo".
+    if (event.type.startsWith("archive:")) {
+      const title = event.type.slice("archive:".length);
+      state.archived.add(title);
+      render(ctx);
+      ctx.log("info", `archived "${title}" (in-memory only)`);
+      return;
+    }
+    if (event.type.startsWith("delete:")) {
+      const title = event.type.slice("delete:".length);
+      await confirmDelete(ctx, title);
+      return;
+    }
+    // Confirmation reply from the showAlert above.
+    if (event.type.startsWith("confirm:")) {
+      const title = event.type.slice("confirm:".length);
+      await deleteNote(ctx, title);
+      render(ctx);
+      return;
+    }
+    if (event.type === "cancel") {
+      // User backed out of the confirm. No state change.
+      return;
+    }
+    if (event.type === "info-dismissed") {
+      // Bottom sheet was dismissed. No state change.
+      return;
     }
   },
 });

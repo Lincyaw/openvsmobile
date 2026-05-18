@@ -18,6 +18,7 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import 'package:mobilecode/ui/app_tokens.dart';
 import 'package:mobilecode/ui/icon_catalog.dart';
+import 'package:mobilecode/ui/ui_modal_renderer.dart';
 import 'package:mobilecode/ui/ui_node.dart';
 import 'package:mobilecode/ui/ui_renderer.dart';
 
@@ -37,6 +38,34 @@ Widget _host(
       ),
     ),
   );
+}
+
+/// Drives `showUiModal` from inside a MaterialApp so `showDialog` /
+/// `showModalBottomSheet` find a Navigator. Mounts a Builder that
+/// captures the BuildContext, then invokes the modal entry point on
+/// the very first frame.
+Future<void> _runModalHarness(
+  WidgetTester tester, {
+  required UiModalPush push,
+  required void Function(UiNodeEvent) onEvent,
+}) async {
+  await tester.pumpWidget(
+    MaterialApp(
+      home: Scaffold(
+        body: Builder(
+          builder: (ctx) {
+            // Kick off the modal once on first frame — `addPostFrameCallback`
+            // ensures the Navigator is ready.
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              showUiModal(context: ctx, push: push, onEvent: onEvent);
+            });
+            return const SizedBox.shrink();
+          },
+        ),
+      ),
+    ),
+  );
+  await tester.pumpAndSettle();
 }
 
 UiNode _allKindsTree() {
@@ -313,11 +342,12 @@ void main() {
     expect(find.byKey(const ValueKey('ui:row.t')), findsOneWidget);
   });
 
-  testWidgets('UiListTile accepts swipeActions (plumbed, not rendered)',
+  testWidgets('UiListTile with swipeActions wraps the tile in a Slidable',
       (tester) async {
-    // Batch 1 contract: the field is parsed and stored; Batch 4 lights
-    // up the gesture. Test that supplying it does not crash and that
-    // the tile still renders normally.
+    // Batch 4 lights up the swipe gesture. The tile is wrapped in a
+    // Slidable when `swipeActions` is non-empty; tapping a revealed
+    // action fires the configured eventId.
+    final events = <UiNodeEvent>[];
     const tree = UiListTile(
       id: 'row',
       title: 'With swipe',
@@ -329,11 +359,17 @@ void main() {
         ),
       ],
     );
-    await tester.pumpWidget(_host(tree));
+    await tester.pumpWidget(_host(tree, onEvent: events.add));
     expect(tester.takeException(), isNull);
     expect(find.text('With swipe'), findsOneWidget);
-    // The delete action label MUST NOT render in batch 1.
-    expect(find.text('Delete'), findsNothing);
+    // Slidable key is mounted (action pane is offscreen until swipe).
+    expect(
+      find.byKey(const ValueKey<String>('ui-tile-slidable:row')),
+      findsOneWidget,
+    );
+    // The action's wire-event has not fired yet — Slidable's panel
+    // stays off-screen until the user drags.
+    expect(events, isEmpty);
   });
 
   testWidgets('UiAppGrid renders one tile per item and fires onLaunchEvent',
@@ -1188,6 +1224,226 @@ void main() {
         'fit': 'scaleDown',
       }),
       throwsFormatException,
+    );
+  });
+
+  // ---- Batch 4 SwipeAction rendering ----
+
+  testWidgets('UiListTile swipe reveals action and tap fires eventId',
+      (tester) async {
+    // The Slidable action pane sits offscreen until swipe. We drag the
+    // tile left to expose the action, then tap the revealed label.
+    final events = <UiNodeEvent>[];
+    const tree = UiListTile(
+      id: 'row',
+      title: 'Sweep me',
+      swipeActions: [
+        UiSwipeAction(
+          label: 'Archive',
+          eventId: 'row.archive',
+          icon: 'folder',
+          accent: AccentToken.info,
+        ),
+        UiSwipeAction(
+          label: 'Delete',
+          eventId: 'row.delete',
+          icon: 'trash',
+          accent: AccentToken.danger,
+        ),
+      ],
+    );
+    await tester.pumpWidget(_host(tree, onEvent: events.add));
+    // Drag from the tile far enough to fully open the action pane.
+    await tester.drag(find.text('Sweep me'), const Offset(-400, 0));
+    await tester.pumpAndSettle();
+    // The two action labels are now mounted in the action pane.
+    expect(find.text('Archive'), findsOneWidget);
+    expect(find.text('Delete'), findsOneWidget);
+    // Tap the Delete action → its eventId fires.
+    await tester.tap(find.text('Delete'));
+    await tester.pumpAndSettle();
+    expect(events, hasLength(1));
+    expect(events.single.nodeId, 'row');
+    expect(events.single.type, 'row.delete');
+  });
+
+  // ---- Batch 4 modal renderers ----
+  //
+  // The modal renderers live in `ui_modal_renderer.dart` (not inside
+  // UiRenderer). Tests below import the entry point directly and use a
+  // MaterialApp host so showDialog / showModalBottomSheet have a
+  // Navigator.
+
+  testWidgets('showUiModal AlertDialog fires picked action eventId',
+      (tester) async {
+    UiNodeEvent? captured;
+    await _runModalHarness(
+      tester,
+      push: const UiAlertPush(
+        pluginId: 'p',
+        panelId: 'home',
+        alert: UiAlertDialog(
+          id: 'a-1',
+          title: 'Delete?',
+          body: 'This cannot be undone.',
+          actions: [
+            UiAlertAction(label: 'Cancel', eventId: 'cancel'),
+            UiAlertAction(
+              label: 'Delete',
+              eventId: 'delete',
+              variant: UiAlertActionVariant.danger,
+            ),
+          ],
+        ),
+      ),
+      onEvent: (e) => captured = e,
+    );
+    expect(find.text('Delete?'), findsOneWidget);
+    expect(find.text('This cannot be undone.'), findsOneWidget);
+    await tester.tap(find.text('Delete'));
+    await tester.pumpAndSettle();
+    expect(captured, isNotNull);
+    expect(captured!.nodeId, 'a-1');
+    expect(captured!.type, 'delete');
+  });
+
+  testWidgets(
+      'showUiModal AlertDialog with dismissible:false blocks tap-outside',
+      (tester) async {
+    UiNodeEvent? captured;
+    await _runModalHarness(
+      tester,
+      push: const UiAlertPush(
+        pluginId: 'p',
+        panelId: 'home',
+        alert: UiAlertDialog(
+          id: 'a-2',
+          title: 'Confirm',
+          actions: [UiAlertAction(label: 'OK', eventId: 'ok')],
+          dismissible: false,
+        ),
+      ),
+      onEvent: (e) => captured = e,
+    );
+    // Tap-outside the dialog should NOT close it.
+    await tester.tapAt(const Offset(10, 10));
+    await tester.pumpAndSettle();
+    expect(find.text('Confirm'), findsOneWidget);
+    expect(captured, isNull);
+    // OK still works.
+    await tester.tap(find.text('OK'));
+    await tester.pumpAndSettle();
+    expect(captured?.type, 'ok');
+  });
+
+  testWidgets('showUiModal ActionSheet fires picked action and dismiss event',
+      (tester) async {
+    final captured = <UiNodeEvent>[];
+    await _runModalHarness(
+      tester,
+      push: const UiActionSheetPush(
+        pluginId: 'p',
+        panelId: 'home',
+        sheet: UiActionSheet(
+          id: 'sh-1',
+          title: 'Refresh interval',
+          actions: [
+            UiActionSheetAction(label: '15s', eventId: 'i:15', icon: 'clock'),
+            UiActionSheetAction(label: '1m', eventId: 'i:60', icon: 'clock'),
+          ],
+          dismissEventId: 'cancel',
+        ),
+      ),
+      onEvent: captured.add,
+    );
+    expect(find.text('Refresh interval'), findsOneWidget);
+    await tester.tap(find.text('15s'));
+    await tester.pumpAndSettle();
+    expect(captured, hasLength(1));
+    expect(captured.single.nodeId, 'sh-1');
+    expect(captured.single.type, 'i:15');
+  });
+
+  testWidgets('showUiModal BottomSheet renders child via UiRenderer',
+      (tester) async {
+    final captured = <UiNodeEvent>[];
+    await _runModalHarness(
+      tester,
+      push: UiBottomSheetPush(
+        pluginId: 'p',
+        panelId: 'home',
+        sheet: UiBottomSheet(
+          id: 'bs-1',
+          title: 'Note info',
+          child: UiColumn(
+            id: 'bs-col',
+            children: const [
+              UiText(id: 'bs-text', text: 'Created: today'),
+              UiButton(id: 'bs-btn', label: 'OK'),
+            ],
+          ),
+          dismissEventId: 'close',
+        ),
+      ),
+      onEvent: captured.add,
+    );
+    expect(find.text('Created: today'), findsOneWidget);
+    expect(find.text('OK'), findsOneWidget);
+    // Tapping the inner button fires through onEvent as 'tap'.
+    await tester.tap(find.text('OK'));
+    await tester.pumpAndSettle(const Duration(milliseconds: 50));
+    expect(captured, hasLength(1));
+    expect(captured.single.nodeId, 'bs-btn');
+    expect(captured.single.type, 'tap');
+  });
+
+  // ---- Batch 4 modal type parsing ----
+
+  test(
+      'UiModalPush.tryFromJson parses alert / actionSheet / bottomSheet kinds',
+      () {
+    final alert = UiModalPush.tryFromJson(<String, dynamic>{
+      'kind': 'alert',
+      'pluginId': 'p',
+      'panelId': 'home',
+      'alert': <String, dynamic>{
+        'id': 'a',
+        'title': 'T',
+        'actions': [
+          <String, dynamic>{'label': 'OK', 'eventId': 'ok'},
+        ],
+      },
+    });
+    expect(alert, isA<UiAlertPush>());
+    expect((alert as UiAlertPush).alert.title, 'T');
+
+    final sheet = UiModalPush.tryFromJson(<String, dynamic>{
+      'kind': 'actionSheet',
+      'pluginId': 'p',
+      'panelId': 'home',
+      'sheet': <String, dynamic>{
+        'id': 'sh',
+        'actions': [
+          <String, dynamic>{'label': 'A', 'eventId': 'a'},
+        ],
+      },
+    });
+    expect(sheet, isA<UiActionSheetPush>());
+
+    final bs = UiModalPush.tryFromJson(<String, dynamic>{
+      'kind': 'bottomSheet',
+      'pluginId': 'p',
+      'panelId': 'home',
+      'sheet': <String, dynamic>{
+        'id': 'bs',
+        'child': <String, dynamic>{'kind': 'Text', 'id': 't', 'text': 'x'},
+      },
+    });
+    expect(bs, isA<UiBottomSheetPush>());
+
+    expect(
+      UiModalPush.tryFromJson(<String, dynamic>{'kind': 'bogus'}),
+      isNull,
     );
   });
 

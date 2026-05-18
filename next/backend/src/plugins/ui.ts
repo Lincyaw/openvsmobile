@@ -551,6 +551,72 @@ export type UiNode =
   | UiRadioGroup
   | UiSlider;
 
+// ---- Batch 4 imperative modals (§4.3) ----
+//
+// These types live OFF the declarative `ui.tree`. A plugin invokes one
+// of three host methods (`ui.showAlert` / `ui.showActionSheet` /
+// `ui.showBottomSheet`) which the host pushes to subscribed clients as a
+// `ui.modal` notification. The picked action / dismiss flows back via the
+// regular `ui.event` channel — same as any tap on a declarative widget.
+//
+// Why imperative: a modal's lifetime is "open until the user dismisses
+// it", which doesn't compose cleanly with the version-bumped declarative
+// reconciliation of `ui.tree`. The §4.3 spec is explicit that these
+// match the pre-existing `ui.showMessage` / `ui.showQuickPick` direction
+// rather than living in the tree.
+
+/// Action variant for [UiAlertDialog] buttons.
+export type UiAlertActionVariant = "primary" | "danger";
+
+export interface UiAlertAction {
+  label: string;
+  eventId: string;
+  variant?: UiAlertActionVariant;
+}
+
+/// Material AlertDialog. `dismissible: false` blocks tap-outside /
+/// back-press dismissal — only the configured action buttons resolve it.
+/// When `dismissible !== false` and the user dismisses without picking,
+/// no event is fired (matching the doc-spec shape: no `dismissEventId`).
+export interface UiAlertDialog {
+  id: string;
+  title: string;
+  body?: string;
+  actions: UiAlertAction[];
+  dismissible?: boolean;
+}
+
+export interface UiActionSheetAction {
+  label: string;
+  icon?: string;
+  eventId: string;
+  accent?: AccentToken;
+}
+
+/// iOS-style action sheet. The renderer picks the platform-native shape
+/// (CupertinoActionSheet on iOS, modal bottom-sheet list on Android).
+/// `dismissEventId` fires on tap-outside / back-press; omitted = silent
+/// dismiss.
+export interface UiActionSheet {
+  id: string;
+  title?: string;
+  actions: UiActionSheetAction[];
+  dismissEventId?: string;
+}
+
+/// Generic modal bottom sheet hosting an arbitrary [UiNode] child. The
+/// child is gated for `file://` URLs at the `ui.showBottomSheet` entry
+/// point (separate from the `ui.render` walker, which only sees panel
+/// trees).
+export interface UiBottomSheet {
+  id: string;
+  title?: string;
+  child: UiNode;
+  dismissEventId?: string;
+}
+
+const ALERT_VARIANTS: ReadonlySet<string> = new Set(["primary", "danger"]);
+
 /// Thrown by `validateUiTree` for any structural problem (unknown kind,
 /// missing required field, duplicate id). The host translates this into
 /// an `-32602 invalidParams` JSON-RPC error.
@@ -1578,6 +1644,177 @@ function parseSlider(
   return out;
 }
 
+// ---- Batch 4 modal validators ----
+//
+// Modals carry their own `id` namespace and (for AlertDialog / ActionSheet)
+// their own list of action `eventId`s. We re-use the existing `seen` set
+// from `validateUiTree` only for [UiBottomSheet.child] — its child is a
+// full `UiNode` tree that must abide by the same per-tree id-uniqueness
+// rule as a `ui.render` payload. Top-level modal ids are unique across
+// the modal's own action set (so a plugin can't ship two actions with
+// the same `eventId` and ambiguate the routing).
+
+/// Validate a [UiAlertDialog] payload. Throws [UiValidationError] for
+/// any shape problem. Used by `host.ts::handleShowAlert`.
+export function validateAlertDialog(raw: unknown): UiAlertDialog {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new UiValidationError("alert must be an object");
+  }
+  const r = raw as Record<string, unknown>;
+  const id = r.id;
+  if (typeof id !== "string" || id.length === 0) {
+    throw new UiValidationError("alert.id must be a non-empty string");
+  }
+  const title = r.title;
+  if (typeof title !== "string" || title.length === 0) {
+    throw new UiValidationError("alert.title must be a non-empty string");
+  }
+  const rawActions = r.actions;
+  if (!Array.isArray(rawActions) || rawActions.length === 0) {
+    throw new UiValidationError("alert.actions must be a non-empty array");
+  }
+  const actions: UiAlertAction[] = [];
+  const seenEventIds = new Set<string>();
+  for (let i = 0; i < rawActions.length; i++) {
+    const a = rawActions[i];
+    if (!a || typeof a !== "object" || Array.isArray(a)) {
+      throw new UiValidationError(`alert.actions[${i}]: must be an object`);
+    }
+    const aa = a as Record<string, unknown>;
+    const label = aa.label;
+    if (typeof label !== "string" || label.length === 0) {
+      throw new UiValidationError(
+        `alert.actions[${i}].label: must be a non-empty string`,
+      );
+    }
+    const eventId = aa.eventId;
+    if (typeof eventId !== "string" || eventId.length === 0) {
+      throw new UiValidationError(
+        `alert.actions[${i}].eventId: must be a non-empty string`,
+      );
+    }
+    if (seenEventIds.has(eventId)) {
+      throw new UiValidationError(
+        `alert.actions[${i}]: duplicate eventId "${eventId}"`,
+      );
+    }
+    seenEventIds.add(eventId);
+    const out: UiAlertAction = { label, eventId };
+    if (aa.variant !== undefined && aa.variant !== null) {
+      if (typeof aa.variant !== "string" || !ALERT_VARIANTS.has(aa.variant)) {
+        throw new UiValidationError(
+          `alert.actions[${i}].variant: must be "primary" | "danger"`,
+        );
+      }
+      out.variant = aa.variant as UiAlertActionVariant;
+    }
+    actions.push(out);
+  }
+  const out: UiAlertDialog = { id, title, actions };
+  const body = optString(r.body, "alert", "body");
+  if (body !== undefined) out.body = body;
+  if (r.dismissible !== undefined && r.dismissible !== null) {
+    if (typeof r.dismissible !== "boolean") {
+      throw new UiValidationError(
+        "alert.dismissible: must be a boolean when provided",
+      );
+    }
+    out.dismissible = r.dismissible;
+  }
+  return out;
+}
+
+/// Validate a [UiActionSheet] payload.
+export function validateActionSheet(raw: unknown): UiActionSheet {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new UiValidationError("actionSheet must be an object");
+  }
+  const r = raw as Record<string, unknown>;
+  const id = r.id;
+  if (typeof id !== "string" || id.length === 0) {
+    throw new UiValidationError("actionSheet.id must be a non-empty string");
+  }
+  const rawActions = r.actions;
+  if (!Array.isArray(rawActions) || rawActions.length === 0) {
+    throw new UiValidationError(
+      "actionSheet.actions must be a non-empty array",
+    );
+  }
+  const actions: UiActionSheetAction[] = [];
+  const seenEventIds = new Set<string>();
+  for (let i = 0; i < rawActions.length; i++) {
+    const a = rawActions[i];
+    if (!a || typeof a !== "object" || Array.isArray(a)) {
+      throw new UiValidationError(
+        `actionSheet.actions[${i}]: must be an object`,
+      );
+    }
+    const aa = a as Record<string, unknown>;
+    const label = aa.label;
+    if (typeof label !== "string" || label.length === 0) {
+      throw new UiValidationError(
+        `actionSheet.actions[${i}].label: must be a non-empty string`,
+      );
+    }
+    const eventId = aa.eventId;
+    if (typeof eventId !== "string" || eventId.length === 0) {
+      throw new UiValidationError(
+        `actionSheet.actions[${i}].eventId: must be a non-empty string`,
+      );
+    }
+    if (seenEventIds.has(eventId)) {
+      throw new UiValidationError(
+        `actionSheet.actions[${i}]: duplicate eventId "${eventId}"`,
+      );
+    }
+    seenEventIds.add(eventId);
+    const out: UiActionSheetAction = { label, eventId };
+    const icon = optString(aa.icon, `actionSheet.actions[${i}]`, "icon");
+    if (icon !== undefined) out.icon = icon;
+    const accent = optAccent(aa.accent, `actionSheet.actions[${i}]`, "accent");
+    if (accent !== undefined) out.accent = accent;
+    actions.push(out);
+  }
+  const out: UiActionSheet = { id, actions };
+  const title = optString(r.title, "actionSheet", "title");
+  if (title !== undefined) out.title = title;
+  const dismissEventId = optString(
+    r.dismissEventId,
+    "actionSheet",
+    "dismissEventId",
+  );
+  if (dismissEventId !== undefined) out.dismissEventId = dismissEventId;
+  return out;
+}
+
+/// Validate a [UiBottomSheet] payload. The `child` is parsed through
+/// [validateUiTree] so it abides by the same shape + per-tree id
+/// uniqueness rule as a `ui.render` payload.
+export function validateBottomSheet(raw: unknown): UiBottomSheet {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new UiValidationError("bottomSheet must be an object");
+  }
+  const r = raw as Record<string, unknown>;
+  const id = r.id;
+  if (typeof id !== "string" || id.length === 0) {
+    throw new UiValidationError("bottomSheet.id must be a non-empty string");
+  }
+  if (r.child === undefined || r.child === null) {
+    throw new UiValidationError("bottomSheet.child: must be a UiNode object");
+  }
+  const child = validateUiTree(r.child);
+  const out: UiBottomSheet = { id, child };
+  const title = optString(r.title, "bottomSheet", "title");
+  if (title !== undefined) out.title = title;
+  const dismissEventId = optString(
+    r.dismissEventId,
+    "bottomSheet",
+    "dismissEventId",
+  );
+  if (dismissEventId !== undefined) out.dismissEventId = dismissEventId;
+  return out;
+}
+
 function optSpacing(
   v: unknown,
   path: string,
@@ -2035,7 +2272,49 @@ export class UiPanelRegistry {
       this.notify(ws, "ui.tree", snap);
     }
   }
+
+  /// Fan a modal push (`ui.modal`) out to every subscriber. Used by
+  /// Batch 4's imperative `ui.showAlert` / `ui.showActionSheet` /
+  /// `ui.showBottomSheet` host methods. Modals live OFF the `ui.tree`
+  /// version stream — they have no per-panel monotonic version and no
+  /// retirement push; the client manages their lifetime via the regular
+  /// `ui.event` flow (action pick or dismiss).
+  ///
+  /// Returns the number of subscribers the push reached so the caller
+  /// can surface "no UI attached" through `ui.show*`'s response.
+  public broadcastModal(payload: UiModalPush): number {
+    let n = 0;
+    for (const ws of this.subscribers) {
+      this.notify(ws, "ui.modal", payload);
+      n++;
+    }
+    return n;
+  }
 }
+
+/// Discriminated payload for the `ui.modal` notification. The `kind`
+/// matches the `ui.show*` method name's suffix so the client's switch
+/// reads naturally; the `pluginId` + `panelId` pair routes the
+/// follow-up `ui.event` back to the right plugin.
+export type UiModalPush =
+  | {
+      kind: "alert";
+      pluginId: string;
+      panelId: string;
+      alert: UiAlertDialog;
+    }
+  | {
+      kind: "actionSheet";
+      pluginId: string;
+      panelId: string;
+      sheet: UiActionSheet;
+    }
+  | {
+      kind: "bottomSheet";
+      pluginId: string;
+      panelId: string;
+      sheet: UiBottomSheet;
+    };
 
 function makeKey(pluginId: string, panelId: string): string {
   return `${pluginId} ${panelId}`;

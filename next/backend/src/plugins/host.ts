@@ -45,8 +45,14 @@ import { StderrLog } from "./stderrLog.js";
 import {
   UiPanelRegistry,
   UiValidationError,
+  validateActionSheet,
+  validateAlertDialog,
+  validateBottomSheet,
   validateFileUrlsAgainstWorkspace,
   validateUiTree,
+  type UiActionSheet,
+  type UiAlertDialog,
+  type UiBottomSheet,
   type UiNotifier,
   type UiPanelSnapshot,
 } from "./ui.js";
@@ -653,6 +659,15 @@ export class PluginHost {
       await this.handleUiRender(plugin, params);
       return {};
     }
+    if (method === "ui.showAlert") {
+      return await this.handleShowAlert(plugin, params);
+    }
+    if (method === "ui.showActionSheet") {
+      return await this.handleShowActionSheet(plugin, params);
+    }
+    if (method === "ui.showBottomSheet") {
+      return await this.handleShowBottomSheet(plugin, params);
+    }
     // Capability passed, but the method itself doesn't exist yet.
     // Surface as methodNotFound so a plugin author has a clear signal
     // that they declared a capability but the host hasn't wired the
@@ -966,6 +981,140 @@ export class PluginHost {
       throw out;
     }
     this.uiRegistry.render(plugin.manifest.id, panelId, tree);
+  }
+
+  // ----- Batch 4 imperative modal entry points -----
+  //
+  // Each `ui.show*` method validates the params, broadcasts a `ui.modal`
+  // notification to subscribed clients via `UiPanelRegistry.broadcastModal`,
+  // and returns `{ delivered: true }` to the calling plugin so the plugin's
+  // await resolves once the push has been dispatched. The user's pick (or
+  // dismiss) flows back via the regular `ui.event` channel — there is no
+  // synchronous "wait for pick" round-trip on the host side.
+
+  private parseShowParams(method: string, params: unknown): {
+    panelId: string;
+    rest: Record<string, unknown>;
+  } {
+    if (!params || typeof params !== "object" || Array.isArray(params)) {
+      const err = new Error(`${method} params must be an object`) as Error & {
+        code: number;
+      };
+      err.code = RPC_ERR.invalidParams;
+      throw err;
+    }
+    const p = params as Record<string, unknown>;
+    const panelId = p.panelId;
+    if (typeof panelId !== "string" || panelId.length === 0) {
+      const err = new Error(
+        `${method} panelId must be a non-empty string`,
+      ) as Error & { code: number };
+      err.code = RPC_ERR.invalidParams;
+      throw err;
+    }
+    return { panelId, rest: p };
+  }
+
+  private async handleShowAlert(
+    plugin: PluginProcess,
+    params: unknown,
+  ): Promise<unknown> {
+    const { panelId, rest } = this.parseShowParams("ui.showAlert", params);
+    let alert: UiAlertDialog;
+    try {
+      alert = validateAlertDialog(rest.alert);
+    } catch (err) {
+      if (err instanceof UiValidationError) {
+        const out = new Error(`ui.showAlert: ${err.message}`) as Error & {
+          code: number;
+        };
+        out.code = RPC_ERR.invalidParams;
+        throw out;
+      }
+      throw err;
+    }
+    this.uiRegistry.broadcastModal({
+      kind: "alert",
+      pluginId: plugin.manifest.id,
+      panelId,
+      alert,
+    });
+    return { delivered: true };
+  }
+
+  private async handleShowActionSheet(
+    plugin: PluginProcess,
+    params: unknown,
+  ): Promise<unknown> {
+    const { panelId, rest } = this.parseShowParams("ui.showActionSheet", params);
+    let sheet: UiActionSheet;
+    try {
+      sheet = validateActionSheet(rest.sheet);
+    } catch (err) {
+      if (err instanceof UiValidationError) {
+        const out = new Error(`ui.showActionSheet: ${err.message}`) as Error & {
+          code: number;
+        };
+        out.code = RPC_ERR.invalidParams;
+        throw out;
+      }
+      throw err;
+    }
+    this.uiRegistry.broadcastModal({
+      kind: "actionSheet",
+      pluginId: plugin.manifest.id,
+      panelId,
+      sheet,
+    });
+    return { delivered: true };
+  }
+
+  private async handleShowBottomSheet(
+    plugin: PluginProcess,
+    params: unknown,
+  ): Promise<unknown> {
+    const { panelId, rest } = this.parseShowParams("ui.showBottomSheet", params);
+    let sheet: UiBottomSheet;
+    try {
+      sheet = validateBottomSheet(rest.sheet);
+    } catch (err) {
+      if (err instanceof UiValidationError) {
+        const out = new Error(`ui.showBottomSheet: ${err.message}`) as Error & {
+          code: number;
+        };
+        out.code = RPC_ERR.invalidParams;
+        throw out;
+      }
+      throw err;
+    }
+    // Re-run the Batch-3 file:// gate on the bottom-sheet child tree.
+    // The `ui.render` walker only sees panel trees — a BottomSheet's
+    // child rides a separate code path, so without this call a plugin
+    // could ship a `UiImage` with `file:///etc/passwd` inside a
+    // BottomSheet and bypass the workspace boundary.
+    const gate = await validateFileUrlsAgainstWorkspace(
+      sheet.child,
+      plugin.manifest.capabilities.fs,
+      this.workspaceRootResolver(),
+    );
+    if (!gate.ok) {
+      const code =
+        gate.code === "capabilityNotDeclared"
+          ? RPC_ERR.capabilityNotDeclared
+          : RPC_ERR.invalidParams;
+      const out = new Error(`ui.showBottomSheet: ${gate.message}`) as Error & {
+        code: number;
+      };
+      out.code = code;
+      throw out;
+    }
+    this.uiRegistry.broadcastModal({
+      kind: "bottomSheet",
+      pluginId: plugin.manifest.id,
+      panelId,
+      sheet,
+    });
+    return { delivered: true };
   }
 
   /// Forward an `ui.event` from the app into the owning plugin. Sent as a

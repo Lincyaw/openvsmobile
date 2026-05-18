@@ -16,12 +16,15 @@
 // affordances call `plugin.enable` / `plugin.disable` and rely on the
 // matching `plugin.stateChanged` push to flip the wire-state.
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../app_state.dart';
 import '../state/plugins_model.dart';
 import '../ui/app_tokens.dart';
+import '../ui/ui_modal_renderer.dart';
 import '../ui/ui_node.dart';
 import '../ui/ui_renderer.dart';
 
@@ -822,10 +825,13 @@ class _PanelRenderer extends StatefulWidget {
 }
 
 class _PanelRendererState extends State<_PanelRenderer> {
+  StreamSubscription<UiModalPush>? _modalSub;
+
   @override
   void initState() {
     super.initState();
     widget.appState.uiPanels.addListener(_onPanelsChanged);
+    _attachModalListener();
   }
 
   @override
@@ -834,13 +840,40 @@ class _PanelRendererState extends State<_PanelRenderer> {
     if (oldWidget.appState.uiPanels != widget.appState.uiPanels) {
       oldWidget.appState.uiPanels.removeListener(_onPanelsChanged);
       widget.appState.uiPanels.addListener(_onPanelsChanged);
+      _modalSub?.cancel();
+      _attachModalListener();
     }
   }
 
   @override
   void dispose() {
     widget.appState.uiPanels.removeListener(_onPanelsChanged);
+    _modalSub?.cancel();
     super.dispose();
+  }
+
+  void _attachModalListener() {
+    _modalSub = widget.appState.uiPanels.modals.listen((push) {
+      // Filter to this panel only. The model broadcasts every modal to
+      // every listener; routing happens here so a panel that isn't this
+      // (pluginId, panelId) doesn't open another panel's dialog.
+      if (push.pluginId != widget.pluginId) return;
+      if (push.panelId != widget.panel.id) return;
+      if (!mounted) return;
+      // showUiModal owns the modal lifecycle: it picks the right
+      // platform widget (AlertDialog / ActionSheet / BottomSheet), wires
+      // up dismissal, and dispatches the resulting eventId back through
+      // UiPanelsModel.dispatchEvent.
+      showUiModal(
+        context: context,
+        push: push,
+        onEvent: (event) => widget.appState.uiPanels.dispatchEvent(
+          pluginId: widget.pluginId,
+          panelId: widget.panel.id,
+          event: event,
+        ),
+      );
+    });
   }
 
   void _onPanelsChanged() {

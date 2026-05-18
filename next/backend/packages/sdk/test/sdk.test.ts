@@ -23,10 +23,13 @@ import {
   type SizeToken,
   type SpacingToken,
   type StyleSlot,
+  type UiActionSheet,
+  type UiAlertDialog,
   type UiAppGrid,
   type UiAppTile,
   type UiAspect,
   type UiBadge,
+  type UiBottomSheet,
   type UiCheckbox,
   type UiDivider,
   type UiEventInput,
@@ -468,6 +471,112 @@ describe("createPlugin: ui.event dispatch", () => {
     expect(ackMsg.id).toBe(7);
     expect(ackMsg.result?.commandId).toBe("hello.greet");
     expect(ackMsg.result?.args?.who).toBe("world");
+  });
+
+  it("ctx.showAlert serializes ui.showAlert request and resolves on host's reply", async () => {
+    const h = buildHarness();
+    let activated: PluginContext | null = null;
+    const plugin = createPlugin({
+      onActivate(ctx): void {
+        activated = ctx;
+        void ctx.showAlert("home", {
+          id: "confirm",
+          title: "Delete?",
+          actions: [
+            { label: "Cancel", eventId: "cancel" },
+            { label: "Delete", eventId: "delete", variant: "danger" },
+          ],
+        });
+      },
+    });
+    plugin.run({ stdin: h.stdinIn, stdout: h.stdoutOut });
+    const [first] = await h.waitForOutbound(1);
+    expect(activated).not.toBeNull();
+    const msg = JSON.parse(first as string) as {
+      id?: number;
+      method?: string;
+      params?: {
+        panelId?: string;
+        alert?: UiAlertDialog;
+      };
+    };
+    expect(msg.method).toBe("ui.showAlert");
+    expect(msg.id).toBeTypeOf("number");
+    expect(msg.params?.panelId).toBe("home");
+    expect(msg.params?.alert?.title).toBe("Delete?");
+    expect(msg.params?.alert?.actions).toHaveLength(2);
+  });
+
+  it("ctx.showActionSheet + ctx.showBottomSheet serialize their wire shapes", async () => {
+    const h = buildHarness();
+    const plugin = createPlugin({
+      onActivate(ctx): void {
+        void ctx.showActionSheet("home", {
+          id: "picker",
+          actions: [
+            { label: "15s", eventId: "i:15" },
+            { label: "1m", eventId: "i:60" },
+          ],
+        });
+        void ctx.showBottomSheet("home", {
+          id: "details",
+          title: "Details",
+          child: ui.text({ id: "bs-t", text: "info" }),
+        });
+      },
+    });
+    plugin.run({ stdin: h.stdinIn, stdout: h.stdoutOut });
+    const lines = await h.waitForOutbound(2);
+    const parsed = lines.map((l) => JSON.parse(l) as {
+      id?: number;
+      method?: string;
+      params?: {
+        panelId?: string;
+        sheet?: UiActionSheet | UiBottomSheet;
+      };
+    });
+    const sheetMsg = parsed.find((p) => p.method === "ui.showActionSheet");
+    const bsMsg = parsed.find((p) => p.method === "ui.showBottomSheet");
+    expect(sheetMsg).toBeDefined();
+    expect(bsMsg).toBeDefined();
+    expect(sheetMsg?.params?.panelId).toBe("home");
+    expect((sheetMsg?.params?.sheet as UiActionSheet).actions).toHaveLength(2);
+    expect(bsMsg?.params?.panelId).toBe("home");
+    expect((bsMsg?.params?.sheet as UiBottomSheet).title).toBe("Details");
+    expect((bsMsg?.params?.sheet as UiBottomSheet).child).toBeDefined();
+  });
+
+  it("ui.alertDialog / actionSheet / bottomSheet constructors produce the right shapes", () => {
+    const alert = ui.alertDialog({
+      id: "a",
+      title: "T",
+      body: "B",
+      actions: [{ label: "OK", eventId: "ok", variant: "primary" }],
+      dismissible: false,
+    });
+    expect(alert.id).toBe("a");
+    expect(alert.body).toBe("B");
+    expect(alert.dismissible).toBe(false);
+    expect(alert.actions[0].variant).toBe("primary");
+
+    const sheet = ui.actionSheet({
+      id: "s",
+      title: "Pick",
+      actions: [{ label: "A", eventId: "a", icon: "clock", accent: "info" }],
+      dismissEventId: "cancel",
+    });
+    expect(sheet.title).toBe("Pick");
+    expect(sheet.actions[0].icon).toBe("clock");
+    expect(sheet.dismissEventId).toBe("cancel");
+
+    const bs = ui.bottomSheet({
+      id: "bs",
+      child: ui.text({ id: "bs-t", text: "x" }),
+      dismissEventId: "close",
+    });
+    expect(bs.id).toBe("bs");
+    expect(bs.child).toBeDefined();
+    expect(bs.dismissEventId).toBe("close");
   });
 
   it("replies methodNotFound when the host calls an unknown method", async () => {

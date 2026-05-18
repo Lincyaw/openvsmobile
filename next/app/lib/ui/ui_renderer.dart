@@ -18,6 +18,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_highlight/flutter_highlight.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:flutter_slidable/flutter_slidable.dart';
 import 'package:markdown/markdown.dart' as md;
 
 import 'app_tokens.dart';
@@ -44,10 +45,6 @@ class UiRenderer extends StatelessWidget {
   /// surface a contextual action sheet (Enable/Disable/Copy path) the
   /// way iOS / WeChat launchers bind long-press. Plugin-authored panels
   /// leave this null and the gesture is a no-op.
-  ///
-  /// TODO(batch 4 SwipeAction): once UiAppGrid grows an
-  /// onLongPressEvent in the spec, drive this through the widget
-  /// contract and drop this screen-local hook.
   final void Function(String gridId, String tileId)? onAppTileLongPress;
 
   const UiRenderer({
@@ -560,11 +557,7 @@ class UiRenderer extends StatelessWidget {
   }
 
   Widget _buildListTile(BuildContext context, Key key, UiListTile node) {
-    // `swipeActions` is plumbed but not rendered in Batch 1 (Batch 4 lights
-    // it up). Material ListTile gives us the title/subtitle/leading/trailing
-    // contract for free; tapping fires the configured onTapEvent.
     final tile = ListTile(
-      key: key,
       leading: node.leading == null ? null : _render(context, node.leading!),
       title: Text(node.title),
       subtitle: node.subtitle == null ? null : Text(node.subtitle!),
@@ -576,7 +569,80 @@ class UiRenderer extends StatelessWidget {
                 type: node.onTapEvent!,
               )),
     );
-    return tile;
+    final actions = node.swipeActions;
+    if (actions == null || actions.isEmpty) {
+      // No swipe-actions on the wire → render the bare Material tile;
+      // adding a Slidable wrapper with no children would still draw the
+      // pan gesture detector and trap parent scrolls.
+      return KeyedSubtree(key: key, child: tile);
+    }
+    // Wrap in a Slidable so swipe-from-right reveals one button per
+    // action, iOS Mail / Things 3 style. The endActionPane lives on the
+    // right edge; commit threshold defaults to ~30% on `flutter_slidable`
+    // — we widen it to 50% per the brief so a casual horizontal drag
+    // doesn't accidentally fire a destructive action.
+    return Slidable(
+      // Group id ensures only one tile is open at a time across the
+      // panel — opening a second row's actions collapses the first.
+      key: ValueKey<String>('ui-tile-slidable:${node.id}'),
+      groupTag: 'ui-tile-group',
+      endActionPane: ActionPane(
+        motion: const DrawerMotion(),
+        extentRatio: actions.length == 1 ? 0.25 : 0.55,
+        // dismissible: a single-action swipe-past-threshold fires the
+        // action and closes the slidable. With multiple actions we
+        // drop dismiss-on-fling (peek-and-pick is the whole point).
+        dismissible: actions.length == 1
+            ? DismissiblePane(
+                closeOnCancel: true,
+                onDismissed: () => onEvent(UiNodeEvent(
+                  nodeId: node.id,
+                  type: actions.first.eventId,
+                )),
+              )
+            : null,
+        children: [
+          for (final action in actions)
+            _swipeActionButton(context, key: node.id, action: action),
+        ],
+      ),
+      child: KeyedSubtree(key: key, child: tile),
+    );
+  }
+
+  /// Build one tap-target button inside a Slidable's action pane. Each
+  /// button paints its accent color as the background and shows the icon
+  /// + label stacked, matching the iOS Mail visual.
+  Widget _swipeActionButton(
+    BuildContext context, {
+    required String key,
+    required UiSwipeAction action,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    final bg = action.accent != null
+        ? StyleSlotResolver.accent(context, action.accent!)
+        : scheme.primary;
+    // Foreground pairing: every accent color in the palette pairs with
+    // white at ≥4.5:1 contrast EXCEPT `muted`, which is intentionally
+    // dim and reads better with onSurface. Same pairing rule as the
+    // pill-badge contrast resolver above.
+    final fg = action.accent == AccentToken.muted
+        ? scheme.onSurface
+        : Colors.white;
+    final iconData = action.icon == null
+        ? null
+        : resolveIconByName(action.icon!);
+    return SlidableAction(
+      key: ValueKey<String>('ui-swipe-action:$key/${action.eventId}'),
+      onPressed: (_) => onEvent(UiNodeEvent(
+        nodeId: key,
+        type: action.eventId,
+      )),
+      backgroundColor: bg,
+      foregroundColor: fg,
+      icon: iconData,
+      label: action.label,
+    );
   }
 
   Widget _buildAppGrid(BuildContext context, Key key, UiAppGrid node) {

@@ -4,6 +4,23 @@
 // every 5 seconds with fixed node ids so the reconciler keeps things
 // in place.
 //
+// Batch 3 (§4.3) widget dogfood: we now render
+//   * `ui.spinner` during the very first activation tick (before the
+//     `loadavg()` sample has stabilized) — the "warming up" caption
+//     gives the user something to see for the second the indicator
+//     lives on screen.
+//   * `ui.progress` (linear, with `value`) for memory and CPU 1-minute
+//     load utilization, instead of raw numbers buried in a mono row.
+//     Numeric companion text keeps the precise reading visible.
+//
+// Batch 4 (§4.3) widget dogfood: the panel now sports a
+// "Refresh interval…" button that opens an imperative ActionSheet
+// (15s / 30s / 1m / 5m). Picking an option tweaks the local
+// `refreshMs` timer in-process; no persistence because the panel
+// rebinds the interval on the next activation cycle anyway. The
+// pattern proves out the picker-style imperative modal in a real
+// plugin without polluting the main panel chrome.
+//
 // Batch 5 (§4.3) widget dogfood:
 //   * `ui.tabBar` — top-of-panel segmented control with CPU / Memory /
 //     Disk / Network tabs. Disk and Network are stub views for v0
@@ -23,7 +40,11 @@ import { cpus, freemem, hostname, loadavg, totalmem, uptime } from "node:os";
 import { createPlugin, ui } from "@openvsmobile/sdk";
 
 const PANEL_ID = "info";
-const REFRESH_MS = 5000;
+
+// Mutable: the Batch-4 action sheet rewrites this when the user picks
+// a different cadence.
+let refreshMs = 5000;
+
 const TABS = [
   { id: "cpu", label: "CPU" },
   { id: "memory", label: "Memory" },
@@ -31,6 +52,8 @@ const TABS = [
   { id: "network", label: "Network" },
 ];
 
+// Used as the "first paint is still warming up" guard so the spinner
+// appears for one render-tick before real samples land.
 let firstSampleReady = false;
 let activeTab = "cpu";
 
@@ -215,11 +238,56 @@ function render(ctx) {
               text: `pid ${process.pid}`,
               style: "mono",
             }),
+            // Batch 4 trigger: tap to open the refresh-interval picker.
+            ui.button({
+              id: "sysinfo-interval-btn",
+              label: `Refresh interval… (current: ${formatInterval(refreshMs)})`,
+              style: "secondary",
+            }),
           ],
         }),
       ],
     }),
   );
+}
+
+function formatInterval(ms) {
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  return `${Math.round(ms / 60_000)}m`;
+}
+
+const INTERVAL_OPTIONS = [
+  { label: "15s", ms: 15_000 },
+  { label: "30s", ms: 30_000 },
+  { label: "1 minute", ms: 60_000 },
+  { label: "5 minutes", ms: 300_000 },
+];
+
+async function openIntervalSheet(ctx) {
+  await ctx.showActionSheet(PANEL_ID, {
+    id: "sysinfo-interval-picker",
+    title: "Refresh interval",
+    actions: INTERVAL_OPTIONS.map((o) => ({
+      label: o.label,
+      icon: "clock",
+      eventId: `set-interval:${o.ms}`,
+    })),
+    dismissEventId: "interval-cancel",
+  });
+}
+
+function applyIntervalChange(ctx, ms) {
+  refreshMs = ms;
+  if (timer !== null) {
+    clearInterval(timer);
+    timer = null;
+  }
+  timer = setInterval(() => render(ctx), refreshMs);
+  if (typeof timer.unref === "function") timer.unref();
+  // Re-render now so the button label reflects the new cadence
+  // immediately — without this the user only sees the update on the
+  // next interval tick.
+  render(ctx);
 }
 
 let timer = null;
@@ -231,10 +299,10 @@ const plugin = createPlugin({
       firstSampleReady = true;
       render(ctx);
     });
-    timer = setInterval(() => render(ctx), REFRESH_MS);
+    timer = setInterval(() => render(ctx), refreshMs);
     if (typeof timer.unref === "function") timer.unref();
   },
-  onUiEvent(ctx, event) {
+  async onUiEvent(ctx, event) {
     if (event.panelId !== PANEL_ID) return;
     if (event.nodeId === "sysinfo-tabs" && event.type === "tab-picked") {
       const tabId = event.payload && event.payload.tabId;
@@ -242,6 +310,24 @@ const plugin = createPlugin({
         activeTab = tabId;
         render(ctx);
       }
+      return;
+    }
+    if (
+      event.nodeId === "sysinfo-interval-btn" &&
+      event.type === "tap"
+    ) {
+      await openIntervalSheet(ctx);
+      return;
+    }
+    if (event.type.startsWith("set-interval:")) {
+      const ms = Number(event.type.slice("set-interval:".length));
+      if (!Number.isFinite(ms) || ms <= 0) return;
+      applyIntervalChange(ctx, ms);
+      return;
+    }
+    if (event.type === "interval-cancel") {
+      // User dismissed the sheet without picking. No-op.
+      return;
     }
   },
 });

@@ -60,6 +60,14 @@ dependencies:
   # main.dart can route to the notification center.
   app_links: ^6.3.2
   flutter_highlight: ^0.7.0
+  # Batch 4 widget vocabulary (§4.3): `UiListTile.swipeActions` renders
+  # an iOS Mail / Things 3-style swipe-from-right action strip. Built-in
+  # `Dismissible` handles one-action swipe-to-commit, but peek-and-pick
+  # with multiple distinct actions (Archive + Delete on a notes row, …)
+  # needs a maintained slidable widget — `flutter_slidable` is the
+  # established package and keeps the gesture geometry consistent with
+  # the platform conventions plugin authors already expect.
+  flutter_slidable: ^4.0.0
   # Batch 3 widget vocabulary (§4.3): `UiMarkdown` strict-subset
   # rendering. Configured with `extensionSet: md.ExtensionSet.none` so
   # tables / footnotes / autolinks stay off; the empty inline-syntax
