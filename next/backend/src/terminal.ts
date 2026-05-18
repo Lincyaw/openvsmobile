@@ -10,8 +10,30 @@
 // much was lost, so the UI can paper over the gap honestly.
 
 import { randomUUID } from "node:crypto";
-import { spawn as ptySpawn, type IPty } from "node-pty";
+import {
+  spawn as ptySpawn,
+  type IPty,
+  type IPtyForkOptions,
+} from "node-pty";
 import { RpcError, RPC_ERR } from "./rpc.js";
+import {
+  isSessionIdSafe,
+  killZellijSession,
+  zellijSessionName,
+  type ExecRunner,
+  type MultiplexerInfo,
+} from "./multiplexer.js";
+
+/// Signature of the node-pty spawn function we depend on. Pulled into a
+/// named type so tests can inject a fake PTY (no actual fork) and assert
+/// on the exact (command, args) the registry chose for a given
+/// multiplexer config — without requiring zellij or even a shell to be
+/// present in the test sandbox.
+export type PtySpawner = (
+  command: string,
+  args: string[],
+  options: IPtyForkOptions,
+) => IPty;
 
 const DEFAULT_SCROLLBACK_BYTES = 1024 * 1024; // 1 MiB.
 
@@ -132,15 +154,70 @@ class ScrollbackBuffer {
 interface Entry extends TerminalSnapshot {
   pty: IPty;
   scrollback: ScrollbackBuffer;
+  /// Zellij session name if this terminal was spawned through zellij;
+  /// null when we fell back to a direct shell. Dispose uses it to fire
+  /// `zellij kill-session` so the multiplexer-side session goes away
+  /// alongside the PTY.
+  externalSessionId: string | null;
+}
+
+/// Hook the registry calls on create/dispose so a higher layer can record
+/// terminal identity to durable storage. Optional — tests and the
+/// transitional "no DB" path leave both methods unimplemented.
+export interface TerminalPersistenceHook {
+  recordCreate(row: {
+    id: string;
+    workspaceRoot: string;
+    cwd: string;
+    cols: number;
+    rows: number;
+    externalSessionId: string | null;
+    createdAt: number;
+  }): void;
+  recordDispose(id: string): void;
+}
+
+export interface TerminalRegistryOptions {
+  /// Multiplexer probe result. When `kind === "zellij"`, `create()` wraps
+  /// the shell in `zellij attach --create <name>`. When `kind === "none"`,
+  /// `create()` spawns the user's shell directly (status quo). May be
+  /// omitted entirely by callers that don't care (older tests).
+  multiplexer?: MultiplexerInfo;
+  /// Workspace root this registry belongs to. Persisted alongside each
+  /// terminal so a future tool can group sessions by workspace without
+  /// extra bookkeeping. Pass-through; never used for any access check.
+  workspaceRoot?: string;
+  /// Durable storage hook. Optional so the legacy two-arg constructor
+  /// signature keeps working for tests that don't need persistence.
+  persistence?: TerminalPersistenceHook;
+  /// Test injection point for the zellij CLI (`kill-session`). Defaults
+  /// to the real `execFile`-backed runner.
+  execRunner?: ExecRunner;
+  /// Test injection point for node-pty. Defaults to the real `spawn`
+  /// from node-pty. Tests pass a fake that records arguments and returns
+  /// a stub IPty so no actual process is forked.
+  ptySpawner?: PtySpawner;
 }
 
 export class TerminalRegistry {
   private readonly sessions = new Map<string, Entry>();
+  private readonly multiplexer: MultiplexerInfo;
+  private readonly workspaceRoot: string;
+  private readonly persistence: TerminalPersistenceHook | null;
+  private readonly execRunner: ExecRunner | undefined;
+  private readonly ptySpawner: PtySpawner;
 
   constructor(
     private readonly onData: TerminalDataSink,
     private readonly onExit: TerminalExitSink,
-  ) {}
+    options: TerminalRegistryOptions = {},
+  ) {
+    this.multiplexer = options.multiplexer ?? { kind: "none" };
+    this.workspaceRoot = options.workspaceRoot ?? "";
+    this.persistence = options.persistence ?? null;
+    this.execRunner = options.execRunner;
+    this.ptySpawner = options.ptySpawner ?? ptySpawn;
+  }
 
   public create(cols: number, rows: number, cwd: string): TerminalSnapshot {
     if (!Number.isInteger(cols) || cols < 1) {
@@ -149,10 +226,32 @@ export class TerminalRegistry {
     if (!Number.isInteger(rows) || rows < 1) {
       throw new RpcError(RPC_ERR.invalidParams, "rows must be a positive int");
     }
-    const shell = process.env.SHELL || "/bin/bash";
+    // Mint the id first so it can flow into the session name we pass to
+    // zellij. The id is already a UUID (no shell-meaningful chars), but
+    // we revalidate explicitly so a future caller that supplies its own
+    // ids cannot bypass the check by accident.
+    const id = randomUUID();
+    const useZellij =
+      this.multiplexer.kind === "zellij" && isSessionIdSafe(id);
+    const externalSessionId = useZellij ? zellijSessionName(id) : null;
+
+    // Spawn either:
+    //   zellij attach --create <name>     (persistent path)
+    //   <user shell>                      (fallback)
+    // node-pty owns the PTY master either way; what runs inside is
+    // transparent to the rest of the registry.
+    const { command, args } = useZellij
+      ? {
+          command: "zellij",
+          // `attach --create <name>` is idempotent: attaches if the named
+          // session exists, creates it (and then attaches) if not. That's
+          // exactly the "resurrect across restart" behavior we want.
+          args: ["attach", "--create", externalSessionId as string],
+        }
+      : { command: process.env.SHELL ?? "/bin/bash", args: [] };
     let pty: IPty;
     try {
-      pty = ptySpawn(shell, [], {
+      pty = this.ptySpawner(command, args, {
         name: "xterm-256color",
         cols,
         rows,
@@ -162,10 +261,10 @@ export class TerminalRegistry {
     } catch (err) {
       throw new RpcError(
         RPC_ERR.internal,
-        `failed to spawn shell: ${(err as Error).message}`,
+        `failed to spawn ${useZellij ? "zellij" : "shell"}: ` +
+          `${(err as Error).message}`,
       );
     }
-    const id = randomUUID();
     const entry: Entry = {
       id,
       cols,
@@ -174,8 +273,20 @@ export class TerminalRegistry {
       createdAt: Date.now(),
       pty,
       scrollback: new ScrollbackBuffer(SCROLLBACK_CAP),
+      externalSessionId,
     };
     this.sessions.set(id, entry);
+    if (this.persistence !== null) {
+      this.persistence.recordCreate({
+        id,
+        workspaceRoot: this.workspaceRoot,
+        cwd,
+        cols,
+        rows,
+        externalSessionId,
+        createdAt: entry.createdAt,
+      });
+    }
 
     pty.onData((d) => {
       const chunk = Buffer.from(d, "utf8");
@@ -195,6 +306,7 @@ export class TerminalRegistry {
     });
     pty.onExit(({ exitCode }) => {
       this.sessions.delete(id);
+      if (this.persistence !== null) this.persistence.recordDispose(id);
       this.onExit(id, exitCode);
     });
 
@@ -235,6 +347,17 @@ export class TerminalRegistry {
       // Already gone; ignore.
     }
     this.sessions.delete(id);
+    if (this.persistence !== null) this.persistence.recordDispose(id);
+    // Killing the PTY only detaches the zellij CLIENT — the zellij
+    // SERVER side of this session keeps running and would linger as a
+    // ghost until the user typed `zellij delete-session` manually. Fire
+    // the explicit kill-session so the user-facing `dispose` actually
+    // disposes. Best-effort: errors (session already gone, zellij
+    // crashed) are logged inside `killZellijSession` and swallowed —
+    // dispose must not fail because of a stale multiplexer.
+    if (entry.externalSessionId !== null) {
+      void killZellijSession(entry.externalSessionId, this.execRunner);
+    }
   }
 
   public list(): TerminalSnapshot[] {

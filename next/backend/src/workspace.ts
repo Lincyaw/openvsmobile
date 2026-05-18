@@ -17,7 +17,9 @@ import {
   TerminalRegistry,
   type TerminalDataSink,
   type TerminalExitSink,
+  type TerminalPersistenceHook,
 } from "./terminal.js";
+import type { MultiplexerInfo } from "./multiplexer.js";
 import { WorkspaceModel } from "./workspaceModel.js";
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024; // 2 MiB hard cap on fs.readFile.
@@ -64,12 +66,22 @@ export class ActiveWorkspace {
   /// (the registry awaits init before exposing the workspace).
   public model: WorkspaceModel | null = null;
 
-  constructor(root: string, onData: TerminalDataSink, onExit: TerminalExitSink) {
+  constructor(
+    root: string,
+    onData: TerminalDataSink,
+    onExit: TerminalExitSink,
+    multiplexer: MultiplexerInfo,
+    persistence: TerminalPersistenceHook | null,
+  ) {
     this.id = randomUUID();
     this.root = root;
     this.label = basename(root) || root;
     this.createdAt = Date.now();
-    this.terminals = new TerminalRegistry(onData, onExit);
+    this.terminals = new TerminalRegistry(onData, onExit, {
+      multiplexer,
+      workspaceRoot: root,
+      ...(persistence !== null ? { persistence } : {}),
+    });
   }
 
   /// Construct + start the resident model. Separated from the constructor
@@ -123,12 +135,18 @@ export class WorkspaceRegistry {
   /// `setInvalidateHook` so ProcessState can wire ProcessState.diffCache in
   /// without WorkspaceRegistry depending on ProcessState.
   private invalidateHook: ((workspaceId: string) => void) | null = null;
+  private readonly multiplexer: MultiplexerInfo;
+  private readonly terminalPersistence: TerminalPersistenceHook | null;
 
   constructor(
     private readonly onTerminalData: TerminalDataSink,
     private readonly onTerminalExit: TerminalExitSink,
+    multiplexer: MultiplexerInfo = { kind: "none" },
+    terminalPersistence: TerminalPersistenceHook | null = null,
   ) {
     this.recents = loadRecents();
+    this.multiplexer = multiplexer;
+    this.terminalPersistence = terminalPersistence;
   }
 
   /// Wire the per-workspace invalidate callback. Called once at boot from
@@ -163,7 +181,13 @@ export class WorkspaceRegistry {
     options: { activate?: boolean } = {},
   ): Promise<ActiveWorkspace> {
     const root = await validatedRoot(rawRoot);
-    const ws = new ActiveWorkspace(root, this.onTerminalData, this.onTerminalExit);
+    const ws = new ActiveWorkspace(
+      root,
+      this.onTerminalData,
+      this.onTerminalExit,
+      this.multiplexer,
+      this.terminalPersistence,
+    );
     // initModel installs watchers + runs initial git status. We await before
     // publishing the workspace so a `workspace.subscribe` immediately after
     // `workspace.open` sees a populated model — not "no such workspace" or a

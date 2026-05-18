@@ -18,7 +18,11 @@ import {
   WorkspaceRegistry,
   type ActiveWorkspace,
 } from "./workspace.js";
-import type { TerminalSnapshot } from "./terminal.js";
+import type {
+  TerminalSnapshot,
+  TerminalPersistenceHook,
+} from "./terminal.js";
+import type { MultiplexerInfo } from "./multiplexer.js";
 import {
   NotificationHub,
   NotificationStore,
@@ -62,6 +66,15 @@ export interface ProcessStateOptions {
   /// handlers (`ui.subscribe`, `ui.event`) check for presence and surface
   /// `notReady` when the host is missing.
   pluginHost?: PluginHost;
+  /// Multiplexer probe result. When provided and zellij-backed, new
+  /// terminals are spawned through `zellij attach --create` so they
+  /// survive a backend restart. Defaults to `{ kind: "none" }` — every
+  /// non-production caller (tests) gets direct-shell behavior.
+  multiplexer?: MultiplexerInfo;
+  /// Durable record of (terminalId → external session) pairs. Optional;
+  /// when omitted, terminals work but nothing about them is persisted to
+  /// disk. Production wires a `TerminalPersistence` here in index.ts.
+  terminalPersistence?: TerminalPersistenceHook;
 }
 
 export interface AttachPluginHostFanOut {
@@ -118,6 +131,9 @@ export class ProcessState {
       deleted: (ids) => this.broadcastNotification("notification.deleted", { ids }),
     });
 
+    const multiplexer: MultiplexerInfo = opts.multiplexer ?? { kind: "none" };
+    const terminalPersistence: TerminalPersistenceHook | null =
+      opts.terminalPersistence ?? null;
     this.workspaces = new WorkspaceRegistry(
       // terminal data → broadcast to every subscriber.
       (sessionId, data, seqEnd) => {
@@ -145,6 +161,8 @@ export class ProcessState {
           sendNotification(sub.ws, "terminal.exit", params);
         }
       },
+      multiplexer,
+      terminalPersistence,
     );
     this.workspaces.setInvalidateHook((workspaceId) => {
       this.invalidateDiffsForWorkspace(workspaceId);

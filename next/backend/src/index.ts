@@ -12,6 +12,8 @@ import { Connection } from "./connection.js";
 import { ProcessState } from "./state.js";
 import { handleNotifyHttp } from "./notifyHttp.js";
 import { PluginHost } from "./plugins/host.js";
+import { probeMultiplexer } from "./multiplexer.js";
+import { TerminalPersistence } from "./terminalPersistence.js";
 import {
   runtimeInfoPath,
   unlinkRuntimeInfo,
@@ -41,8 +43,28 @@ async function main(): Promise<void> {
   const { token, source } = resolveToken();
   const version = readPackageVersion();
 
-  // Plugin host. Discovers plugins on disk and spawns the ones with
-  const state = new ProcessState();
+  // Probe for a terminal multiplexer. When zellij is available, every
+  // terminal spawned through `terminal.create` is wrapped in
+  // `zellij attach --create <name>` so the kernel-side PTY survives a
+  // backend restart — the zellij server holds the slave, the backend's
+  // PTY child is the zellij CLIENT. Missing zellij is fine; the probe
+  // returns `{ kind: "none" }` and terminal.ts transparently spawns
+  // the user's shell directly. The probe logs a single stderr line on
+  // failure, never throws, and is hard-bounded by a 2s timeout.
+  const multiplexer = await probeMultiplexer();
+  if (multiplexer.kind === "zellij") {
+    console.error(
+      `[openvsmobile-next] multiplexer: zellij (${multiplexer.version})`,
+    );
+  }
+
+  // Durable record of (terminalId → multiplexer session) pairs. Writes
+  // on terminal.create / dispose; nothing in v0 reads back from it. The
+  // column exists so a future "list resurrectable sessions" surface
+  // doesn't need a schema migration when it lands.
+  const terminalPersistence = new TerminalPersistence();
+
+  const state = new ProcessState({ multiplexer, terminalPersistence });
 
   // ntfy is the notification transport for background delivery. Gated by
   // $NTFY_URL + $NTFY_TOPIC. Backends without ntfy configured still
@@ -150,6 +172,11 @@ async function main(): Promise<void> {
       pluginHost.shutdown();
     } catch (err) {
       console.error("[openvsmobile-next] plugin shutdown error:", err);
+    }
+    try {
+      terminalPersistence.close();
+    } catch (err) {
+      console.error("[openvsmobile-next] terminal DB close error:", err);
     }
     // Best-effort unlink — if the file is already gone (or was never
     // written), we don't block shutdown on it.
