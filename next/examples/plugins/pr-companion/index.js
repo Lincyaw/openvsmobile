@@ -27,7 +27,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import { createPlugin, ui } from "@openvsmobile/sdk";
+import { createPlugin } from "@openvsmobile/sdk";
 
 import { resolveGhAuth } from "./auth.js";
 import { createGithubClient } from "./github.js";

@@ -111,6 +111,13 @@ let detailTimer = null;
 
 const POLL_INTERVAL_MS = 30_000;
 
+// Generation counter used to guard against stale-render races: when the
+// user taps PR1 then quickly switches to PR2 before PR1's fetch
+// resolves, PR1's tail (`pushPanel` + detailState writes) must not
+// clobber PR2's rendered state. Each fetchAndRender invocation captures
+// `++detailGen` and bails after every await if the global has moved on.
+let detailGen = 0;
+
 /**
  * Compute the status badge text for the header. GitHub's `state` is
  * either "open" or "closed"; `merged` and `draft` are separate
@@ -438,6 +445,7 @@ function resetDetailState() {
  * }} github
  */
 async function fetchAndRender(ctx, currentPr, github) {
+  const myGen = ++detailGen;
   const cached = cacheGet(currentPr);
   const reqParams = { owner: currentPr.owner, repo: currentPr.repo, number: currentPr.number };
 
@@ -455,6 +463,27 @@ async function fetchAndRender(ctx, currentPr, github) {
       .listPullComments({ ...reqParams, ...(cached?.etagComments ? { etag: cached.etagComments } : {}) })
       .catch((err) => ({ status: "offline", error: err })),
   ]);
+
+  // Stale-render guard: if the user switched PRs while we were
+  // awaiting, drop our writes on the floor — the newer fetch owns the
+  // panel now. The cache slot for our PR could still be useful for a
+  // future revisit, so persist it below before exiting; but skip
+  // detailState mutation + pushPanel.
+  const isStale = myGen !== detailGen;
+  if (isStale) {
+    if (currentPr !== null && (prRes.status === "ok" || filesRes.status === "ok" || commentsRes.status === "ok")) {
+      cacheSet(currentPr, {
+        pr: prRes.status === "ok" ? prRes.pull : cached?.pr ?? null,
+        files: filesRes.status === "ok" ? filesRes.files : cached?.files ?? null,
+        comments: commentsRes.status === "ok" ? commentsRes.comments : cached?.comments ?? null,
+        etagPr: prRes.status === "ok" ? prRes.etag ?? null : cached?.etagPr ?? null,
+        etagFiles: filesRes.status === "ok" ? filesRes.etag ?? null : cached?.etagFiles ?? null,
+        etagComments: commentsRes.status === "ok" ? commentsRes.etag ?? null : cached?.etagComments ?? null,
+        lastFetchAt: Date.now(),
+      });
+    }
+    return;
+  }
 
   detailState.loading = false;
   detailState.perTabError = {};
@@ -513,6 +542,8 @@ async function fetchAndRender(ctx, currentPr, github) {
     // Everything failed — show the worst error as the banner. If all
     // three are the same status (typical for unauthed / offline), the
     // banner alone tells the story.
+    // Precedence (per design doc Error states): unauthed > rateLimited
+    // > offline > serverError.
     const priority = ["unauthed", "rateLimited", "offline", "serverError"];
     const worst = priority
       .map((k) => allErrors.find((e) => e.status === k))
