@@ -11,6 +11,7 @@ import {
   PluginHost,
   type HostLogEntry,
   type PluginState,
+  type WorkspaceRef,
 } from "../src/plugins/host.js";
 import { makeTempDir, rmTempDir, sleep } from "./_helpers.js";
 
@@ -59,6 +60,7 @@ afterEach(async () => {
 async function buildHarness(
   fixtures: string[],
   overrideManifest?: { name: string; content: string },
+  options?: { workspaceResolver?: () => WorkspaceRef | null },
 ): Promise<Harness> {
   if (staging === null) throw new Error("staging dir not set up");
   const pluginsDir = join(staging, "plugins");
@@ -82,6 +84,9 @@ async function buildHarness(
     logDir,
     logger: (line) => hostDiagnostics.push(line),
     onHostLog: (entry) => hostLogs.push(entry),
+    ...(options?.workspaceResolver !== undefined
+      ? { workspaceResolver: options.workspaceResolver }
+      : {}),
   });
   await host.start();
   return { host, pluginsDir, logDir, hostLogs, hostDiagnostics };
@@ -216,6 +221,116 @@ describe("PluginHost", () => {
       const entry = harness.host.get("broken");
       expect(entry?.state).toBe<PluginState>("errored");
       expect(entry?.reason).toContain("version");
+    } finally {
+      harness.host.shutdown();
+    }
+  });
+
+  it("workspace.current returns the active WorkspaceRef and null when none is set", async () => {
+    // Two-phase: start with a live workspace so the spawn-time request
+    // sees it, then re-resolve to null and fan out an activation to
+    // exercise the null path on the notification side.
+    let workspace: WorkspaceRef | null = {
+      id: "ws-1",
+      root: "/tmp/repo-1",
+      label: "repo-1",
+    };
+    const harness = await buildHarness(["workspace"], undefined, {
+      workspaceResolver: () => workspace,
+    });
+    try {
+      const logPath = join(harness.logDir, "workspace.stderr.log");
+      const response = await waitFor(async () => {
+        let raw: string;
+        try {
+          raw = await readFile(logPath, "utf8");
+        } catch {
+          return undefined;
+        }
+        // First inbound frame is the response to id:1.
+        const match = /<<RX>>(.*?)<<END>>/s.exec(raw);
+        if (match === null) return undefined;
+        const body = JSON.parse(match[1] as string) as {
+          id?: number;
+          result?: { workspace?: WorkspaceRef | null };
+        };
+        if (body.id !== 1) return undefined;
+        return body;
+      }, 2000);
+      expect(response.result?.workspace).toEqual({
+        id: "ws-1",
+        root: "/tmp/repo-1",
+        label: "repo-1",
+      });
+
+      // Now flip the resolver to null and fan out — the plugin's
+      // stderr dump should pick the notification up as a second
+      // marker frame.
+      workspace = null;
+      harness.host.fanOutWorkspaceActivated(null);
+      const notification = await waitFor(async () => {
+        const raw = await readFile(logPath, "utf8");
+        const all = [...raw.matchAll(/<<RX>>(.*?)<<END>>/gs)];
+        for (const m of all) {
+          const body = JSON.parse(m[1] as string) as {
+            method?: string;
+            params?: { workspace?: WorkspaceRef | null };
+          };
+          if (body.method === "workspace.activated") return body;
+        }
+        return undefined;
+      }, 2000);
+      expect(notification.params?.workspace).toBeNull();
+    } finally {
+      harness.host.shutdown();
+    }
+  });
+
+  it("fanOutWorkspaceActivated only pushes to active plugins, skipping disabled/crashed", async () => {
+    // Stage both an active plugin and a crashy one. After crashy
+    // terminates, the fan-out must not throw and must reach only the
+    // surviving live plugin's stderr log.
+    const harness = await buildHarness(["workspace", "crashy"], undefined, {
+      workspaceResolver: () => null,
+    });
+    try {
+      // Wait for the workspace fixture's first request to land in its
+      // stderr — confirms it's active and listening.
+      const liveLog = join(harness.logDir, "workspace.stderr.log");
+      await waitFor(async () => {
+        try {
+          const raw = await readFile(liveLog, "utf8");
+          return /<<RX>>/.test(raw) ? true : undefined;
+        } catch {
+          return undefined;
+        }
+      }, 2000);
+      // And wait for crashy to have exited.
+      await waitFor(() => {
+        const e = harness.host.get("crashy");
+        return e?.state === "crashed" ? true : undefined;
+      }, 2000);
+      // Fan out — must not throw even though crashy is gone.
+      const ws: WorkspaceRef = {
+        id: "ws-x",
+        root: "/tmp/x",
+        label: "x",
+      };
+      expect(() => harness.host.fanOutWorkspaceActivated(ws)).not.toThrow();
+      // The live plugin should observe the notification.
+      const seen = await waitFor(async () => {
+        const raw = await readFile(liveLog, "utf8");
+        const all = [...raw.matchAll(/<<RX>>(.*?)<<END>>/gs)];
+        for (const m of all) {
+          const body = JSON.parse(m[1] as string) as {
+            method?: string;
+            params?: { workspace?: WorkspaceRef | null };
+          };
+          if (body.method === "workspace.activated") return body;
+        }
+        return undefined;
+      }, 2000);
+      expect(seen.params?.workspace).toEqual(ws);
     } finally {
       harness.host.shutdown();
     }

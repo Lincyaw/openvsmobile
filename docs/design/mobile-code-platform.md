@@ -267,6 +267,7 @@ plugin.run();
 - `log(level, msg)` → `host.log` (always allowed).
 - `renderPanel(panelId, tree)` → `ui.render` (gated by `capabilities.ui`).
 - `invokeCommand(targetPluginId, commandId, args)` → `plugin.invokeCommand` (cross-plugin call; gated by the host).
+- `currentWorkspace()` → `workspace.current` (gated by `capabilities.fs`; returns `WorkspaceRef | null`). Pair with `PluginConfig.onWorkspaceActivated` for switch notifications; the callback does not fire on startup, so a plugin's first read must come through this RPC.
 
 Each SDK call is a thin wrapper that:
 1. Checks the plugin's declared capabilities (fail-fast `Error: capability "X" not declared`). *Reserved for richer capabilities; today the SDK trusts the manifest and lets the host's gate produce the error, since v0 only has `ui`.*
@@ -297,7 +298,7 @@ Capabilities declared but unused are fine. Capabilities used but not declared �
 
 | Namespace    | Methods                                                                        |
 |--------------|--------------------------------------------------------------------------------|
-| `workspace.` | `readFile`, `listDir`, `findFiles`, `findText`, `getCurrentSelection`, `onChange` (subscription)        |
+| `workspace.` | `current` (→ `{ workspace: WorkspaceRef \| null }`), `readFile`, `listDir`, `findFiles`, `findText`, `getCurrentSelection`, `onChange` (subscription) |
 | `editor.`    | `getOpenedFile`, `revealRange`. `applyEdit` reserved for v1 (depends on editor capability arriving in core). |
 | `terminal.`  | `spawn`, `write`, `dispose`, `onData` (subscription)                           |
 | `git.`       | `diff`, `log` (read-only). Write ops are out of scope (first principle #6).    |
@@ -310,6 +311,7 @@ Notifications from the plugin to the client (host pushes back to plugin):
 | Method                  | Params                                                          |
 |-------------------------|-----------------------------------------------------------------|
 | `ui.event`              | `{ panelId, eventId, sourceId, payload }` — see §4.3            |
+| `workspace.activated`   | `{ workspace: WorkspaceRef \| null }` — fired on every active-workspace transition; `null` when the last open workspace closes. Plugins read the initial value via `workspace.current`; this notification does NOT fire on plugin startup. Fan-out is unconditional across active plugin processes — opt-in lives in the SDK callback, not at the wire. |
 | `workspace.changed`     | `{ workspaceId, files: { added, removed, modified } }` — filtered to capability scope |
 | `terminal.data`         | `{ sessionId, bytesBase64 }` — only for plugin-owned sessions   |
 | `terminal.exit`         | `{ sessionId, exitCode }`                                       |

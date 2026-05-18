@@ -152,6 +152,23 @@ export interface PluginHostOptions {
   /// is rejected. Tests substitute a fixed string; production wires this
   /// to `ProcessState.workspaces.current()?.root`.
   workspaceRootResolver?: () => string | null;
+  /// Resolve the full active workspace descriptor for the `workspace.*`
+  /// SDK surface (Phase 0 of the repo-aware plugin work). Returns
+  /// `null` when no workspace is active. Production wires this to
+  /// `ProcessState.workspaces.current()` projected to `WorkspaceRef`;
+  /// tests substitute a stub. Defaults to "no active workspace" so the
+  /// host stays usable in isolation (e.g. SDK-only test harnesses).
+  workspaceResolver?: () => WorkspaceRef | null;
+}
+
+/// Minimal workspace shape pushed to plugins. Matches the SDK's
+/// `WorkspaceRef` interface — id (UUID), absolute root path, label.
+/// Carried by the `workspace.current` response and the
+/// `workspace.activated` notification.
+export interface WorkspaceRef {
+  id: string;
+  root: string;
+  label: string;
 }
 
 const DEFAULT_PLUGINS_DIR_REL = [".local", "share", "openvsmobile-next", "plugins"];
@@ -260,6 +277,11 @@ export class PluginHost {
   /// workspace" — every `file://` URL is rejected until production wires
   /// `state.workspaces.current()?.root` here.
   private readonly workspaceRootResolver: () => string | null;
+  /// Resolves the active workspace descriptor for the `workspace.current`
+  /// plugin-host RPC. See `PluginHostOptions.workspaceResolver`. Defaults
+  /// to "no active workspace" — production wires this to the workspace
+  /// registry in `index.ts`.
+  private readonly workspaceResolver: () => WorkspaceRef | null;
 
   constructor(opts: PluginHostOptions = {}) {
     this.pluginsDir = opts.pluginsDir ?? resolveDefaultPluginsDir();
@@ -283,6 +305,7 @@ export class PluginHost {
       ((ws, method, params) => sendNotification(ws, method, params));
     this.uiRegistry = new UiPanelRegistry(uiNotifier);
     this.workspaceRootResolver = opts.workspaceRootResolver ?? (() => null);
+    this.workspaceResolver = opts.workspaceResolver ?? (() => null);
   }
 
   /// UI panel registry. Public so the RPC layer can route `ui.subscribe`
@@ -667,6 +690,15 @@ export class PluginHost {
     }
     if (method === "ui.showBottomSheet") {
       return await this.handleShowBottomSheet(plugin, params);
+    }
+    if (method === "workspace.current") {
+      // Plugin-side analogue of the frontend's `workspace.current` RPC:
+      // a content-free request that returns the active workspace
+      // (`{ workspace: WorkspaceRef | null }`) so a repo-aware plugin
+      // can do an initial read without waiting for the first
+      // `workspace.activated` notification. Capability gating
+      // (`fs` via `workspace.*` namespace map) has already run upstream.
+      return { workspace: this.workspaceResolver() };
     }
     // Capability passed, but the method itself doesn't exist yet.
     // Surface as methodNotFound so a plugin author has a clear signal
@@ -1177,6 +1209,37 @@ export class PluginHost {
       method: "ui.event",
       params: outboundParams,
     });
+  }
+
+  /// Fan a `workspace.activated` notification out to every active plugin
+  /// process. Called by the workspace registry whenever the
+  /// currently-active workspace changes (open-and-activate, activate,
+  /// close-that-flips-current, last-close-clears-current).
+  ///
+  /// Scope is intentionally unconditional: every active plugin receives
+  /// the frame, regardless of manifest declarations. The callback is
+  /// opt-in at the SDK level (plugins without `onWorkspaceActivated`
+  /// ignore it harmlessly) and the cost of an extra notification frame
+  /// is trivial compared to the wiring cost of a per-plugin
+  /// subscription system. We do NOT gate on a capability key — there
+  /// is no `workspace` capability in the manifest schema, and "the user
+  /// switched windows" is not a privileged signal.
+  ///
+  /// Disabled / crashed / errored / registered (not-yet-active) plugins
+  /// are skipped: they have no live process to receive the frame, and
+  /// the SDK shape promises "no fire on startup" so an inactive plugin
+  /// missing this transition is the correct behavior — it'll read the
+  /// current value via `ctx.currentWorkspace()` whenever it activates
+  /// next.
+  public fanOutWorkspaceActivated(workspace: WorkspaceRef | null): void {
+    for (const entry of this.plugins.values()) {
+      if (entry.state !== "active" || entry.process === undefined) continue;
+      entry.process.send({
+        jsonrpc: "2.0",
+        method: "workspace.activated",
+        params: { workspace },
+      });
+    }
   }
 
   /// Test seam: handle a websocket dropping subscription from the UI

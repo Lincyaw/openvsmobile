@@ -89,6 +89,25 @@ async function main(): Promise<void> {
     // `Image` / `Avatar` with a `file://` src; resolves to the same
     // path the read-only `fs.*` RPCs rely on for isolation.
     workspaceRootResolver: () => state.workspaces.current()?.root ?? null,
+    // Phase-0 repo-aware plugin surface: backs the `workspace.current`
+    // plugin-host RPC with the registry's current workspace. Projected
+    // down to the SDK's `WorkspaceRef` shape (id / root / label) so
+    // `createdAt` doesn't leak into the plugin contract.
+    workspaceResolver: () => {
+      const ws = state.workspaces.current();
+      if (ws === null) return null;
+      return { id: ws.id, root: ws.root, label: ws.label };
+    },
+  });
+  // Phase-0 fan-out: when the user switches workspaces, push
+  // `workspace.activated` to every active plugin process so repo-aware
+  // plugins react without polling. Wired here (not in ProcessState's
+  // constructor) because the registry is owned by ProcessState but the
+  // host is constructed afterwards.
+  state.workspaces.setActivatedHook((ws) => {
+    pluginHost.fanOutWorkspaceActivated(
+      ws === null ? null : { id: ws.id, root: ws.root, label: ws.label },
+    );
   });
   state.pluginHost = pluginHost;
   await pluginHost.start();

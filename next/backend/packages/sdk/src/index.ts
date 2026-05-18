@@ -1082,6 +1082,22 @@ export interface UiEventInput {
   payload?: unknown;
 }
 
+/// Minimal workspace descriptor exposed to plugins. Mirrors the
+/// frontend-facing `Workspace` shape from the design doc §4 minus the
+/// `createdAt` timestamp — plugins react to "the user switched
+/// workspaces"; lifecycle timing is the host's concern.
+///
+/// `id` is the same UUID the backend issues for the workspace; it is
+/// stable across reconnect so a plugin can persist per-workspace state
+/// keyed by it. `root` is the absolute filesystem path (post-symlink
+/// canonical form); `label` is the user-visible name (typically the
+/// basename of `root`).
+export interface WorkspaceRef {
+  id: string;
+  root: string;
+  label: string;
+}
+
 export interface PluginContext {
   /// Send a `host.log` notification. Always allowed regardless of the
   /// manifest's capability set — the host log is the universal smoke
@@ -1139,6 +1155,19 @@ export interface PluginContext {
     panelId: string,
     sheet: UiBottomSheet,
   ): Promise<{ delivered: boolean }>;
+  /// Read the currently-active workspace from the host. Returns `null`
+  /// when no workspace is active (fresh backend with no workspaces open,
+  /// or the user just closed the last one). Round-trips a
+  /// `workspace.current` request to the host; gated by the manifest's
+  /// `fs` capability per §3.6 (the `workspace.*` namespace already maps
+  /// to `fs`). Plugins without `fs` capability get a `capabilityNotDeclared`
+  /// rejection.
+  ///
+  /// This is the canonical way to do the initial read on activation —
+  /// `onWorkspaceActivated` does NOT fire on plugin startup, so the
+  /// usual shape is: `await ctx.currentWorkspace()` inside `onActivate`,
+  /// then react to `onWorkspaceActivated` for subsequent switches.
+  currentWorkspace(): Promise<WorkspaceRef | null>;
 }
 
 export interface PluginConfig {
@@ -1158,6 +1187,18 @@ export interface PluginConfig {
   onUiEvent?(
     ctx: PluginContext,
     event: UiEventInput,
+  ): void | Promise<void>;
+  /// Invoked when the user activates a different workspace, or when the
+  /// last open workspace is closed (in which case `workspace` is
+  /// `null`). Does NOT fire on plugin startup — the activation hook
+  /// already runs once, and the canonical way to get the initial value
+  /// is `ctx.currentWorkspace()`. Fan-out is unconditional: every
+  /// active plugin process receives the underlying `workspace.activated`
+  /// notification regardless of manifest declarations; plugins that
+  /// don't supply a callback silently ignore it.
+  onWorkspaceActivated?(
+    ctx: PluginContext,
+    workspace: WorkspaceRef | null,
   ): void | Promise<void>;
 }
 
@@ -1255,6 +1296,27 @@ export function createPlugin(config: PluginConfig): PluginRunner {
         },
         showBottomSheet(panelId, sheet): Promise<{ delivered: boolean }> {
           return sendShowRequest("ui.showBottomSheet", { panelId, sheet });
+        },
+        currentWorkspace(): Promise<WorkspaceRef | null> {
+          return new Promise<WorkspaceRef | null>((resolve, reject) => {
+            const id = nextOutboundId++;
+            pendingInvokes.set(id, {
+              // Host shape: `{ workspace: WorkspaceRef | null }`. Unwrap
+              // before surfacing to the caller so the SDK contract matches
+              // the doc'd return type.
+              resolve: (v) => {
+                const r = (v ?? {}) as { workspace?: WorkspaceRef | null };
+                resolve(r.workspace ?? null);
+              },
+              reject,
+            });
+            writeMessage({
+              jsonrpc: "2.0",
+              id,
+              method: "workspace.current",
+              params: {},
+            });
+          });
         },
       };
 
@@ -1400,6 +1462,47 @@ export function createPlugin(config: PluginConfig): PluginRunner {
             await config.onUiEvent(ctx, event);
             respond(msg.id, undefined, {});
           } catch (err) {
+            respond(msg.id, {
+              code: RPC_ERR_INTERNAL,
+              message: (err as Error).message,
+            });
+          }
+          return;
+        }
+
+        if (msg.method === "workspace.activated") {
+          // Notification-shaped: the host fires this on every active
+          // workspace transition (including → null on the last close).
+          // We unwrap the payload, invoke the optional callback, and ack
+          // (when the host happened to send an id — current host doesn't,
+          // but the response slot stays open in case that changes).
+          const params = (msg.params ?? {}) as {
+            workspace?: WorkspaceRef | null;
+          };
+          const wsRef: WorkspaceRef | null =
+            params.workspace !== undefined && params.workspace !== null
+              ? params.workspace
+              : null;
+          if (config.onWorkspaceActivated === undefined) {
+            // No-op when the plugin didn't subscribe — matches what
+            // `ui.event` / `command.invoke` do when their callbacks are
+            // absent. Ack only if the host sent a request id.
+            respond(msg.id, undefined, {});
+            return;
+          }
+          try {
+            await config.onWorkspaceActivated(ctx, wsRef);
+            respond(msg.id, undefined, {});
+          } catch (err) {
+            // Surface the throw via `host.log` so the plugin author
+            // sees it. The host treats this as fire-and-forget, so a
+            // rejection on its end would just be logged — keep the
+            // back-channel limited to `host.log` for symmetry with
+            // `onActivate`'s error reporting above.
+            ctx.log(
+              "error",
+              `onWorkspaceActivated threw: ${(err as Error).message ?? String(err)}`,
+            );
             respond(msg.id, {
               code: RPC_ERR_INTERNAL,
               message: (err as Error).message,

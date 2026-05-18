@@ -47,6 +47,7 @@ import {
   type UiStack,
   type UiSwitch,
   type UiTabBar,
+  type WorkspaceRef,
 } from "../src/index.js";
 
 interface Harness {
@@ -754,5 +755,115 @@ describe("Batch 5 widgets (long tail)", () => {
     expect(s.collapsible).toBe(true);
     const omitted = ui.section({ id: "s2", children: [] });
     expect(omitted.collapsible).toBeUndefined();
+  });
+});
+
+describe("Phase-0 workspace surface", () => {
+  it("ctx.currentWorkspace serializes a workspace.current request and unwraps the host's payload", async () => {
+    const h = buildHarness();
+    let resolved: WorkspaceRef | null | undefined;
+    const plugin = createPlugin({
+      onActivate(ctx): void {
+        void ctx.currentWorkspace().then((ws) => {
+          resolved = ws;
+        });
+      },
+    });
+    plugin.run({ stdin: h.stdinIn, stdout: h.stdoutOut });
+    const [first] = await h.waitForOutbound(1);
+    const req = JSON.parse(first as string) as {
+      jsonrpc: string;
+      id?: number;
+      method?: string;
+      params?: unknown;
+    };
+    expect(req.jsonrpc).toBe("2.0");
+    expect(req.method).toBe("workspace.current");
+    expect(req.id).toBeTypeOf("number");
+    // Simulate the host's response.
+    h.pushInbound({
+      jsonrpc: "2.0",
+      id: req.id,
+      result: {
+        workspace: { id: "ws-uuid", root: "/tmp/repo", label: "repo" },
+      },
+    });
+    // Yield to flush the resolved-promise microtask.
+    await new Promise((r) => setTimeout(r, 5));
+    expect(resolved).toEqual({
+      id: "ws-uuid",
+      root: "/tmp/repo",
+      label: "repo",
+    });
+  });
+
+  it("ctx.currentWorkspace resolves null when the host reports no active workspace", async () => {
+    const h = buildHarness();
+    let resolved: WorkspaceRef | null | undefined = undefined;
+    const plugin = createPlugin({
+      onActivate(ctx): void {
+        void ctx.currentWorkspace().then((ws) => {
+          resolved = ws;
+        });
+      },
+    });
+    plugin.run({ stdin: h.stdinIn, stdout: h.stdoutOut });
+    const [first] = await h.waitForOutbound(1);
+    const req = JSON.parse(first as string) as { id?: number };
+    h.pushInbound({
+      jsonrpc: "2.0",
+      id: req.id,
+      result: { workspace: null },
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(resolved).toBeNull();
+  });
+
+  it("onWorkspaceActivated fires with a workspace payload, then with null", async () => {
+    const h = buildHarness();
+    const seen: Array<WorkspaceRef | null> = [];
+    const plugin = createPlugin({
+      onWorkspaceActivated(_ctx, ws): void {
+        seen.push(ws);
+      },
+    });
+    plugin.run({ stdin: h.stdinIn, stdout: h.stdoutOut });
+    // Wait one microtask so the stdin data listener is wired.
+    await Promise.resolve();
+    h.pushInbound({
+      jsonrpc: "2.0",
+      method: "workspace.activated",
+      params: {
+        workspace: { id: "ws-a", root: "/tmp/a", label: "a" },
+      },
+    });
+    h.pushInbound({
+      jsonrpc: "2.0",
+      method: "workspace.activated",
+      params: { workspace: null },
+    });
+    // Notifications carry no id → no ack. Give the SDK a tick to drain.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toEqual({ id: "ws-a", root: "/tmp/a", label: "a" });
+    expect(seen[1]).toBeNull();
+  });
+
+  it("an unhandled workspace.activated notification is dropped without throwing or logging", async () => {
+    const h = buildHarness();
+    // No callback. The notification should be a no-op — no methodNotFound
+    // frame, no host.log noise, no thrown error.
+    const plugin = createPlugin({});
+    plugin.run({ stdin: h.stdinIn, stdout: h.stdoutOut });
+    await Promise.resolve();
+    h.pushInbound({
+      jsonrpc: "2.0",
+      method: "workspace.activated",
+      params: { workspace: null },
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    // No outbound frame whatsoever — the notification has no id so the SDK
+    // does not ack, and there is no callback to throw or log.
+    expect(h.outboundLines).toEqual([]);
   });
 });

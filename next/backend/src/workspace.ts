@@ -147,6 +147,14 @@ export class WorkspaceRegistry {
   /// `setInvalidateHook` so ProcessState can wire ProcessState.diffCache in
   /// without WorkspaceRegistry depending on ProcessState.
   private invalidateHook: ((workspaceId: string) => void) | null = null;
+  /// Fires whenever the currently-active workspace changes (open-and-
+  /// activate, activate, close-that-flips-current, last-close-clears-
+  /// current, disposeAll). Payload is the new active workspace, or
+  /// `null` when nothing is active. ProcessState wires this to
+  /// `PluginHost.fanOutWorkspaceActivated` so repo-aware plugins see
+  /// workspace switches without polling. Idempotent transitions
+  /// (current → same current) are suppressed at call sites.
+  private activatedHook: ((ws: ActiveWorkspace | null) => void) | null = null;
   private readonly multiplexer: MultiplexerInfo;
   private readonly terminalPersistence: TerminalPersistenceHook | null;
   /// Process-wide set of terminal ids that have already been hydrated
@@ -175,6 +183,25 @@ export class WorkspaceRegistry {
   /// ProcessState; the hook is fired by each ActiveWorkspace's model.
   public setInvalidateHook(hook: (workspaceId: string) => void): void {
     this.invalidateHook = hook;
+  }
+
+  /// Wire the "currently-active workspace changed" callback. Called once
+  /// at boot from ProcessState; ProcessState forwards the new active
+  /// workspace to `PluginHost.fanOutWorkspaceActivated`.
+  public setActivatedHook(
+    hook: (ws: ActiveWorkspace | null) => void,
+  ): void {
+    this.activatedHook = hook;
+  }
+
+  /// Fire the activated hook when the currently-active workspace changes.
+  /// Idempotent — call sites pass the old id so a no-op transition (e.g.
+  /// `activate` on the already-current workspace) suppresses the push.
+  private fireActivatedIfChanged(previousId: string | null): void {
+    if (this.activatedHook === null) return;
+    if (this.currentId === previousId) return;
+    const ws = this.current();
+    this.activatedHook(ws);
   }
 
   public listActive(): WorkspaceInfo[] {
@@ -229,6 +256,7 @@ export class WorkspaceRegistry {
     // session — only the first one wins.
     const claimed = ws.terminals.hydrateFromPersistence(this.hydrationClaims);
     for (const id of claimed) this.hydrationClaims.add(id);
+    const previousId = this.currentId;
     this.active.set(ws.id, ws);
     const activate = options.activate ?? true;
     if (activate) {
@@ -238,6 +266,7 @@ export class WorkspaceRegistry {
     // if it was null. Caller chose to pre-stage a workspace without focusing.
     this.recents = pushRecent(this.recents, root);
     saveRecents(this.recents);
+    this.fireActivatedIfChanged(previousId);
     return ws;
   }
 
@@ -249,7 +278,9 @@ export class WorkspaceRegistry {
     if (!w) {
       throw new RpcError(RPC_ERR.invalidParams, `no such workspace: ${rawId}`);
     }
+    const previousId = this.currentId;
     this.currentId = w.id;
+    this.fireActivatedIfChanged(previousId);
     return w;
   }
 
@@ -263,6 +294,7 @@ export class WorkspaceRegistry {
     if (!w) {
       throw new RpcError(RPC_ERR.invalidParams, `no such workspace: ${rawId}`);
     }
+    const previousId = this.currentId;
     w.dispose();
     this.active.delete(rawId);
     if (this.currentId === rawId) {
@@ -271,14 +303,17 @@ export class WorkspaceRegistry {
         | undefined;
       this.currentId = first ? first.id : null;
     }
+    this.fireActivatedIfChanged(previousId);
     return this.currentId;
   }
 
   public disposeAll(): string[] {
     const ids = [...this.active.keys()];
+    const previousId = this.currentId;
     for (const w of this.active.values()) w.dispose();
     this.active.clear();
     this.currentId = null;
+    this.fireActivatedIfChanged(previousId);
     return ids;
   }
 
