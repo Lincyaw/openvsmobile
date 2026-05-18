@@ -241,25 +241,25 @@ class _DiffHeader extends StatelessWidget {
               path,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+              style: AppText.mono(context, fontSize: 12),
             ),
           ),
           Text(
             '+$adds',
-            style: TextStyle(
+            style: AppText.mono(
+              context,
               color: theme.colorScheme.tertiary,
               fontWeight: FontWeight.bold,
-              fontFamily: 'monospace',
               fontSize: 12,
             ),
           ),
           const SizedBox(width: AppSpacing.sm),
           Text(
             '-$dels',
-            style: TextStyle(
+            style: AppText.mono(
+              context,
               color: theme.colorScheme.error,
               fontWeight: FontWeight.bold,
-              fontFamily: 'monospace',
               fontSize: 12,
             ),
           ),
@@ -303,8 +303,8 @@ class _HunkCard extends StatelessWidget {
             child: Text(
               '@@ -${hunk.oldStart},${hunk.oldLines} '
               '+${hunk.newStart},${hunk.newLines} @@',
-              style: TextStyle(
-                fontFamily: 'monospace',
+              style: AppText.mono(
+                context,
                 fontSize: 11,
                 color: theme.colorScheme.onSurfaceVariant,
               ),
@@ -358,9 +358,9 @@ class _DiffLineRow extends StatelessWidget {
             width: AppSpacing.md,
             child: Text(
               marker,
-              style: TextStyle(
+              style: AppText.mono(
+                context,
                 color: fg,
-                fontFamily: 'monospace',
                 fontSize: 12,
               ),
             ),
@@ -369,9 +369,9 @@ class _DiffLineRow extends StatelessWidget {
           Expanded(
             child: SelectableText(
               line.text,
-              style: TextStyle(
+              style: AppText.mono(
+                context,
                 color: fg,
-                fontFamily: 'monospace',
                 fontSize: 12,
                 height: 1.35,
               ),
@@ -397,9 +397,9 @@ class _GapStrip extends StatelessWidget {
       alignment: Alignment.center,
       child: Text(
         '… $unchanged unchanged line${unchanged == 1 ? '' : 's'} …',
-        style: TextStyle(
+        style: AppText.mono(
+          context,
           color: theme.colorScheme.onSurfaceVariant,
-          fontFamily: 'monospace',
           fontSize: 11,
         ),
       ),
@@ -433,8 +433,8 @@ class _DiffPlaceholder extends StatelessWidget {
               children: [
                 Text(
                   path,
-                  style: TextStyle(
-                    fontFamily: 'monospace',
+                  style: AppText.mono(
+                    context,
                     fontSize: 12,
                     color: theme.colorScheme.onSurfaceVariant,
                   ),

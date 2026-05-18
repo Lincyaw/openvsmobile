@@ -403,7 +403,7 @@ class _MobileCodeAppState extends State<MobileCodeApp>
     return MaterialApp(
       navigatorKey: _navKey,
       title: 'MobileCode',
-      theme: AppTheme.light(),
+      theme: AppTheme.dark(),
       home: _loadingSettings || _appState == null
           ? const _BootSplash()
           : (_state.activeBackend == null)

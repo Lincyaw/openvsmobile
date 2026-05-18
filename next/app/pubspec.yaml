@@ -60,6 +60,11 @@ dependencies:
   # main.dart can route to the notification center.
   app_links: ^6.3.2
   flutter_highlight: ^0.7.0
+  # UI + monospace fonts. Runtime-fetched and cached by `google_fonts` so we
+  # do not bundle font binaries into the APK. When the device is offline and
+  # the font has not been cached yet, the package silently falls back to the
+  # platform's default font — acceptable for v0.
+  google_fonts: ^6.2.1
 
 dev_dependencies:
   flutter_test:

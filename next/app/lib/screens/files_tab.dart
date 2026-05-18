@@ -817,10 +817,10 @@ class _StatusBar extends StatelessWidget {
           : theme.colorScheme.onSurfaceVariant,
       fontSize: 12,
     );
-    final monoStyle = TextStyle(
+    final monoStyle = AppText.mono(
+      context,
       color: theme.colorScheme.onSurface,
       fontSize: 12,
-      fontFamily: 'monospace',
       fontWeight: FontWeight.w500,
     );
     return Material(

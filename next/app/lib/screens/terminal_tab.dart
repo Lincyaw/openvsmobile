@@ -260,7 +260,12 @@ class _SessionTile extends StatelessWidget {
                       Expanded(
                         child: Text(
                           label,
-                          style: const TextStyle(
+                          // Session labels like `sh · 1` are code-flavoured
+                          // identifiers — render them in the project mono
+                          // font so they read as terminal artefacts, not
+                          // chat-room titles.
+                          style: AppText.mono(
+                            context,
                             fontSize: 15,
                             fontWeight: FontWeight.w500,
                           ),
@@ -283,10 +288,10 @@ class _SessionTile extends StatelessWidget {
                     previewText ?? '(no output yet)',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
+                    style: AppText.mono(
+                      context,
                       fontSize: 13,
                       color: dim,
-                      fontFamily: 'monospace',
                       fontStyle: previewText == null
                           ? FontStyle.italic
                           : FontStyle.normal,
