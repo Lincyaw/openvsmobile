@@ -223,6 +223,13 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
               autofocus: true,
               backgroundOpacity: 1.0,
               simulateScroll: false,
+              // Bundled in pubspec.yaml. Carries Powerline + Nerd Font
+              // glyph ranges that Zellij / lazygit / oh-my-zsh prompts
+              // need; system 'monospace' covers anything outside that.
+              textStyle: const TerminalStyle(
+                fontFamily: 'JetBrainsMonoNF',
+                fontFamilyFallback: ['monospace'],
+              ),
             ),
           ),
         ),

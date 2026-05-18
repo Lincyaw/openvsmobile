@@ -1,5 +1,5 @@
-// Top-level scaffold: app bar with workspace switcher + gear, bottom nav,
-// connection-state banner.
+// Top-level scaffold: app bar with workspace switcher + bell, bottom nav,
+// connection-state banner. Backend management lives in the Settings tab.
 
 import 'dart:async';
 
@@ -97,9 +97,9 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   void _openSettings() {
-    // ⚙ in the app bar now lands on the Backends list, not the legacy
-    // single-backend form. Backend details are edited from there.
-    widget.onOpenBackends();
+    // The failed-connection banner's "Settings" button: jump to the
+    // Settings tab so the user can fix auth / backend issues from there.
+    setState(() => _tab = 3);
   }
 
   @override
@@ -138,11 +138,6 @@ class _HomeShellState extends State<HomeShell> {
           _BellIconAction(
             appState: widget.appState,
             settingsStore: widget.settingsStore,
-          ),
-          IconButton(
-            tooltip: 'Settings',
-            icon: const Icon(Icons.settings),
-            onPressed: _openSettings,
           ),
         ],
       ),
