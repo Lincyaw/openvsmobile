@@ -14,22 +14,37 @@
 //     newStart+newLines of previous). It is visual only — tapping does
 //     nothing in v0 because the backend does not surface unchanged-line
 //     content (and we don't want to fake it).
-//   * Non-text shapes (binary / deleted / too-large) render a placeholder
-//     card with reason.
+//   * Binary / oversize diffs render a placeholder card with the reason
+//     (issue #55 AC: backend signals these via `isBinary: true` and
+//     `tooLarge: true` flags on the response).
 
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
 
+/// Signature of the diff fetch the viewer uses. Production wires this to
+/// `AppState.gitDiff`; widget tests inject a fake to render against a
+/// canned response without spinning up a backend.
+typedef GitDiffFn = Future<Map<String, dynamic>> Function({
+  required String workspaceId,
+  required String path,
+});
+
 class DiffViewerScreen extends StatefulWidget {
   final AppState appState;
   final String workspaceId;
   final String path;
+
+  /// Test-only override for the diff RPC. Defaults to `appState.gitDiff`.
+  @visibleForTesting
+  final GitDiffFn? diffOverride;
+
   const DiffViewerScreen({
     super.key,
     required this.appState,
     required this.workspaceId,
     required this.path,
+    this.diffOverride,
   });
 
   @override
@@ -42,7 +57,8 @@ class _DiffViewerScreenState extends State<DiffViewerScreen> {
   @override
   void initState() {
     super.initState();
-    _future = widget.appState.gitDiff(
+    final fetch = widget.diffOverride ?? widget.appState.gitDiff;
+    _future = fetch(
       workspaceId: widget.workspaceId,
       path: widget.path,
     );
@@ -113,9 +129,17 @@ class _DiffBody extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final kind = data['kind'] as String? ?? 'text';
-    if (kind != 'text') {
-      return _DiffPlaceholder(path: path, kind: kind);
+    // Backend wire shape (see next/backend/src/rpc.ts `git.diff`):
+    //   { hunks, baseSha, headSha, isBinary, tooLarge? }
+    // `isBinary` and `tooLarge` are mutually exclusive with a non-empty
+    // `hunks`; honour them first so the placeholder always wins.
+    final isBinary = data['isBinary'] == true;
+    final tooLarge = data['tooLarge'] == true;
+    if (isBinary) {
+      return _DiffPlaceholder(path: path, kind: 'binary');
+    }
+    if (tooLarge) {
+      return _DiffPlaceholder(path: path, kind: 'too-large');
     }
     final hunksRaw = data['hunks'] as List? ?? const [];
     final hunks = hunksRaw

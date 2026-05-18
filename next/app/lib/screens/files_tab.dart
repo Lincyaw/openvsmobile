@@ -862,7 +862,7 @@ class _StatusBar extends StatelessWidget {
                 const SizedBox(width: 8),
                 Text(
                   changesActive
-                      ? '· Changes · $changed file${changed == 1 ? '' : 's'}'
+                      ? '· Changes · $changed file${changed == 1 ? '' : 's'} · tap to exit'
                       : '· $changed changed',
                   style: bodyStyle,
                 ),
