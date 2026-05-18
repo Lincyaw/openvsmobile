@@ -962,7 +962,6 @@ export class PluginHost {
       err.code = RPC_ERR.capabilityNotDeclared;
       throw err;
     }
-    const id = this.allocateOutboundId();
     const outboundParams: Record<string, unknown> = {
       pluginId: params.pluginId,
       panelId: params.panelId,
@@ -970,9 +969,13 @@ export class PluginHost {
       type: params.type,
     };
     if (params.payload !== undefined) outboundParams.payload = params.payload;
+    // Fire-and-forget: no id so the plugin does not reply. The SDK still
+    // acknowledges (sends a response) because it mirrors the host method
+    // table, but with no id the response is dropped by the plugin's own
+    // respond() helper. On the host side we never await, so the channel
+    // stays quiet.
     entry.process.send({
       jsonrpc: "2.0",
-      id,
       method: "ui.event",
       params: outboundParams,
     });
