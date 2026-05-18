@@ -78,7 +78,6 @@ const Map<String, String> _kLanguageByExtension = {
   'toml': 'ini',
   'ini': 'ini',
   'conf': 'ini',
-  'env': 'properties',
   'properties': 'properties',
   'diff': 'diff',
   'patch': 'diff',
