@@ -1,23 +1,26 @@
-// PR Companion — Phase 2 (Inbox).
+// PR Companion — plugin entry (Phases 1 + 2 + 3).
 //
-// Phase 1 (skeleton + auth + workspace detection) and Phase 2 (this
-// slice — GitHub Notifications fetch with ETag, three-tab filter, scope
-// chip + switcher, swipe-to-dismiss with persistence) coexist in this
-// file. Phase 3 (PR detail) is implemented in `render/prDetail.js` by a
-// parallel worker; the partition between phases here uses explicit
-// section markers so the merge is mechanical.
+// Phase 1 ships the shell (auth + workspace detection). Phase 2 ships
+// the Inbox (GitHub Notifications fetch with ETag, three-tab filter,
+// scope chip + switcher, swipe-to-dismiss with persistence). Phase 3
+// ships the read-only PR detail panel (three-tab Conversation / Files
+// / Checks-placeholder, in-memory LRU cache, 30s ETag polling). The
+// partition between phases uses explicit `// === Phase N ===` markers
+// so future merges (Phase 4 review actions, Phase 5 checks +
+// background fan-out) stay mechanical.
 //
 // What this file owns:
-//   * Module-level state for inbox + cross-phase navigation target.
+//   * Module-level state for inbox + detail + cross-phase navigation.
 //   * `onActivate` / `onWorkspaceActivated` / `onUiEvent` wiring.
-//   * The `pollInbox` ETag-polling loop (60s foreground cadence).
-//   * Dispatching inbox UI events through `handleInboxEvent`.
+//   * The 60s inbox poll loop; detail polling is owned by prDetail.js.
+//   * Dispatching UI events to `handleInboxEvent` and
+//     `handleDetailEvent`.
 //
 // What this file does NOT own:
-//   * Inbox widget-tree construction or filter logic — see
-//     `render/inbox.js`.
-//   * PR-detail rendering — see `render/prDetail.js` (Phase 3 module;
-//     exists after Phase 3 merges).
+//   * Inbox widget-tree / filter logic — see `render/inbox.js`.
+//   * Detail widget-tree / fetch orchestration — see
+//     `render/prDetail.js` and its `render/{conversationTab,filesTab,
+//     _pure}.js` helpers.
 //   * Persistence helpers — see `state.js`.
 //   * GitHub HTTP client — see `github.js`.
 
@@ -31,15 +34,25 @@ import { createGithubClient } from "./github.js";
 import { loadState, saveState } from "./state.js";
 // Phase 2 renderer + event handler.
 import { renderInboxPanel, handleInboxEvent } from "./render/inbox.js";
+// Phase 3 renderer + event handler + polling lifecycle.
+import {
+  renderDetailPanel,
+  handleDetailEvent,
+  stopDetailPolling,
+} from "./render/prDetail.js";
 
 const execFileAsync = promisify(execFile);
 
 const INBOX_PANEL = "inbox";
 const DETAIL_PANEL = "detail";
-const USER_AGENT = "openvsmobile-pr-companion/0.1";
 
 const GIT_TIMEOUT_MS = 5000;
 const INBOX_POLL_INTERVAL_MS = 60_000;
+
+// User-Agent string passed to github.js. GitHub's API policy requires a
+// non-empty User-Agent; using a plugin-stable identifier makes our calls
+// distinguishable in their audit logs without leaking host identity.
+const USER_AGENT = "openvsmobile-pr-companion/0.1";
 
 // Regex per design doc § "Workspace model": SSH (`git@github.com:o/r`)
 // and HTTPS (`https://github.com/o/r[.git]`) forms only. Anything else
@@ -104,12 +117,26 @@ let currentRepo = null;
 // ─────────────────────────────────────────────────────────────
 // === Cross-phase: shared state ===
 // ─────────────────────────────────────────────────────────────
-// Read by Phase 2's row-tap handler, read+written by Phase 3's detail
-// renderer. Lives OUTSIDE the per-phase blocks so the Phase 3 merge can
-// reference it without shuffling code.
-
+// Phase 2 (Inbox) and Phase 3 (Detail) both read/write these slots.
+//
+// Contract:
+//   * `currentDetailPr` is the PR currently displayed in the detail
+//     panel, or `null` when no PR is open. Phase 2's Inbox tap path
+//     sets this to a `{owner, repo, number}` and calls `render(ctx)`,
+//     which re-renders both panels including detail.
+//   * `previousDetailPr` is what the detail layer last rendered. The
+//     detail render compares old vs new to know whether to reset its
+//     internal tab/file state and restart its polling loop.
+//   * `githubClient` is a per-activation client instance scoped to the
+//     resolved token. It is `null` until auth resolves, and is
+//     replaced (not mutated) on every activation so token rotation
+//     just works.
 /** @type {{ owner: string, repo: string, number: number } | null} */
 let currentDetailPr = null;
+/** @type {{ owner: string, repo: string, number: number } | null} */
+let previousDetailPr = null;
+/** @type {ReturnType<typeof createGithubClient> | null} */
+let githubClient = null;
 
 // ─────────────────────────────────────────────────────────────
 // === Phase 2 (Inbox) state ===
@@ -142,9 +169,6 @@ const inboxState = {
   lastRefreshIso: /** @type {string | null} */ (null),
 };
 
-let githubClient = /** @type {ReturnType<typeof createGithubClient> | null} */ (
-  null
-);
 /** @type {NodeJS.Timeout | null} */
 let inboxTimer = null;
 // Single-slot in-flight guard. A workspace switch can fire a manual
@@ -169,6 +193,13 @@ function effectiveScope() {
   if (persisted === "thisRepo" || persisted === "allRepos") return persisted;
   return "thisRepo";
 }
+
+// ─────────────────────────────────────────────────────────────
+// === Phase 3 (Detail) state ===
+// ─────────────────────────────────────────────────────────────
+// All Phase-3 module-level state lives inside render/prDetail.js
+// (detailState + prDetailCache + detailTimer) — none of it leaks here
+// beyond the cross-phase slots above. Keeps the merge surface minimal.
 
 /**
  * Persist `value` as the scope for the active workspace, then save.
@@ -262,41 +293,27 @@ async function pollInbox(ctx) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// === Phase 3 (Detail) state ===
-// ─────────────────────────────────────────────────────────────
-// (Phase 3 owns this section; Phase 2 leaves it absent.)
-
-function buildDetailTree() {
-  // Phase-2-only placeholder. Phase 3 replaces this builder with the
-  // real conversation/files/checks tree driven by `currentDetailPr`.
-  // Until then we paint a friendly note so the panel slot isn't
-  // visually empty.
-  const text =
-    currentDetailPr === null
-      ? "Open a PR from the Inbox tab. (Phase 3)"
-      : `Selected PR: ${currentDetailPr.owner}/${currentDetailPr.repo} #${currentDetailPr.number}. Detail UI lands in Phase 3.`;
-  return ui.section({
-    id: "prcomp-detail-section",
-    title: "PR Detail",
-    children: [
-      ui.text({ id: "prcomp-detail-placeholder", text }),
-    ],
+/**
+ * Render the detail panel via render/prDetail.js. Tracks
+ * `previousDetailPr` so the render layer can detect PR changes and
+ * reset its internal tab/file state + restart its 30s polling loop
+ * when needed.
+ *
+ * Wrapper exists so Phase 2's Inbox tap path has a single, stable
+ * entry point: set `currentDetailPr = …` then call
+ * `renderDetailPanelEntry(ctx)`.
+ */
+async function renderDetailPanelEntry(ctx) {
+  const prev = previousDetailPr;
+  previousDetailPr = currentDetailPr;
+  await renderDetailPanel(ctx, {
+    currentPr: currentDetailPr,
+    previousPr: prev,
+    github: githubClient,
   });
 }
 
-/**
- * Cross-phase entry point: Phase 2's row-tap handler invokes this
- * after setting `currentDetailPr`. Phase 3 reshapes the body inside
- * `buildDetailTree`; the call site here stays unchanged.
- *
- * @param {import("@openvsmobile/sdk").PluginContext} ctx
- */
-function renderDetailPanel(ctx) {
-  ctx.renderPanel(DETAIL_PANEL, buildDetailTree());
-}
-
-function render(ctx) {
+async function render(ctx) {
   ctx.renderPanel(
     INBOX_PANEL,
     renderInboxPanel(ctx, {
@@ -311,7 +328,7 @@ function render(ctx) {
       lastRefreshIso: inboxState.lastRefreshIso,
     }),
   );
-  renderDetailPanel(ctx);
+  await renderDetailPanelEntry(ctx);
 }
 
 async function hydrateWorkspace(workspace) {
@@ -329,6 +346,24 @@ async function hydrateWorkspace(workspace) {
   currentRepo = repo;
 }
 
+/**
+ * Rebuild the GitHub client from the latest auth result. Called on
+ * every activation; sets `githubClient` to `null` when auth is in any
+ * non-ok state so callers (Phase 2 / 3 / 4 / 5) can short-circuit
+ * cleanly. We never persist or rotate the client — replacing the
+ * reference on each activation matches the auth-rotation story.
+ */
+function rebuildGithubClient() {
+  if (currentAuth !== null && currentAuth.status === "ok") {
+    githubClient = createGithubClient({
+      token: currentAuth.token,
+      userAgent: USER_AGENT,
+    });
+  } else {
+    githubClient = null;
+  }
+}
+
 const plugin = createPlugin({
   async onActivate(ctx) {
     currentCtx = ctx;
@@ -341,14 +376,15 @@ const plugin = createPlugin({
     await hydrateWorkspace(workspace);
     currentAuth = await resolveGhAuth();
 
-    // === Phase 2: persisted-state load + client instantiation ===
+    // === Phase 2: persisted-state load ===
     persistedState = await loadState(ctx);
     dismissedSet = new Set(persistedState.dismissedIds);
-    if (currentAuth !== null && currentAuth.status === "ok") {
-      githubClient = createGithubClient({
-        token: currentAuth.token,
-        userAgent: USER_AGENT,
-      });
+
+    // === Cross-phase: GitHub client ===
+    rebuildGithubClient();
+
+    if (githubClient !== null) {
+      // === Phase 2: inbox poll loop ===
       // First poll runs concurrently with the initial paint — the
       // paint reflects the empty list + the "no PRs" empty state, then
       // the next render after the fetch fills it in. Acceptable
@@ -357,7 +393,7 @@ const plugin = createPlugin({
       // panel for the full HTTP round trip.
       pollInbox(ctx)
         .then((changed) => {
-          if (changed) render(ctx);
+          if (changed) void render(ctx);
         })
         .catch((err) => {
           ctx.log(
@@ -372,7 +408,7 @@ const plugin = createPlugin({
       inboxTimer = setInterval(() => {
         pollInbox(ctx)
           .then((changed) => {
-            if (changed) render(ctx);
+            if (changed) void render(ctx);
           })
           .catch((err) => {
             ctx.log(
@@ -384,7 +420,7 @@ const plugin = createPlugin({
       inboxTimer.unref?.();
     }
 
-    render(ctx);
+    await render(ctx);
   },
   async onWorkspaceActivated(ctx, workspace) {
     currentCtx = ctx;
@@ -395,15 +431,19 @@ const plugin = createPlugin({
       repoByWorkspace.delete(workspace.id);
     }
     await hydrateWorkspace(workspace);
-    render(ctx);
+    await render(ctx);
     // Workspace switch = scope change in most cases. Kick a poll so
     // the user sees instant feedback for the new scope; the ETag
     // means the call is essentially free on the wire even when the
     // notification list is unchanged.
+    //
+    // Detail panel is workspace-agnostic in Phase 3 (the open PR is
+    // pinned by id, not by workspace), so we don't tear it down on a
+    // workspace switch.
     if (githubClient !== null) {
       pollInbox(ctx)
         .then((changed) => {
-          if (changed) render(ctx);
+          if (changed) void render(ctx);
         })
         .catch((err) => {
           ctx.log(
@@ -437,20 +477,47 @@ const plugin = createPlugin({
         addDismissedId,
         openPrDetail: (ref) => {
           currentDetailPr = ref;
-          renderDetailPanel(ctx);
+          void renderDetailPanelEntry(ctx);
         },
         pollInbox: () => pollInbox(ctx),
-        rerender: () => render(ctx),
+        rerender: () => {
+          void render(ctx);
+        },
       });
       return;
     }
     // === Phase 3: Detail events ===
-    // (Phase 3 inserts its branch here.)
+    if (event.panelId === DETAIL_PANEL) {
+      const handled = handleDetailEvent(ctx, event, {
+        currentPr: currentDetailPr,
+        github: githubClient,
+      });
+      if (handled === true) return;
+    }
+
+    // Fall-through: log unknown events so the wire path is observable
+    // without pretending to handle anything.
     ctx.log(
       "warn",
       `prcomp: unhandled event ${event.panelId}/${event.type}`,
     );
   },
 });
+
+// When the host closes stdin the SDK lets the event loop drain. The
+// inbox + detail polling intervals are `unref()`'d so they don't keep
+// us alive, but a SIGTERM (or stdin EOF inside a tty) should also clear
+// them explicitly so vitest / test harnesses don't see a dangling
+// handle.
+const shutdown = () => {
+  if (inboxTimer !== null) {
+    clearInterval(inboxTimer);
+    inboxTimer = null;
+  }
+  stopDetailPolling();
+};
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
+process.stdin.once("end", shutdown);
 
 plugin.run();

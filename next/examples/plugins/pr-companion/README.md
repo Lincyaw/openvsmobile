@@ -39,12 +39,11 @@ shell out to a `terminal.*` RPC (the `gh auth token` invocation is a
 plain `node:child_process` call inside our own process), and we never
 persist the token.
 
-## Scope (Phases 1 + 2 — shipped)
+## Scope (Phases 1 + 2 + 3 — shipped)
 
-Phase 1 ships the plugin shell:
+Phase 1 — plugin shell:
 
-- Two panels are registered (`inbox`, `detail`) with placeholder
-  content.
+- Two panels are registered (`inbox`, `detail`).
 - `gh auth token` is resolved on every activation; the inbox banner
   reflects auth state (`missing` / `unauthed` / `tokenInvalid` /
   `offline` / `ok`).
@@ -53,7 +52,7 @@ Phase 1 ships the plugin shell:
   `owner/repo`, `not a GitHub repo`, or `no workspace active`.
 - A single `GET /user` call surfaces the authenticated login.
 
-Phase 2 ships the Inbox:
+Phase 2 — Inbox:
 
 - `GET /notifications?participating=true` polled every 60 s with
   `If-None-Match` / `If-Modified-Since` so 304s stay free.
@@ -65,9 +64,28 @@ Phase 2 ships the Inbox:
 - Swipe-to-dismiss persists dismissed notification ids to
   `~/.openvsmobile/pr-companion/state.json`; the per-workspace scope
   toggle is persisted alongside, keyed by the workspace UUID.
-- Tapping a row stages a PR ref for the Detail panel; the detail
-  surface itself is Phase 3.
+- Tapping a row stages the PR ref and re-renders the Detail panel.
 
-**Not yet implemented** (Phases 3–5): PR detail rendering, review
-actions, checks tab, background notification fan-out. See the design
-doc's "Implementation phases" section for the staged plan.
+Phase 3 — read-only PR detail panel:
+
+- Three-tab structure (Conversation / Files / Checks). Conversation
+  renders the PR body + top-level comments as Markdown cards; Files
+  renders one row per changed file with `+adds -dels` and a tap-to-open
+  diff sub-view (one `ui.codeBlock` per hunk, language inferred from a
+  small extension map per resolved design choice #3); Checks is a
+  placeholder for Phase 5.
+- In-memory LRU cache (20 entries) keyed by `owner/repo#number`. Stale-
+  while-revalidate: cached data renders instantly, a background refetch
+  re-renders on success.
+- 30s ETag polling while a PR is open; the timer is stopped when the PR
+  is closed or the plugin shuts down. Polling uses github.js's existing
+  10s per-request timeout — no separate abort plumbing here.
+- Partial-failure rendering: if any of `getPull` / `listPullFiles` /
+  `listPullComments` fails, the other tabs still render; the failing
+  tab degrades to a caption. A full-stack failure surfaces as a single
+  banner (`unauthed` / `offline` / `rateLimited` / `serverError`).
+
+**Not yet implemented** (Phases 4 / 5): review actions, top-level
+comment sheet, inline-comment threads (Phase 4); Checks tab content,
+background notification fan-out (Phase 5). See the design doc's
+"Implementation phases" section for the staged plan.
