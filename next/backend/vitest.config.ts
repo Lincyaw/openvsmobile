@@ -16,6 +16,10 @@ export default defineConfig({
       // member; its unit tests run in the same vitest invocation so a
       // single `pnpm test` covers both halves of the plugin platform.
       "packages/*/test/**/*.test.ts",
+      // Plugin example unit tests (pure modules, no host needed). Kept
+      // in-tree so a single `pnpm test` exercises them; once a plugin
+      // grows its own runner this glob retires.
+      "../examples/plugins/*/*.test.js",
     ],
     // ESM is the default in this project. Vitest picks it up from package.json
     // ("type": "module") — no extra config needed.
