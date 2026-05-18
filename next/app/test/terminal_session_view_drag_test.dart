@@ -49,18 +49,19 @@ void main() {
       expect(terminalFinder, findsOneWidget);
 
       // A modest downward drag — enough to clear at least one cellHeight
-      // and trigger at least one SGR wheel-down report. Exact count
-      // depends on the rendered cell height in the test environment, so
-      // we assert on shape, not magnitude.
+      // and trigger at least one SGR wheel-up report (natural-scroll
+      // semantics: finger down = reveal earlier content = wheel-up).
+      // Exact count depends on the rendered cell height in the test
+      // environment, so we assert on shape, not magnitude.
       await tester.drag(terminalFinder, const Offset(0, 120));
       await tester.pump();
 
       expect(captured, isNotEmpty,
           reason: 'drag should have emitted at least one SGR wheel report');
       for (final s in captured) {
-        // SGR wheel-down at some cell (col, row >= 1).
+        // SGR wheel-up (button 64) at some cell (col, row >= 1).
         expect(
-          RegExp(r'^\x1b\[<65;\d+;\d+M$').hasMatch(s),
+          RegExp(r'^\x1b\[<64;\d+;\d+M$').hasMatch(s),
           isTrue,
           reason: 'unexpected emission: ${s.codeUnits}',
         );

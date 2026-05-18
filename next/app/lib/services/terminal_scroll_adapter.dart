@@ -23,6 +23,15 @@ const int kMediumDragBurstSize = 4;
 ///                          semantics: the wheel reports where you started,
 ///                          not where the cursor currently is)
 ///
+/// **Directionality matches mobile direct-manipulation** (the same model
+/// as macOS natural-scroll, default since ~2011): a downward finger drag
+/// pulls earlier content into view — i.e. the visible window moves *up*
+/// over the buffer. So a downward drag emits `arrowUp` / SGR wheel-up
+/// (button 64) / PageUp, and an upward drag emits the opposite. The
+/// adapter flips raw pointer dy at its input boundary so its internal
+/// `down` vocabulary means "natural-scroll-down direction" — i.e. the
+/// keystroke we want to synthesise, not the direction the finger went.
+///
 /// The asymmetry around inertia is deliberate: in normal-buffer scrollback
 /// the xterm.dart view owns a real scroll position, and our callers are
 /// expected to drive it directly. In alt-buffer paths the side-effect is
@@ -45,8 +54,9 @@ class TerminalScrollAdapter {
   /// xterm.dart render-object's `getCellOffset`; tests stub it.
   final ({int col, int row}) Function(Offset) cellAt;
 
-  /// Normal-buffer scroll sink. Signed integer; positive matches a
-  /// downward drag direction. Callers translate sign into whatever
+  /// Normal-buffer scroll sink. Signed integer; positive matches the
+  /// natural-scroll-down direction (i.e. the user dragged *up* and wants
+  /// to see later content). Callers translate sign into whatever
   /// scrollback API the view exposes.
   final void Function(int lines) onScrollback;
 
@@ -66,9 +76,15 @@ class TerminalScrollAdapter {
   /// Accumulates raw drag-delta pixels and emits one unit per
   /// `cellHeight` of accumulated travel. Sub-cell remainder is held in
   /// `_residualDy` until the next update.
+  ///
+  /// The raw `deltaDy` is negated on the way in so the adapter's
+  /// internal `down` vocabulary aligns with the natural-scroll
+  /// direction (see class doc): a downward finger drag — `deltaDy > 0`
+  /// — produces `units < 0` and therefore `down: false`, which
+  /// downstream emits as `arrowUp` / SGR wheel-up / PageUp.
   void onDragUpdate({required double deltaDy, required double cellHeight}) {
     if (!_dragActive || cellHeight <= 0) return;
-    _residualDy += deltaDy;
+    _residualDy -= deltaDy;
     final int units = (_residualDy / cellHeight).truncate();
     if (units == 0) return;
     _residualDy -= units * cellHeight;
@@ -86,7 +102,10 @@ class TerminalScrollAdapter {
     _residualDy = 0;
 
     if (velocityDy.abs() < kFastFlingVelocity) return;
-    final bool down = velocityDy > 0;
+    // Same input-boundary flip as onDragUpdate: a downward fling
+    // (`velocityDy > 0`) is a natural-scroll-up request, so `down` is
+    // false → PageUp / wheel-up. See class doc.
+    final bool down = velocityDy < 0;
 
     if (!terminal.isUsingAltBuffer) {
       // Normal-buffer fling intentionally not synthesised — the host

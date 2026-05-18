@@ -36,7 +36,7 @@ void main() {
     void enterAltBuffer() => terminal.write('\x1b[?1049h');
     void enableMouseScrollReporting() => terminal.write('\x1b[?1000h');
 
-    test('normal buffer: drag down 3 × cellHeight → 3 scrollback increments', () {
+    test('normal buffer: drag down 3 × cellHeight → 3 negative scrollback ticks (natural scroll)', () {
       final adapter = buildAdapter();
       adapter.onDragStart(const Offset(50, 50));
       adapter.onDragUpdate(deltaDy: 16, cellHeight: 16);
@@ -44,11 +44,15 @@ void main() {
       adapter.onDragUpdate(deltaDy: 16, cellHeight: 16);
       adapter.onDragEnd(velocityDy: 0, rows: 24);
 
-      expect(scrollback, [1, 1, 1]);
+      // Sign reflects natural-scroll vocabulary: finger drag down is a
+      // natural-scroll-up request (reveal earlier content), so the sink
+      // receives negative ticks. Callers translate the sign into whatever
+      // scrollback API they expose.
+      expect(scrollback, [-1, -1, -1]);
       expect(emitted, isEmpty);
     });
 
-    test('alt + no mouse: drag down 3 × cellHeight → 3 × \\e[B (arrow down)', () {
+    test('alt + no mouse: drag down 3 × cellHeight → 3 × \\e[A (arrow up, natural scroll)', () {
       enterAltBuffer();
       expect(terminal.isUsingAltBuffer, isTrue);
       expect(terminal.mouseMode, MouseMode.none);
@@ -58,11 +62,12 @@ void main() {
       adapter.onDragUpdate(deltaDy: 48, cellHeight: 16);
       adapter.onDragEnd(velocityDy: 0, rows: 24);
 
-      expect(emitted, ['\x1b[B', '\x1b[B', '\x1b[B']);
+      // Finger drag down = reveal earlier content = arrow ↑.
+      expect(emitted, ['\x1b[A', '\x1b[A', '\x1b[A']);
       expect(scrollback, isEmpty);
     });
 
-    test('alt + mouse reportScroll: drag down 3 × cellHeight → 3 × SGR wheel-down', () {
+    test('alt + mouse reportScroll: drag down 3 × cellHeight → 3 × SGR wheel-up (natural scroll)', () {
       enterAltBuffer();
       enableMouseScrollReporting();
       expect(terminal.mouseMode.reportScroll, isTrue);
@@ -74,24 +79,25 @@ void main() {
       adapter.onDragUpdate(deltaDy: 48, cellHeight: 16);
       adapter.onDragEnd(velocityDy: 0, rows: 24);
 
+      // Finger drag down → SGR wheel-up (button 64) at the drag-start cell.
       expect(emitted, [
-        '\x1b[<65;10;5M',
-        '\x1b[<65;10;5M',
-        '\x1b[<65;10;5M',
+        '\x1b[<64;10;5M',
+        '\x1b[<64;10;5M',
+        '\x1b[<64;10;5M',
       ]);
       expect(scrollback, isEmpty);
     });
 
-    test('alt + no mouse: fast fling up (dy negative > 800 px/s) → one PgUp', () {
+    test('alt + no mouse: fast fling up (dy negative > 800 px/s) → one PgDn (natural scroll)', () {
       enterAltBuffer();
 
       final adapter = buildAdapter();
       adapter.onDragStart(const Offset(50, 50));
       // No slow-drag accumulation; fling velocity alone triggers the paging
-      // event on dragEnd.
+      // event on dragEnd. Finger fling up = natural-scroll down = PgDn.
       adapter.onDragEnd(velocityDy: -1200, rows: 24);
 
-      expect(emitted, ['\x1b[5~']);
+      expect(emitted, ['\x1b[6~']);
       expect(scrollback, isEmpty);
     });
 
@@ -101,12 +107,13 @@ void main() {
 
       final adapter = buildAdapter(cellAt: (_) => (col: 10, row: 5));
       adapter.onDragStart(const Offset(120, 80));
+      // Finger fling down → natural-scroll up → wheel-up burst.
       adapter.onDragEnd(velocityDy: 1500, rows: 24);
 
-      // rows/2 = 12 wheel-down events.
+      // rows/2 = 12 wheel-up events (button 64).
       expect(emitted.length, 12);
       for (final s in emitted) {
-        expect(s, '\x1b[<65;10;5M');
+        expect(s, '\x1b[<64;10;5M');
       }
     });
 
@@ -148,9 +155,10 @@ void main() {
       adapter.onDragEnd(velocityDy: 0, rows: 24);
 
       // The drag-start offset was (7, 3); the adapter must not have used
-      // the update's accumulated position.
+      // the update's accumulated position. Wheel-up (button 64) because
+      // finger drag down is a natural-scroll-up request.
       expect(lastQueried, const Offset(7, 3));
-      expect(emitted.every((s) => s == '\x1b[<65;7;3M'), isTrue);
+      expect(emitted.every((s) => s == '\x1b[<64;7;3M'), isTrue);
     });
   });
 }
