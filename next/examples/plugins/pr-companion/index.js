@@ -6,8 +6,10 @@
 //     "Resolved design choices" #2).
 //   * `gh auth token` resolution on every activation, plus a single
 //     `/user` call to surface the authenticated login in the placeholder.
-//     The token never lives outside auth.js's call frame in this slice;
-//     Phase 2's github.js will receive it explicitly when it lands.
+//     The token is held only in auth.js's return value and in the
+//     module-scoped `currentAuth` object below; it is never read,
+//     logged, persisted, or serialized into the widget tree. Phase 2's
+//     github.js will receive it explicitly when it lands.
 //   * Workspace detection: on activation and on every
 //     `onWorkspaceActivated` callback we run `git remote get-url origin`
 //     inside the workspace root and parse the result against the
@@ -168,6 +170,10 @@ function buildInboxTree() {
   // render. Wrapping the banner in a single-child column keeps the root
   // shape identical regardless of which branch fired.
   if (currentAuth === null || currentAuth.status !== "ok") {
+    // onActivate awaits resolveGhAuth() before calling render(), so in
+    // normal flow currentAuth is never null here. The fallback exists
+    // only so this builder is safely callable from a future call site
+    // (e.g. a manual re-render before activation completes).
     const banner = authBanner(currentAuth ?? { status: "offline", error: new Error("auth not resolved") });
     return ui.column({
       id: "prcomp-inbox-root",

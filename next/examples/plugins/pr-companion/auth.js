@@ -78,6 +78,10 @@ export async function resolveGhAuth() {
         Accept: "application/vnd.github+json",
         "User-Agent": USER_AGENT,
       },
+      // 5s budget matches the gh/git execFile timeouts. Without this a
+      // half-open TCP can hang onActivate forever, leaving the panel
+      // blank — AbortError lands in the catch and surfaces as offline.
+      signal: AbortSignal.timeout(5000),
     });
   } catch (err) {
     return { status: "offline", error: err instanceof Error ? err : new Error(String(err)) };
