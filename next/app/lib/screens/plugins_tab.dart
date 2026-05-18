@@ -830,7 +830,7 @@ class _DetailBody extends StatelessWidget {
   }
 }
 
-class _PanelRenderer extends StatelessWidget {
+class _PanelRenderer extends StatefulWidget {
   final AppState appState;
   final String pluginId;
   final PluginPanelStub panel;
@@ -841,25 +841,62 @@ class _PanelRenderer extends StatelessWidget {
   });
 
   @override
+  State<_PanelRenderer> createState() => _PanelRendererState();
+}
+
+class _PanelRendererState extends State<_PanelRenderer> {
+  @override
+  void initState() {
+    super.initState();
+    widget.appState.uiPanels.addListener(_onPanelsChanged);
+  }
+
+  @override
+  void didUpdateWidget(covariant _PanelRenderer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.appState.uiPanels != widget.appState.uiPanels) {
+      oldWidget.appState.uiPanels.removeListener(_onPanelsChanged);
+      widget.appState.uiPanels.addListener(_onPanelsChanged);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.appState.uiPanels.removeListener(_onPanelsChanged);
+    super.dispose();
+  }
+
+  void _onPanelsChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final snapshot = appState.uiPanels.snapshotFor(pluginId, panel.id);
+    final snapshot =
+        widget.appState.uiPanels.snapshotFor(widget.pluginId, widget.panel.id);
     final tree = snapshot?.tree;
     if (tree == null) {
-      return _PanelEmpty(title: panel.title);
+      return _PanelEmpty(
+        title: widget.panel.title,
+        hasSnapshot: snapshot != null,
+        panelCount: widget.appState.uiPanels.panels.length,
+      );
     }
     return SingleChildScrollView(
-      key: ValueKey<String>('plugin-panel:$pluginId/${panel.id}'),
+      key: ValueKey<String>(
+        'plugin-panel:${widget.pluginId}/${widget.panel.id}',
+      ),
       padding: const EdgeInsets.all(AppSpacing.md),
       child: UiRenderer(
         tree: tree,
-        onEvent: (event) => _dispatch(panel.id, event),
+        onEvent: (event) => _dispatch(widget.panel.id, event),
       ),
     );
   }
 
   void _dispatch(String panelId, UiNodeEvent event) {
-    appState.uiPanels.dispatchEvent(
-      pluginId: pluginId,
+    widget.appState.uiPanels.dispatchEvent(
+      pluginId: widget.pluginId,
       panelId: panelId,
       event: event,
     );
@@ -868,7 +905,13 @@ class _PanelRenderer extends StatelessWidget {
 
 class _PanelEmpty extends StatelessWidget {
   final String title;
-  const _PanelEmpty({required this.title});
+  final bool hasSnapshot;
+  final int panelCount;
+  const _PanelEmpty({
+    required this.title,
+    this.hasSnapshot = false,
+    this.panelCount = 0,
+  });
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -887,6 +930,14 @@ class _PanelEmpty extends StatelessWidget {
               'Waiting for "$title" content from the plugin…',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodyMedium,
+            ),
+            const SizedBox(height: AppSpacing.sm),
+            Text(
+              'snapshot=${hasSnapshot ? "yes" : "no"}  panels=$panelCount',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
             ),
           ],
         ),

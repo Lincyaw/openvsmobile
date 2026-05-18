@@ -4,5 +4,8 @@
   "version": "0.1.0",
   "entry": { "kind": "node", "path": "index.js" },
   "activation": ["onStartup"],
-  "capabilities": { "ui": true }
+  "capabilities": { "ui": true },
+  "contributes": {
+    "panels": [{ "id": "time", "title": "Clock" }]
+  }
 }

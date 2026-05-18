@@ -6,6 +6,7 @@
   "activation": ["onStartup"],
   "capabilities": { "ui": true },
   "contributes": {
+    "panels": [{ "id": "home", "title": "Hello World" }],
     "commands": [{ "id": "hello.greet", "title": "Greet" }]
   }
 }

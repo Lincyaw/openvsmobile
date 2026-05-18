@@ -28,7 +28,6 @@ import { RPC_ERR, sendNotification } from "../rpc.js";
 import {
   loadManifest,
   type ManifestCapabilities,
-  type ManifestContributes,
   type PluginManifest,
 } from "./manifest.js";
 import {
@@ -93,7 +92,7 @@ export interface PluginInfo {
   version: string;
   state: WirePluginState;
   capabilities: ManifestCapabilities;
-  contributes: ManifestContributes;
+  contributes: Record<string, unknown>;
   crashReason?: string;
 }
 
@@ -693,7 +692,10 @@ export class PluginHost {
       version: entry.manifest.version,
       state: toWireState(entry.state),
       capabilities: entry.manifest.capabilities,
-      contributes: entry.manifest.contributes,
+      contributes: {
+        ...entry.manifest.contributes.unknown,
+        commands: entry.manifest.contributes.commands,
+      },
     };
     if (info.state === "crashed" && entry.reason !== undefined) {
       info.crashReason = entry.reason;
