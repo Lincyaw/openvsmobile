@@ -98,6 +98,11 @@ async function main(): Promise<void> {
       if (ws === null) return null;
       return { id: ws.id, root: ws.root, label: ws.label };
     },
+    // Phase-6A `notify.show`: plugins fire user-facing notifications
+    // through the existing §4.5 store + WS fan-out. The host has
+    // already overridden `input.source` to the plugin id before
+    // calling us, so `publish` runs unchanged.
+    notificationPublisher: (input) => state.notificationHub.publish(input),
   });
   // Phase-0 fan-out: when the user switches workspaces, push
   // `workspace.activated` to every active plugin process so repo-aware

@@ -1098,6 +1098,52 @@ export interface WorkspaceRef {
   label: string;
 }
 
+// ---------------------------------------------------------------------
+// Notification surface (Phase 6A). Mirrors the host's wire shape from
+// `next/backend/src/notifications.ts` so plugins do not need to import
+// across packages. The host validates this payload on receipt and
+// silently overrides `source` to the plugin's manifest id (a plugin
+// cannot impersonate another `source` like "system" or another
+// plugin's id).
+// ---------------------------------------------------------------------
+
+export type NotificationLevel = "info" | "success" | "warning" | "error";
+
+export interface NotificationField {
+  key: string;
+  value: string;
+}
+
+export interface NotificationLink {
+  title: string;
+  url: string;
+}
+
+export type NotificationAction =
+  | { kind: "open-url"; url: string }
+  | { kind: "copy"; text: string }
+  | { kind: "open-workspace"; workspaceId: string };
+
+/// Inbound payload a plugin hands to `ctx.showNotification`. Matches the
+/// host's `NotificationInput` verbatim. `source` is required by the type
+/// but the host overrides it to the plugin's id on receipt — supplying
+/// anything else here is harmless, just ignored.
+export interface NotificationInput {
+  source: string;
+  level: NotificationLevel;
+  title: string;
+  body?: string;
+  fields?: NotificationField[];
+  links?: NotificationLink[];
+  action?: NotificationAction;
+  groupKey?: string;
+  supersedes?: string;
+  important?: boolean;
+  ttl?: number;
+  timestamp?: number;
+  widget?: unknown;
+}
+
 export interface PluginContext {
   /// Send a `host.log` notification. Always allowed regardless of the
   /// manifest's capability set — the host log is the universal smoke
@@ -1168,6 +1214,14 @@ export interface PluginContext {
   /// usual shape is: `await ctx.currentWorkspace()` inside `onActivate`,
   /// then react to `onWorkspaceActivated` for subsequent switches.
   currentWorkspace(): Promise<WorkspaceRef | null>;
+  /// Fire a user-facing notification through the host's notification
+  /// store + WS fan-out (§4.5). Round-trips a `notify.show` request;
+  /// gated by the manifest's `ui` capability. The host overrides
+  /// `input.source` to the plugin's id before persistence — plugins
+  /// cannot impersonate `"system"` or another plugin's id. Returns the
+  /// server-assigned notification id so the plugin can correlate it
+  /// with later `supersedes` calls.
+  showNotification(input: NotificationInput): Promise<{ id: string }>;
 }
 
 export interface PluginConfig {
@@ -1315,6 +1369,35 @@ export function createPlugin(config: PluginConfig): PluginRunner {
               id,
               method: "workspace.current",
               params: {},
+            });
+          });
+        },
+        showNotification(input): Promise<{ id: string }> {
+          return new Promise<{ id: string }>((resolve, reject) => {
+            const id = nextOutboundId++;
+            pendingInvokes.set(id, {
+              // Host shape: `{ id: <notification-id> }`. We narrow here
+              // rather than at the call site so the SDK contract stays
+              // crisp even if the host later returns more fields.
+              resolve: (v) => {
+                const r = (v ?? {}) as { id?: unknown };
+                if (typeof r.id !== "string") {
+                  reject(
+                    new Error(
+                      "notify.show response missing string id",
+                    ),
+                  );
+                  return;
+                }
+                resolve({ id: r.id });
+              },
+              reject,
+            });
+            writeMessage({
+              jsonrpc: "2.0",
+              id,
+              method: "notify.show",
+              params: { input },
             });
           });
         },

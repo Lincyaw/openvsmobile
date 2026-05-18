@@ -24,7 +24,11 @@ import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { WebSocket } from "ws";
-import { RPC_ERR, sendNotification } from "../rpc.js";
+import { RPC_ERR, RpcError, sendNotification } from "../rpc.js";
+import {
+  validateNotificationInput,
+  type NotificationInput,
+} from "../notifications.js";
 import {
   loadManifest,
   type ManifestCapabilities,
@@ -159,6 +163,15 @@ export interface PluginHostOptions {
   /// tests substitute a stub. Defaults to "no active workspace" so the
   /// host stays usable in isolation (e.g. SDK-only test harnesses).
   workspaceResolver?: () => WorkspaceRef | null;
+  /// Sink for plugin-fired notifications (Phase 6A). Receives an
+  /// already-source-overridden `NotificationInput`; returns the
+  /// store-assigned id. Production wires this to
+  /// `state.notificationHub.publish(input)` so the row lands in the
+  /// SQLite store and fans out through the existing
+  /// `notification.show` WS broadcast. Default is a no-op that returns
+  /// a synthetic id so the host stays usable in isolation
+  /// (SDK-only test harnesses); production callers always supply one.
+  notificationPublisher?: (input: NotificationInput) => { id: string };
 }
 
 /// Minimal workspace shape pushed to plugins. Matches the SDK's
@@ -282,6 +295,13 @@ export class PluginHost {
   /// to "no active workspace" — production wires this to the workspace
   /// registry in `index.ts`.
   private readonly workspaceResolver: () => WorkspaceRef | null;
+  /// Publishes a (source-overridden) notification into the host's store +
+  /// fan-out. See `PluginHostOptions.notificationPublisher`. Defaults to
+  /// a synthetic-id no-op so the host runs in isolation; production
+  /// wires this to `state.notificationHub.publish` in `index.ts`.
+  private readonly notificationPublisher: (
+    input: NotificationInput,
+  ) => { id: string };
 
   constructor(opts: PluginHostOptions = {}) {
     this.pluginsDir = opts.pluginsDir ?? resolveDefaultPluginsDir();
@@ -306,6 +326,9 @@ export class PluginHost {
     this.uiRegistry = new UiPanelRegistry(uiNotifier);
     this.workspaceRootResolver = opts.workspaceRootResolver ?? (() => null);
     this.workspaceResolver = opts.workspaceResolver ?? (() => null);
+    this.notificationPublisher =
+      opts.notificationPublisher ??
+      ((_input) => ({ id: `unwired-${Date.now()}` }));
   }
 
   /// UI panel registry. Public so the RPC layer can route `ui.subscribe`
@@ -700,6 +723,9 @@ export class PluginHost {
       // (`fs` via `workspace.*` namespace map) has already run upstream.
       return { workspace: this.workspaceResolver() };
     }
+    if (method === "notify.show") {
+      return this.handleNotifyShow(plugin, params);
+    }
     // Capability passed, but the method itself doesn't exist yet.
     // Surface as methodNotFound so a plugin author has a clear signal
     // that they declared a capability but the host hasn't wired the
@@ -737,6 +763,53 @@ export class PluginHost {
       throw err;
     }
     this.onHostLog({ pluginId, level, msg, ts: Date.now() });
+  }
+
+  /// Plugin-fired notification (Phase 6A). Params shape:
+  /// `{ input: NotificationInput }`. The capability gate (`ui` via the
+  /// `notify.*` → `ui` mapping in `requiredCapability`) has already run
+  /// upstream, so we know the plugin declared `ui`.
+  ///
+  /// Security: we override `input.source = plugin.id` BEFORE validation
+  /// + publish. The hub's existing `add`/`publish` path trusts whatever
+  /// `source` the caller passes, which is correct for host-invoked
+  /// callers — but a plugin must NOT be able to claim
+  /// `source: "system"` or another plugin's id. Overriding at the
+  /// handler boundary keeps the change self-contained: no API
+  /// modification to `NotificationStore.insert` or `NotificationHub.publish`.
+  ///
+  /// Validation errors propagate as `RpcError(invalidParams)` (the
+  /// dispatcher reads `err.code` and rewrites the JSON-RPC error frame).
+  /// Returns `{ id }` — the store-assigned notification id, so the
+  /// plugin can correlate it with later `supersedes` calls.
+  private handleNotifyShow(
+    plugin: PluginProcess,
+    params: unknown,
+  ): { id: string } {
+    if (!params || typeof params !== "object" || Array.isArray(params)) {
+      throw new RpcError(
+        RPC_ERR.invalidParams,
+        "notify.show params must be an object",
+      );
+    }
+    const p = params as Record<string, unknown>;
+    const raw = p.input;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new RpcError(
+        RPC_ERR.invalidParams,
+        "notify.show params.input must be an object",
+      );
+    }
+    // Source override BEFORE validation. The validator requires
+    // a non-empty string `source`; injecting the plugin id here means
+    // a plugin that omits `source` (correct usage — the field is
+    // host-overwritten anyway) still passes validation.
+    const overridden = {
+      ...(raw as Record<string, unknown>),
+      source: plugin.manifest.id,
+    };
+    const input = validateNotificationInput(overridden);
+    return this.notificationPublisher(input);
   }
 
   /// Reserve an outbound id for a host→plugin request. Used by

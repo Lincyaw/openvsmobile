@@ -13,6 +13,7 @@ import {
   type PluginState,
   type WorkspaceRef,
 } from "../src/plugins/host.js";
+import type { NotificationInput } from "../src/notifications.js";
 import { makeTempDir, rmTempDir, sleep } from "./_helpers.js";
 
 const FIXTURE_ROOT = join(
@@ -60,7 +61,10 @@ afterEach(async () => {
 async function buildHarness(
   fixtures: string[],
   overrideManifest?: { name: string; content: string },
-  options?: { workspaceResolver?: () => WorkspaceRef | null },
+  options?: {
+    workspaceResolver?: () => WorkspaceRef | null;
+    notificationPublisher?: (input: NotificationInput) => { id: string };
+  },
 ): Promise<Harness> {
   if (staging === null) throw new Error("staging dir not set up");
   const pluginsDir = join(staging, "plugins");
@@ -86,6 +90,9 @@ async function buildHarness(
     onHostLog: (entry) => hostLogs.push(entry),
     ...(options?.workspaceResolver !== undefined
       ? { workspaceResolver: options.workspaceResolver }
+      : {}),
+    ...(options?.notificationPublisher !== undefined
+      ? { notificationPublisher: options.notificationPublisher }
       : {}),
   });
   await host.start();
@@ -333,6 +340,186 @@ describe("PluginHost", () => {
       expect(seen.params?.workspace).toEqual(ws);
     } finally {
       harness.host.shutdown();
+    }
+  });
+
+  it("notify.show: a plugin with `ui` capability publishes a notification; source is the plugin id", async () => {
+    const seen: NotificationInput[] = [];
+    let counter = 0;
+    const harness = await buildHarness(["notify"], undefined, {
+      notificationPublisher: (input) => {
+        seen.push(input);
+        return { id: `n-${++counter}` };
+      },
+    });
+    try {
+      const captured = await waitFor(() => (seen.length > 0 ? seen[0] : undefined), 2000);
+      expect(captured.title).toBe("hello from notify fixture");
+      expect(captured.body).toBe("phase-6a smoke");
+      expect(captured.level).toBe("info");
+      // The fixture deliberately sends `source: "system"` — the host
+      // must overwrite it with the plugin id BEFORE publish, otherwise
+      // a plugin could impersonate the system or another plugin.
+      expect(captured.source).toBe("notify");
+
+      // The host's response (containing the assigned id) should reach
+      // the plugin's stdin, which the fixture echoes to stderr.
+      const logPath = join(harness.logDir, "notify.stderr.log");
+      const response = await waitFor(async () => {
+        let raw: string;
+        try {
+          raw = await readFile(logPath, "utf8");
+        } catch {
+          return undefined;
+        }
+        const all = [...raw.matchAll(/<<RX>>(.*?)<<END>>/gs)];
+        for (const m of all) {
+          const body = JSON.parse(m[1] as string) as {
+            id?: number;
+            result?: { id?: string };
+          };
+          if (body.id === 1 && body.result?.id !== undefined) return body;
+        }
+        return undefined;
+      }, 2000);
+      expect(response.result?.id).toBe("n-1");
+    } finally {
+      harness.host.shutdown();
+    }
+  });
+
+  it("notify.show: a plugin without `ui` capability gets -32011 capabilityNotDeclared", async () => {
+    // Stage the notify fixture but override its manifest to strip `ui`.
+    const seen: NotificationInput[] = [];
+    const harness = await buildHarness(["notify"], {
+      name: "notify",
+      content: JSON.stringify({
+        id: "notify",
+        name: "Notify fixture (no caps)",
+        version: "0.0.1",
+        entry: { kind: "node", path: "index.js" },
+        activation: ["onStartup"],
+        capabilities: {},
+      }),
+    }, {
+      notificationPublisher: (input) => {
+        seen.push(input);
+        return { id: "should-not-fire" };
+      },
+    });
+    try {
+      const logPath = join(harness.logDir, "notify.stderr.log");
+      const reply = await waitFor(async () => {
+        let raw: string;
+        try {
+          raw = await readFile(logPath, "utf8");
+        } catch {
+          return undefined;
+        }
+        const all = [...raw.matchAll(/<<RX>>(.*?)<<END>>/gs)];
+        for (const m of all) {
+          const body = JSON.parse(m[1] as string) as {
+            id?: number;
+            error?: { code?: number; message?: string };
+          };
+          if (body.id === 1 && body.error !== undefined) return body;
+        }
+        return undefined;
+      }, 2000);
+      expect(reply.error?.code).toBe(-32011);
+      expect(String(reply.error?.message)).toContain("capabilityNotDeclared");
+      // And the publisher must never have run.
+      expect(seen).toHaveLength(0);
+    } finally {
+      harness.host.shutdown();
+    }
+  });
+
+  it("notify.show: invalid input (missing title) surfaces -32602 invalidParams to the plugin", async () => {
+    // Custom fixture inline: write a plugin that fires notify.show
+    // with an empty title so the host's validator rejects it. Pattern
+    // after the override-manifest path the other tests use.
+    if (staging === null) throw new Error("staging dir not set up");
+    const pluginsDir = join(staging, "plugins");
+    const logDir = join(staging, "logs");
+    await mkdir(join(pluginsDir, "notifybad"), { recursive: true });
+    await mkdir(logDir, { recursive: true });
+    await writeFile(
+      join(pluginsDir, "notifybad", "plugin.json"),
+      JSON.stringify({
+        id: "notifybad",
+        name: "Notify bad fixture",
+        version: "0.0.1",
+        entry: { kind: "node", path: "index.js" },
+        activation: ["onStartup"],
+        capabilities: { ui: true },
+      }),
+    );
+    await writeFile(
+      join(pluginsDir, "notifybad", "index.js"),
+      `
+process.stdout.write(
+  JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "notify.show",
+    params: { input: { level: "info", title: "" } },
+  }) + "\\n",
+);
+let buffer = Buffer.alloc(0);
+process.stdin.on("data", (chunk) => {
+  buffer = Buffer.concat([buffer, chunk]);
+  while (true) {
+    const nl = buffer.indexOf(0x0a);
+    if (nl === -1) return;
+    let line = buffer.subarray(0, nl);
+    buffer = buffer.subarray(nl + 1);
+    if (line.length > 0 && line[line.length - 1] === 0x0d) {
+      line = line.subarray(0, line.length - 1);
+    }
+    if (line.length === 0) continue;
+    process.stderr.write("<<RX>>" + line.toString("utf8") + "<<END>>\\n");
+  }
+});
+setTimeout(() => {}, 60_000);
+`,
+    );
+    const seen: NotificationInput[] = [];
+    const host = new PluginHost({
+      pluginsDir,
+      logDir,
+      logger: () => {},
+      onHostLog: () => {},
+      notificationPublisher: (input) => {
+        seen.push(input);
+        return { id: "x" };
+      },
+    });
+    await host.start();
+    try {
+      const logPath = join(logDir, "notifybad.stderr.log");
+      const reply = await waitFor(async () => {
+        let raw: string;
+        try {
+          raw = await readFile(logPath, "utf8");
+        } catch {
+          return undefined;
+        }
+        const all = [...raw.matchAll(/<<RX>>(.*?)<<END>>/gs)];
+        for (const m of all) {
+          const body = JSON.parse(m[1] as string) as {
+            id?: number;
+            error?: { code?: number; message?: string };
+          };
+          if (body.id === 1 && body.error !== undefined) return body;
+        }
+        return undefined;
+      }, 2000);
+      expect(reply.error?.code).toBe(-32602);
+      expect(String(reply.error?.message)).toContain("title");
+      expect(seen).toHaveLength(0);
+    } finally {
+      host.shutdown();
     }
   });
 

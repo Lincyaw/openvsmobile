@@ -19,6 +19,7 @@ import {
   createPlugin,
   ui,
   type AccentToken,
+  type NotificationInput,
   type PluginContext,
   type SizeToken,
   type SpacingToken,
@@ -865,5 +866,109 @@ describe("Phase-0 workspace surface", () => {
     // No outbound frame whatsoever — the notification has no id so the SDK
     // does not ack, and there is no callback to throw or log.
     expect(h.outboundLines).toEqual([]);
+  });
+});
+
+describe("Phase-6A notify.show surface", () => {
+  it("ctx.showNotification serializes a notify.show request and resolves with {id} on the host's reply", async () => {
+    const h = buildHarness();
+    let resolved: { id: string } | undefined;
+    const input: NotificationInput = {
+      // `source` is host-overridden but the SDK type still requires it;
+      // any string is fine, the host overwrites it before validation.
+      source: "ignored",
+      level: "info",
+      title: "Build green",
+      body: "All checks passed",
+    };
+    const plugin = createPlugin({
+      onActivate(ctx): void {
+        void ctx.showNotification(input).then((r) => {
+          resolved = r;
+        });
+      },
+    });
+    plugin.run({ stdin: h.stdinIn, stdout: h.stdoutOut });
+    const [first] = await h.waitForOutbound(1);
+    const req = JSON.parse(first as string) as {
+      jsonrpc: string;
+      id?: number;
+      method?: string;
+      params?: { input?: NotificationInput };
+    };
+    expect(req.jsonrpc).toBe("2.0");
+    expect(req.method).toBe("notify.show");
+    expect(req.id).toBeTypeOf("number");
+    expect(req.params?.input?.title).toBe("Build green");
+    expect(req.params?.input?.level).toBe("info");
+    // Simulate the host's success-shaped reply.
+    h.pushInbound({
+      jsonrpc: "2.0",
+      id: req.id,
+      result: { id: "notif-abc-123" },
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(resolved).toEqual({ id: "notif-abc-123" });
+  });
+
+  it("ctx.showNotification rejects when the host returns an error frame", async () => {
+    const h = buildHarness();
+    let caught: Error | null = null;
+    const plugin = createPlugin({
+      onActivate(ctx): void {
+        void ctx
+          .showNotification({
+            source: "ignored",
+            level: "info",
+            // Empty title → host's validator would reject in the wild.
+            // We just need the host to *reply* with an error frame; the
+            // SDK has no validation of its own.
+            title: "",
+          })
+          .catch((err) => {
+            caught = err as Error;
+          });
+      },
+    });
+    plugin.run({ stdin: h.stdinIn, stdout: h.stdoutOut });
+    const [first] = await h.waitForOutbound(1);
+    const req = JSON.parse(first as string) as { id?: number };
+    h.pushInbound({
+      jsonrpc: "2.0",
+      id: req.id,
+      error: { code: -32602, message: "title required" },
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(caught).not.toBeNull();
+    expect((caught as unknown as Error).message).toContain("title required");
+  });
+
+  it("ctx.showNotification rejects when the host's reply omits a string id", async () => {
+    const h = buildHarness();
+    let caught: Error | null = null;
+    const plugin = createPlugin({
+      onActivate(ctx): void {
+        void ctx
+          .showNotification({
+            source: "ignored",
+            level: "info",
+            title: "x",
+          })
+          .catch((err) => {
+            caught = err as Error;
+          });
+      },
+    });
+    plugin.run({ stdin: h.stdinIn, stdout: h.stdoutOut });
+    const [first] = await h.waitForOutbound(1);
+    const req = JSON.parse(first as string) as { id?: number };
+    h.pushInbound({
+      jsonrpc: "2.0",
+      id: req.id,
+      result: {}, // missing id
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(caught).not.toBeNull();
+    expect((caught as unknown as Error).message).toContain("missing string id");
   });
 });

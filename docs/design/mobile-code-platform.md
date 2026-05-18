@@ -268,6 +268,7 @@ plugin.run();
 - `renderPanel(panelId, tree)` → `ui.render` (gated by `capabilities.ui`).
 - `invokeCommand(targetPluginId, commandId, args)` → `plugin.invokeCommand` (cross-plugin call; gated by the host).
 - `currentWorkspace()` → `workspace.current` (gated by `capabilities.fs`; returns `WorkspaceRef | null`). Pair with `PluginConfig.onWorkspaceActivated` for switch notifications; the callback does not fire on startup, so a plugin's first read must come through this RPC.
+- `showNotification(input)` → `notify.show` (gated by `capabilities.ui`; returns `{ id }`). Fires a user-facing notification through the §4.5 store + WS fan-out. The host overrides `input.source` to the plugin's manifest id before persistence — plugins cannot impersonate `"system"` or another plugin's id. Pair with `supersedes` to update a previously-fired notification by its returned id.
 
 Each SDK call is a thin wrapper that:
 1. Checks the plugin's declared capabilities (fail-fast `Error: capability "X" not declared`). *Reserved for richer capabilities; today the SDK trusts the manifest and lets the host's gate produce the error, since v0 only has `ui`.*
@@ -304,7 +305,7 @@ Capabilities declared but unused are fine. Capabilities used but not declared �
 | `git.`       | `diff`, `log` (read-only). Write ops are out of scope (first principle #6).    |
 | `ui.`        | `render(panelId, tree)`, `setStatusItem(itemId, props)`, `showMessage`, `showQuickPick`. Incremental `update` reserved for v1; v0 re-renders full panels. |
 | `secrets.`   | `get(key)`, `set(key, value)`                                                  |
-| `notify.`    | `post(notification)` — wraps §4.5 `POST /notify` with the plugin's `id` auto-prefixed to `source` |
+| `notify.`    | `show({ input })` (Phase 6A) — fires a user-facing notification through the §4.5 store + WS fan-out. The host overrides `input.source = pluginId` before persistence; returns `{ id }` (the store-assigned notification id). `post(notification)` (planned alias for the HTTP `POST /notify` surface) lands later. |
 
 Notifications from the plugin to the client (host pushes back to plugin):
 
