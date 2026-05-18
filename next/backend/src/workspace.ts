@@ -9,10 +9,11 @@
 // intentional only at the recents UI level.
 
 import { promises as fs, constants as fsConstants } from "node:fs";
-import { basename, isAbsolute, normalize, resolve, sep } from "node:path";
+import { basename, isAbsolute, normalize, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { RpcError, RPC_ERR } from "./rpc.js";
 import { loadRecents, pushRecent, saveRecents } from "./config.js";
+import { pathIsInside } from "./pathInside.js";
 import {
   TerminalRegistry,
   type TerminalDataSink,
@@ -105,8 +106,7 @@ export class ActiveWorkspace {
   }
 
   public assertContains(target: string): void {
-    const root = this.root.endsWith(sep) ? this.root : this.root + sep;
-    if (target !== this.root && !target.startsWith(root)) {
+    if (!pathIsInside(target, this.root)) {
       throw new RpcError(
         RPC_ERR.invalidParams,
         `path is outside workspace ${this.root}`,

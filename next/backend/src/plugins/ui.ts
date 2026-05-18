@@ -22,8 +22,11 @@
 //     plugin-author bug and surfaces as `-32602 invalidParams` per the
 //     issue spec rather than getting silently rendered as garbage.
 
-import { resolve as nodePathResolve, sep as nodePathSep } from "node:path";
+import { promises as fs } from "node:fs";
+import { isAbsolute, normalize } from "node:path";
 import type { WebSocket } from "ws";
+
+import { pathIsInside } from "../pathInside.js";
 
 export type UiTextStyle = "body" | "title" | "caption" | "mono";
 export type UiButtonStyle = "primary" | "secondary" | "danger";
@@ -1172,49 +1175,78 @@ function optNumber(
   return v;
 }
 
-// ----- file:// URL extraction (Batch 3 fs gating) -----
+// ----- file:// URL extraction + gating (Batch 3 fs gating) -----
 //
 // `UiImage` and `UiAvatar` can carry a `file://…` src. The host gates
 // such URLs against the calling plugin's manifest `fs` capability AND
-// the active workspace root. Centralizing the URL walk here keeps the
-// gate next to the schema it's gating; the host wires `validateFileUrls`
-// into `ui.render` after the tree validates.
+// the active workspace root. Centralizing the gate here keeps the
+// policy next to the schema it's gating; the host wires
+// `validateFileUrlsAgainstWorkspace` into `ui.render` after the tree
+// validates.
+//
+// Security boundary: this gate must be at least as strict as the
+// `fs.*` RPC isolation (CLAUDE.md guarantee: "symlinks cannot escape
+// root"). Concretely:
+//   * Paths are realpath-resolved before the prefix check — a symlink
+//     inside the workspace that points at `/etc/passwd` is rejected,
+//     matching `resolveCallerPath` in workspace.ts.
+//   * Non-existent paths reject (`outsideWorkspace`) rather than
+//     accepting lexically. The renderer's `FileImage` would just paint
+//     a broken-image placeholder anyway; collapsing into the same
+//     outcome here keeps the gate symmetric with `fs.readFile`, which
+//     also rejects on ENOENT.
+//   * Malformed `file://` URLs (bad percent-encoding) are dropped from
+//     the site list entirely — the renderer treats unknown URL
+//     schemes as broken images, so we mirror that posture instead of
+//     leaking a half-decoded path into the prefix check.
 
 export interface FileUrlSite {
-  /// Absolute filesystem path the `file://` URL resolves to. Already
-  /// percent-decoded; not normalized — the caller normalizes with
-  /// `path.resolve()` against the workspace root.
+  /// Absolute, decoded filesystem path the `file://` URL points at.
+  /// Not realpath-resolved yet — the gate does that synchronously
+  /// inside `validateFileUrlsAgainstWorkspace`.
   rawPath: string;
   /// Dot-path of the offending node inside the tree, for error reporting.
   path: string;
 }
 
 /// Result of [validateFileUrlsAgainstWorkspace] — `ok` means every
-/// `file://` URL in the tree (if any) cleared both the capability and
-/// workspace-prefix checks; otherwise `error` carries the first
-/// violation so the caller can map it to a JSON-RPC error frame.
+/// `file://` URL in the tree (if any) cleared the capability, the
+/// workspace-prefix check, AND the symlink-realpath check. Otherwise
+/// `error` carries the first violation so the caller can map it to a
+/// JSON-RPC error frame.
 export type FileUrlGateResult =
   | { ok: true }
-  | { ok: false; code: "capabilityNotDeclared" | "outsideWorkspace" | "noActiveWorkspace"; message: string };
+  | {
+      ok: false;
+      code:
+        | "capabilityNotDeclared"
+        | "outsideWorkspace"
+        | "noActiveWorkspace";
+      message: string;
+    };
 
-/// Apply the Batch-3 `file://` URL gate to a validated tree. Wrapped as
-/// a separate function so unit tests can hit the policy without spinning
-/// up a child process. The host calls this inside `handleUiRender`
-/// immediately after `validateUiTree` succeeds.
+/// Apply the Batch-3 `file://` URL gate to a validated tree.
 ///
-/// Rules (mirror the host wiring):
+/// Async because we `fs.realpath` each `file://` target — a lexical-
+/// only check could be bypassed by a symlink inside the workspace that
+/// points outside it (e.g. `/srv/ws/evil → /etc/passwd`). The `fs.*`
+/// RPCs use the same `realpath` discipline (see `resolveCallerPath`
+/// in workspace.ts); this gate must not be weaker than that boundary.
+///
+/// Rules:
 ///   * No `file://` URLs in the tree → `{ ok: true }` regardless of caps.
 ///   * Plugin's manifest `fs` ∈ {"read", "readwrite"} → required for any
 ///     `file://` URL. Otherwise → `capabilityNotDeclared`.
 ///   * `workspaceRoot === null` (no active workspace) → `noActiveWorkspace`.
-///   * Path must resolve inside `workspaceRoot` (prefix-match with a
-///     trailing separator to defeat `/srv/work` matching `/srv/workroot`).
-///     Otherwise → `outsideWorkspace`.
-export function validateFileUrlsAgainstWorkspace(
+///   * The realpath-resolved path must lie inside the realpath-resolved
+///     workspace root. Symlinks that escape → `outsideWorkspace`.
+///     Paths that don't exist (or are not absolute) → `outsideWorkspace`
+///     so the gate is symmetric with the `fs.*` RPCs' ENOENT handling.
+export async function validateFileUrlsAgainstWorkspace(
   tree: UiNode,
   fsCap: "none" | "read" | "readwrite",
   workspaceRoot: string | null,
-): FileUrlGateResult {
+): Promise<FileUrlGateResult> {
   const sites = collectFileUrls(tree);
   if (sites.length === 0) return { ok: true };
   if (fsCap !== "read" && fsCap !== "readwrite") {
@@ -1231,15 +1263,49 @@ export function validateFileUrlsAgainstWorkspace(
       message: `${sites[0].path} uses file:// but no workspace is currently active`,
     };
   }
-  // Lazy import via require? No — caller passes already-normalized root;
-  // we do the comparison with substring + separator.
-  const normalizedRoot = nodePathResolve(workspaceRoot);
+  // Realpath-resolve the workspace root once. If the workspace root
+  // itself can't be resolved we have to refuse every site — that's
+  // a pathological config and falling open would be unsafe.
+  let resolvedRoot: string;
+  try {
+    resolvedRoot = await fs.realpath(workspaceRoot);
+  } catch {
+    return {
+      ok: false,
+      code: "outsideWorkspace",
+      message: `cannot realpath workspace root ${workspaceRoot}`,
+    };
+  }
   for (const site of sites) {
-    const resolved = nodePathResolve(site.rawPath);
-    if (
-      resolved !== normalizedRoot &&
-      !resolved.startsWith(normalizedRoot + nodePathSep)
-    ) {
+    // The decoded path must be absolute. Relative file:// URLs are
+    // ill-formed and we treat them as outside-workspace rather than
+    // trying to anchor them anywhere.
+    if (!isAbsolute(site.rawPath)) {
+      return {
+        ok: false,
+        code: "outsideWorkspace",
+        message: `${site.path} file:// path "${site.rawPath}" is not absolute`,
+      };
+    }
+    const normalized = normalize(site.rawPath);
+    let resolved: string;
+    try {
+      resolved = await fs.realpath(normalized);
+    } catch {
+      // ENOENT / EACCES / etc. → collapse into "outside workspace"
+      // for two reasons:
+      //   1. The `fs.*` RPCs do the same collapse so a plugin can't
+      //      probe filesystem layout via differential error messages.
+      //   2. The renderer will paint a broken-image placeholder
+      //      anyway — there's no reason to forward a render that
+      //      can't load.
+      return {
+        ok: false,
+        code: "outsideWorkspace",
+        message: `${site.path} file:// path "${site.rawPath}" is outside the active workspace`,
+      };
+    }
+    if (!pathIsInside(resolved, resolvedRoot)) {
       return {
         ok: false,
         code: "outsideWorkspace",
@@ -1252,8 +1318,13 @@ export function validateFileUrlsAgainstWorkspace(
 
 /// Walk `tree` and collect every `file://` URL it references. Returns
 /// an empty array if no UiImage / UiAvatar carries a file:// src.
-/// Caller (`PluginHost.handleUiRender`) uses the returned sites to
-/// enforce the fs capability + workspace-root constraints.
+///
+/// The walker is exhaustive on `UiNode.kind` — every container kind
+/// recurses into its children explicitly, every leaf kind returns
+/// without recursing, and the final `assertNever` makes TypeScript
+/// fail the build when a future widget adds nested content without
+/// updating this walker. Silently skipping a future container would
+/// degrade the security boundary, so the strictness is intentional.
 export function collectFileUrls(tree: UiNode): FileUrlSite[] {
   const out: FileUrlSite[] = [];
   walk(tree, "$");
@@ -1262,6 +1333,8 @@ export function collectFileUrls(tree: UiNode): FileUrlSite[] {
   function walk(node: UiNode, path: string): void {
     switch (node.kind) {
       case "Column":
+        node.children.forEach((c, i) => walk(c, `${path}.children[${i}]`));
+        return;
       case "Row":
         node.children.forEach((c, i) => walk(c, `${path}.children[${i}]`));
         return;
@@ -1284,8 +1357,28 @@ export function collectFileUrls(tree: UiNode): FileUrlSite[] {
       case "Avatar":
         if (node.src !== undefined) check(node.src, path);
         return;
-      default:
+      // ---- Leaf / non-container kinds: nothing to recurse into ----
+      case "Text":
+      case "Spacer":
+      case "TextField":
+      case "Button":
+      case "Icon":
+      case "Badge":
+      case "AppGrid":
+      case "Switch":
+      case "Select":
+      case "Banner":
+      case "Divider":
+      case "Markdown":
+      case "CodeBlock":
+      case "Progress":
+      case "Spinner":
         return;
+      default:
+        // Compile-time exhaustiveness: if a new UiNode kind is added
+        // to the union and this switch isn't updated, `node` here is
+        // not `never` and TypeScript refuses the assignment below.
+        assertNever(node);
     }
   }
 
@@ -1295,13 +1388,28 @@ export function collectFileUrls(tree: UiNode): FileUrlSite[] {
     try {
       decoded = decodeURIComponent(src.substring("file://".length));
     } catch {
-      // Malformed percent-encoding — treat as a sentinel path that
-      // will fail the workspace-root check downstream. We don't throw
-      // here because the walker promises "collect, don't enforce".
-      decoded = src.substring("file://".length);
+      // Malformed percent-encoding. We drop the site entirely — the
+      // renderer treats unknown / unparseable URL schemes as broken
+      // images, and forwarding a half-decoded path would either
+      // false-accept (if the raw bytes happen to share the workspace
+      // prefix) or fail with a confusing "outside workspace" error.
+      // Dropping is the symmetric outcome.
+      return;
     }
     out.push({ rawPath: decoded, path });
   }
+}
+
+/// Compile-time exhaustiveness assertion. Reachable only when a new
+/// `UiNode.kind` lands without a matching `case` in `collectFileUrls`'s
+/// walker — at which point TypeScript fails the assignment because the
+/// inferred type isn't `never`. Runtime is unreachable in well-typed
+/// code; we still throw so a JS-only consumer gets a loud signal
+/// instead of silent under-coverage.
+function assertNever(node: never): never {
+  throw new Error(
+    `collectFileUrls walker missing case for ${JSON.stringify(node)}`,
+  );
 }
 
 // ----- Registry + fan-out -----

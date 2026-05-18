@@ -650,7 +650,7 @@ export class PluginHost {
       return {};
     }
     if (method === "ui.render") {
-      this.handleUiRender(plugin, params);
+      await this.handleUiRender(plugin, params);
       return {};
     }
     // Capability passed, but the method itself doesn't exist yet.
@@ -908,7 +908,10 @@ export class PluginHost {
     }
   }
 
-  private handleUiRender(plugin: PluginProcess, params: unknown): void {
+  private async handleUiRender(
+    plugin: PluginProcess,
+    params: unknown,
+  ): Promise<void> {
     if (!params || typeof params !== "object" || Array.isArray(params)) {
       const err = new Error(
         "ui.render params must be an object",
@@ -939,11 +942,14 @@ export class PluginHost {
       throw err;
     }
     // Batch 3 file:// URL gate. See validateFileUrlsAgainstWorkspace.
+    // Async because the gate `fs.realpath`s every file:// URL so a
+    // symlink inside the workspace pointing outside it can't bypass
+    // the prefix check — matches the `fs.*` RPCs' isolation discipline.
     // Rejecting the whole `ui.render` (not just the offending node) is
     // intentional: a partial render would leave the plugin's state
     // desynced from the panel's contents, and a single bad node is a
     // plugin-author bug they should see clearly.
-    const gate = validateFileUrlsAgainstWorkspace(
+    const gate = await validateFileUrlsAgainstWorkspace(
       tree,
       plugin.manifest.capabilities.fs,
       this.workspaceRootResolver(),

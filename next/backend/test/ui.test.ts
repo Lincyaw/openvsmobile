@@ -15,7 +15,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { WebSocket } from "ws";
-import { cp, mkdir, readFile } from "node:fs/promises";
+import { cp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -690,7 +690,31 @@ describe("validateUiTree", () => {
 });
 
 describe("file:// URL fs-gating (Batch 3)", () => {
-  const WORKSPACE = "/srv/ws";
+  // Real workspace tempdir + a real "outside" tempdir so the gate's
+  // `fs.realpath` discipline can be exercised end-to-end. The gate is
+  // async and follows symlinks (matching `resolveCallerPath` in
+  // workspace.ts) — a lexical check would let a symlink-inside-the-
+  // workspace escape, which is the BLOCKER review fix.
+  let ws: string;
+  let outside: string;
+
+  beforeEach(async () => {
+    ws = await makeTempDir("openvsmobile-uigate-ws-");
+    outside = await makeTempDir("openvsmobile-uigate-out-");
+    // One real file inside the workspace so "accept" paths can be
+    // realpath-resolved.
+    await writeFile(join(ws, "logo.png"), "p");
+    await mkdir(join(ws, "sub", "dir"), { recursive: true });
+    await writeFile(join(ws, "sub", "dir", "logo.png"), "p");
+    // One real file outside, used as the symlink target.
+    await writeFile(join(outside, "secret"), "s");
+  });
+
+  afterEach(async () => {
+    await rmTempDir(ws);
+    await rmTempDir(outside);
+  });
+
   // Helper: build a UiImage tree carrying the given src.
   function imageTree(src: string) {
     return validateUiTree({
@@ -700,90 +724,127 @@ describe("file:// URL fs-gating (Batch 3)", () => {
     });
   }
 
-  it("passes when no file:// URLs are present (data: URL)", () => {
+  it("passes when no file:// URLs are present (data: URL)", async () => {
     const tree = imageTree("data:image/png;base64,iVBORw0KGgo=");
-    const res = validateFileUrlsAgainstWorkspace(tree, "none", WORKSPACE);
+    const res = await validateFileUrlsAgainstWorkspace(tree, "none", ws);
     expect(res.ok).toBe(true);
   });
 
-  it("rejects file:// when plugin has fs: none", () => {
-    const tree = imageTree(`file://${WORKSPACE}/icon.png`);
-    const res = validateFileUrlsAgainstWorkspace(tree, "none", WORKSPACE);
+  it("rejects file:// when plugin has fs: none", async () => {
+    const tree = imageTree(`file://${ws}/logo.png`);
+    const res = await validateFileUrlsAgainstWorkspace(tree, "none", ws);
     expect(res.ok).toBe(false);
     if (res.ok) throw new Error("unreachable");
     expect(res.code).toBe("capabilityNotDeclared");
   });
 
-  it("accepts file:// when plugin has fs: read and path is inside workspace", () => {
-    const tree = imageTree(`file://${WORKSPACE}/logo.png`);
-    const res = validateFileUrlsAgainstWorkspace(tree, "read", WORKSPACE);
+  it("accepts file:// when plugin has fs: read and path is inside workspace", async () => {
+    const tree = imageTree(`file://${ws}/logo.png`);
+    const res = await validateFileUrlsAgainstWorkspace(tree, "read", ws);
     expect(res.ok).toBe(true);
   });
 
-  it("accepts file:// when plugin has fs: readwrite", () => {
-    const tree = imageTree(`file://${WORKSPACE}/sub/dir/logo.png`);
-    const res = validateFileUrlsAgainstWorkspace(tree, "readwrite", WORKSPACE);
+  it("accepts file:// when plugin has fs: readwrite", async () => {
+    const tree = imageTree(`file://${ws}/sub/dir/logo.png`);
+    const res = await validateFileUrlsAgainstWorkspace(
+      tree,
+      "readwrite",
+      ws,
+    );
     expect(res.ok).toBe(true);
   });
 
-  it("rejects file:// with ../ traversal that escapes workspace", () => {
-    const tree = imageTree(`file://${WORKSPACE}/sub/../../etc/passwd`);
-    const res = validateFileUrlsAgainstWorkspace(tree, "read", WORKSPACE);
+  it("rejects file:// with ../ traversal that escapes workspace", async () => {
+    // The traversal target doesn't exist, so realpath fails and we
+    // collapse into `outsideWorkspace` — same UX as a path-outside.
+    const tree = imageTree(`file://${ws}/sub/../../etc/passwd`);
+    const res = await validateFileUrlsAgainstWorkspace(tree, "read", ws);
     expect(res.ok).toBe(false);
     if (res.ok) throw new Error("unreachable");
     expect(res.code).toBe("outsideWorkspace");
   });
 
-  it("rejects file:// with absolute path outside the workspace", () => {
-    const tree = imageTree(`file:///etc/passwd`);
-    const res = validateFileUrlsAgainstWorkspace(tree, "read", WORKSPACE);
+  it("rejects file:// with absolute path outside the workspace", async () => {
+    const tree = imageTree(`file://${outside}/secret`);
+    const res = await validateFileUrlsAgainstWorkspace(tree, "read", ws);
     expect(res.ok).toBe(false);
     if (res.ok) throw new Error("unreachable");
     expect(res.code).toBe("outsideWorkspace");
   });
 
-  it("rejects file:// when no workspace is active", () => {
-    const tree = imageTree(`file:///some/path`);
-    const res = validateFileUrlsAgainstWorkspace(tree, "read", null);
+  it("rejects file:// when no workspace is active", async () => {
+    const tree = imageTree(`file://${ws}/logo.png`);
+    const res = await validateFileUrlsAgainstWorkspace(tree, "read", null);
     expect(res.ok).toBe(false);
     if (res.ok) throw new Error("unreachable");
     expect(res.code).toBe("noActiveWorkspace");
   });
 
-  it("rejects file:// avoiding partial-prefix match (/srv/ws vs /srv/wsroot)", () => {
-    // `/srv/wsroot/...` must NOT match `/srv/ws` — without the
-    // separator guard a naive `startsWith` would falsely accept this.
-    const tree = imageTree(`file:///srv/wsroot/icon.png`);
-    const res = validateFileUrlsAgainstWorkspace(tree, "read", "/srv/ws");
+  it("rejects file:// avoiding partial-prefix match (/tmp/ws vs /tmp/wsroot)", async () => {
+    // Build a sibling directory whose name is a *prefix* of ws's
+    // basename — without the separator guard a naive `startsWith`
+    // would falsely accept. We construct that by suffixing ws's
+    // basename with "root".
+    const sibling = `${ws}root`;
+    await mkdir(sibling, { recursive: true });
+    try {
+      await writeFile(join(sibling, "icon.png"), "p");
+      const tree = imageTree(`file://${sibling}/icon.png`);
+      const res = await validateFileUrlsAgainstWorkspace(tree, "read", ws);
+      expect(res.ok).toBe(false);
+      if (res.ok) throw new Error("unreachable");
+      expect(res.code).toBe("outsideWorkspace");
+    } finally {
+      await rmTempDir(sibling);
+    }
+  });
+
+  it("REGRESSION: rejects file:// via symlink that escapes the workspace", async () => {
+    // BLOCKER fix from review: workspace contains a symlink whose
+    // target is outside the workspace. A lexical-only check would
+    // pass (the symlink path starts with the workspace prefix), but
+    // the realpath gate must reject — matching `fs.*` RPC isolation.
+    await symlink(join(outside, "secret"), join(ws, "evil"));
+    const tree = imageTree(`file://${ws}/evil`);
+    const res = await validateFileUrlsAgainstWorkspace(tree, "read", ws);
     expect(res.ok).toBe(false);
     if (res.ok) throw new Error("unreachable");
     expect(res.code).toBe("outsideWorkspace");
   });
 
-  it("gate also fires on UiAvatar with file:// src", () => {
+  it("accepts a symlink whose target is itself inside the workspace", async () => {
+    // Symlink-within-workspace is fine: realpath resolves to a path
+    // still under the workspace root.
+    await symlink(join(ws, "logo.png"), join(ws, "alias.png"));
+    const tree = imageTree(`file://${ws}/alias.png`);
+    const res = await validateFileUrlsAgainstWorkspace(tree, "read", ws);
+    expect(res.ok).toBe(true);
+  });
+
+  it("gate also fires on UiAvatar with file:// src", async () => {
     const tree = validateUiTree({
       kind: "Avatar",
       id: "av",
-      src: `file:///etc/shadow`,
+      src: `file://${outside}/secret`,
       initial: "A",
     });
-    const res = validateFileUrlsAgainstWorkspace(tree, "read", "/srv/ws");
+    const res = await validateFileUrlsAgainstWorkspace(tree, "read", ws);
     expect(res.ok).toBe(false);
     if (res.ok) throw new Error("unreachable");
     expect(res.code).toBe("outsideWorkspace");
   });
 
-  it("UiAvatar with no src (initial-only) is never gated", () => {
+  it("UiAvatar with no src (initial-only) is never gated", async () => {
     const tree = validateUiTree({
       kind: "Avatar",
       id: "av2",
       initial: "AB",
     });
-    const res = validateFileUrlsAgainstWorkspace(tree, "none", null);
+    const res = await validateFileUrlsAgainstWorkspace(tree, "none", null);
     expect(res.ok).toBe(true);
   });
 
-  it("walks nested containers and gates a deep file:// site", () => {
+  it("walks nested containers and gates a deep file:// site", async () => {
     const tree = validateUiTree({
       kind: "Column",
       id: "c1",
@@ -799,18 +860,51 @@ describe("file:// URL fs-gating (Batch 3)", () => {
               trailing: {
                 kind: "Image",
                 id: "deep-img",
-                src: `file:///elsewhere/x.png`,
+                src: `file://${outside}/secret`,
               },
             },
           ],
         },
       ],
     });
-    const res = validateFileUrlsAgainstWorkspace(tree, "read", "/srv/ws");
+    const res = await validateFileUrlsAgainstWorkspace(tree, "read", ws);
     expect(res.ok).toBe(false);
     if (res.ok) throw new Error("unreachable");
     expect(res.code).toBe("outsideWorkspace");
     expect(res.message).toMatch(/trailing/);
+  });
+
+  it("rejects file:// pointing at a non-existent path inside the workspace", async () => {
+    // Symmetric with `fs.readFile`'s ENOENT collapse: a path that
+    // doesn't exist gets `outsideWorkspace` so the plugin can't
+    // probe filesystem layout via differential errors.
+    const tree = imageTree(`file://${ws}/no-such-file.png`);
+    const res = await validateFileUrlsAgainstWorkspace(tree, "read", ws);
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error("unreachable");
+    expect(res.code).toBe("outsideWorkspace");
+  });
+
+  it("malformed percent-encoding in file:// URL is dropped from the site list", async () => {
+    // Trailing lone `%` is an invalid escape sequence that throws
+    // from `decodeURIComponent`. The gate must NOT silently fall
+    // through to a prefix check on the raw bytes — the comment in
+    // the previous implementation lied. Now we drop the site, which
+    // means the tree contains no `file://` URLs as far as the gate
+    // is concerned and the call passes.
+    const tree = imageTree(`file://%FF%FE%`);
+    const res = await validateFileUrlsAgainstWorkspace(tree, "none", ws);
+    expect(res.ok).toBe(true);
+  });
+
+  it("rejects a file:// URL whose decoded path is not absolute", async () => {
+    // `file://relative/path` decodes to `relative/path` which isn't
+    // absolute — reject rather than try to anchor it anywhere.
+    const tree = imageTree("file://relative/path.png");
+    const res = await validateFileUrlsAgainstWorkspace(tree, "read", ws);
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error("unreachable");
+    expect(res.code).toBe("outsideWorkspace");
   });
 });
 

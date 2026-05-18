@@ -17,7 +17,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_highlight/flutter_highlight.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:markdown/markdown.dart' as md;
 
 import 'app_tokens.dart';
@@ -817,8 +817,10 @@ class UiRenderer extends StatelessWidget {
       extensionSet: md.ExtensionSet.none,
       inlineSyntaxes: const <md.InlineSyntax>[],
       // Don't render images — the spec is explicit ("no images") and we
-      // already give plugins UiImage for that. Same for raw HTML.
-      sizedImageBuilder: (cfg) => Text(cfg.alt ?? cfg.uri.toString()),
+      // already give plugins UiImage for that. The stub falls back to
+      // alt text (then the bare URI) so a stray `![logo](x)` in plugin
+      // markdown still surfaces something legible instead of nothing.
+      imageBuilder: (uri, title, alt) => Text(alt ?? uri.toString()),
       onTapLink: null, // links render but aren't tappable in v0
       styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
         // Code blocks get the mono font + a subtle background. The
