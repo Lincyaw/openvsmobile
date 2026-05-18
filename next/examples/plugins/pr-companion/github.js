@@ -24,9 +24,6 @@
 // as the source of truth; extending them later is a one-line addition,
 // rendering fields we never expose is permanent bloat.
 //
-// TODO(phase-2): if option (b) was taken on test discovery, add a vitest
-// include glob so github.test.js runs in `pnpm test`.
-
 const GITHUB_API = "https://api.github.com";
 const ACCEPT = "application/vnd.github+json";
 const API_VERSION = "2022-11-28";
@@ -311,9 +308,13 @@ export function createGithubClient({ token, userAgent }) {
     const classified = classify(response, rateLimit);
     if (classified !== null) {
       if (classified.status === "notModified") {
+        // Prefer a server-supplied ETag if the 304 carries one (rare
+        // for GitHub but documented for some endpoints); otherwise
+        // echo the caller's so the next conditional request re-uses
+        // the same validator.
         return {
           status: /** @type {const} */ ("notModified"),
-          etag: opts.etag ?? null,
+          etag: response.headers.get("etag") ?? opts.etag ?? null,
           rateLimit,
         };
       }
@@ -553,7 +554,6 @@ export function createGithubClient({ token, userAgent }) {
         // First-page non-2xx is the response. Mid-pagination failure
         // is reported the same way — partial results are not safer
         // than an explicit error.
-        if (firstResponse === null) return res;
         return res;
       }
       if (firstResponse === null) firstResponse = res;
@@ -564,6 +564,10 @@ export function createGithubClient({ token, userAgent }) {
         // crashing the plugin.
         return { status: /** @type {const} */ ("serverError"), code: 500 };
       }
+      // At cap: drop the rest of this page and skip the next fetch.
+      // Callers see truncated results; the design doc cap is sized to
+      // exceed typical realistic inboxes (100 notifications, 300 PR
+      // files, 500 PR comments).
       for (const raw of body) {
         if (items.length >= cap) break;
         items.push(map(/** @type {Record<string, unknown>} */ (raw)));

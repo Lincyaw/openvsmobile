@@ -182,6 +182,22 @@ describe("listNotifications", () => {
     expect(calls[0].init.headers["If-None-Match"]).toBe('W/"prev"');
   });
 
+  it("304 prefers a server-supplied ETag over the caller's echo", async () => {
+    fetchImpl = () =>
+      Promise.resolve(
+        fakeResponse({
+          status: 304,
+          headers: { ...RATE_HEADERS, ETag: 'W/"server-new"' },
+        }),
+      );
+
+    const client = newClient();
+    const result = await client.listNotifications({ sinceETag: 'W/"old"' });
+
+    expect(result.status).toBe("notModified");
+    expect(result.etag).toBe('W/"server-new"');
+  });
+
   it("401 returns unauthed", async () => {
     fetchImpl = () => Promise.resolve(fakeResponse({ status: 401, headers: RATE_HEADERS }));
 
@@ -462,5 +478,36 @@ describe("lastRateLimit", () => {
     expect(rl).not.toBeNull();
     expect(rl.limit).toBe(5000);
     expect(rl.remaining).toBe(4998);
+  });
+
+  it("304 responses also update lastRateLimit (rate-limit headers ride on 304s)", async () => {
+    const client = newClient();
+
+    // First a 200 to seed the slot.
+    fetchImpl = () =>
+      Promise.resolve(
+        fakeResponse({
+          status: 200,
+          body: [],
+          headers: RATE_HEADERS, // remaining=4998
+        }),
+      );
+    await client.listNotifications();
+    expect(client.lastRateLimit().remaining).toBe(4998);
+
+    // Then a 304 with a stricter remaining; the slot must follow.
+    fetchImpl = () =>
+      Promise.resolve(
+        fakeResponse({
+          status: 304,
+          headers: {
+            "X-RateLimit-Limit": "5000",
+            "X-RateLimit-Remaining": "4200",
+            "X-RateLimit-Reset": String(Math.floor(Date.now() / 1000) + 3600),
+          },
+        }),
+      );
+    await client.listNotifications({ sinceETag: 'W/"prev"' });
+    expect(client.lastRateLimit().remaining).toBe(4200);
   });
 });
