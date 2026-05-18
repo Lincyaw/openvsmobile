@@ -133,6 +133,117 @@ export function filterTopLevelComments(comments) {
 }
 
 /**
+ * Pick a feather icon name + accent token for a check run, driven by
+ * `status` and `conclusion`. Pure + SDK-free so the Phase 5 test file
+ * can pin the mapping table here without resolving `@openvsmobile/sdk`.
+ *
+ *   * completed/success         → check-circle / success
+ *   * completed/failure-like    → x-circle / danger
+ *     (failure | timed_out | action_required)
+ *   * completed/neutral-like    → minus-circle / muted
+ *     (neutral | cancelled | skipped)
+ *   * in_progress/queued/pending → clock / info
+ *   * anything else              → alert-circle / warning  (catch-all)
+ *
+ * @param {{ status: string, conclusion: string | null }} run
+ * @returns {{ name: string, accent: "success" | "danger" | "muted" | "info" | "warning" }}
+ */
+export function iconForStatus(run) {
+  const status = run.status;
+  const conclusion = run.conclusion;
+  if (status === "completed") {
+    if (conclusion === "success") {
+      return { name: "feather:check-circle", accent: "success" };
+    }
+    if (
+      conclusion === "failure" ||
+      conclusion === "timed_out" ||
+      conclusion === "action_required"
+    ) {
+      return { name: "feather:x-circle", accent: "danger" };
+    }
+    if (
+      conclusion === "neutral" ||
+      conclusion === "cancelled" ||
+      conclusion === "skipped"
+    ) {
+      return { name: "feather:minus-circle", accent: "muted" };
+    }
+    return { name: "feather:alert-circle", accent: "warning" };
+  }
+  if (status === "in_progress" || status === "queued" || status === "pending") {
+    return { name: "feather:clock", accent: "info" };
+  }
+  return { name: "feather:alert-circle", accent: "warning" };
+}
+
+/**
+ * Caption text for a check-run row: `"2m 34s · success"`, or
+ * `"running 1m 12s"`, or just one of those, or `""` when there's
+ * nothing useful to show. Injectable `nowMs` so the tests can pin the
+ * "running" branch without monkey-patching Date.
+ *
+ * @param {{ status: string, conclusion: string | null, startedAt: string | null, completedAt: string | null }} run
+ * @param {number} [nowMs] — injectable for tests
+ * @returns {string}
+ */
+export function captionForRun(run, nowMs = Date.now()) {
+  /** @type {string[]} */
+  const parts = [];
+  const startMs = run.startedAt === null ? NaN : Date.parse(run.startedAt);
+  const endMs = run.completedAt === null ? NaN : Date.parse(run.completedAt);
+  if (Number.isFinite(startMs) && Number.isFinite(endMs)) {
+    const dur = formatDuration(startMs, endMs);
+    if (dur.length > 0) parts.push(dur);
+  } else if (Number.isFinite(startMs)) {
+    // Still running — synthesize a "running Xm Ys" caption against
+    // wall-clock now. `formatDuration` returns "" for negative spans,
+    // so a clock-skewed startedAt in the future degrades silently.
+    const dur = formatDuration(startMs, nowMs);
+    if (dur.length > 0) parts.push(`running ${dur}`);
+  }
+  if (typeof run.conclusion === "string" && run.conclusion.length > 0) {
+    parts.push(run.conclusion);
+  }
+  return parts.join(" · ");
+}
+
+/**
+ * Format a duration between two epoch-millis instants as a short
+ * caption: `"45s"`, `"2m 34s"`, `"1h 12m"`. Returns `""` for invalid
+ * input (non-finite, end before start) so the caller can omit the
+ * caption entirely. We deliberately do not reuse `formatRelative` —
+ * that one renders a past-tense relative-to-now string ("2m ago");
+ * this one renders an absolute span.
+ *
+ * Granularity rules:
+ *   * < 1 minute → seconds (`"45s"`).
+ *   * < 1 hour   → minutes + seconds (`"2m 34s"`); drop the seconds
+ *     when they round to 0 (`"5m"`).
+ *   * ≥ 1 hour   → hours + minutes (`"1h 12m"`); drop minutes when
+ *     they round to 0 (`"3h"`).
+ *
+ * @param {number} startMs
+ * @param {number} endMs
+ * @returns {string}
+ */
+export function formatDuration(startMs, endMs) {
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return "";
+  const deltaMs = endMs - startMs;
+  if (deltaMs < 0) return "";
+  const totalSeconds = Math.floor(deltaMs / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) {
+    const seconds = totalSeconds % 60;
+    return seconds === 0 ? `${totalMinutes}m` : `${totalMinutes}m ${seconds}s`;
+  }
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
+}
+
+/**
  * Conservative "X minutes ago" formatter. Avoids pulling Intl /
  * date-fns into the plugin runtime; the design doc treats relative
  * times as decorative captions and the spec didn't ask for perfect

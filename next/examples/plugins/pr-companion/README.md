@@ -39,7 +39,7 @@ shell out to a `terminal.*` RPC (the `gh auth token` invocation is a
 plain `node:child_process` call inside our own process), and we never
 persist the token.
 
-## Scope (Phases 1 + 2 + 3 — shipped)
+## Scope (Phases 1 + 2 + 3 + 5 — shipped)
 
 Phase 1 — plugin shell:
 
@@ -85,7 +85,38 @@ Phase 3 — read-only PR detail panel:
   tab degrades to a caption. A full-stack failure surfaces as a single
   banner (`unauthed` / `offline` / `rateLimited` / `serverError`).
 
-**Not yet implemented** (Phases 4 / 5): review actions, top-level
-comment sheet, inline-comment threads (Phase 4); Checks tab content,
-background notification fan-out (Phase 5). See the design doc's
-"Implementation phases" section for the staged plan.
+Phase 5 (partial) — Checks tab:
+
+- The Checks tab renders one row per `check_run` for the PR's
+  `head_sha`, with a feather icon + accent driven by `status` /
+  `conclusion` (success → check-circle, failure / timed-out /
+  action-required → x-circle, neutral / cancelled / skipped →
+  minus-circle, in-progress / queued / pending → clock, anything else →
+  alert-circle). When at least one run is still in flight, a linear
+  `ui.progress` widget at the top of the tab shows the
+  passing-out-of-total ratio.
+- Caption per row is `"<duration> · <conclusion>"` (e.g. `"2m 34s ·
+  success"`); in-flight runs show `"running 1m 12s"` against
+  wall-clock. Duration formatting lives in `_pure.js#formatDuration`.
+- The check-runs fetch is the fourth leg of the detail panel's
+  `fetchAndRender`, gated on the PR's `head_sha`: cached PRs fire it in
+  parallel with the other three, fresh PRs fall back to a sequential
+  second stage (one extra round-trip on first paint). It piggybacks
+  the existing 30-second ETag polling — no new timer.
+- Tapping a check row currently just logs at debug; opening a per-run
+  log bottom sheet is left as a `TODO Phase 6` marker (requires
+  github.js to fetch the run's log content, which it doesn't do
+  today).
+
+**Not yet implemented** (Phases 4 / 6):
+
+- Review actions, top-level comment sheet, inline-comment threads
+  (Phase 4 — parallel work).
+- **Background notification fan-out** via `notification.show` is
+  deferred. The plugin SDK has no `ctx.showNotification` API yet —
+  same pattern as the Phase-0 workspace SDK gap. A follow-up Phase 6
+  PR will land the SDK extension and wire the 5-minute background
+  poll to it. Per-check log bottom sheet ships in the same Phase 6.
+
+See the design doc's "Implementation phases" section for the staged
+plan.

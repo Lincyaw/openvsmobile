@@ -37,6 +37,9 @@ import { ui } from "@openvsmobile/sdk";
 
 import { buildConversationTabBody } from "./conversationTab.js";
 import { buildFilesTabBody } from "./filesTab.js";
+// === Phase 5 additions ===
+import { renderChecksTab } from "./checksTab.js";
+// === end Phase 5 additions ===
 
 const DETAIL_PANEL = "detail";
 
@@ -52,8 +55,16 @@ const DEFAULT_DETAIL_STATE = Object.freeze({
   error: null,
   /** @type {boolean} */
   loading: false,
-  /** @type {{ pr?: { kind: string }, files?: { kind: string }, comments?: { kind: string } }} */
+  // === Phase 5 additions ===
+  // Per-tab error slot now also tracks the Checks leg; checkRuns
+  // starts null so the tab can distinguish "haven't fetched yet" from
+  // "fetched and got an empty list" (the latter renders the empty
+  // state caption).
+  /** @type {{ pr?: { kind: string }, files?: { kind: string }, comments?: { kind: string }, checks?: { kind: string } }} */
   perTabError: {},
+  /** @type {Array<{ id: number, name: string, status: string, conclusion: string | null, startedAt: string | null, completedAt: string | null }> | null} */
+  checkRuns: null,
+  // === end Phase 5 additions ===
 });
 
 /** @type {ReturnType<typeof makeDetailState>} */
@@ -65,8 +76,12 @@ function makeDetailState() {
     openFile: DEFAULT_DETAIL_STATE.openFile,
     error: DEFAULT_DETAIL_STATE.error,
     loading: DEFAULT_DETAIL_STATE.loading,
-    /** @type {{ pr?: { kind: string }, files?: { kind: string }, comments?: { kind: string } }} */
+    /** @type {{ pr?: { kind: string }, files?: { kind: string }, comments?: { kind: string }, checks?: { kind: string } }} */
     perTabError: {},
+    // === Phase 5 additions ===
+    /** @type {Array<{ id: number, name: string, status: string, conclusion: string | null, startedAt: string | null, completedAt: string | null }> | null} */
+    checkRuns: null,
+    // === end Phase 5 additions ===
   };
 }
 
@@ -75,7 +90,12 @@ function makeDetailState() {
 // always the first one in iteration. Cap is 20 (design doc §"Data
 // model & caching").
 const CACHE_CAP = 20;
-/** @type {Map<string, { pr: unknown, files: unknown, comments: unknown, etagPr: string | null, etagFiles: string | null, etagComments: string | null, lastFetchAt: number }>} */
+// === Phase 5 additions ===
+// Cache shape gains `checks` + `etagChecks`. Both stay null when the
+// PR has no headSha yet (chicken-and-egg: listCheckRuns is per-ref and
+// the ref comes from the PR fetch) — see fetchAndRender below.
+// === end Phase 5 additions ===
+/** @type {Map<string, { pr: unknown, files: unknown, comments: unknown, checks: unknown, etagPr: string | null, etagFiles: string | null, etagComments: string | null, etagChecks: string | null, lastFetchAt: number }>} */
 const prDetailCache = new Map();
 
 function cacheKey(currentPr) {
@@ -270,7 +290,7 @@ function buildHeader(currentPr, pr) {
  * active so the renderer can preserve focus/scroll per nodeId.
  *
  * @param {ReturnType<typeof makeDetailState>} state
- * @param {{ pr: unknown, files: unknown, comments: unknown } | null} data
+ * @param {{ pr: unknown, files: unknown, comments: unknown, checks?: unknown } | null} data
  */
 function buildTabBody(state, data) {
   const pr = /** @type {{ body: string } | null} */ (data?.pr ?? null);
@@ -291,21 +311,23 @@ function buildTabBody(state, data) {
         openFile: state.openFile,
         error: state.perTabError.files ?? null,
       });
-    case "checks":
-      // Phase 5 will fill this in. Caption is intentional — the
-      // alternative (omitting the tab entirely) would change the
-      // TabBar contract between phases and force a Phase-5 diff in the
-      // header logic. Cheaper to ship the empty tab now.
-      return ui.section({
-        id: "prcomp-detail-checks",
-        children: [
-          ui.text({
-            id: "prcomp-detail-checks-placeholder",
-            text: "Checks coming in Phase 5.",
-            style: "caption",
-          }),
-        ],
+    case "checks": {
+      // === Phase 5 additions ===
+      // Prefer data (cache) over detailState so cached check-runs
+      // render instantly on a re-open; the in-flight fetch will then
+      // overwrite via detailState on the next pushPanel.
+      const cachedChecks = /** @type {Array<{ id: number, name: string, status: string, conclusion: string | null, startedAt: string | null, completedAt: string | null }> | null | undefined} */ (data?.checks);
+      const checkRuns =
+        cachedChecks !== undefined && cachedChecks !== null
+          ? cachedChecks
+          : state.checkRuns;
+      return renderChecksTab({
+        pr,
+        checkRuns,
+        error: state.perTabError.checks ?? null,
       });
+      // === end Phase 5 additions ===
+    }
     case "conversation":
     default:
       return buildConversationTabBody({
@@ -321,7 +343,7 @@ function buildTabBody(state, data) {
  *
  * @param {{ owner: string, repo: string, number: number } | null} currentPr
  * @param {ReturnType<typeof makeDetailState>} state
- * @param {{ pr: unknown, files: unknown, comments: unknown } | null} data
+ * @param {{ pr: unknown, files: unknown, comments: unknown, checks?: unknown } | null} data
  */
 export function buildDetailPanelTree(currentPr, state, data) {
   if (currentPr === null) {
@@ -414,7 +436,9 @@ function pushPanel(ctx, currentPr) {
           const e = prDetailCache.get(cacheKey(currentPr));
           return e === undefined
             ? null
-            : { pr: e.pr, files: e.files, comments: e.comments };
+            // === Phase 5 additions: include `checks` slot ===
+            : { pr: e.pr, files: e.files, comments: e.comments, checks: e.checks };
+            // === end Phase 5 additions ===
         })();
   ctx.renderPanel(DETAIL_PANEL, buildDetailPanelTree(currentPr, detailState, data));
 }
@@ -442,6 +466,7 @@ function resetDetailState() {
  *   getPull: (params: { owner: string, repo: string, number: number, etag?: string }) => Promise<any>,
  *   listPullFiles: (params: { owner: string, repo: string, number: number, etag?: string }) => Promise<any>,
  *   listPullComments: (params: { owner: string, repo: string, number: number, etag?: string }) => Promise<any>,
+ *   listCheckRuns: (params: { owner: string, repo: string, ref: string, etag?: string }) => Promise<any>,
  * }} github
  */
 async function fetchAndRender(ctx, currentPr, github) {
@@ -452,7 +477,25 @@ async function fetchAndRender(ctx, currentPr, github) {
   detailState.loading = cached === null;
   pushPanel(ctx, currentPr);
 
-  const [prRes, filesRes, commentsRes] = await Promise.all([
+  // === Phase 5 additions ===
+  // Chicken-and-egg: listCheckRuns is per-ref, so we need pr.headSha
+  // before we can call it. Two cases:
+  //   * We already have a cached PR (with headSha) — fire all four
+  //     legs in parallel; the ref is good enough until the new getPull
+  //     comes back with a (possibly newer) headSha.
+  //   * No cache — fire the original three first, then if getPull
+  //     succeeded and yielded a ref, do checks as a second stage.
+  // The second-stage path adds one round-trip on the very first paint
+  // of a never-seen PR; subsequent polls hit the parallel path. The
+  // 30s polling cadence amortizes the cost.
+  const cachedPr = /** @type {{ headSha?: string } | null | undefined} */ (cached?.pr ?? null);
+  const cachedRef =
+    cachedPr !== null && cachedPr !== undefined && typeof cachedPr.headSha === "string" && cachedPr.headSha.length > 0
+      ? cachedPr.headSha
+      : null;
+  // === end Phase 5 additions ===
+
+  const [prRes, filesRes, commentsRes, checksResMaybe] = await Promise.all([
     github
       .getPull({ ...reqParams, ...(cached?.etagPr ? { etag: cached.etagPr } : {}) })
       .catch((err) => ({ status: "offline", error: err })),
@@ -462,7 +505,44 @@ async function fetchAndRender(ctx, currentPr, github) {
     github
       .listPullComments({ ...reqParams, ...(cached?.etagComments ? { etag: cached.etagComments } : {}) })
       .catch((err) => ({ status: "offline", error: err })),
+    // === Phase 5 additions ===
+    cachedRef === null
+      ? Promise.resolve(null)
+      : github
+          .listCheckRuns({
+            owner: currentPr.owner,
+            repo: currentPr.repo,
+            ref: cachedRef,
+            ...(cached?.etagChecks ? { etag: cached.etagChecks } : {}),
+          })
+          .catch((err) => ({ status: "offline", error: err })),
+    // === end Phase 5 additions ===
   ]);
+
+  // === Phase 5 additions ===
+  // Second-stage fetch when the cached path didn't run.  Use prRes if
+  // it succeeded (preferred — could be a newer headSha) else fall back
+  // to nothing. If prRes was a 304 (notModified), the cached headSha
+  // is still valid — but we'd have used it on the first stage already,
+  // so this branch only fires when there was no cache to begin with.
+  let checksRes = checksResMaybe;
+  const freshRef =
+    prRes.status === "ok" &&
+    prRes.pull !== undefined &&
+    typeof prRes.pull.headSha === "string" &&
+    prRes.pull.headSha.length > 0
+      ? prRes.pull.headSha
+      : null;
+  if (checksResMaybe === null && freshRef !== null) {
+    checksRes = await github
+      .listCheckRuns({
+        owner: currentPr.owner,
+        repo: currentPr.repo,
+        ref: freshRef,
+      })
+      .catch((err) => ({ status: "offline", error: err }));
+  }
+  // === end Phase 5 additions ===
 
   // Stale-render guard: if the user switched PRs while we were
   // awaiting, drop our writes on the floor — the newer fetch owns the
@@ -471,14 +551,33 @@ async function fetchAndRender(ctx, currentPr, github) {
   // detailState mutation + pushPanel.
   const isStale = myGen !== detailGen;
   if (isStale) {
-    if (currentPr !== null && (prRes.status === "ok" || filesRes.status === "ok" || commentsRes.status === "ok")) {
+    const anyOk =
+      prRes.status === "ok" ||
+      filesRes.status === "ok" ||
+      commentsRes.status === "ok" ||
+      // === Phase 5 additions ===
+      (checksRes !== null && checksRes.status === "ok");
+      // === end Phase 5 additions ===
+    if (currentPr !== null && anyOk) {
       cacheSet(currentPr, {
         pr: prRes.status === "ok" ? prRes.pull : cached?.pr ?? null,
         files: filesRes.status === "ok" ? filesRes.files : cached?.files ?? null,
         comments: commentsRes.status === "ok" ? commentsRes.comments : cached?.comments ?? null,
+        // === Phase 5 additions ===
+        checks:
+          checksRes !== null && checksRes.status === "ok"
+            ? checksRes.checkRuns
+            : cached?.checks ?? null,
+        // === end Phase 5 additions ===
         etagPr: prRes.status === "ok" ? prRes.etag ?? null : cached?.etagPr ?? null,
         etagFiles: filesRes.status === "ok" ? filesRes.etag ?? null : cached?.etagFiles ?? null,
         etagComments: commentsRes.status === "ok" ? commentsRes.etag ?? null : cached?.etagComments ?? null,
+        // === Phase 5 additions ===
+        etagChecks:
+          checksRes !== null && checksRes.status === "ok"
+            ? checksRes.etag ?? null
+            : cached?.etagChecks ?? null,
+        // === end Phase 5 additions ===
         lastFetchAt: Date.now(),
       });
     }
@@ -498,6 +597,10 @@ async function fetchAndRender(ctx, currentPr, github) {
   let etagPr = cached?.etagPr ?? null;
   let etagFiles = cached?.etagFiles ?? null;
   let etagComments = cached?.etagComments ?? null;
+  // === Phase 5 additions ===
+  let checks = cached?.checks ?? null;
+  let etagChecks = cached?.etagChecks ?? null;
+  // === end Phase 5 additions ===
 
   // -- PR --
   if (prRes.status === "ok") {
@@ -532,9 +635,34 @@ async function fetchAndRender(ctx, currentPr, github) {
     if (cached === null) comments = null;
   }
 
+  // === Phase 5 additions ===
+  // -- Checks --
+  // checksRes === null means we never fired the request (no ref
+  // available). That's not an error — leave the cached value alone
+  // and don't set a perTabError; the tab will render its loading /
+  // empty state. Once getPull succeeds we'll have a ref next poll.
+  if (checksRes === null) {
+    // intentionally no-op
+  } else if (checksRes.status === "ok") {
+    checks = checksRes.checkRuns;
+    etagChecks = checksRes.etag ?? null;
+  } else if (checksRes.status === "notModified") {
+    etagChecks = checksRes.etag ?? etagChecks;
+  } else {
+    detailState.perTabError.checks = { kind: checksRes.status, ...checksRes };
+    if (cached === null) checks = null;
+  }
+  // === end Phase 5 additions ===
+
   // Top-level banner. Prefer the strongest error: unauthed > rateLimited
   // > offline > serverError. If any leg surfaced one, hoist it so the
   // user sees a single clear cause.
+  // === Phase 5 additions ===
+  // Checks is intentionally excluded from this set: it can be absent
+  // for legitimate reasons (no ref yet, no checks configured) and we
+  // don't want a single failing checks leg to mask the rest. Its
+  // per-tab error surfaces inside the Checks tab body instead.
+  // === end Phase 5 additions ===
   const allErrors = [prRes, filesRes, commentsRes].filter(
     (r) => r.status !== "ok" && r.status !== "notModified",
   );
@@ -560,12 +688,28 @@ async function fetchAndRender(ctx, currentPr, github) {
       pr,
       files,
       comments,
+      // === Phase 5 additions ===
+      checks,
+      // === end Phase 5 additions ===
       etagPr,
       etagFiles,
       etagComments,
+      // === Phase 5 additions ===
+      etagChecks,
+      // === end Phase 5 additions ===
       lastFetchAt: Date.now(),
     });
   }
+
+  // === Phase 5 additions ===
+  // Mirror the cached `checks` into detailState so the renderer can
+  // read it without poking at the cache. Three other tabs read from
+  // the cache via pushPanel's `data` lookup; for symmetry the Checks
+  // tab does the same — but we also need detailState.checkRuns set so
+  // that on a cache miss (first fetch ever) the tab still gets the
+  // freshly-fetched data.
+  detailState.checkRuns = checks;
+  // === end Phase 5 additions ===
 
   pushPanel(ctx, currentPr);
 }
@@ -728,6 +872,21 @@ export function handleDetailEvent(ctx, event, deps) {
     pushPanel(ctx, deps.currentPr);
     return true;
   }
+
+  // === Phase 5 additions ===
+  // Check-row tap. v0 just logs; opening a per-check log bottom
+  // sheet needs github.js to fetch the run's log content (no such
+  // method today). Swallowing the event keeps the host from
+  // bubbling it as "unhandled".
+  // TODO Phase 6: open ui.showBottomSheet with the last 200 lines of
+  // the run's log (would need github.js#getCheckRunLog or similar) +
+  // a "View full on GitHub" link to checkRun.htmlUrl.
+  if (typeof event.type === "string" && event.type.startsWith("detail-check-tapped:")) {
+    const idxStr = event.type.slice("detail-check-tapped:".length);
+    ctx.log("debug", `prcomp: check-row tap idx=${idxStr} (log sheet pending Phase 6)`);
+    return true;
+  }
+  // === end Phase 5 additions ===
 
   return false;
 }
