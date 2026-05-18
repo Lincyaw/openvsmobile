@@ -241,13 +241,12 @@ class _DiffHeader extends StatelessWidget {
               path,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: AppText.mono(context, fontSize: 12),
+              style: AppText.mono(fontSize: 12),
             ),
           ),
           Text(
             '+$adds',
             style: AppText.mono(
-              context,
               color: theme.colorScheme.tertiary,
               fontWeight: FontWeight.bold,
               fontSize: 12,
@@ -257,7 +256,6 @@ class _DiffHeader extends StatelessWidget {
           Text(
             '-$dels',
             style: AppText.mono(
-              context,
               color: theme.colorScheme.error,
               fontWeight: FontWeight.bold,
               fontSize: 12,
@@ -304,7 +302,6 @@ class _HunkCard extends StatelessWidget {
               '@@ -${hunk.oldStart},${hunk.oldLines} '
               '+${hunk.newStart},${hunk.newLines} @@',
               style: AppText.mono(
-                context,
                 fontSize: 11,
                 color: theme.colorScheme.onSurfaceVariant,
               ),
@@ -359,7 +356,6 @@ class _DiffLineRow extends StatelessWidget {
             child: Text(
               marker,
               style: AppText.mono(
-                context,
                 color: fg,
                 fontSize: 12,
               ),
@@ -370,7 +366,6 @@ class _DiffLineRow extends StatelessWidget {
             child: SelectableText(
               line.text,
               style: AppText.mono(
-                context,
                 color: fg,
                 fontSize: 12,
                 height: 1.35,
@@ -398,7 +393,6 @@ class _GapStrip extends StatelessWidget {
       child: Text(
         '… $unchanged unchanged line${unchanged == 1 ? '' : 's'} …',
         style: AppText.mono(
-          context,
           color: theme.colorScheme.onSurfaceVariant,
           fontSize: 11,
         ),
@@ -434,7 +428,6 @@ class _DiffPlaceholder extends StatelessWidget {
                 Text(
                   path,
                   style: AppText.mono(
-                    context,
                     fontSize: 12,
                     color: theme.colorScheme.onSurfaceVariant,
                   ),

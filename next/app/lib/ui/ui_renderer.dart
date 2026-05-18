@@ -13,6 +13,8 @@
 
 import 'package:flutter/material.dart';
 
+import 'app_tokens.dart';
+
 import 'ui_node.dart';
 
 /// Recursively renders a `UiNode` tree using Material widgets.
@@ -163,11 +165,11 @@ class UiRenderer extends StatelessWidget {
       case UiTextStyleKind.caption:
         return theme.bodySmall;
       case UiTextStyleKind.mono:
-        // 'monospace' is the canonical family used by the file viewer,
-        // diff viewer, and settings screen. Match it so plugin-rendered
-        // code blocks visually align with the rest of the app.
-        return (theme.bodyMedium ?? const TextStyle())
-            .copyWith(fontFamily: 'monospace');
+        return AppText.mono(
+          fontSize: theme.bodyMedium?.fontSize,
+          color: theme.bodyMedium?.color,
+          height: theme.bodyMedium?.height,
+        );
     }
   }
 

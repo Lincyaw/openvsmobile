@@ -265,7 +265,6 @@ class _SessionTile extends StatelessWidget {
                           // font so they read as terminal artefacts, not
                           // chat-room titles.
                           style: AppText.mono(
-                            context,
                             fontSize: 15,
                             fontWeight: FontWeight.w500,
                           ),
@@ -289,7 +288,6 @@ class _SessionTile extends StatelessWidget {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: AppText.mono(
-                      context,
                       fontSize: 13,
                       color: dim,
                       fontStyle: previewText == null

@@ -12,6 +12,7 @@ import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../settings_store.dart';
+import '../ui/app_tokens.dart';
 
 class _LogEntry {
   final DateTime time;
@@ -314,8 +315,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           '[${log.time.hour.toString().padLeft(2, '0')}:'
                           '${log.time.minute.toString().padLeft(2, '0')}:'
                           '${log.time.second.toString().padLeft(2, '0')}] ${log.text}',
-                          style: TextStyle(
-                            fontFamily: 'monospace',
+                          style: AppText.mono(
                             fontSize: 12,
                             color: log.isError
                                 ? Theme.of(context).colorScheme.error

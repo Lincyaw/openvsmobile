@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../services/system_tray.dart';
+import '../ui/app_tokens.dart';
 
 class SystemTrayDebugScreen extends StatefulWidget {
   final SystemTrayController controller;
@@ -144,10 +145,7 @@ class _SystemTrayDebugScreenState extends State<SystemTrayDebugScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               child: SelectableText(
                 c.logs.value.reversed.join('\n'),
-                style: const TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 12,
-                ),
+                style: AppText.mono(fontSize: 12),
               ),
             ),
         ],

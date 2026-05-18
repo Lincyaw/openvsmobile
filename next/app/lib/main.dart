@@ -404,6 +404,8 @@ class _MobileCodeAppState extends State<MobileCodeApp>
       navigatorKey: _navKey,
       title: 'MobileCode',
       theme: AppTheme.dark(),
+      darkTheme: AppTheme.dark(),
+      themeMode: ThemeMode.dark,
       home: _loadingSettings || _appState == null
           ? const _BootSplash()
           : (_state.activeBackend == null)

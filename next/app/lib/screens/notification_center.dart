@@ -14,6 +14,7 @@ import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../app_state.dart';
+import '../ui/app_tokens.dart';
 import '../backend_client.dart';
 import '../notification.dart';
 import '../settings_store.dart';
@@ -609,10 +610,7 @@ class _SourcePill extends StatelessWidget {
       ),
       child: Text(
         source.isEmpty ? '(unknown)' : source,
-        style: const TextStyle(
-          fontFamily: 'monospace',
-          fontSize: 11,
-        ),
+        style: AppText.mono(fontSize: 11),
       ),
     );
   }

@@ -818,7 +818,6 @@ class _StatusBar extends StatelessWidget {
       fontSize: 12,
     );
     final monoStyle = AppText.mono(
-      context,
       color: theme.colorScheme.onSurface,
       fontSize: 12,
       fontWeight: FontWeight.w500,
@@ -977,9 +976,8 @@ class _DecorationBadge extends StatelessWidget {
         padding: const EdgeInsets.only(left: AppSpacing.sm),
         child: Text(
           status,
-          style: TextStyle(
+          style: AppText.mono(
             color: color,
-            fontFamily: 'monospace',
             fontSize: 12,
             fontWeight: FontWeight.bold,
             decoration: status == 'D' ? TextDecoration.lineThrough : null,
@@ -995,9 +993,8 @@ class _DecorationBadge extends StatelessWidget {
       padding: const EdgeInsets.only(left: AppSpacing.sm),
       child: Text(
         '●$count',
-        style: TextStyle(
+        style: AppText.mono(
           color: theme.colorScheme.onSurfaceVariant,
-          fontFamily: 'monospace',
           fontSize: 11,
         ),
       ),

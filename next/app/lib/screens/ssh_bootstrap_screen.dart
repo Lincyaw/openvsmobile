@@ -358,10 +358,7 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
                   controller: _scrollCtrl,
                   child: SelectableText(
                     _log.isEmpty ? '(no output yet)' : _log.join('\n'),
-                    style: const TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 12,
-                    ),
+                    style: AppText.mono(fontSize: 12),
                   ),
                 ),
               ),
@@ -428,10 +425,7 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
                 padding: const EdgeInsets.all(AppSpacing.sm),
                 child: SelectableText(
                   f.lastStderr.join('\n'),
-                  style: const TextStyle(
-                    fontFamily: 'monospace',
-                    fontSize: 12,
-                  ),
+                  style: AppText.mono(fontSize: 12),
                 ),
               ),
             ],

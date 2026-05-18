@@ -76,7 +76,7 @@ class AppTheme {
         size: AppIconSize.md,
         color: AppColors.onSurface,
       ),
-      visualDensity: const VisualDensity(horizontal: -1, vertical: -2),
+      visualDensity: const VisualDensity(horizontal: 0, vertical: -1),
       splashFactory: InkRipple.splashFactory,
       // Flat chrome — no Material elevation drops. Layers separate via
       // 1px outline borders and surface-container tints, not shadows.
@@ -87,7 +87,7 @@ class AppTheme {
         shadowColor: Colors.transparent,
         elevation: 0,
         scrolledUnderElevation: 0,
-        toolbarHeight: 48,
+        toolbarHeight: 52,
         centerTitle: false,
         titleTextStyle: textTheme.titleMedium?.copyWith(
           fontWeight: FontWeight.w600,
@@ -155,9 +155,8 @@ class AppTheme {
         dense: true,
         iconColor: AppColors.onSurfaceVariant,
         textColor: AppColors.onSurface,
-        visualDensity: VisualDensity(horizontal: -1, vertical: -2),
         contentPadding: EdgeInsets.symmetric(horizontal: AppSpacing.lg),
-        minVerticalPadding: AppSpacing.xs,
+        minVerticalPadding: AppSpacing.sm,
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,

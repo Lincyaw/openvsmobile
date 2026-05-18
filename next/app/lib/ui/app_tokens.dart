@@ -84,19 +84,14 @@ class AppColors {
   static const Color onError = Color(0xFF330000);
 }
 
-/// Text-role helpers. `AppText.mono(context)` is the single canonical
-/// entry point for any code-like surface (paths, branches, shas, terminal
-/// labels, diff content) so we never sprinkle ad-hoc
-/// `fontFamily: 'monospace'` strings — which silently pick whatever
-/// platform monospace happens to be available — across the codebase.
+/// Single canonical entry point for any code-like surface (paths,
+/// branches, shas, terminal labels, diff content). Always prefer this
+/// over `fontFamily: 'monospace'`, which silently picks an unpredictable
+/// platform monospace and breaks the visual contract.
 class AppText {
   const AppText._();
 
-  /// JetBrains Mono, inheriting size/colour/weight from the call site so
-  /// callers can write `AppText.mono(context, fontSize: 12, color: …)` and
-  /// only override what differs from the default.
-  static TextStyle mono(
-    BuildContext context, {
+  static TextStyle mono({
     double? fontSize,
     FontWeight? fontWeight,
     Color? color,

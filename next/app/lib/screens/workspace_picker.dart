@@ -8,6 +8,7 @@
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
+import '../ui/app_tokens.dart';
 import '../models.dart';
 
 class WorkspacePickerScreen extends StatefulWidget {
@@ -101,7 +102,7 @@ class _WorkspacePickerScreenState extends State<WorkspacePickerScreen> {
                 Expanded(
                   child: Text(
                     path,
-                    style: const TextStyle(fontFamily: 'monospace'),
+                    style: AppText.mono(),
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),

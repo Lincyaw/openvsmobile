@@ -9,12 +9,9 @@ import 'package:flutter_highlight/flutter_highlight.dart';
 import 'package:flutter_highlight/themes/monokai-sublime.dart';
 
 import '../models.dart';
+import '../ui/app_tokens.dart';
 
-const _kCodeTextStyle = TextStyle(
-  fontFamily: 'monospace',
-  fontSize: 13,
-  height: 1.35,
-);
+final _kCodeTextStyle = AppText.mono(fontSize: 13, height: 1.35);
 
 // Extension → highlight.js language id. Anything not in this map renders as
 // plain monospace text (the original v0 behaviour). Keep entries lowercase;
