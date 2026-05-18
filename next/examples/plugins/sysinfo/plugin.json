@@ -1,0 +1,8 @@
+{
+  "id": "sysinfo",
+  "name": "System Info",
+  "version": "0.1.0",
+  "entry": { "kind": "node", "path": "index.js" },
+  "activation": ["onStartup"],
+  "capabilities": { "ui": true }
+}
