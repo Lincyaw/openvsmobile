@@ -1551,6 +1551,27 @@ void _batch5Tests() {
     expect(tester.widget<Slider>(find.byType(Slider)).value, 30);
   });
 
+  testWidgets(
+      'UiSlider snaps back when plugin re-renders with the prior value after a local drag',
+      (tester) async {
+    // Regression: the prior didUpdateWidget compared new wire vs old
+    // wire — a "plugin rejects local drag by re-rendering the same
+    // wire value" sequence (20 → drag to 70 → re-render with 20) left
+    // the UI on 70 because wire-vs-wire was equal. The correct
+    // comparator is wire-vs-local; this test pins it.
+    UiNode tree(double v) => UiSlider(id: 'sw-reject', min: 0, max: 100, value: v);
+    await tester.pumpWidget(_host(tree(20)));
+    expect(tester.widget<Slider>(find.byType(Slider)).value, 20);
+    // User drags to 70 — local optimistic update.
+    tester.widget<Slider>(find.byType(Slider)).onChanged!(70);
+    await tester.pump();
+    expect(tester.widget<Slider>(find.byType(Slider)).value, 70);
+    // Plugin rejects: re-renders with the same wire value (20). Local
+    // must snap back even though new wire == old wire.
+    await tester.pumpWidget(_host(tree(20)));
+    expect(tester.widget<Slider>(find.byType(Slider)).value, 20);
+  });
+
   test('UiNode.fromJson parses Batch 5 widgets', () {
     final g = UiNode.fromJson(<String, dynamic>{
       'kind': 'Grid',

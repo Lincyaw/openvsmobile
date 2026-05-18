@@ -2081,7 +2081,14 @@ class _UiSliderRendererState extends State<_UiSliderRenderer> {
   @override
   void didUpdateWidget(_UiSliderRenderer old) {
     super.didUpdateWidget(old);
-    if (widget.node.value != old.node.value) {
+    // Wire value is authoritative: compare against our optimistic
+    // local (not against the previous wire value). Otherwise a "plugin
+    // rejects local drag by re-rendering with the prior wire value"
+    // sequence — where `old.node.value == widget.node.value` — would
+    // silently leave the UI on the user's optimistic value while the
+    // plugin thinks the slider is back at the previous position. This
+    // mirrors the Switch / Checkbox / RadioGroup contract.
+    if (widget.node.value != _value) {
       _value = _clamped(widget.node.value);
     }
   }
