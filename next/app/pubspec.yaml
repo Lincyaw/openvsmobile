@@ -65,6 +65,7 @@ dependencies:
   # the font has not been cached yet, the package silently falls back to the
   # platform's default font — acceptable for v0.
   google_fonts: ^6.2.1
+  flutter_feather_icons: ^2.0.0+1
 
 dev_dependencies:
   flutter_test:

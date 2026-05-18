@@ -41,17 +41,52 @@ import { Buffer } from "node:buffer";
 export type UiTextStyle = "body" | "title" | "caption" | "mono";
 export type UiButtonStyle = "primary" | "secondary" | "danger";
 
+// ---- StyleSlot tokens (Batch 1 — §4.3 cross-cutting principles) ----
+//
+// Plugin authors pick from a small named set instead of hard-coding
+// numbers / hex colors. The Flutter host owns the pixel/color mapping; the
+// SDK only exports the names so authors get autocomplete and the wire
+// format is forward-compatible (the host can re-tune density without
+// re-shipping plugins).
+//
+// `gap` / `size` on existing widgets continues to accept a raw number for
+// one minor version — see the constructors below — but new code should
+// prefer the named tokens.
+
+/// Spacing scale shared by gap / padding / spacer.
+export type SpacingToken = "none" | "xs" | "sm" | "md" | "lg" | "xl";
+/// Corner radius scale.
+export type RadiusToken = "none" | "sm" | "md" | "lg" | "pill";
+/// Container background tier — see §4.3 cross-cutting principles.
+export type SurfaceToken = "default" | "elevated" | "muted" | "inverse";
+/// Semantic accent / brand color. `brand` resolves to the plugin's
+/// `themeColor` if declared, falling back to the app brand.
+export type AccentToken =
+  | "brand"
+  | "info"
+  | "success"
+  | "warning"
+  | "danger"
+  | "muted";
+/// Icon / avatar / hit-target size buckets.
+export type SizeToken = "xs" | "sm" | "md" | "lg" | "xl";
+
+/// `StyleSlot` is the union of "raw pixel/color value" and "named token".
+/// Numbers stay accepted for back-compat (existing `gap: 8` keeps working)
+/// while new code can write `gap: "sm"`. Renderer resolves both.
+export type StyleSlot<TToken extends string> = number | TToken;
+
 export interface UiColumn {
   kind: "Column";
   id: string;
   children: UiNode[];
-  gap?: number;
+  gap?: StyleSlot<SpacingToken>;
 }
 export interface UiRow {
   kind: "Row";
   id: string;
   children: UiNode[];
-  gap?: number;
+  gap?: StyleSlot<SpacingToken>;
 }
 export interface UiSection {
   kind: "Section";
@@ -78,7 +113,7 @@ export interface UiText {
 export interface UiSpacer {
   kind: "Spacer";
   id: string;
-  size?: number;
+  size?: StyleSlot<SpacingToken>;
 }
 export interface UiTextField {
   kind: "TextField";
@@ -94,6 +129,79 @@ export interface UiButton {
   style?: UiButtonStyle;
 }
 
+// ---- Batch 1 new widgets (§4.3) ----
+
+export interface UiIcon {
+  kind: "Icon";
+  id: string;
+  /// Feather glyph name (see `next/app/lib/ui/icon_catalog.dart`). Unknown
+  /// names render a placeholder so a typo never crashes the panel.
+  name: string;
+  size?: StyleSlot<SizeToken>;
+  accent?: AccentToken;
+}
+
+export type UiBadgeVariant = "dot" | "pill";
+
+export interface UiBadge {
+  kind: "Badge";
+  id: string;
+  text?: string;
+  count?: number;
+  accent?: AccentToken;
+  variant: UiBadgeVariant;
+}
+
+/// Plumbed-but-not-rendered in Batch 1 — Batch 4 lights this up.
+/// Field shape mirrors the doc spec: `label` + `eventId`, optional
+/// `icon` (Feather catalog name) + `accent`.
+export interface UiSwipeAction {
+  label: string;
+  icon?: string;
+  accent?: AccentToken;
+  eventId: string;
+}
+
+export interface UiListTile {
+  kind: "ListTile";
+  id: string;
+  title: string;
+  subtitle?: string;
+  leading?: UiNode;
+  trailing?: UiNode;
+  onTapEvent?: string;
+  swipeActions?: UiSwipeAction[];
+}
+
+/// Compact tile-corner badge for [UiAppTile]. The full [UiBadge] widget
+/// is overkill for the launcher's corner indicator; the doc spec uses
+/// this slimmed shape ({ count?, text? }) so plugins don't have to
+/// declare a full badge node off the main tree.
+export interface UiAppTileBadge {
+  count?: number;
+  text?: string;
+}
+
+export interface UiAppTile {
+  id: string;
+  name: string;
+  /// Either a Feather catalog name or an opaque `{ uri }` reference.
+  /// v0 renderer honors the catalog-name form; `{ uri }` is the
+  /// controlled escape hatch for "every plugin gets a real-looking
+  /// app icon on the launcher" (only valid on `UiAppGrid` tiles).
+  icon: string | { uri: string };
+  badge?: UiAppTileBadge;
+  accent?: AccentToken;
+}
+
+export interface UiAppGrid {
+  kind: "AppGrid";
+  id: string;
+  items: UiAppTile[];
+  columns?: number;
+  onLaunchEvent?: string;
+}
+
 export type UiNode =
   | UiColumn
   | UiRow
@@ -103,7 +211,11 @@ export type UiNode =
   | UiText
   | UiSpacer
   | UiTextField
-  | UiButton;
+  | UiButton
+  | UiIcon
+  | UiBadge
+  | UiListTile
+  | UiAppGrid;
 
 /// Constructors mirroring the §4.3 widget vocabulary. IDs may be
 /// omitted; an omitted id is replaced with `crypto.randomUUID()` so the
@@ -184,6 +296,70 @@ export const ui = {
       label: p.label,
     };
     if (p.style !== undefined) out.style = p.style;
+    return out;
+  },
+  icon(p: {
+    id?: string;
+    name: string;
+    size?: StyleSlot<SizeToken>;
+    accent?: AccentToken;
+  }): UiIcon {
+    const out: UiIcon = { kind: "Icon", id: ensureId(p.id), name: p.name };
+    if (p.size !== undefined) out.size = p.size;
+    if (p.accent !== undefined) out.accent = p.accent;
+    return out;
+  },
+  badge(p: {
+    id?: string;
+    text?: string;
+    count?: number;
+    accent?: AccentToken;
+    variant?: UiBadgeVariant;
+  }): UiBadge {
+    const out: UiBadge = {
+      kind: "Badge",
+      id: ensureId(p.id),
+      variant: p.variant ?? "pill",
+    };
+    if (p.text !== undefined) out.text = p.text;
+    if (p.count !== undefined) out.count = p.count;
+    if (p.accent !== undefined) out.accent = p.accent;
+    return out;
+  },
+  listTile(p: {
+    id?: string;
+    title: string;
+    subtitle?: string;
+    leading?: UiNode;
+    trailing?: UiNode;
+    onTapEvent?: string;
+    swipeActions?: UiSwipeAction[];
+  }): UiListTile {
+    const out: UiListTile = {
+      kind: "ListTile",
+      id: ensureId(p.id),
+      title: p.title,
+    };
+    if (p.subtitle !== undefined) out.subtitle = p.subtitle;
+    if (p.leading !== undefined) out.leading = p.leading;
+    if (p.trailing !== undefined) out.trailing = p.trailing;
+    if (p.onTapEvent !== undefined) out.onTapEvent = p.onTapEvent;
+    if (p.swipeActions !== undefined) out.swipeActions = p.swipeActions;
+    return out;
+  },
+  appGrid(p: {
+    id?: string;
+    items: UiAppTile[];
+    columns?: number;
+    onLaunchEvent?: string;
+  }): UiAppGrid {
+    const out: UiAppGrid = {
+      kind: "AppGrid",
+      id: ensureId(p.id),
+      items: p.items,
+    };
+    if (p.columns !== undefined) out.columns = p.columns;
+    if (p.onLaunchEvent !== undefined) out.onLaunchEvent = p.onLaunchEvent;
     return out;
   },
 };

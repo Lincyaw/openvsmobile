@@ -14,6 +14,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:mobilecode/ui/app_tokens.dart';
+import 'package:mobilecode/ui/icon_catalog.dart';
 import 'package:mobilecode/ui/ui_node.dart';
 import 'package:mobilecode/ui/ui_renderer.dart';
 
@@ -35,14 +37,14 @@ UiNode _allKindsTree() {
   // widget kinds … implemented and exercised by widget tests."
   return UiColumn(
     id: 'root-col',
-    gap: 8,
-    children: const [
-      UiText(id: 't-title', text: 'Title goes here', style: UiTextStyleKind.title),
-      UiText(id: 't-body',  text: 'Body line',       style: UiTextStyleKind.body),
-      UiText(id: 't-caption', text: 'caption text',  style: UiTextStyleKind.caption),
-      UiText(id: 't-mono',  text: 'mono()',          style: UiTextStyleKind.mono),
-      UiSpacer(id: 'sp-1', size: 12),
-      UiRow(id: 'row-1', gap: 4, children: [
+    gap: SpacingSlot.number(8),
+    children: [
+      const UiText(id: 't-title', text: 'Title goes here', style: UiTextStyleKind.title),
+      const UiText(id: 't-body',  text: 'Body line',       style: UiTextStyleKind.body),
+      const UiText(id: 't-caption', text: 'caption text',  style: UiTextStyleKind.caption),
+      const UiText(id: 't-mono',  text: 'mono()',          style: UiTextStyleKind.mono),
+      UiSpacer(id: 'sp-1', size: SpacingSlot.number(12)),
+      UiRow(id: 'row-1', gap: SpacingSlot.number(4), children: const [
         UiText(id: 'row-t1', text: 'left'),
         UiText(id: 'row-t2', text: 'right'),
       ]),
@@ -187,10 +189,12 @@ void main() {
     final node = UiNode.fromJson(json);
     expect(node, isA<UiColumn>());
     final col = node as UiColumn;
-    expect(col.gap, 4.0);
+    // Batch 1: gap/size carry a SpacingSlot wrapper that retains either
+    // a numeric value or a SpacingToken. The number path stays a double.
+    expect(col.gap?.numeric, 4.0);
     expect(col.children, hasLength(3));
     expect((col.children[0] as UiText).style, UiTextStyleKind.mono);
-    expect((col.children[1] as UiSpacer).size, 8.0);
+    expect((col.children[1] as UiSpacer).size?.numeric, 8.0);
     final card = col.children[2] as UiCard;
     final btn = card.children.single as UiButton;
     expect(btn.label, 'Click');
@@ -209,5 +213,284 @@ void main() {
       () => UiNode.fromJson({'kind': 'Text', 'text': 'no id'}),
       throwsFormatException,
     );
+  });
+
+  // ---- Batch 1 widgets (§4.3) ----
+
+  testWidgets('UiIcon renders a known Feather glyph at the requested size',
+      (tester) async {
+    final tree = UiIcon(
+      id: 'i',
+      name: 'home',
+      size: SizeSlot.number(32),
+      accent: AccentToken.brand,
+    );
+    await tester.pumpWidget(_host(tree));
+    expect(tester.takeException(), isNull);
+    final iconWidget = tester.widget<Icon>(find.byKey(const ValueKey('ui:i')));
+    expect(iconWidget.size, 32);
+    expect(iconWidget.icon, isNotNull);
+  });
+
+  testWidgets('UiIcon falls back to a placeholder for unknown names',
+      (tester) async {
+    const tree = UiIcon(id: 'i', name: 'no-such-icon');
+    await tester.pumpWidget(_host(tree));
+    expect(tester.takeException(), isNull);
+    final iconWidget = tester.widget<Icon>(find.byKey(const ValueKey('ui:i')));
+    // The catalog returns null for unknown names; renderer uses
+    // Icons.help_outline as the visible-but-degraded placeholder.
+    expect(iconWidget.icon, Icons.help_outline);
+  });
+
+  testWidgets('UiBadge dot renders an 8x8 colored circle', (tester) async {
+    const tree = UiBadge(
+      id: 'b',
+      variant: UiBadgeVariant.dot,
+      accent: AccentToken.danger,
+    );
+    await tester.pumpWidget(_host(tree));
+    expect(tester.takeException(), isNull);
+    final size = tester.getSize(find.byKey(const ValueKey('ui:b')));
+    expect(size.width, 8);
+    expect(size.height, 8);
+  });
+
+  testWidgets('UiBadge pill renders text/count and a rounded background',
+      (tester) async {
+    const tree = UiBadge(
+      id: 'b2',
+      variant: UiBadgeVariant.pill,
+      count: 3,
+      accent: AccentToken.brand,
+    );
+    await tester.pumpWidget(_host(tree));
+    expect(tester.takeException(), isNull);
+    expect(find.text('3'), findsOneWidget);
+  });
+
+  testWidgets('UiListTile renders title/subtitle and emits onTapEvent',
+      (tester) async {
+    final events = <UiNodeEvent>[];
+    const tree = UiListTile(
+      id: 'row',
+      title: 'Title row',
+      subtitle: 'Subtitle row',
+      onTapEvent: 'open',
+    );
+    await tester.pumpWidget(_host(tree, onEvent: events.add));
+    expect(find.text('Title row'), findsOneWidget);
+    expect(find.text('Subtitle row'), findsOneWidget);
+    await tester.tap(find.byType(ListTile));
+    await tester.pump();
+    expect(events, hasLength(1));
+    expect(events.single.type, 'open');
+    expect(events.single.nodeId, 'row');
+  });
+
+  testWidgets('UiListTile renders leading + trailing nodes via recursion',
+      (tester) async {
+    const tree = UiListTile(
+      id: 'row',
+      title: 'With chrome',
+      leading: UiIcon(id: 'row.l', name: 'user'),
+      trailing: UiBadge(
+        id: 'row.t',
+        variant: UiBadgeVariant.dot,
+        accent: AccentToken.info,
+      ),
+    );
+    await tester.pumpWidget(_host(tree));
+    expect(tester.takeException(), isNull);
+    expect(find.byKey(const ValueKey('ui:row.l')), findsOneWidget);
+    expect(find.byKey(const ValueKey('ui:row.t')), findsOneWidget);
+  });
+
+  testWidgets('UiListTile accepts swipeActions (plumbed, not rendered)',
+      (tester) async {
+    // Batch 1 contract: the field is parsed and stored; Batch 4 lights
+    // up the gesture. Test that supplying it does not crash and that
+    // the tile still renders normally.
+    const tree = UiListTile(
+      id: 'row',
+      title: 'With swipe',
+      swipeActions: [
+        UiSwipeAction(
+          label: 'Delete',
+          eventId: 'row.delete',
+          accent: AccentToken.danger,
+        ),
+      ],
+    );
+    await tester.pumpWidget(_host(tree));
+    expect(tester.takeException(), isNull);
+    expect(find.text('With swipe'), findsOneWidget);
+    // The delete action label MUST NOT render in batch 1.
+    expect(find.text('Delete'), findsNothing);
+  });
+
+  testWidgets('UiAppGrid renders one tile per item and fires onLaunchEvent',
+      (tester) async {
+    final events = <UiNodeEvent>[];
+    const tree = UiAppGrid(
+      id: 'grid',
+      onLaunchEvent: 'go',
+      items: [
+        UiAppTile(id: 't1', name: 'Alpha', icon: UiAppTileIconName('home')),
+        UiAppTile(id: 't2', name: 'Beta', icon: UiAppTileIconName('settings')),
+      ],
+    );
+    await tester.pumpWidget(_host(tree, onEvent: events.add));
+    expect(tester.takeException(), isNull);
+    expect(find.text('Alpha'), findsOneWidget);
+    expect(find.text('Beta'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('app-tile:grid/t1')),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('Alpha'));
+    await tester.pump();
+    expect(events, hasLength(1));
+    expect(events.single.type, 'go');
+    expect(events.single.payload, {'tileId': 't1'});
+  });
+
+  testWidgets('UiAppGrid uses default onLaunchEvent="launch" when omitted',
+      (tester) async {
+    final events = <UiNodeEvent>[];
+    const tree = UiAppGrid(
+      id: 'grid',
+      items: [
+        UiAppTile(id: 't1', name: 'Alpha', icon: UiAppTileIconName('home')),
+      ],
+    );
+    await tester.pumpWidget(_host(tree, onEvent: events.add));
+    await tester.tap(find.text('Alpha'));
+    await tester.pump();
+    expect(events.single.type, 'launch');
+  });
+
+  test('UiAppTile.fromJson reads the catalog-name icon shape', () {
+    final tile = UiAppTile.fromJson(<String, dynamic>{
+      'id': 't',
+      'name': 'Alpha',
+      'icon': 'home',
+      'accent': 'brand',
+    });
+    expect((tile.icon as UiAppTileIconName).name, 'home');
+    expect(tile.accent, AccentToken.brand);
+  });
+
+  test('UiAppTile.fromJson reads the { uri } icon shape', () {
+    final tile = UiAppTile.fromJson(<String, dynamic>{
+      'id': 't',
+      'name': 'Alpha',
+      'icon': <String, dynamic>{'uri': 'https://x/i.png'},
+    });
+    expect((tile.icon as UiAppTileIconUri).uri, 'https://x/i.png');
+  });
+
+  test('UiNode.fromJson accepts tokenized gap on Column/Row', () {
+    final node = UiNode.fromJson(<String, dynamic>{
+      'kind': 'Column',
+      'id': 'c',
+      'gap': 'sm',
+      'children': <Map<String, dynamic>>[
+        <String, dynamic>{'kind': 'Text', 'id': 't', 'text': 'hi'},
+      ],
+    });
+    final col = node as UiColumn;
+    expect(col.gap?.token, SpacingToken.sm);
+    expect(col.gap?.numeric, isNull);
+  });
+
+  // ---- StyleSlotResolver round-trip ----
+
+  testWidgets('StyleSlotResolver: spacing tokens map to AppSpacing scale',
+      (tester) async {
+    // Tokens resolve to the same px values that legacy `AppSpacing.*`
+    // constants exposed, so numeric and tokenized authors share one scale.
+    expect(StyleSlotResolver.spacing(SpacingToken.none), 0);
+    expect(StyleSlotResolver.spacing(SpacingToken.xs), AppSpacing.xs);
+    expect(StyleSlotResolver.spacing(SpacingToken.sm), AppSpacing.sm);
+    expect(StyleSlotResolver.spacing(SpacingToken.md), AppSpacing.md);
+    expect(StyleSlotResolver.spacing(SpacingToken.lg), AppSpacing.lg);
+    expect(StyleSlotResolver.spacing(SpacingToken.xl), AppSpacing.xl);
+
+    expect(StyleSlotResolver.spacingSlot(numeric: 12), 12);
+    expect(
+      StyleSlotResolver.spacingSlot(token: SpacingToken.md),
+      AppSpacing.md,
+    );
+  });
+
+  testWidgets('StyleSlotResolver: size tokens map to icon size buckets',
+      (tester) async {
+    expect(StyleSlotResolver.size(SizeToken.sm), AppIconSize.sm);
+    expect(StyleSlotResolver.size(SizeToken.md), AppIconSize.md);
+    expect(StyleSlotResolver.size(SizeToken.lg), AppIconSize.lg);
+  });
+
+  testWidgets('StyleSlotResolver: surface / accent resolve via ColorScheme',
+      (tester) async {
+    late BuildContext capturedCtx;
+    await tester.pumpWidget(MaterialApp(
+      home: Builder(builder: (ctx) {
+        capturedCtx = ctx;
+        return const SizedBox.shrink();
+      }),
+    ));
+    final scheme = Theme.of(capturedCtx).colorScheme;
+    expect(
+      StyleSlotResolver.surface(capturedCtx, SurfaceToken.defaultSurface),
+      scheme.surface,
+    );
+    expect(
+      StyleSlotResolver.surface(capturedCtx, SurfaceToken.elevated),
+      scheme.surfaceContainerHigh,
+    );
+    expect(
+      StyleSlotResolver.accent(capturedCtx, AccentToken.brand),
+      scheme.primary,
+    );
+    expect(
+      StyleSlotResolver.accent(capturedCtx, AccentToken.danger),
+      scheme.error,
+    );
+  });
+
+  test('resolvePluginThemeColor handles every documented palette name', () {
+    for (final name in [
+      'teal',
+      'blue',
+      'green',
+      'orange',
+      'red',
+      'purple',
+      'mono',
+    ]) {
+      expect(resolvePluginThemeColor(name), isNotNull, reason: name);
+    }
+    expect(resolvePluginThemeColor(null), isNull);
+    expect(resolvePluginThemeColor('chartreuse'), isNull);
+  });
+
+  test('icon catalog covers a few essential names', () {
+    // Quick smoke test that the curated subset is wired up. We don't
+    // assert the full list — that lives in the source file.
+    for (final name in const [
+      'home',
+      'settings',
+      'code',
+      'terminal',
+      'file',
+      'folder',
+      'plus',
+      'check',
+      'x',
+    ]) {
+      expect(resolveIconByName(name), isNotNull, reason: name);
+    }
+    expect(resolveIconByName('definitely-not-a-feather-icon'), isNull);
   });
 }

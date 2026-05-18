@@ -192,3 +192,255 @@ class AppText {
     ).copyWith(fontFamilyFallback: monoFontFamilyFallback);
   }
 }
+
+// ---------------------------------------------------------------------
+// StyleSlot tokens (Batch 1 — design §4.3 cross-cutting principles).
+//
+// Plugin authors pick from a small named set instead of hard-coding
+// numbers / hex colors; the Flutter host owns the pixel/color mapping.
+// The SDK side mirrors these as TypeScript string-literal unions; this
+// file is the renderer's resolver.
+// ---------------------------------------------------------------------
+
+enum SpacingToken { none, xs, sm, md, lg, xl }
+enum RadiusToken { none, sm, md, lg, pill }
+/// Container background tier — matches the doc spec
+/// (`default | elevated | muted | inverse`). `default` is the bare
+/// surface (no chrome); `elevated` is the raised card layer.
+enum SurfaceToken { defaultSurface, elevated, muted, inverse }
+/// Semantic accent — matches the doc spec (`brand | info | success |
+/// warning | danger | muted`). `brand` resolves to the plugin's
+/// `themeColor` if declared, falling back to the app brand.
+enum AccentToken { brand, info, success, warning, danger, muted }
+enum SizeToken { xs, sm, md, lg, xl }
+
+SpacingToken? spacingTokenFromString(String? raw) {
+  if (raw == null) return null;
+  switch (raw) {
+    case 'none':
+      return SpacingToken.none;
+    case 'xs':
+      return SpacingToken.xs;
+    case 'sm':
+      return SpacingToken.sm;
+    case 'md':
+      return SpacingToken.md;
+    case 'lg':
+      return SpacingToken.lg;
+    case 'xl':
+      return SpacingToken.xl;
+  }
+  throw FormatException('Unknown SpacingToken: $raw');
+}
+
+RadiusToken? radiusTokenFromString(String? raw) {
+  if (raw == null) return null;
+  switch (raw) {
+    case 'none':
+      return RadiusToken.none;
+    case 'sm':
+      return RadiusToken.sm;
+    case 'md':
+      return RadiusToken.md;
+    case 'lg':
+      return RadiusToken.lg;
+    case 'pill':
+      return RadiusToken.pill;
+  }
+  throw FormatException('Unknown RadiusToken: $raw');
+}
+
+SurfaceToken? surfaceTokenFromString(String? raw) {
+  if (raw == null) return null;
+  switch (raw) {
+    case 'default':
+      return SurfaceToken.defaultSurface;
+    case 'elevated':
+      return SurfaceToken.elevated;
+    case 'muted':
+      return SurfaceToken.muted;
+    case 'inverse':
+      return SurfaceToken.inverse;
+  }
+  throw FormatException('Unknown SurfaceToken: $raw');
+}
+
+AccentToken? accentTokenFromString(String? raw) {
+  if (raw == null) return null;
+  switch (raw) {
+    case 'brand':
+      return AccentToken.brand;
+    case 'info':
+      return AccentToken.info;
+    case 'success':
+      return AccentToken.success;
+    case 'warning':
+      return AccentToken.warning;
+    case 'danger':
+      return AccentToken.danger;
+    case 'muted':
+      return AccentToken.muted;
+  }
+  throw FormatException('Unknown AccentToken: $raw');
+}
+
+SizeToken? sizeTokenFromString(String? raw) {
+  if (raw == null) return null;
+  switch (raw) {
+    case 'xs':
+      return SizeToken.xs;
+    case 'sm':
+      return SizeToken.sm;
+    case 'md':
+      return SizeToken.md;
+    case 'lg':
+      return SizeToken.lg;
+    case 'xl':
+      return SizeToken.xl;
+  }
+  throw FormatException('Unknown SizeToken: $raw');
+}
+
+/// Resolver: token → concrete pixel / color / radius value, using the
+/// surrounding [BuildContext]'s theme for color lookups. The resolver is
+/// stateless; methods are static so callers don't pay for an instance.
+class StyleSlotResolver {
+  const StyleSlotResolver._();
+
+  /// Spacing token → pixels. Maps onto the existing `AppSpacing` scale so
+  /// numeric (`gap: 8`) and tokenized (`gap: 'sm'`) callers share the
+  /// same canonical values.
+  static double spacing(SpacingToken token) {
+    switch (token) {
+      case SpacingToken.none:
+        return 0;
+      case SpacingToken.xs:
+        return AppSpacing.xs;
+      case SpacingToken.sm:
+        return AppSpacing.sm;
+      case SpacingToken.md:
+        return AppSpacing.md;
+      case SpacingToken.lg:
+        return AppSpacing.lg;
+      case SpacingToken.xl:
+        return AppSpacing.xl;
+    }
+  }
+
+  /// Either form of `gap` / `size` / `padding`: number passes through,
+  /// token resolves via [spacing].
+  static double spacingSlot({double? numeric, SpacingToken? token}) {
+    if (token != null) return spacing(token);
+    return numeric ?? 0;
+  }
+
+  /// Radius token → pixels. `pill` is a sentinel large value that, when
+  /// fed into a `BorderRadius.circular`, produces a fully-rounded edge
+  /// on any reasonable widget height.
+  static double radius(RadiusToken token) {
+    switch (token) {
+      case RadiusToken.none:
+        return 0;
+      case RadiusToken.sm:
+        return AppRadius.sm;
+      case RadiusToken.md:
+        return AppRadius.md;
+      case RadiusToken.lg:
+        return AppRadius.lg;
+      case RadiusToken.pill:
+        return 999;
+    }
+  }
+
+  /// Size token (icons, avatars, hit-targets) → pixels.
+  static double size(SizeToken token) {
+    switch (token) {
+      case SizeToken.xs:
+        return 12;
+      case SizeToken.sm:
+        return AppIconSize.sm;
+      case SizeToken.md:
+        return AppIconSize.md;
+      case SizeToken.lg:
+        return AppIconSize.lg;
+      case SizeToken.xl:
+        return 64;
+    }
+  }
+
+  static double sizeSlot({double? numeric, SizeToken? token}) {
+    if (token != null) return size(token);
+    return numeric ?? size(SizeToken.md);
+  }
+
+  /// Container background color for a [SurfaceToken]. The four values
+  /// map onto the app's surface-container scale: `default` is the bare
+  /// page surface; `elevated` is the raised card layer; `muted` is the
+  /// dim background for embedded content; `inverse` is the high-contrast
+  /// inverse surface (used by tooltips, snackbars).
+  static Color surface(BuildContext context, SurfaceToken token) {
+    final scheme = Theme.of(context).colorScheme;
+    switch (token) {
+      case SurfaceToken.defaultSurface:
+        return scheme.surface;
+      case SurfaceToken.elevated:
+        return scheme.surfaceContainerHigh;
+      case SurfaceToken.muted:
+        return scheme.surfaceContainerLow;
+      case SurfaceToken.inverse:
+        return scheme.inverseSurface;
+    }
+  }
+
+  /// Accent token → semantic color. `brand` resolves to the surrounding
+  /// theme's primary, so the per-plugin theme override (Batch 1) flips
+  /// `brand` on a panel-by-panel basis without touching the global scheme.
+  /// `muted` is the dim-text / outline color for de-emphasized accents.
+  static Color accent(BuildContext context, AccentToken token) {
+    final scheme = Theme.of(context).colorScheme;
+    switch (token) {
+      case AccentToken.brand:
+        return scheme.primary;
+      case AccentToken.info:
+        return scheme.tertiary;
+      case AccentToken.success:
+        // Re-use the brand green for success — keeps the palette honest;
+        // we deliberately don't introduce a fourth-color token until
+        // batch 2's UiSection.variant pass forces the issue.
+        return const Color(0xFF1F7A48);
+      case AccentToken.warning:
+        return scheme.tertiary;
+      case AccentToken.danger:
+        return scheme.error;
+      case AccentToken.muted:
+        return scheme.onSurfaceVariant;
+    }
+  }
+}
+
+/// Plugin-level brand color (manifest `themeColor`). Resolves the seven
+/// named hues to a concrete Color the renderer can hand to a scoped
+/// `Theme` so `AccentToken.brand` lookups inside the plugin panel use
+/// the plugin's color instead of the app default.
+Color? resolvePluginThemeColor(String? raw) {
+  if (raw == null) return null;
+  switch (raw) {
+    case 'teal':
+      return const Color(0xFF14B8A6);
+    case 'blue':
+      return const Color(0xFF3B82F6);
+    case 'green':
+      return const Color(0xFF22C55E);
+    case 'orange':
+      return const Color(0xFFF97316);
+    case 'red':
+      return const Color(0xFFEF4444);
+    case 'purple':
+      return const Color(0xFFA855F7);
+    case 'mono':
+      // "mono" = no chroma; resolved to a neutral that still reads as
+      // an accent against the app's surface containers.
+      return const Color(0xFF6B7280);
+  }
+  return null;
+}

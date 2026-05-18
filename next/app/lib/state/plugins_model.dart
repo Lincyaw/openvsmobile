@@ -69,6 +69,13 @@ class PluginInfo {
   /// (`fs`/`terminal`/`network`/`secrets`/`ui`) and ignores the rest.
   final Map<String, dynamic> capabilities;
 
+  /// Plugin-level brand color (Batch 1 — design §4.3). One of seven named
+  /// hues (teal/blue/green/orange/red/purple/mono). Resolved via
+  /// `resolvePluginThemeColor` in `app_tokens.dart`. The Plugins tab
+  /// scopes a Theme override around the plugin's panels so the `brand`
+  /// AccentToken resolves to this color inside the panel only.
+  final String? themeColor;
+
   const PluginInfo({
     required this.id,
     required this.name,
@@ -78,6 +85,7 @@ class PluginInfo {
     required this.panels,
     required this.commands,
     this.capabilities = const <String, dynamic>{},
+    this.themeColor,
   });
 
   factory PluginInfo.fromJson(Map<String, dynamic> json) {
@@ -129,6 +137,7 @@ class PluginInfo {
       panels: panels,
       commands: commands,
       capabilities: caps,
+      themeColor: json['themeColor'] as String?,
     );
   }
 
@@ -147,6 +156,7 @@ class PluginInfo {
       panels: panels,
       commands: commands,
       capabilities: capabilities,
+      themeColor: themeColor,
     );
   }
 }

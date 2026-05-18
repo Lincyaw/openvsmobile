@@ -128,4 +128,48 @@ describe("parseManifestObject", () => {
       ManifestError,
     );
   });
+
+  // ---- Batch 1: plugin-level themeColor (§4.3) ----
+
+  it("accepts themeColor when set to a known palette name", () => {
+    const { manifest, warnings } = parseManifestObject(
+      {
+        name: "Notes",
+        version: "1.0.0",
+        entry: { kind: "node", path: "main.js" },
+        themeColor: "teal",
+      },
+      "notes",
+    );
+    expect(manifest.themeColor).toBe("teal");
+    // themeColor is a known top-level key — no "preserved but ignored"
+    // warning should fire for it.
+    expect(warnings.some((w) => w.includes("themeColor"))).toBe(false);
+  });
+
+  it("omits themeColor from the parsed manifest when absent", () => {
+    const { manifest } = parseManifestObject(
+      {
+        name: "Notes",
+        version: "1.0.0",
+        entry: { kind: "node", path: "main.js" },
+      },
+      "notes",
+    );
+    expect(manifest.themeColor).toBeUndefined();
+  });
+
+  it("rejects an unknown themeColor value", () => {
+    expect(() =>
+      parseManifestObject(
+        {
+          name: "Notes",
+          version: "1.0.0",
+          entry: { kind: "node", path: "main.js" },
+          themeColor: "magenta",
+        },
+        "notes",
+      ),
+    ).toThrow(ManifestError);
+  });
 });

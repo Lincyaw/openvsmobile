@@ -42,6 +42,29 @@ export interface ManifestContributes {
   unknown: Record<string, unknown>;
 }
 
+/// Plugin-level brand color (Batch 1 — §4.3 cross-cutting principles).
+/// When set, the Flutter host scopes a Theme override around the plugin's
+/// panels so the `brand` AccentToken resolves to this color inside the
+/// panel only. Unset → the app's default brand color is used.
+export type ManifestThemeColor =
+  | "teal"
+  | "blue"
+  | "green"
+  | "orange"
+  | "red"
+  | "purple"
+  | "mono";
+
+const THEME_COLORS: ReadonlySet<ManifestThemeColor> = new Set([
+  "teal",
+  "blue",
+  "green",
+  "orange",
+  "red",
+  "purple",
+  "mono",
+]);
+
 export interface PluginManifest {
   id: string;
   name: string;
@@ -50,6 +73,10 @@ export interface PluginManifest {
   activation: string[];
   capabilities: ManifestCapabilities;
   contributes: ManifestContributes;
+  /// Optional plugin-level brand color. Forwarded to the host via the
+  /// `plugin.list` / `plugin.info` wire shape so the renderer can scope a
+  /// theme override around the plugin's panels.
+  themeColor?: ManifestThemeColor;
   /// Unknown top-level keys, kept verbatim (round-tripped forward).
   unknown: Record<string, unknown>;
 }
@@ -67,6 +94,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "activation",
   "capabilities",
   "contributes",
+  "themeColor",
 ]);
 
 const KNOWN_CONTRIBUTES_KEYS = new Set(["commands"]);
@@ -140,6 +168,7 @@ export function parseManifestObject(
   const activation = parseActivation(bag.activation);
   const capabilities = parseCapabilities(bag.capabilities, warnings);
   const contributes = parseContributes(bag.contributes, warnings);
+  const themeColor = parseThemeColor(bag.themeColor);
 
   const unknown: Record<string, unknown> = {};
   for (const key of Object.keys(bag)) {
@@ -148,19 +177,28 @@ export function parseManifestObject(
     warnings.push(`unknown top-level key "${key}" — preserved but ignored`);
   }
 
-  return {
-    manifest: {
-      id,
-      name,
-      version,
-      entry,
-      activation,
-      capabilities,
-      contributes,
-      unknown,
-    },
-    warnings,
+  const manifest: PluginManifest = {
+    id,
+    name,
+    version,
+    entry,
+    activation,
+    capabilities,
+    contributes,
+    unknown,
   };
+  if (themeColor !== undefined) manifest.themeColor = themeColor;
+  return { manifest, warnings };
+}
+
+function parseThemeColor(v: unknown): ManifestThemeColor | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== "string" || !THEME_COLORS.has(v as ManifestThemeColor)) {
+    throw new ManifestError(
+      `themeColor must be one of ${[...THEME_COLORS].map((t) => `"${t}"`).join(" | ")}`,
+    );
+  }
+  return v as ManifestThemeColor;
 }
 
 function requireString(bag: Record<string, unknown>, key: string): string {

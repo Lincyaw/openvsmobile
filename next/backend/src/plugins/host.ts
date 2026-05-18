@@ -28,6 +28,7 @@ import { RPC_ERR, sendNotification } from "../rpc.js";
 import {
   loadManifest,
   type ManifestCapabilities,
+  type ManifestThemeColor,
   type PluginManifest,
 } from "./manifest.js";
 import {
@@ -93,6 +94,10 @@ export interface PluginInfo {
   state: WirePluginState;
   capabilities: ManifestCapabilities;
   contributes: Record<string, unknown>;
+  /// Optional plugin-level brand color (Batch 1 — §4.3). The Flutter host
+  /// scopes a Theme override around the plugin's panels so the `brand`
+  /// AccentToken resolves to this color inside the panel only.
+  themeColor?: ManifestThemeColor;
   crashReason?: string;
 }
 
@@ -697,6 +702,9 @@ export class PluginHost {
         commands: entry.manifest.contributes.commands,
       },
     };
+    if (entry.manifest.themeColor !== undefined) {
+      info.themeColor = entry.manifest.themeColor;
+    }
     if (info.state === "crashed" && entry.reason !== undefined) {
       info.crashReason = entry.reason;
     }

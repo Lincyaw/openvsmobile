@@ -18,8 +18,17 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   createPlugin,
   ui,
+  type AccentToken,
   type PluginContext,
+  type SizeToken,
+  type SpacingToken,
+  type StyleSlot,
+  type UiAppGrid,
+  type UiAppTile,
+  type UiBadge,
   type UiEventInput,
+  type UiIcon,
+  type UiListTile,
 } from "../src/index.js";
 
 interface Harness {
@@ -133,6 +142,110 @@ describe("ui.* constructors", () => {
       "TextField",
       "Button",
     ]);
+  });
+});
+
+describe("Batch 1 widgets (UiIcon / UiBadge / UiListTile / UiAppGrid)", () => {
+  it("ui.icon round-trips a tokenized size and accent", () => {
+    const icon: UiIcon = ui.icon({
+      id: "i",
+      name: "home",
+      size: "md" satisfies StyleSlot<SizeToken>,
+      accent: "brand" satisfies AccentToken,
+    });
+    expect(icon.kind).toBe("Icon");
+    expect(icon.name).toBe("home");
+    expect(icon.size).toBe("md");
+    expect(icon.accent).toBe("brand");
+  });
+
+  it("ui.badge defaults to pill variant when omitted", () => {
+    const b: UiBadge = ui.badge({ id: "b", text: "12" });
+    expect(b.kind).toBe("Badge");
+    expect(b.variant).toBe("pill");
+    expect(b.text).toBe("12");
+  });
+
+  it("ui.badge honors variant + count + accent overrides", () => {
+    const b: UiBadge = ui.badge({
+      id: "b2",
+      variant: "dot",
+      count: 0,
+      accent: "danger",
+    });
+    expect(b.variant).toBe("dot");
+    expect(b.count).toBe(0);
+    expect(b.accent).toBe("danger");
+  });
+
+  it("ui.listTile carries leading + trailing + swipeActions (plumbed)", () => {
+    const tile: UiListTile = ui.listTile({
+      id: "row",
+      title: "Hello",
+      subtitle: "world",
+      leading: ui.icon({ id: "row.lead", name: "user" }),
+      trailing: ui.badge({ id: "row.trail", variant: "dot", accent: "info" }),
+      onTapEvent: "open",
+      swipeActions: [
+        { label: "Delete", eventId: "row.delete", accent: "danger" },
+      ],
+    });
+    expect(tile.kind).toBe("ListTile");
+    expect(tile.title).toBe("Hello");
+    expect(tile.subtitle).toBe("world");
+    expect((tile.leading as UiIcon).kind).toBe("Icon");
+    expect((tile.trailing as UiBadge).kind).toBe("Badge");
+    expect(tile.onTapEvent).toBe("open");
+    expect(tile.swipeActions).toHaveLength(1);
+    expect(tile.swipeActions?.[0].label).toBe("Delete");
+  });
+
+  it("ui.appGrid carries items + optional columns + onLaunchEvent", () => {
+    const tile: UiAppTile = {
+      id: "t1",
+      name: "Notes",
+      icon: "file-text",
+      accent: "brand",
+    };
+    const grid: UiAppGrid = ui.appGrid({
+      id: "g",
+      items: [tile],
+      columns: 4,
+      onLaunchEvent: "launch",
+    });
+    expect(grid.kind).toBe("AppGrid");
+    expect(grid.items).toHaveLength(1);
+    expect(grid.items[0].name).toBe("Notes");
+    expect(grid.items[0].icon).toBe("file-text");
+    expect(grid.columns).toBe(4);
+    expect(grid.onLaunchEvent).toBe("launch");
+  });
+
+  it("ui.appGrid accepts the { uri } icon variant for Batch 3 forward-compat", () => {
+    const grid = ui.appGrid({
+      id: "g2",
+      items: [
+        {
+          id: "t",
+          name: "Custom",
+          icon: { uri: "https://example/icon.png" },
+        },
+      ],
+    });
+    expect(grid.items[0].icon).toEqual({ uri: "https://example/icon.png" });
+  });
+
+  it("StyleSlot<SpacingToken> still accepts raw numbers (back-compat)", () => {
+    // The new typed shape continues to honor the legacy number form for
+    // one minor version. This test pins the contract.
+    const slot: StyleSlot<SpacingToken> = 8;
+    const slotTok: StyleSlot<SpacingToken> = "sm";
+    expect(typeof slot).toBe("number");
+    expect(typeof slotTok).toBe("string");
+    const col = ui.column({ id: "c", gap: slotTok, children: [] });
+    expect(col.gap).toBe("sm");
+    const colNum = ui.column({ id: "c2", gap: 8, children: [] });
+    expect(colNum.gap).toBe(8);
   });
 });
 

@@ -53,8 +53,12 @@ Future<AppState> _appStateWithSeed(List<PluginInfo> seed) async {
 Widget _wrap(Widget child) => MaterialApp(home: Scaffold(body: child));
 
 void main() {
-  testWidgets('list renders three plugins with correct badges + switches',
+  testWidgets('grid renders one tile per plugin with the tile name visible',
       (tester) async {
+    // Batch 1 redesign: the Plugins tab now goes through UiAppGrid; tiles
+    // surface the plugin name as a caption and a state-derived UiBadge.
+    // The legacy in-grid Switch + badge-label affordances moved to the
+    // detail screen (covered by other tests).
     final appState = await _appStateWithSeed([
       _info(id: 'alpha', state: PluginWireState.running),
       _info(id: 'beta', state: PluginWireState.crashed, crashReason: 'boom'),
@@ -68,25 +72,21 @@ void main() {
     expect(find.text('beta'), findsOneWidget);
     expect(find.text('gamma'), findsOneWidget);
 
-    // Badge labels — these must match the wire-state label exactly.
-    expect(find.text('running'), findsOneWidget);
-    expect(find.text('crashed'), findsOneWidget);
-    expect(find.text('disabled'), findsOneWidget);
-    // Crashed reason is rendered next to the badge.
-    expect(find.text('boom'), findsOneWidget);
-
-    // Switch states. PluginWireState.disabled → off; everything else
-    // (including crashed) → on, because the toggle drives
-    // enabled-vs-disabled, not running-vs-stopped.
-    final alphaSwitch = tester
-        .widget<Switch>(find.byKey(const ValueKey<String>('plugin-toggle:alpha')));
-    final betaSwitch = tester
-        .widget<Switch>(find.byKey(const ValueKey<String>('plugin-toggle:beta')));
-    final gammaSwitch = tester
-        .widget<Switch>(find.byKey(const ValueKey<String>('plugin-toggle:gamma')));
-    expect(alphaSwitch.value, isTrue);
-    expect(betaSwitch.value, isTrue);
-    expect(gammaSwitch.value, isFalse);
+    // App-tile keys follow the renderer's `app-tile:<gridId>/<tileId>`
+    // contract; we don't pin the grid id in tests because the host owns
+    // it, but ByKeyMatching on the tile id suffix is enough.
+    expect(
+      find.byKey(const ValueKey<String>('app-tile:host.plugins.grid/alpha')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('app-tile:host.plugins.grid/beta')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('app-tile:host.plugins.grid/gamma')),
+      findsOneWidget,
+    );
   });
 
   testWidgets('tap row → detail view with single panel renders UiRenderer',
@@ -135,17 +135,23 @@ void main() {
     expect(find.text('hello from plugin'), findsOneWidget);
   });
 
-  testWidgets('plugin.stateChanged push flips badge from running to crashed',
+  testWidgets('plugin.stateChanged push reflects crashed state in detail view',
       (tester) async {
+    // Batch 1: state labels live in the detail / info view, not the grid.
+    // Render the detail view directly and assert the banner appears after
+    // a state push flips the plugin to crashed.
     final appState = await _appStateWithSeed([
       _info(id: 'alpha', state: PluginWireState.running),
     ]);
     addTearDown(appState.dispose);
-    await tester.pumpWidget(_wrap(PluginsTab(appState: appState)));
+    final initialInfo = appState.plugins.plugin('alpha')!;
+    await tester.pumpWidget(_wrap(
+      PluginDetailView(appState: appState, info: initialInfo),
+    ));
     await tester.pump();
 
-    expect(find.text('running'), findsOneWidget);
-    expect(find.text('crashed'), findsNothing);
+    expect(find.byKey(const ValueKey<String>('plugin-crashed-banner')),
+        findsNothing);
 
     appState.plugins.debugApplyStateChange(<String, dynamic>{
       'id': 'alpha',
@@ -154,9 +160,18 @@ void main() {
     });
     await tester.pump();
 
-    expect(find.text('running'), findsNothing);
-    expect(find.text('crashed'), findsOneWidget);
-    expect(find.text('segfault'), findsOneWidget);
+    // Detail view is a const StatelessWidget against the snapshot it was
+    // built with — pump the updated info through PluginDetailScreen so
+    // the AnimatedBuilder picks up the listener mutation.
+    final updated = appState.plugins.plugin('alpha')!;
+    await tester.pumpWidget(_wrap(
+      PluginDetailView(appState: appState, info: updated),
+    ));
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey<String>('plugin-crashed-banner')),
+        findsOneWidget);
+    expect(find.textContaining('segfault'), findsOneWidget);
   });
 
   testWidgets('crashed detail shows banner; Reload calls disable then enable',
@@ -225,8 +240,11 @@ void main() {
     );
   });
 
-  testWidgets('toggling the switch routes through plugin.disable',
+  testWidgets('detail kebab → Disable routes through plugin.disable',
       (tester) async {
+    // Batch 1: the enable/disable toggle moved off the grid tile into the
+    // detail view. Production goes through the kebab menu; the contract
+    // we verify is that selecting Disable still invokes plugin.disable.
     final appState = await _appStateWithSeed([
       _info(id: 'alpha', state: PluginWireState.running),
     ]);
@@ -237,10 +255,15 @@ void main() {
       return <String, dynamic>{'ok': true};
     };
 
-    await tester.pumpWidget(_wrap(PluginsTab(appState: appState)));
-    await tester.pump();
+    final info = appState.plugins.plugin('alpha')!;
+    await tester.pumpWidget(_wrap(
+      PluginDetailView(appState: appState, info: info),
+    ));
+    await tester.pumpAndSettle();
 
-    await tester.tap(find.byKey(const ValueKey<String>('plugin-toggle:alpha')));
+    await tester.tap(find.byKey(const ValueKey<String>('plugin-kebab')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Disable'));
     await tester.pumpAndSettle();
     expect(calls, ['plugin.disable:alpha']);
   });
@@ -311,7 +334,7 @@ void main() {
     expect(find.text('panel A content'), findsOneWidget);
   });
 
-  testWidgets('grid renders one card per plugin with a card key',
+  testWidgets('grid renders through UiAppGrid with one tile per plugin',
       (tester) async {
     final appState = await _appStateWithSeed([
       _info(id: 'alpha', state: PluginWireState.running),
@@ -321,11 +344,17 @@ void main() {
     await tester.pumpWidget(_wrap(PluginsTab(appState: appState)));
     await tester.pump();
 
+    // The host emits exactly one UiAppGrid that renders as a single
+    // GridView; each plugin becomes a tile keyed by id.
     expect(find.byType(GridView), findsOneWidget);
-    expect(find.byKey(const ValueKey<String>('plugin-card:alpha')),
-        findsOneWidget);
     expect(
-        find.byKey(const ValueKey<String>('plugin-card:beta')), findsOneWidget);
+      find.byKey(const ValueKey<String>('app-tile:host.plugins.grid/alpha')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('app-tile:host.plugins.grid/beta')),
+      findsOneWidget,
+    );
   });
 
   testWidgets('tapping a disabled plugin opens the info screen with path hint',

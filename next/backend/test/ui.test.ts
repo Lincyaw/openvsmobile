@@ -180,6 +180,164 @@ describe("validateUiTree", () => {
       }),
     ).toThrow(/style/);
   });
+
+  // ---- Batch 1 widgets (§4.3) ----
+
+  it("accepts UiIcon with a tokenized size and accent", () => {
+    const tree = validateUiTree({
+      kind: "Icon",
+      id: "i",
+      name: "home",
+      size: "md",
+      accent: "brand",
+    });
+    expect(tree.kind).toBe("Icon");
+    if (tree.kind !== "Icon") throw new Error("unreachable");
+    expect(tree.name).toBe("home");
+    expect(tree.size).toBe("md");
+    expect(tree.accent).toBe("brand");
+  });
+
+  it("accepts UiIcon with a numeric size (back-compat)", () => {
+    const tree = validateUiTree({
+      kind: "Icon",
+      id: "i2",
+      name: "settings",
+      size: 24,
+    });
+    if (tree.kind !== "Icon") throw new Error("unreachable");
+    expect(tree.size).toBe(24);
+  });
+
+  it("rejects UiIcon with unknown accent", () => {
+    expect(() =>
+      validateUiTree({
+        kind: "Icon",
+        id: "i3",
+        name: "home",
+        accent: "purple",
+      }),
+    ).toThrow(/accent/);
+  });
+
+  it("accepts UiBadge with the pill variant + count", () => {
+    const tree = validateUiTree({
+      kind: "Badge",
+      id: "b",
+      variant: "pill",
+      count: 7,
+      accent: "danger",
+    });
+    if (tree.kind !== "Badge") throw new Error("unreachable");
+    expect(tree.count).toBe(7);
+    expect(tree.variant).toBe("pill");
+  });
+
+  it("rejects UiBadge missing variant", () => {
+    expect(() =>
+      validateUiTree({ kind: "Badge", id: "b2" }),
+    ).toThrow(/variant/);
+  });
+
+  it("rejects UiBadge with negative count", () => {
+    expect(() =>
+      validateUiTree({
+        kind: "Badge",
+        id: "b3",
+        variant: "pill",
+        count: -1,
+      }),
+    ).toThrow(/count/);
+  });
+
+  it("accepts UiListTile with leading / trailing / swipeActions", () => {
+    const tree = validateUiTree({
+      kind: "ListTile",
+      id: "row",
+      title: "Hello",
+      subtitle: "world",
+      leading: { kind: "Icon", id: "row.l", name: "user" },
+      trailing: { kind: "Badge", id: "row.t", variant: "dot" },
+      onTapEvent: "open",
+      swipeActions: [
+        { label: "Delete", eventId: "row.delete", accent: "danger" },
+      ],
+    });
+    if (tree.kind !== "ListTile") throw new Error("unreachable");
+    expect(tree.title).toBe("Hello");
+    expect(tree.leading?.kind).toBe("Icon");
+    expect(tree.trailing?.kind).toBe("Badge");
+    expect(tree.swipeActions).toHaveLength(1);
+  });
+
+  it("rejects UiListTile with non-string title", () => {
+    expect(() =>
+      validateUiTree({ kind: "ListTile", id: "row", title: 42 }),
+    ).toThrow(/title/);
+  });
+
+  it("accepts UiAppGrid with a string-icon tile and onLaunchEvent", () => {
+    const tree = validateUiTree({
+      kind: "AppGrid",
+      id: "g",
+      onLaunchEvent: "launch",
+      columns: 3,
+      items: [
+        { id: "t1", name: "Notes", icon: "file-text", accent: "brand" },
+      ],
+    });
+    if (tree.kind !== "AppGrid") throw new Error("unreachable");
+    expect(tree.items).toHaveLength(1);
+    expect(tree.items[0].icon).toBe("file-text");
+    expect(tree.columns).toBe(3);
+  });
+
+  it("accepts UiAppGrid with a { uri } icon (Batch 3 forward-compat)", () => {
+    const tree = validateUiTree({
+      kind: "AppGrid",
+      id: "g2",
+      items: [
+        { id: "t", name: "Custom", icon: { uri: "https://x/i.png" } },
+      ],
+    });
+    if (tree.kind !== "AppGrid") throw new Error("unreachable");
+    expect(tree.items[0].icon).toEqual({ uri: "https://x/i.png" });
+  });
+
+  it("rejects UiAppGrid with duplicate tile ids", () => {
+    expect(() =>
+      validateUiTree({
+        kind: "AppGrid",
+        id: "g3",
+        items: [
+          { id: "t", name: "A", icon: "home" },
+          { id: "t", name: "B", icon: "home" },
+        ],
+      }),
+    ).toThrow(/duplicate tile id/);
+  });
+
+  it("accepts Column.gap as a token string", () => {
+    const tree = validateUiTree({
+      kind: "Column",
+      id: "c",
+      gap: "sm",
+      children: [{ kind: "Text", id: "t", text: "hi" }],
+    });
+    if (tree.kind !== "Column") throw new Error("unreachable");
+    expect(tree.gap).toBe("sm");
+  });
+
+  it("rejects Column.gap as an unknown token string", () => {
+    expect(() =>
+      validateUiTree({
+        kind: "Column",
+        id: "c2",
+        gap: "huge",
+        children: [],
+      }),
+    ).toThrow(/gap/);
+  });
 });
 
 describe("UiPanelRegistry", () => {

@@ -27,17 +27,62 @@ import type { WebSocket } from "ws";
 export type UiTextStyle = "body" | "title" | "caption" | "mono";
 export type UiButtonStyle = "primary" | "secondary" | "danger";
 
+// ---- StyleSlot tokens (Batch 1 — §4.3 cross-cutting principles) ----
+//
+// Mirrored on the SDK side as exported string-literal unions so plugin
+// authors get autocomplete. The host accepts either a token name or a
+// raw number for the back-compat one-minor-version window.
+
+export type SpacingToken = "none" | "xs" | "sm" | "md" | "lg" | "xl";
+export type RadiusToken = "none" | "sm" | "md" | "lg" | "pill";
+export type SurfaceToken = "default" | "elevated" | "muted" | "inverse";
+export type AccentToken =
+  | "brand"
+  | "info"
+  | "success"
+  | "warning"
+  | "danger"
+  | "muted";
+export type SizeToken = "xs" | "sm" | "md" | "lg" | "xl";
+
+export type StyleSlot<TToken extends string> = number | TToken;
+
+const SPACING_TOKENS: ReadonlySet<string> = new Set([
+  "none",
+  "xs",
+  "sm",
+  "md",
+  "lg",
+  "xl",
+]);
+const SIZE_TOKENS: ReadonlySet<string> = new Set([
+  "xs",
+  "sm",
+  "md",
+  "lg",
+  "xl",
+]);
+const ACCENT_TOKENS: ReadonlySet<string> = new Set([
+  "brand",
+  "info",
+  "success",
+  "warning",
+  "danger",
+  "muted",
+]);
+const BADGE_VARIANTS: ReadonlySet<string> = new Set(["dot", "pill"]);
+
 export interface UiColumn {
   kind: "Column";
   id: string;
   children: UiNode[];
-  gap?: number;
+  gap?: StyleSlot<SpacingToken>;
 }
 export interface UiRow {
   kind: "Row";
   id: string;
   children: UiNode[];
-  gap?: number;
+  gap?: StyleSlot<SpacingToken>;
 }
 export interface UiSection {
   kind: "Section";
@@ -64,7 +109,7 @@ export interface UiText {
 export interface UiSpacer {
   kind: "Spacer";
   id: string;
-  size?: number;
+  size?: StyleSlot<SpacingToken>;
 }
 export interface UiTextField {
   kind: "TextField";
@@ -80,6 +125,73 @@ export interface UiButton {
   style?: UiButtonStyle;
 }
 
+// ---- Batch 1 new widgets ----
+
+export interface UiIcon {
+  kind: "Icon";
+  id: string;
+  name: string;
+  size?: StyleSlot<SizeToken>;
+  accent?: AccentToken;
+}
+
+export type UiBadgeVariant = "dot" | "pill";
+
+export interface UiBadge {
+  kind: "Badge";
+  id: string;
+  text?: string;
+  count?: number;
+  accent?: AccentToken;
+  variant: UiBadgeVariant;
+}
+
+/// Doc-spec shape: `label` + `eventId`, optional `icon` (Feather name)
+/// + `accent`. Plumbed-but-not-rendered in Batch 1; Batch 4 lights up
+/// the gesture.
+export interface UiSwipeAction {
+  label: string;
+  icon?: string;
+  accent?: AccentToken;
+  eventId: string;
+}
+
+export interface UiListTile {
+  kind: "ListTile";
+  id: string;
+  title: string;
+  subtitle?: string;
+  leading?: UiNode;
+  trailing?: UiNode;
+  onTapEvent?: string;
+  swipeActions?: UiSwipeAction[];
+}
+
+/// Compact tile-corner badge for [UiAppTile] — slim `{ count?, text? }`
+/// shape from the doc spec, not the full [UiBadge] widget. Plain object
+/// (no `kind`, no required `id`) because it lives off the main
+/// reconciliation tree.
+export interface UiAppTileBadge {
+  count?: number;
+  text?: string;
+}
+
+export interface UiAppTile {
+  id: string;
+  name: string;
+  icon: string | { uri: string };
+  badge?: UiAppTileBadge;
+  accent?: AccentToken;
+}
+
+export interface UiAppGrid {
+  kind: "AppGrid";
+  id: string;
+  items: UiAppTile[];
+  columns?: number;
+  onLaunchEvent?: string;
+}
+
 export type UiNode =
   | UiColumn
   | UiRow
@@ -89,7 +201,11 @@ export type UiNode =
   | UiText
   | UiSpacer
   | UiTextField
-  | UiButton;
+  | UiButton
+  | UiIcon
+  | UiBadge
+  | UiListTile
+  | UiAppGrid;
 
 /// Thrown by `validateUiTree` for any structural problem (unknown kind,
 /// missing required field, duplicate id). The host translates this into
@@ -139,6 +255,14 @@ function parseNode(raw: unknown, seen: Set<string>, path: string): UiNode {
       return parseTextField(r, path, id);
     case "Button":
       return parseButton(r, path, id);
+    case "Icon":
+      return parseIcon(r, path, id);
+    case "Badge":
+      return parseBadge(r, path, id);
+    case "ListTile":
+      return parseListTile(r, seen, path, id);
+    case "AppGrid":
+      return parseAppGrid(r, path, id);
     default:
       throw new UiValidationError(
         `${path}: unknown node kind ${JSON.stringify(kind)}`,
@@ -171,7 +295,7 @@ function parseFlex(
 ): UiColumn | UiRow {
   const children = parseChildren(r.children, seen, path, "children");
   const out = { kind, id, children } as UiColumn | UiRow;
-  const gap = optNumber(r.gap, path, "gap");
+  const gap = optSpacing(r.gap, path, "gap");
   if (gap !== undefined) out.gap = gap;
   return out;
 }
@@ -242,7 +366,7 @@ function parseSpacer(
   id: string,
 ): UiSpacer {
   const out: UiSpacer = { kind: "Spacer", id };
-  const size = optNumber(r.size, path, "size");
+  const size = optSpacing(r.size, path, "size");
   if (size !== undefined) out.size = size;
   return out;
 }
@@ -282,6 +406,256 @@ function parseButton(
     out.style = style;
   }
   return out;
+}
+
+function parseIcon(
+  r: Record<string, unknown>,
+  path: string,
+  id: string,
+): UiIcon {
+  const name = r.name;
+  if (typeof name !== "string" || name.length === 0) {
+    throw new UiValidationError(`${path}.name: must be a non-empty string`);
+  }
+  const out: UiIcon = { kind: "Icon", id, name };
+  const size = optSize(r.size, path, "size");
+  if (size !== undefined) out.size = size;
+  const accent = optAccent(r.accent, path, "accent");
+  if (accent !== undefined) out.accent = accent;
+  return out;
+}
+
+function parseBadge(
+  r: Record<string, unknown>,
+  path: string,
+  id: string,
+): UiBadge {
+  const variantRaw = r.variant;
+  if (typeof variantRaw !== "string" || !BADGE_VARIANTS.has(variantRaw)) {
+    throw new UiValidationError(
+      `${path}.variant: must be "dot" | "pill"`,
+    );
+  }
+  const out: UiBadge = { kind: "Badge", id, variant: variantRaw as UiBadgeVariant };
+  const text = optString(r.text, path, "text");
+  if (text !== undefined) out.text = text;
+  const count = optNumber(r.count, path, "count");
+  if (count !== undefined) {
+    if (!Number.isInteger(count) || count < 0) {
+      throw new UiValidationError(
+        `${path}.count: must be a non-negative integer when provided`,
+      );
+    }
+    out.count = count;
+  }
+  const accent = optAccent(r.accent, path, "accent");
+  if (accent !== undefined) out.accent = accent;
+  return out;
+}
+
+function parseListTile(
+  r: Record<string, unknown>,
+  seen: Set<string>,
+  path: string,
+  id: string,
+): UiListTile {
+  const title = r.title;
+  if (typeof title !== "string" || title.length === 0) {
+    throw new UiValidationError(`${path}.title: must be a non-empty string`);
+  }
+  const out: UiListTile = { kind: "ListTile", id, title };
+  const subtitle = optString(r.subtitle, path, "subtitle");
+  if (subtitle !== undefined) out.subtitle = subtitle;
+  if (r.leading !== undefined && r.leading !== null) {
+    out.leading = parseNode(r.leading, seen, `${path}.leading`);
+  }
+  if (r.trailing !== undefined && r.trailing !== null) {
+    out.trailing = parseNode(r.trailing, seen, `${path}.trailing`);
+  }
+  const onTapEvent = optString(r.onTapEvent, path, "onTapEvent");
+  if (onTapEvent !== undefined) out.onTapEvent = onTapEvent;
+  if (r.swipeActions !== undefined && r.swipeActions !== null) {
+    if (!Array.isArray(r.swipeActions)) {
+      throw new UiValidationError(
+        `${path}.swipeActions: must be an array when provided`,
+      );
+    }
+    out.swipeActions = r.swipeActions.map((raw, i) =>
+      parseSwipeAction(raw, `${path}.swipeActions[${i}]`),
+    );
+  }
+  return out;
+}
+
+function parseSwipeAction(raw: unknown, path: string): UiSwipeAction {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new UiValidationError(`${path}: must be an object`);
+  }
+  const r = raw as Record<string, unknown>;
+  const label = r.label;
+  if (typeof label !== "string" || label.length === 0) {
+    throw new UiValidationError(`${path}.label: must be a non-empty string`);
+  }
+  const eventId = r.eventId;
+  if (typeof eventId !== "string" || eventId.length === 0) {
+    throw new UiValidationError(`${path}.eventId: must be a non-empty string`);
+  }
+  const out: UiSwipeAction = { label, eventId };
+  const icon = optString(r.icon, path, "icon");
+  if (icon !== undefined) out.icon = icon;
+  const accent = optAccent(r.accent, path, "accent");
+  if (accent !== undefined) out.accent = accent;
+  return out;
+}
+
+function parseAppGrid(
+  r: Record<string, unknown>,
+  path: string,
+  id: string,
+): UiAppGrid {
+  const rawItems = r.items;
+  if (!Array.isArray(rawItems)) {
+    throw new UiValidationError(`${path}.items: must be an array`);
+  }
+  const items: UiAppTile[] = [];
+  const seenTileIds = new Set<string>();
+  for (let i = 0; i < rawItems.length; i++) {
+    const tile = parseAppTile(rawItems[i], `${path}.items[${i}]`);
+    if (seenTileIds.has(tile.id)) {
+      throw new UiValidationError(
+        `${path}.items[${i}]: duplicate tile id "${tile.id}"`,
+      );
+    }
+    seenTileIds.add(tile.id);
+    items.push(tile);
+  }
+  const out: UiAppGrid = { kind: "AppGrid", id, items };
+  const columns = optNumber(r.columns, path, "columns");
+  if (columns !== undefined) {
+    if (!Number.isInteger(columns) || columns < 1) {
+      throw new UiValidationError(
+        `${path}.columns: must be a positive integer when provided`,
+      );
+    }
+    out.columns = columns;
+  }
+  const onLaunchEvent = optString(r.onLaunchEvent, path, "onLaunchEvent");
+  if (onLaunchEvent !== undefined) out.onLaunchEvent = onLaunchEvent;
+  return out;
+}
+
+function parseAppTile(raw: unknown, path: string): UiAppTile {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new UiValidationError(`${path}: must be an object`);
+  }
+  const r = raw as Record<string, unknown>;
+  const id = r.id;
+  if (typeof id !== "string" || id.length === 0) {
+    throw new UiValidationError(`${path}.id: must be a non-empty string`);
+  }
+  const name = r.name;
+  if (typeof name !== "string" || name.length === 0) {
+    throw new UiValidationError(`${path}.name: must be a non-empty string`);
+  }
+  let icon: string | { uri: string };
+  if (typeof r.icon === "string" && r.icon.length > 0) {
+    icon = r.icon;
+  } else if (
+    r.icon &&
+    typeof r.icon === "object" &&
+    !Array.isArray(r.icon) &&
+    typeof (r.icon as Record<string, unknown>).uri === "string" &&
+    ((r.icon as Record<string, unknown>).uri as string).length > 0
+  ) {
+    icon = { uri: (r.icon as { uri: string }).uri };
+  } else {
+    throw new UiValidationError(
+      `${path}.icon: must be a non-empty string or { uri: string }`,
+    );
+  }
+  const out: UiAppTile = { id, name, icon };
+  if (r.badge !== undefined && r.badge !== null) {
+    if (typeof r.badge !== "object" || Array.isArray(r.badge)) {
+      throw new UiValidationError(
+        `${path}.badge: must be a { count?, text? } object`,
+      );
+    }
+    const bag = r.badge as Record<string, unknown>;
+    const badge: UiAppTileBadge = {};
+    const count = optNumber(bag.count, path, "badge.count");
+    if (count !== undefined) {
+      if (!Number.isInteger(count) || count < 0) {
+        throw new UiValidationError(
+          `${path}.badge.count: must be a non-negative integer when provided`,
+        );
+      }
+      badge.count = count;
+    }
+    const text = optString(bag.text, path, "badge.text");
+    if (text !== undefined) badge.text = text;
+    out.badge = badge;
+  }
+  const accent = optAccent(r.accent, path, "accent");
+  if (accent !== undefined) out.accent = accent;
+  return out;
+}
+
+function optSpacing(
+  v: unknown,
+  path: string,
+  key: string,
+): StyleSlot<SpacingToken> | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v === "number") {
+    if (!Number.isFinite(v)) {
+      throw new UiValidationError(
+        `${path}.${key}: must be a finite number when provided`,
+      );
+    }
+    return v;
+  }
+  if (typeof v === "string" && SPACING_TOKENS.has(v)) {
+    return v as SpacingToken;
+  }
+  throw new UiValidationError(
+    `${path}.${key}: must be a number or one of ${[...SPACING_TOKENS].map((t) => `"${t}"`).join(" | ")}`,
+  );
+}
+
+function optSize(
+  v: unknown,
+  path: string,
+  key: string,
+): StyleSlot<SizeToken> | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v === "number") {
+    if (!Number.isFinite(v) || v < 0) {
+      throw new UiValidationError(
+        `${path}.${key}: must be a non-negative finite number when provided`,
+      );
+    }
+    return v;
+  }
+  if (typeof v === "string" && SIZE_TOKENS.has(v)) {
+    return v as SizeToken;
+  }
+  throw new UiValidationError(
+    `${path}.${key}: must be a number or one of ${[...SIZE_TOKENS].map((t) => `"${t}"`).join(" | ")}`,
+  );
+}
+
+function optAccent(
+  v: unknown,
+  path: string,
+  key: string,
+): AccentToken | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v === "string" && ACCENT_TOKENS.has(v)) {
+    return v as AccentToken;
+  }
+  throw new UiValidationError(
+    `${path}.${key}: must be one of ${[...ACCENT_TOKENS].map((t) => `"${t}"`).join(" | ")}`,
+  );
 }
 
 function optString(

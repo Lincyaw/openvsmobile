@@ -18,12 +18,43 @@
 
 import 'package:flutter/foundation.dart';
 
+import 'app_tokens.dart';
+
 /// Style hint for `UiText`.
 enum UiTextStyleKind { body, title, caption, mono }
 
 /// Visual emphasis for `UiButton`. Maps to Material button variants
 /// inside the renderer (see ui_renderer.dart).
 enum UiButtonStyleKind { primary, secondary, danger }
+
+/// `gap` / `size` / `padding` accepts either a raw number (legacy) or a
+/// named [SpacingToken] (Batch 1). The container carries whichever the
+/// plugin sent and the renderer resolves through [StyleSlotResolver].
+@immutable
+class SpacingSlot {
+  final double? numeric;
+  final SpacingToken? token;
+  const SpacingSlot._({this.numeric, this.token});
+
+  factory SpacingSlot.number(double v) => SpacingSlot._(numeric: v);
+  factory SpacingSlot.tokenValue(SpacingToken t) => SpacingSlot._(token: t);
+
+  bool get isEmpty => numeric == null && token == null;
+}
+
+/// `size` slot for [UiIcon] — accepts a number or [SizeToken].
+@immutable
+class SizeSlot {
+  final double? numeric;
+  final SizeToken? token;
+  const SizeSlot._({this.numeric, this.token});
+
+  factory SizeSlot.number(double v) => SizeSlot._(numeric: v);
+  factory SizeSlot.tokenValue(SizeToken t) => SizeSlot._(token: t);
+}
+
+/// Discriminant for [UiBadge].
+enum UiBadgeVariant { dot, pill }
 
 /// Base type for every node in the descriptor tree. Every concrete node
 /// carries an `id` which is mandatory and must be unique within the
@@ -50,13 +81,13 @@ sealed class UiNode {
         return UiColumn(
           id: id,
           children: _children(raw['children']),
-          gap: _asDouble(raw['gap']),
+          gap: _spacingSlot(raw['gap']),
         );
       case 'Row':
         return UiRow(
           id: id,
           children: _children(raw['children']),
-          gap: _asDouble(raw['gap']),
+          gap: _spacingSlot(raw['gap']),
         );
       case 'Section':
         return UiSection(
@@ -79,7 +110,7 @@ sealed class UiNode {
           style: _textStyle(raw['style']),
         );
       case 'Spacer':
-        return UiSpacer(id: id, size: _asDouble(raw['size']));
+        return UiSpacer(id: id, size: _spacingSlot(raw['size']));
       case 'TextField':
         return UiTextField(
           id: id,
@@ -98,6 +129,58 @@ sealed class UiNode {
           id: id,
           label: label,
           style: _buttonStyle(raw['style']),
+        );
+      case 'Icon':
+        final name = raw['name'];
+        if (name is! String || name.isEmpty) {
+          throw const FormatException(
+            'UiIcon.name must be a non-empty string',
+          );
+        }
+        return UiIcon(
+          id: id,
+          name: name,
+          size: _sizeSlot(raw['size']),
+          accent: accentTokenFromString(_asString(raw['accent'])),
+        );
+      case 'Badge':
+        final variantRaw = raw['variant'];
+        if (variantRaw is! String) {
+          throw const FormatException('UiBadge.variant is required');
+        }
+        return UiBadge(
+          id: id,
+          variant: _badgeVariant(variantRaw),
+          text: _asString(raw['text']),
+          count: _asInt(raw['count']),
+          accent: accentTokenFromString(_asString(raw['accent'])),
+        );
+      case 'ListTile':
+        final title = raw['title'];
+        if (title is! String || title.isEmpty) {
+          throw const FormatException(
+            'UiListTile.title must be a non-empty string',
+          );
+        }
+        return UiListTile(
+          id: id,
+          title: title,
+          subtitle: _asString(raw['subtitle']),
+          leading: raw['leading'] == null
+              ? null
+              : UiNode.fromJson(raw['leading']),
+          trailing: raw['trailing'] == null
+              ? null
+              : UiNode.fromJson(raw['trailing']),
+          onTapEvent: _asString(raw['onTapEvent']),
+          swipeActions: _swipeActions(raw['swipeActions']),
+        );
+      case 'AppGrid':
+        return UiAppGrid(
+          id: id,
+          items: _appTiles(raw['items']),
+          columns: _asInt(raw['columns']),
+          onLaunchEvent: _asString(raw['onLaunchEvent']),
         );
       default:
         throw FormatException('UiNode: unknown kind "$kind"');
@@ -121,10 +204,74 @@ sealed class UiNode {
     return raw;
   }
 
-  static double? _asDouble(Object? raw) {
+  static int? _asInt(Object? raw) {
     if (raw == null) return null;
-    if (raw is num) return raw.toDouble();
-    throw FormatException('UiNode: expected number, got ${raw.runtimeType}');
+    if (raw is int) return raw;
+    if (raw is double && raw == raw.truncateToDouble()) return raw.toInt();
+    throw FormatException('UiNode: expected integer, got ${raw.runtimeType}');
+  }
+
+  static SpacingSlot? _spacingSlot(Object? raw) {
+    if (raw == null) return null;
+    if (raw is num) return SpacingSlot.number(raw.toDouble());
+    if (raw is String) {
+      final tok = spacingTokenFromString(raw);
+      if (tok != null) return SpacingSlot.tokenValue(tok);
+    }
+    throw FormatException(
+      'UiNode: spacing must be a number or SpacingToken string, got ${raw.runtimeType}',
+    );
+  }
+
+  static SizeSlot? _sizeSlot(Object? raw) {
+    if (raw == null) return null;
+    if (raw is num) return SizeSlot.number(raw.toDouble());
+    if (raw is String) {
+      final tok = sizeTokenFromString(raw);
+      if (tok != null) return SizeSlot.tokenValue(tok);
+    }
+    throw FormatException(
+      'UiNode: size must be a number or SizeToken string, got ${raw.runtimeType}',
+    );
+  }
+
+  static UiBadgeVariant _badgeVariant(String raw) {
+    switch (raw) {
+      case 'dot':
+        return UiBadgeVariant.dot;
+      case 'pill':
+        return UiBadgeVariant.pill;
+    }
+    throw FormatException('UiBadge: unknown variant "$raw"');
+  }
+
+  static List<UiSwipeAction>? _swipeActions(Object? raw) {
+    if (raw == null) return null;
+    if (raw is! List) {
+      throw const FormatException(
+        'UiListTile.swipeActions must be a JSON array',
+      );
+    }
+    return [
+      for (final r in raw)
+        if (r is Map<String, dynamic>)
+          UiSwipeAction(
+            label: r['label'] is String ? r['label'] as String : '',
+            eventId: r['eventId'] is String ? r['eventId'] as String : '',
+            icon: _asString(r['icon']),
+            accent: accentTokenFromString(_asString(r['accent'])),
+          ),
+    ];
+  }
+
+  static List<UiAppTile> _appTiles(Object? raw) {
+    if (raw is! List) {
+      throw const FormatException('UiAppGrid.items must be a JSON array');
+    }
+    return [
+      for (final r in raw)
+        if (r is Map<String, dynamic>) UiAppTile.fromJson(r),
+    ];
   }
 
   static UiTextStyleKind? _textStyle(Object? raw) {
@@ -160,14 +307,14 @@ sealed class UiNode {
 
 class UiColumn extends UiNode {
   final List<UiNode> children;
-  final double? gap;
+  final SpacingSlot? gap;
   const UiColumn({required String id, required this.children, this.gap})
       : super(id);
 }
 
 class UiRow extends UiNode {
   final List<UiNode> children;
-  final double? gap;
+  final SpacingSlot? gap;
   const UiRow({required String id, required this.children, this.gap})
       : super(id);
 }
@@ -197,7 +344,7 @@ class UiText extends UiNode {
 }
 
 class UiSpacer extends UiNode {
-  final double? size;
+  final SpacingSlot? size;
   const UiSpacer({required String id, this.size}) : super(id);
 }
 
@@ -218,6 +365,181 @@ class UiButton extends UiNode {
   final UiButtonStyleKind? style;
   const UiButton({required String id, required this.label, this.style})
       : super(id);
+}
+
+class UiIcon extends UiNode {
+  final String name;
+  final SizeSlot? size;
+  final AccentToken? accent;
+  const UiIcon({
+    required String id,
+    required this.name,
+    this.size,
+    this.accent,
+  }) : super(id);
+}
+
+class UiBadge extends UiNode {
+  final UiBadgeVariant variant;
+  final String? text;
+  final int? count;
+  final AccentToken? accent;
+  const UiBadge({
+    required String id,
+    required this.variant,
+    this.text,
+    this.count,
+    this.accent,
+  }) : super(id);
+}
+
+/// Swipe action attached to a [UiListTile] — Batch 1 plumbs the field
+/// but does not render it; Batch 4 lights up the swipe gesture. Shape
+/// matches the doc spec: required `label` + `eventId`, optional `icon`
+/// (Feather catalog name) + `accent`.
+@immutable
+class UiSwipeAction {
+  final String label;
+  final String eventId;
+  final String? icon;
+  final AccentToken? accent;
+  const UiSwipeAction({
+    required this.label,
+    required this.eventId,
+    this.icon,
+    this.accent,
+  });
+}
+
+class UiListTile extends UiNode {
+  final String title;
+  final String? subtitle;
+  final UiNode? leading;
+  final UiNode? trailing;
+  final String? onTapEvent;
+  final List<UiSwipeAction>? swipeActions;
+  const UiListTile({
+    required String id,
+    required this.title,
+    this.subtitle,
+    this.leading,
+    this.trailing,
+    this.onTapEvent,
+    this.swipeActions,
+  }) : super(id);
+}
+
+/// Compact tile-corner badge — slim `{ count?, text? }` shape from the
+/// doc spec. Plain object (not a [UiBadge] node) because it lives off
+/// the main reconciliation tree.
+@immutable
+class UiAppTileBadge {
+  final int? count;
+  final String? text;
+  const UiAppTileBadge({this.count, this.text});
+}
+
+/// Items in [UiAppGrid]. Not a `UiNode` itself — app-tiles live off the
+/// main reconciliation path and only the surrounding grid carries an id
+/// for ValueKey reconciliation.
+@immutable
+class UiAppTile {
+  final String id;
+  final String name;
+  /// One of: `String iconName` (Feather catalog lookup) or
+  /// `UiAppTileIconUri uri` (opaque ref for future Batch 3 image support).
+  final UiAppTileIcon icon;
+  final UiAppTileBadge? badge;
+  final AccentToken? accent;
+  const UiAppTile({
+    required this.id,
+    required this.name,
+    required this.icon,
+    this.badge,
+    this.accent,
+  });
+
+  factory UiAppTile.fromJson(Map<String, dynamic> raw) {
+    final id = raw['id'];
+    if (id is! String || id.isEmpty) {
+      throw const FormatException('UiAppTile.id must be a non-empty string');
+    }
+    final name = raw['name'];
+    if (name is! String || name.isEmpty) {
+      throw const FormatException('UiAppTile.name must be a non-empty string');
+    }
+    final iconRaw = raw['icon'];
+    final UiAppTileIcon icon;
+    if (iconRaw is String && iconRaw.isNotEmpty) {
+      icon = UiAppTileIconName(iconRaw);
+    } else if (iconRaw is Map<String, dynamic>) {
+      final uri = iconRaw['uri'];
+      if (uri is! String || uri.isEmpty) {
+        throw const FormatException('UiAppTile.icon.uri must be a string');
+      }
+      icon = UiAppTileIconUri(uri);
+    } else {
+      throw const FormatException('UiAppTile.icon must be a string or { uri }');
+    }
+    UiAppTileBadge? badge;
+    final badgeRaw = raw['badge'];
+    if (badgeRaw is Map<String, dynamic>) {
+      final rawCount = badgeRaw['count'];
+      final rawText = badgeRaw['text'];
+      int? count;
+      if (rawCount is int) {
+        count = rawCount;
+      } else if (rawCount is double && rawCount == rawCount.truncateToDouble()) {
+        count = rawCount.toInt();
+      } else if (rawCount != null) {
+        throw const FormatException('UiAppTile.badge.count must be an int');
+      }
+      String? text;
+      if (rawText is String) {
+        text = rawText;
+      } else if (rawText != null) {
+        throw const FormatException('UiAppTile.badge.text must be a string');
+      }
+      badge = UiAppTileBadge(count: count, text: text);
+    }
+    final accent = accentTokenFromString(
+      raw['accent'] is String ? raw['accent'] as String : null,
+    );
+    return UiAppTile(
+      id: id,
+      name: name,
+      icon: icon,
+      badge: badge,
+      accent: accent,
+    );
+  }
+}
+
+@immutable
+sealed class UiAppTileIcon {
+  const UiAppTileIcon();
+}
+
+class UiAppTileIconName extends UiAppTileIcon {
+  final String name;
+  const UiAppTileIconName(this.name);
+}
+
+class UiAppTileIconUri extends UiAppTileIcon {
+  final String uri;
+  const UiAppTileIconUri(this.uri);
+}
+
+class UiAppGrid extends UiNode {
+  final List<UiAppTile> items;
+  final int? columns;
+  final String? onLaunchEvent;
+  const UiAppGrid({
+    required String id,
+    required this.items,
+    this.columns,
+    this.onLaunchEvent,
+  }) : super(id);
 }
 
 /// What the renderer fires when the user interacts with a leaf widget.

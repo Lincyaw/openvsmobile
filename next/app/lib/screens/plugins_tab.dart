@@ -1,11 +1,14 @@
-// Plugins tab (design §3 / issue C4).
+// Plugins tab (design §3 / issue C4; Batch 1 — §4.3).
 //
-// App-grid layout: every installed plugin gets an icon card. Tapping an
-// enabled plugin drills into its panel host (`PluginDetailScreen`);
-// tapping a disabled plugin drills into the info screen
-// (`PluginInfoScreen`) which exposes Enable/Disable + capability chips
-// + the filesystem path hint. Long-pressing any card opens a
-// BottomSheet with the same enable/disable affordance.
+// Renders the installed-plugin catalog through the same `UiAppGrid`
+// renderer that ships in the widget vocabulary for plugin-authored
+// panels — eating our own dogfood proves the new widget works against
+// real data, not just synthetic tests.
+//
+// Tapping a tile drills into the existing detail screen (info screen
+// for disabled plugins, panel host for enabled). The enable/disable
+// switch now lives only in the detail screen — Batch 1 spec moved it
+// off the grid tile.
 //
 // State sourcing: AppState owns the PluginsModel + UiPanelsModel; this
 // screen only listens. Per CLAUDE.md first principle #1, the backend is
@@ -14,7 +17,6 @@
 // matching `plugin.stateChanged` push to flip the wire-state.
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../app_state.dart';
 import '../state/plugins_model.dart';
@@ -25,9 +27,9 @@ import '../ui/ui_renderer.dart';
 const String _kFilesystemPluginsDir =
     '~/.local/share/openvsmobile-next/plugins/';
 
-/// Breakpoint between phone-portrait and wider layouts. Anything below
-/// renders 3 columns; anything at-or-above renders 5.
-const double _kGridWideBreakpoint = 600;
+/// Stable id for the host-emitted Plugins app-grid. Stays constant across
+/// re-renders so the renderer's reconciliation keeps grid scroll position.
+const String _kPluginsGridId = 'host.plugins.grid';
 
 class PluginsTab extends StatelessWidget {
   final AppState appState;
@@ -43,57 +45,67 @@ class PluginsTab extends StatelessWidget {
         if (plugins.isEmpty) {
           return _PluginsEmptyState(loaded: model.isLoaded);
         }
-        return LayoutBuilder(
-          builder: (context, constraints) {
-            final columns = constraints.maxWidth >= _kGridWideBreakpoint
-                ? 5
-                : 3;
-            return GridView.builder(
-              padding: const EdgeInsets.all(AppSpacing.md),
-              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: columns,
-                mainAxisSpacing: AppSpacing.md,
-                crossAxisSpacing: AppSpacing.md,
-                childAspectRatio: 0.85,
-              ),
-              itemCount: plugins.length,
-              itemBuilder: (context, i) {
-                final p = plugins[i];
-                return _PluginGridCard(
-                  info: p,
-                  onTap: () => _openPrimary(context, p),
-                  onLongPress: () => _showActionSheet(context, p),
-                  onToggle: (enabled) => _onToggle(context, p, enabled),
-                );
-              },
-            );
-          },
+        final grid = _buildGrid(plugins);
+        return SingleChildScrollView(
+          padding: EdgeInsets.zero,
+          child: UiRenderer(
+            tree: grid,
+            onEvent: (e) => _onGridEvent(context, plugins, e),
+          ),
         );
       },
     );
   }
 
-  Future<void> _onToggle(
-    BuildContext context,
-    PluginInfo info,
-    bool enabled,
-  ) async {
-    final messenger = ScaffoldMessenger.maybeOf(context);
-    try {
-      if (enabled) {
-        await appState.plugins.enable(info.id);
-      } else {
-        await appState.plugins.disable(info.id);
-      }
-    } catch (e) {
-      messenger?.showSnackBar(
-        SnackBar(
-          content: Text(
-            'Failed to ${enabled ? "enable" : "disable"} ${info.name}: $e',
+  UiAppGrid _buildGrid(List<PluginInfo> plugins) {
+    return UiAppGrid(
+      id: _kPluginsGridId,
+      onLaunchEvent: 'launch',
+      items: [
+        for (final p in plugins)
+          UiAppTile(
+            id: p.id,
+            name: p.name,
+            icon: const UiAppTileIconName('package'),
+            badge: _badgeFor(p),
+            // Per-plugin themeColor flows through the AccentToken.brand
+            // path inside the detail screen — here on the grid we keep
+            // the app's primary so the launcher reads as one product.
+            accent: AccentToken.brand,
           ),
-        ),
-      );
+      ],
+    );
+  }
+
+  /// Wire-state → tile-corner badge. Only `crashed` raises a badge in
+  /// Batch 1 (a single `!` text); the slim [UiAppTileBadge] shape from
+  /// the doc spec (`{ count?, text? }`) doesn't carry an accent or
+  /// variant, so visual differentiation across the other wire states
+  /// stays in the detail screen, not on the launcher tile.
+  UiAppTileBadge? _badgeFor(PluginInfo p) {
+    switch (p.state) {
+      case PluginWireState.crashed:
+        return const UiAppTileBadge(text: '!');
+      case PluginWireState.disabled:
+      case PluginWireState.running:
+      case PluginWireState.stopped:
+      case PluginWireState.unknown:
+        return null;
     }
+  }
+
+  void _onGridEvent(
+    BuildContext context,
+    List<PluginInfo> plugins,
+    UiNodeEvent event,
+  ) {
+    final tileId = event.payload?['tileId'];
+    if (tileId is! String) return;
+    final info = plugins.firstWhere(
+      (p) => p.id == tileId,
+      orElse: () => plugins.first,
+    );
+    _openPrimary(context, info);
   }
 
   /// Primary tap target: enabled plugins go straight to their panel host;
@@ -114,141 +126,6 @@ class PluginsTab extends StatelessWidget {
             PluginDetailScreen(appState: appState, pluginId: info.id),
       ),
     );
-  }
-
-  void _showActionSheet(BuildContext context, PluginInfo info) {
-    showModalBottomSheet<void>(
-      context: context,
-      builder: (sheetContext) => _PluginActionSheet(
-        info: info,
-        onEnable: () async {
-          Navigator.of(sheetContext).pop();
-          await _onToggle(context, info, true);
-        },
-        onDisable: () async {
-          Navigator.of(sheetContext).pop();
-          await _onToggle(context, info, false);
-        },
-        onOpenInTerminal: () async {
-          Navigator.of(sheetContext).pop();
-          final cmd = 'cd $_kFilesystemPluginsDir${info.id}';
-          await Clipboard.setData(ClipboardData(text: cmd));
-          if (context.mounted) {
-            ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-              SnackBar(content: Text('Copied to clipboard: $cmd')),
-            );
-          }
-        },
-      ),
-    );
-  }
-}
-
-class _PluginGridCard extends StatelessWidget {
-  final PluginInfo info;
-  final VoidCallback onTap;
-  final VoidCallback onLongPress;
-  final ValueChanged<bool> onToggle;
-  const _PluginGridCard({
-    required this.info,
-    required this.onTap,
-    required this.onLongPress,
-    required this.onToggle,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final isEnabled = info.state != PluginWireState.disabled;
-    final isCrashed = info.state == PluginWireState.crashed;
-
-    return Material(
-      color: theme.colorScheme.surfaceContainer,
-      borderRadius: BorderRadius.circular(AppRadius.sm),
-      child: InkWell(
-        key: ValueKey<String>('plugin-card:${info.id}'),
-        onTap: onTap,
-        onLongPress: onLongPress,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-        child: Container(
-          padding: const EdgeInsets.all(AppSpacing.md),
-          decoration: BoxDecoration(
-            border: Border.all(color: theme.colorScheme.outline, width: 1),
-            borderRadius: BorderRadius.circular(AppRadius.sm),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // Top row: status dot + tiny toggle keeps the contract that
-              // `plugin-toggle:<id>` Switch is reachable from the main view.
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Container(
-                    key: ValueKey<String>('plugin-card-dot:${info.id}'),
-                    width: 8,
-                    height: 8,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: _dotColor(theme, info.state),
-                    ),
-                  ),
-                  Transform.scale(
-                    scale: 0.7,
-                    alignment: Alignment.centerRight,
-                    child: Switch(
-                      key: ValueKey<String>('plugin-toggle:${info.id}'),
-                      value: isEnabled,
-                      onChanged: onToggle,
-                    ),
-                  ),
-                ],
-              ),
-              Expanded(
-                child: Center(
-                  child: _PluginIconAvatar(info: info, dim: !isEnabled),
-                ),
-              ),
-              const SizedBox(height: AppSpacing.sm),
-              Text(
-                info.name,
-                textAlign: TextAlign.center,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.labelLarge?.copyWith(
-                  fontWeight: FontWeight.w600,
-                  color: isEnabled
-                      ? theme.colorScheme.onSurface
-                      : theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: AppSpacing.xs),
-              // Status badge — preserves wire-state labels and crash
-              // reason text required by the contract tests.
-              Center(
-                child: PluginStateBadge(
-                  state: info.state,
-                  reason: isCrashed ? info.crashReason : null,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Color _dotColor(ThemeData theme, PluginWireState state) {
-    switch (state) {
-      case PluginWireState.running:
-        return theme.colorScheme.primary;
-      case PluginWireState.crashed:
-        return theme.colorScheme.error;
-      case PluginWireState.stopped:
-      case PluginWireState.disabled:
-      case PluginWireState.unknown:
-        return theme.colorScheme.outlineVariant;
-    }
   }
 }
 
@@ -364,79 +241,6 @@ class _PluginsEmptyState extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-// ---- Action sheet (long-press) ----
-
-class _PluginActionSheet extends StatelessWidget {
-  final PluginInfo info;
-  final VoidCallback onEnable;
-  final VoidCallback onDisable;
-  final VoidCallback onOpenInTerminal;
-  const _PluginActionSheet({
-    required this.info,
-    required this.onEnable,
-    required this.onDisable,
-    required this.onOpenInTerminal,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final isEnabled = info.state != PluginWireState.disabled;
-    return SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(
-              AppSpacing.lg,
-              AppSpacing.md,
-              AppSpacing.lg,
-              AppSpacing.sm,
-            ),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(info.name, style: theme.textTheme.titleMedium),
-                ),
-                Text(
-                  info.version,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const Divider(height: 1),
-          ListTile(
-            key: ValueKey<String>('plugin-sheet-toggle:${info.id}'),
-            leading: Icon(
-              isEnabled ? Icons.toggle_off_outlined : Icons.toggle_on_outlined,
-            ),
-            title: Text(isEnabled ? 'Disable' : 'Enable'),
-            onTap: isEnabled ? onDisable : onEnable,
-          ),
-          ListTile(
-            key: ValueKey<String>('plugin-sheet-terminal:${info.id}'),
-            leading: const Icon(Icons.terminal),
-            title: const Text('Copy cd command'),
-            subtitle: Text(
-              '$_kFilesystemPluginsDir${info.id}',
-              style: AppText.mono(
-                fontSize: 12,
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            onTap: onOpenInTerminal,
-          ),
-        ],
       ),
     );
   }
@@ -700,13 +504,36 @@ class PluginDetailView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(info.name),
-        actions: [_PluginKebabMenu(appState: appState, info: info)],
+    return _PluginThemeScope(
+      themeColor: info.themeColor,
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(info.name),
+          actions: [_PluginKebabMenu(appState: appState, info: info)],
+        ),
+        body: _DetailBody(appState: appState, info: info),
       ),
-      body: _DetailBody(appState: appState, info: info),
     );
+  }
+}
+
+/// Per-plugin `Theme` override (Batch 1 — design §4.3). When a plugin
+/// declares `themeColor` in its manifest, we scope a fresh ColorScheme
+/// with `primary` swapped to the plugin's color so the `brand`
+/// `AccentToken` resolves inside the plugin's panel only. Plugins
+/// without a `themeColor` get the surrounding theme verbatim.
+class _PluginThemeScope extends StatelessWidget {
+  final String? themeColor;
+  final Widget child;
+  const _PluginThemeScope({required this.themeColor, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    final resolved = resolvePluginThemeColor(themeColor);
+    if (resolved == null) return child;
+    final base = Theme.of(context);
+    final scheme = base.colorScheme.copyWith(primary: resolved);
+    return Theme(data: base.copyWith(colorScheme: scheme), child: child);
   }
 }
 
