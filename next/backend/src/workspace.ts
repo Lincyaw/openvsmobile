@@ -124,6 +124,18 @@ export class ActiveWorkspace {
       this.model = null;
     }
   }
+
+  /// Process-shutdown variant of `dispose`. Detaches PTY clients
+  /// without recording disposal in the terminal DB, so zellij-backed
+  /// sessions can be hydrated on the next boot. The watcher gets torn
+  /// down the same way either path — it's not persisted.
+  public detachForShutdown(): void {
+    this.terminals.detachAll();
+    if (this.model !== null) {
+      void this.model.dispose();
+      this.model = null;
+    }
+  }
 }
 
 export class WorkspaceRegistry {
@@ -137,6 +149,16 @@ export class WorkspaceRegistry {
   private invalidateHook: ((workspaceId: string) => void) | null = null;
   private readonly multiplexer: MultiplexerInfo;
   private readonly terminalPersistence: TerminalPersistenceHook | null;
+  /// Process-wide set of terminal ids that have already been hydrated
+  /// into some ActiveWorkspace. When two workspaces share the same
+  /// root in one backend session (rare but legal), the second open
+  /// must NOT re-hydrate the same rows — the first registry owns the
+  /// zellij client. We never remove ids from this set: a terminal
+  /// that has been claimed once is fated to either be disposed (which
+  /// also wipes the DB row) or detached at shutdown (DB row preserved
+  /// for next boot, but the in-process claim is moot because we're
+  /// shutting down).
+  private readonly hydrationClaims = new Set<string>();
 
   constructor(
     private readonly onTerminalData: TerminalDataSink,
@@ -198,6 +220,15 @@ export class WorkspaceRegistry {
     } else {
       await ws.initModel();
     }
+    // Hydrate any persisted zellij-backed terminals whose workspace_root
+    // matches this freshly-opened workspace's root. Each hydrated entry
+    // shows up in `terminal.list` immediately, with PTY attach deferred
+    // until the first write/resize/history call. We pass a process-wide
+    // claim set so two ActiveWorkspaces sharing the same root in one
+    // backend session don't each try to attach to the same zellij
+    // session — only the first one wins.
+    const claimed = ws.terminals.hydrateFromPersistence(this.hydrationClaims);
+    for (const id of claimed) this.hydrationClaims.add(id);
     this.active.set(ws.id, ws);
     const activate = options.activate ?? true;
     if (activate) {
@@ -246,6 +277,20 @@ export class WorkspaceRegistry {
   public disposeAll(): string[] {
     const ids = [...this.active.keys()];
     for (const w of this.active.values()) w.dispose();
+    this.active.clear();
+    this.currentId = null;
+    return ids;
+  }
+
+  /// Process-shutdown counterpart to `disposeAll`. Detaches terminal
+  /// PTY clients without wiping their persistence rows, so a clean
+  /// SIGTERM doesn't defeat the whole point of the terminal DB. Used
+  /// by `state.shutdownAll`; explicit `workspace.close` still goes
+  /// through `close` → `dispose` (and DOES wipe rows, because the user
+  /// asked for the workspace to go away).
+  public detachAllForShutdown(): string[] {
+    const ids = [...this.active.keys()];
+    for (const w of this.active.values()) w.detachForShutdown();
     this.active.clear();
     this.currentId = null;
     return ids;

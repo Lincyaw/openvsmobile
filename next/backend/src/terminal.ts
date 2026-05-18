@@ -151,19 +151,38 @@ class ScrollbackBuffer {
   }
 }
 
+/// Either a fully-attached terminal (PTY + scrollback live) or a hydrated
+/// row from disk (metadata only, attach deferred). The `state` field is
+/// the discriminator; everything else is the same shape so list/snapshot
+/// callers don't need to branch on liveness. The state is intentionally
+/// NOT surfaced over the wire — `terminal.list` returns identical JSON
+/// for either kind, matching first principle #5 (per-resource subscription
+/// in the protocol from day one; lazy spawn is a server-side optimization
+/// invisible to clients).
 interface Entry extends TerminalSnapshot {
-  pty: IPty;
-  scrollback: ScrollbackBuffer;
-  /// Zellij session name if this terminal was spawned through zellij;
-  /// null when we fell back to a direct shell. Dispose uses it to fire
-  /// `zellij kill-session` so the multiplexer-side session goes away
-  /// alongside the PTY.
+  /// `live`     — PTY is attached, scrollback is collecting bytes.
+  /// `hydrated` — DB row only; `pty` and `scrollback` are absent.
+  state: "live" | "hydrated";
+  pty: IPty | null;
+  scrollback: ScrollbackBuffer | null;
+  /// Zellij session name if this terminal was (or will be) spawned
+  /// through zellij; null when we fell back to a direct shell. Dispose
+  /// uses it to fire `zellij kill-session` so the multiplexer-side
+  /// session goes away alongside the PTY — but only for `live` entries;
+  /// a `hydrated` entry never had a client attached, so killing the
+  /// session would defeat the whole point of persistence.
   externalSessionId: string | null;
 }
 
-/// Hook the registry calls on create/dispose so a higher layer can record
-/// terminal identity to durable storage. Optional — tests and the
-/// transitional "no DB" path leave both methods unimplemented.
+/// Hook the registry calls on create/dispose/hydrate so a higher layer
+/// can record terminal identity to durable storage. Optional — tests
+/// and the transitional "no DB" path leave methods unimplemented.
+///
+/// `loadByWorkspaceRoot` powers the boot-time hydration path: when a
+/// workspace opens, the registry asks the hook for every previously-
+/// persisted row whose workspace_root matches, and reattaches them
+/// lazily. Rows that don't have an `externalSessionId` (direct-shell
+/// fallback) are filtered at the persistence layer.
 export interface TerminalPersistenceHook {
   recordCreate(row: {
     id: string;
@@ -175,6 +194,15 @@ export interface TerminalPersistenceHook {
     createdAt: number;
   }): void;
   recordDispose(id: string): void;
+  loadByWorkspaceRoot(workspaceRoot: string): Array<{
+    id: string;
+    workspaceRoot: string;
+    cwd: string;
+    cols: number;
+    rows: number;
+    externalSessionId: string | null;
+    createdAt: number;
+  }>;
 }
 
 export interface TerminalRegistryOptions {
@@ -271,6 +299,7 @@ export class TerminalRegistry {
       rows,
       cwd,
       createdAt: Date.now(),
+      state: "live",
       pty,
       scrollback: new ScrollbackBuffer(SCROLLBACK_CAP),
       externalSessionId,
@@ -287,7 +316,155 @@ export class TerminalRegistry {
         createdAt: entry.createdAt,
       });
     }
+    this.wirePtyListeners(entry);
+    return snapshotOf(entry);
+  }
 
+  /// Read every persisted row for this registry's workspaceRoot and
+  /// hydrate them. Called once per ActiveWorkspace at open time. The
+  /// `excludeIds` set lets the surrounding WorkspaceRegistry skip ids
+  /// it has already claimed for another registry — that's how two
+  /// ActiveWorkspaces opened against the same root in one backend
+  /// session avoid double-attaching to the same zellij client.
+  /// Returns the list of newly-hydrated ids so the caller can extend
+  /// its claim set.
+  public hydrateFromPersistence(excludeIds: Set<string>): string[] {
+    if (this.persistence === null) return [];
+    const claimed: string[] = [];
+    const rows = this.persistence.loadByWorkspaceRoot(this.workspaceRoot);
+    for (const row of rows) {
+      if (excludeIds.has(row.id)) continue;
+      // Direct-shell rows (externalSessionId === null) can't be
+      // resurrected; the persistence layer is supposed to filter them
+      // out but we re-check to keep the runtime invariant tight.
+      if (row.externalSessionId === null) continue;
+      const snap = this.hydrate({
+        id: row.id,
+        cwd: row.cwd,
+        cols: row.cols,
+        rows: row.rows,
+        externalSessionId: row.externalSessionId,
+        createdAt: row.createdAt,
+      });
+      if (snap !== null) claimed.push(snap.id);
+    }
+    return claimed;
+  }
+
+  /// Hydrate a previously-persisted terminal into the in-memory map
+  /// without spawning a PTY. Called once per row by WorkspaceRegistry
+  /// at workspace.open time. The entry shows up in `list()` exactly
+  /// like a live one, and the first write/resize/history call against
+  /// it triggers the deferred zellij attach. Returns the snapshot the
+  /// caller can use to track which ids were claimed.
+  ///
+  /// Idempotent: if a terminal with the same id is already in the map
+  /// (e.g. a second ActiveWorkspace for the same root opened in the
+  /// same backend session), the existing entry wins and this call is a
+  /// no-op. That keeps two workspaces sharing one zellij session from
+  /// each spawning their own client.
+  public hydrate(row: {
+    id: string;
+    cwd: string;
+    cols: number;
+    rows: number;
+    externalSessionId: string;
+    createdAt: number;
+  }): TerminalSnapshot | null {
+    if (this.sessions.has(row.id)) return null;
+    if (!isSessionIdSafe(row.id)) {
+      // A row that wouldn't pass our own session-name safety check
+      // can't be re-attached safely; drop it from disk so it doesn't
+      // sit around forever, and skip hydration.
+      if (this.persistence !== null) this.persistence.recordDispose(row.id);
+      return null;
+    }
+    const entry: Entry = {
+      id: row.id,
+      cols: row.cols,
+      rows: row.rows,
+      cwd: row.cwd,
+      createdAt: row.createdAt,
+      state: "hydrated",
+      pty: null,
+      scrollback: null,
+      externalSessionId: row.externalSessionId,
+    };
+    this.sessions.set(row.id, entry);
+    return snapshotOf(entry);
+  }
+
+  /// Promote a `hydrated` entry to `live` by spawning the zellij client.
+  /// Called from write/resize/history before they touch the PTY. On
+  /// success the entry's `pty` / `scrollback` are populated and the
+  /// state flips. On failure the entry is removed from the map AND the
+  /// DB (the session is unreachable; persisting the row would loop the
+  /// user through the same failure on next restart) and an exit-like
+  /// notification fires so the app prunes its chip — matches first
+  /// principle #2 (push tells the client *exactly* what happened).
+  ///
+  /// No-op for entries already `live`.
+  private lazyAttachIfNeeded(entry: Entry): void {
+    if (entry.state === "live") return;
+    const externalSessionId = entry.externalSessionId;
+    // Hydrated entries always carry a non-null externalSessionId — the
+    // persistence layer filters out direct-shell rows before hydration —
+    // but the runtime check keeps the type-narrowing honest and guards
+    // against a future caller path that might construct a hydrated
+    // entry by other means.
+    if (externalSessionId === null) {
+      this.evictAndExit(entry.id, -1);
+      return;
+    }
+    let pty: IPty;
+    try {
+      pty = this.ptySpawner(
+        "zellij",
+        ["attach", "--create", externalSessionId],
+        {
+          name: "xterm-256color",
+          cols: entry.cols,
+          rows: entry.rows,
+          cwd: entry.cwd,
+          env: process.env as { [key: string]: string },
+        },
+      );
+    } catch (err) {
+      // zellij missing / spawn refused / cwd vanished — all collapse to
+      // "this chip is dead." Surface to the app via exit fan-out and
+      // drop persistence so we don't try again on next restart.
+      console.error(
+        `[openvsmobile-next] lazy attach failed for terminal ${entry.id}: ` +
+          `${(err as Error).message}`,
+      );
+      this.evictAndExit(entry.id, -1);
+      throw new RpcError(
+        RPC_ERR.internal,
+        `failed to attach to zellij session ${externalSessionId}: ` +
+          `${(err as Error).message}`,
+      );
+    }
+    entry.pty = pty;
+    entry.scrollback = new ScrollbackBuffer(SCROLLBACK_CAP);
+    entry.state = "live";
+    this.wirePtyListeners(entry);
+  }
+
+  /// Wire the data + exit callbacks for a freshly-spawned PTY. Shared
+  /// between `create` and `lazyAttachIfNeeded` so live entries and
+  /// just-attached entries have identical observation semantics — same
+  /// scrollback contract, same exit-cleanup path.
+  private wirePtyListeners(entry: Entry): void {
+    const pty = entry.pty;
+    const scrollback = entry.scrollback;
+    if (pty === null || scrollback === null) {
+      // Defensive: wirePtyListeners is only called after a successful
+      // spawn so this branch is unreachable. Throw rather than silently
+      // ignore — a future refactor that breaks the invariant should
+      // surface loudly in tests.
+      throw new Error("wirePtyListeners called on a non-live entry");
+    }
+    const id = entry.id;
     pty.onData((d) => {
       const chunk = Buffer.from(d, "utf8");
       if (chunk.length === 0) {
@@ -301,7 +478,7 @@ export class TerminalRegistry {
       // Buffer first, then fan out. Order matters: if a brand-new subscriber
       // calls terminal.history concurrently with this data callback, they
       // must not see a chunk in the live stream that isn't yet in scrollback.
-      const seqEnd = entry.scrollback.append(chunk);
+      const seqEnd = scrollback.append(chunk);
       this.onData(id, chunk, seqEnd);
     });
     pty.onExit(({ exitCode }) => {
@@ -309,13 +486,27 @@ export class TerminalRegistry {
       if (this.persistence !== null) this.persistence.recordDispose(id);
       this.onExit(id, exitCode);
     });
+  }
 
-    return snapshotOf(entry);
+  /// Tear down a session (live or hydrated) and notify the app via the
+  /// standard exit fan-out. Used by the lazy-attach failure path where
+  /// there's no PTY exit to ride on.
+  private evictAndExit(id: string, exitCode: number): void {
+    this.sessions.delete(id);
+    if (this.persistence !== null) this.persistence.recordDispose(id);
+    this.onExit(id, exitCode);
   }
 
   public write(id: string, data: Buffer): void {
     const entry = this.requireSession(id);
-    entry.pty.write(data.toString("utf8"));
+    // First write against a hydrated entry is the canonical lazy-attach
+    // trigger: the user typed a key, which means they're focused on
+    // this chip and expect the buffer to follow. `lazyAttachIfNeeded`
+    // throws on failure with the entry already evicted from the map.
+    this.lazyAttachIfNeeded(entry);
+    // entry.pty is non-null after a successful attach; the cast keeps
+    // the type narrow without re-reading the field through `?.`.
+    (entry.pty as IPty).write(data.toString("utf8"));
   }
 
   public resize(id: string, cols: number, rows: number): void {
@@ -326,8 +517,13 @@ export class TerminalRegistry {
       throw new RpcError(RPC_ERR.invalidParams, "rows must be a positive int");
     }
     const entry = this.requireSession(id);
+    // Resize is the second canonical lazy-attach trigger: the app
+    // recomputes geometry on chip focus and pushes the new size before
+    // the user can type. Attaching here means the zellij server
+    // re-lays-out for the actual screen on the very first frame.
+    this.lazyAttachIfNeeded(entry);
     try {
-      entry.pty.resize(cols, rows);
+      (entry.pty as IPty).resize(cols, rows);
     } catch (err) {
       throw new RpcError(
         RPC_ERR.internal,
@@ -341,8 +537,19 @@ export class TerminalRegistry {
   public dispose(id: string): void {
     const entry = this.sessions.get(id);
     if (!entry) return;
+    // Hydrated entries never had a client attached, so there's no PTY
+    // to kill and no zellij CLIENT to detach. Wipe the in-memory + DB
+    // record and stop — we deliberately do NOT call kill-session
+    // because the zellij SERVER session may be exactly what the user
+    // wanted to keep around. If they want to bin it too they can do so
+    // explicitly via `zellij delete-session`.
+    if (entry.state === "hydrated") {
+      this.sessions.delete(id);
+      if (this.persistence !== null) this.persistence.recordDispose(id);
+      return;
+    }
     try {
-      entry.pty.kill();
+      (entry.pty as IPty).kill();
     } catch {
       // Already gone; ignore.
     }
@@ -374,8 +581,43 @@ export class TerminalRegistry {
     }
   }
 
+  /// Process-shutdown path: tear down PTY clients without touching the
+  /// persistence DB or firing `zellij kill-session`. The whole point of
+  /// the zellij wrapper is that a clean SIGTERM should NOT wipe the
+  /// session — the zellij server stays running, the row stays on disk,
+  /// and the next backend boot hydrates the chip right back. Used by
+  /// `state.shutdownAll`; user-driven `workspace.close` and
+  /// `terminal.dispose` still go through `dispose()` which DOES record
+  /// the dispose and kill the zellij session, because those are
+  /// explicit destroy intents.
+  ///
+  /// For direct-shell terminals (no externalSessionId) there's nothing
+  /// to resurrect anyway, so we still kill the PTY but skip the DB
+  /// touch — the row is meaningless and `loadByWorkspaceRoot` filters
+  /// it out at hydrate time.
+  public detachAll(): void {
+    for (const entry of this.sessions.values()) {
+      if (entry.state === "live" && entry.pty !== null) {
+        try {
+          entry.pty.kill();
+        } catch {
+          // Already gone; ignore.
+        }
+      }
+    }
+    this.sessions.clear();
+  }
+
   /// Snapshot of the scrollback buffer for `id`. Throws invalidParams if the
   /// session is unknown — the registry is the authority on liveness.
+  ///
+  /// `terminal.history` is the app's first action when the user switches
+  /// to a chip, so it's also a canonical lazy-attach trigger: by the
+  /// time the response returns we want the PTY live and the zellij
+  /// reattach already painting bytes into the data stream. The history
+  /// blob itself is empty for a freshly-attached terminal — zellij owns
+  /// the buffer, not us — but the act of asking is what wakes the
+  /// session up.
   public history(
     id: string,
     maxBytes?: number,
@@ -387,7 +629,10 @@ export class TerminalRegistry {
     lengthBytes: number;
   } {
     const entry = this.requireSession(id);
-    const snap = entry.scrollback.snapshot(maxBytes);
+    this.lazyAttachIfNeeded(entry);
+    // After lazyAttachIfNeeded the entry is `live` and `scrollback` is
+    // non-null; the cast keeps that fact in the types.
+    const snap = (entry.scrollback as ScrollbackBuffer).snapshot(maxBytes);
     return {
       sessionId: id,
       scrollbackBase64: snap.bytes.toString("base64"),

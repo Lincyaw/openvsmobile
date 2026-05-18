@@ -231,10 +231,15 @@ export class ProcessState {
     return out;
   }
 
-  /// Walk every active workspace, kill its PTYs, and emit workspace.closed
-  /// for each. Used by the SIGINT/SIGTERM handler in index.ts.
+  /// Walk every active workspace, detach its PTY clients, and emit
+  /// workspace.closed for each. Used by the SIGINT/SIGTERM handler in
+  /// index.ts. Detach (not destroy) is the right semantic for a
+  /// process shutdown: any zellij-backed terminals must keep their DB
+  /// rows so the next backend boot can hydrate them. Workspaces
+  /// themselves are not persisted, so wiping the in-memory map is
+  /// fine.
   public shutdownAll(): void {
-    const ids = this.workspaces.disposeAll();
+    const ids = this.workspaces.detachAllForShutdown();
     for (const id of ids) {
       this.broadcastWorkspaceClosed(id);
     }

@@ -392,6 +392,424 @@ describe("TerminalPersistence", () => {
   });
 });
 
+describe("TerminalPersistence.loadByWorkspaceRoot", () => {
+  it("returns rows filtered by workspace_root, ordered by createdAt", async () => {
+    const opts = await tempDbPath();
+    const persistence = new TerminalPersistence(opts);
+    persistence.recordCreate({
+      id: "term-a",
+      workspaceRoot: "/work-A",
+      cwd: "/work-A",
+      cols: 80,
+      rows: 24,
+      externalSessionId: "ovsm-term-a",
+      createdAt: 2000,
+    });
+    persistence.recordCreate({
+      id: "term-b",
+      workspaceRoot: "/work-A",
+      cwd: "/work-A/src",
+      cols: 100,
+      rows: 30,
+      externalSessionId: "ovsm-term-b",
+      createdAt: 1000,
+    });
+    persistence.recordCreate({
+      id: "term-c",
+      workspaceRoot: "/other-root",
+      cwd: "/other-root",
+      cols: 80,
+      rows: 24,
+      externalSessionId: "ovsm-term-c",
+      createdAt: 500,
+    });
+    const rows = persistence.loadByWorkspaceRoot("/work-A");
+    expect(rows.map((r) => r.id)).toEqual(["term-b", "term-a"]);
+    expect(rows[0].externalSessionId).toBe("ovsm-term-b");
+    expect(rows[0].cols).toBe(100);
+    persistence.close();
+  });
+
+  it("filters out direct-shell rows (externalSessionId === null)", async () => {
+    // Rows without a multiplexer session can't be resurrected — the
+    // PTY died with the previous backend. They stay on disk (no
+    // protocol-level prune today) but never come back from a load.
+    const opts = await tempDbPath();
+    const persistence = new TerminalPersistence(opts);
+    persistence.recordCreate({
+      id: "fallback-only",
+      workspaceRoot: "/work",
+      cwd: "/work",
+      cols: 80,
+      rows: 24,
+      externalSessionId: null,
+      createdAt: 1,
+    });
+    persistence.recordCreate({
+      id: "with-mux",
+      workspaceRoot: "/work",
+      cwd: "/work",
+      cols: 80,
+      rows: 24,
+      externalSessionId: "ovsm-with-mux",
+      createdAt: 2,
+    });
+    const rows = persistence.loadByWorkspaceRoot("/work");
+    expect(rows.map((r) => r.id)).toEqual(["with-mux"]);
+    persistence.close();
+  });
+});
+
+describe("TerminalRegistry hydrate + lazy attach", () => {
+  it("hydrate makes a row appear in list() with no PTY spawn", () => {
+    const { spawn, calls } = recordingSpawner();
+    const reg = new TerminalRegistry(
+      () => {},
+      () => {},
+      {
+        multiplexer: { kind: "zellij" },
+        workspaceRoot: "/work",
+        ptySpawner: spawn,
+      },
+    );
+    reg.hydrate({
+      id: "11111111-2222-3333-4444-555555555555",
+      cwd: "/work",
+      cols: 80,
+      rows: 24,
+      externalSessionId: "ovsm-11111111-2222-3333-4444-555555555555",
+      createdAt: 1,
+    });
+    // Hydration is metadata-only — no spawn yet.
+    expect(calls).toHaveLength(0);
+    const listed = reg.list();
+    expect(listed).toHaveLength(1);
+    expect(listed[0].id).toBe("11111111-2222-3333-4444-555555555555");
+    // Critically, the wire shape is identical to a live terminal — no
+    // extra fields, no "state" leakage. Catches a future regression
+    // where a stray `state` slips into snapshotOf and changes
+    // terminal.list's response.
+    expect(Object.keys(listed[0]).sort()).toEqual(
+      ["cols", "createdAt", "cwd", "id", "rows"].sort(),
+    );
+  });
+
+  it("hydrateFromPersistence pulls every row for the registry's workspaceRoot", async () => {
+    const opts = await tempDbPath();
+    const persistence = new TerminalPersistence(opts);
+    persistence.recordCreate({
+      id: "abc",
+      workspaceRoot: "/work",
+      cwd: "/work",
+      cols: 80,
+      rows: 24,
+      externalSessionId: "ovsm-abc",
+      createdAt: 1,
+    });
+    const { spawn, calls } = recordingSpawner();
+    const reg = new TerminalRegistry(
+      () => {},
+      () => {},
+      {
+        multiplexer: { kind: "zellij" },
+        workspaceRoot: "/work",
+        persistence,
+        ptySpawner: spawn,
+      },
+    );
+    const claimed = reg.hydrateFromPersistence(new Set());
+    expect(claimed).toEqual(["abc"]);
+    expect(reg.list()).toHaveLength(1);
+    expect(calls).toHaveLength(0); // still no spawn yet
+    persistence.close();
+  });
+
+  it("hydrateFromPersistence respects the excludeIds claim set", async () => {
+    // Two registries against the same root. The first claims the
+    // terminal id; the second must skip it so we don't double-attach
+    // to one zellij session.
+    const opts = await tempDbPath();
+    const persistence = new TerminalPersistence(opts);
+    persistence.recordCreate({
+      id: "shared",
+      workspaceRoot: "/work",
+      cwd: "/work",
+      cols: 80,
+      rows: 24,
+      externalSessionId: "ovsm-shared",
+      createdAt: 1,
+    });
+    const claims = new Set<string>();
+    const regA = new TerminalRegistry(
+      () => {},
+      () => {},
+      {
+        multiplexer: { kind: "zellij" },
+        workspaceRoot: "/work",
+        persistence,
+        ptySpawner: recordingSpawner().spawn,
+      },
+    );
+    const claimedA = regA.hydrateFromPersistence(claims);
+    for (const id of claimedA) claims.add(id);
+    const regB = new TerminalRegistry(
+      () => {},
+      () => {},
+      {
+        multiplexer: { kind: "zellij" },
+        workspaceRoot: "/work",
+        persistence,
+        ptySpawner: recordingSpawner().spawn,
+      },
+    );
+    const claimedB = regB.hydrateFromPersistence(claims);
+    expect(claimedA).toEqual(["shared"]);
+    expect(claimedB).toEqual([]);
+    expect(regB.list()).toHaveLength(0);
+    persistence.close();
+  });
+
+  it("write against a hydrated entry triggers `zellij attach --create`", async () => {
+    const { spawn, calls } = recordingSpawner();
+    const reg = new TerminalRegistry(
+      () => {},
+      () => {},
+      {
+        multiplexer: { kind: "zellij" },
+        workspaceRoot: "/work",
+        ptySpawner: spawn,
+      },
+    );
+    const id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    reg.hydrate({
+      id,
+      cwd: "/work",
+      cols: 100,
+      rows: 30,
+      externalSessionId: `ovsm-${id}`,
+      createdAt: 1,
+    });
+    expect(calls).toHaveLength(0);
+    reg.write(id, Buffer.from("ls\n", "utf8"));
+    // Lazy attach fired with the persisted cwd / dimensions; we
+    // pinned both so a regression that loses geometry on hydrate
+    // shows up here.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].command).toBe("zellij");
+    expect(calls[0].args).toEqual(["attach", "--create", `ovsm-${id}`]);
+    expect(calls[0].options.cols).toBe(100);
+    expect(calls[0].options.rows).toBe(30);
+    expect(calls[0].options.cwd).toBe("/work");
+    // Second write does NOT spawn again — entry is `live` now.
+    reg.write(id, Buffer.from("pwd\n", "utf8"));
+    expect(calls).toHaveLength(1);
+  });
+
+  it("resize against a hydrated entry triggers `zellij attach --create`", () => {
+    const { spawn, calls } = recordingSpawner();
+    const reg = new TerminalRegistry(
+      () => {},
+      () => {},
+      {
+        multiplexer: { kind: "zellij" },
+        workspaceRoot: "/work",
+        ptySpawner: spawn,
+      },
+    );
+    const id = "11111111-1111-1111-1111-111111111111";
+    reg.hydrate({
+      id,
+      cwd: "/work",
+      cols: 80,
+      rows: 24,
+      externalSessionId: `ovsm-${id}`,
+      createdAt: 1,
+    });
+    reg.resize(id, 120, 40);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].command).toBe("zellij");
+    // After lazy attach the geometry on the entry reflects the new
+    // size — the resize fired against the now-live PTY.
+    const listed = reg.list();
+    expect(listed[0].cols).toBe(120);
+    expect(listed[0].rows).toBe(40);
+  });
+
+  it("history against a hydrated entry triggers `zellij attach --create`", () => {
+    // The app's typical chip-focus sequence is fetch history → start
+    // rendering → user types. Anchoring lazy attach on history makes
+    // the zellij reattach repaint visible the moment the chip opens.
+    const { spawn, calls } = recordingSpawner();
+    const reg = new TerminalRegistry(
+      () => {},
+      () => {},
+      {
+        multiplexer: { kind: "zellij" },
+        workspaceRoot: "/work",
+        ptySpawner: spawn,
+      },
+    );
+    const id = "22222222-2222-2222-2222-222222222222";
+    reg.hydrate({
+      id,
+      cwd: "/work",
+      cols: 80,
+      rows: 24,
+      externalSessionId: `ovsm-${id}`,
+      createdAt: 1,
+    });
+    const snap = reg.history(id);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].command).toBe("zellij");
+    // Freshly-attached terminals have no scrollback yet — zellij owns
+    // the buffer, we'll fill ours as data flows.
+    expect(snap.scrollbackOffsetEnd).toBe(0);
+    expect(snap.lengthBytes).toBe(0);
+  });
+
+  it("dispose of a hydrated entry wipes the DB row WITHOUT calling kill-session", async () => {
+    // Explicit dispose IS a destroy intent — the user clicked the X,
+    // so the DB row goes away. But we never had a zellij client of
+    // our own (the entry was still lazy), so we don't issue
+    // kill-session: the zellij server may have older clients the
+    // user wants to reach via the zellij CLI. That asymmetry is
+    // documented in TerminalRegistry.dispose.
+    const opts = await tempDbPath();
+    const persistence = new TerminalPersistence(opts);
+    persistence.recordCreate({
+      id: "lazy-1",
+      workspaceRoot: "/work",
+      cwd: "/work",
+      cols: 80,
+      rows: 24,
+      externalSessionId: "ovsm-lazy-1",
+      createdAt: 1,
+    });
+    const { spawn } = recordingSpawner();
+    const { runner, calls: execCalls } = recordingRunner();
+    const reg = new TerminalRegistry(
+      () => {},
+      () => {},
+      {
+        multiplexer: { kind: "zellij" },
+        workspaceRoot: "/work",
+        persistence,
+        ptySpawner: spawn,
+        execRunner: runner,
+      },
+    );
+    reg.hydrateFromPersistence(new Set());
+    reg.dispose("lazy-1");
+    await new Promise((r) => setImmediate(r));
+    // No kill-session for a hydrated dispose.
+    expect(execCalls).toHaveLength(0);
+    // DB row is gone — the user explicitly chose to wipe this chip.
+    expect(persistence.loadByWorkspaceRoot("/work")).toEqual([]);
+    // And the registry is empty.
+    expect(reg.list()).toEqual([]);
+    persistence.close();
+  });
+
+  it("lazy attach failure evicts the entry, wipes the DB row, fires exit", async () => {
+    const opts = await tempDbPath();
+    const persistence = new TerminalPersistence(opts);
+    persistence.recordCreate({
+      id: "doomed",
+      workspaceRoot: "/work",
+      cwd: "/work",
+      cols: 80,
+      rows: 24,
+      externalSessionId: "ovsm-doomed",
+      createdAt: 1,
+    });
+    const exits: Array<{ id: string; code: number }> = [];
+    const failingSpawn = (): IPty => {
+      throw new Error("zellij missing");
+    };
+    const reg = new TerminalRegistry(
+      () => {},
+      (id, code) => exits.push({ id, code }),
+      {
+        multiplexer: { kind: "zellij" },
+        workspaceRoot: "/work",
+        persistence,
+        ptySpawner: failingSpawn,
+      },
+    );
+    reg.hydrateFromPersistence(new Set());
+    expect(reg.list()).toHaveLength(1);
+    expect(() => reg.write("doomed", Buffer.from("x", "utf8"))).toThrow(
+      /failed to attach/,
+    );
+    // The exit fan-out fired with code -1 so the app prunes its chip.
+    expect(exits).toEqual([{ id: "doomed", code: -1 }]);
+    // The DB row is gone — a doomed session would just fail the same
+    // way on next boot, so we sweep it.
+    expect(persistence.loadByWorkspaceRoot("/work")).toEqual([]);
+    // And the in-memory map is empty.
+    expect(reg.list()).toEqual([]);
+    persistence.close();
+  });
+
+  it("detachAll tears down PTY clients WITHOUT touching the DB", async () => {
+    // The whole point of the persistence layer: clean SIGTERM must
+    // leave the DB intact so the next boot can hydrate. detachAll
+    // (used by state.shutdownAll) is the shutdown-safe variant.
+    const opts = await tempDbPath();
+    const persistence = new TerminalPersistence(opts);
+    const { spawn, calls } = recordingSpawner();
+    const reg = new TerminalRegistry(
+      () => {},
+      () => {},
+      {
+        multiplexer: { kind: "zellij" },
+        workspaceRoot: "/work",
+        persistence,
+        ptySpawner: spawn,
+      },
+    );
+    // One live terminal + one hydrated terminal.
+    const live = reg.create(80, 24, "/work");
+    reg.hydrate({
+      id: "hydrated-1",
+      cwd: "/work",
+      cols: 80,
+      rows: 24,
+      externalSessionId: "ovsm-hydrated-1",
+      createdAt: 1,
+    });
+    // The live one is in the DB from `create`; the hydrated one came
+    // from a hand-call but the DB doesn't know about it. We add it
+    // explicitly so the post-detach assertion has something to check
+    // for both shapes.
+    persistence.recordCreate({
+      id: "hydrated-1",
+      workspaceRoot: "/work",
+      cwd: "/work",
+      cols: 80,
+      rows: 24,
+      externalSessionId: "ovsm-hydrated-1",
+      createdAt: 1,
+    });
+    reg.detachAll();
+    // The live PTY got killed; the FakePty.killed flag would be set
+    // (we already exercise that in other tests). What matters here
+    // is that BOTH rows are still on disk.
+    const stillThere = persistence.loadByWorkspaceRoot("/work");
+    expect(stillThere.map((r) => r.id).sort()).toEqual(
+      [live.id, "hydrated-1"].sort(),
+    );
+    // And the in-memory map is empty — nothing leaked across the
+    // detach boundary.
+    expect(reg.list()).toEqual([]);
+    // The fake spawner recorded the live spawn but no zellij
+    // kill-session was issued (we'd see it via execCalls if we had a
+    // runner; this assert is about the spawn count not surging).
+    expect(calls).toHaveLength(1);
+    persistence.close();
+  });
+});
+
 describe("probeMultiplexer", () => {
   it("returns `none` when zellij is not installed (ENOENT)", async () => {
     const { probeMultiplexer } = await import("../src/multiplexer.js");
