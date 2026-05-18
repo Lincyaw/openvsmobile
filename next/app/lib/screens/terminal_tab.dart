@@ -16,6 +16,7 @@ import 'package:flutter/material.dart';
 
 import '../app_state.dart';
 import '../models.dart';
+import '../ui/app_tokens.dart';
 import 'terminal_detail.dart';
 
 class TerminalTab extends StatefulWidget {
@@ -113,7 +114,7 @@ class _TerminalTabState extends State<TerminalTab> {
     if (w == null) {
       return const Center(
         child: Padding(
-          padding: EdgeInsets.all(24),
+          padding: EdgeInsets.all(AppSpacing.xl),
           child: Text(
             'No workspace open.\n'
             'Tap the title bar to choose one.',
@@ -126,17 +127,17 @@ class _TerminalTabState extends State<TerminalTab> {
     if (sessions.isEmpty) {
       return Center(
         child: Padding(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.all(AppSpacing.xl),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.terminal_outlined, size: 48),
-              const SizedBox(height: 12),
+              const Icon(Icons.terminal_outlined, size: AppIconSize.lg),
+              const SizedBox(height: AppSpacing.md),
               const Text(
                 'No terminal sessions yet.',
                 textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: AppSpacing.lg),
               FilledButton.icon(
                 onPressed: _createAndOpen,
                 icon: const Icon(Icons.add),
@@ -239,16 +240,17 @@ class _SessionTile extends StatelessWidget {
       onTap: onTap,
       onLongPress: onLongPress,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.lg, vertical: AppSpacing.sm + 2),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             Icon(
               Icons.terminal_outlined,
               color: dim,
-              size: 22,
+              size: AppIconSize.md - 2,
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: AppSpacing.md),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -267,7 +269,7 @@ class _SessionTile extends StatelessWidget {
                       ),
                       if (cwdBasename.isNotEmpty)
                         Padding(
-                          padding: const EdgeInsets.only(left: 8),
+                          padding: const EdgeInsets.only(left: AppSpacing.sm),
                           child: Text(
                             cwdBasename,
                             style: TextStyle(fontSize: 12, color: dim),
@@ -293,7 +295,7 @@ class _SessionTile extends StatelessWidget {
                 ],
               ),
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: AppSpacing.sm),
             Text(
               timestamp,
               style: TextStyle(fontSize: 12, color: dim),
@@ -317,11 +319,12 @@ class _NewSessionTile extends StatelessWidget {
       // identity to act on; tapping is the only meaningful interaction.
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.lg, vertical: AppSpacing.md + 2),
         child: Row(
           children: [
             Icon(Icons.add, color: theme.colorScheme.primary),
-            const SizedBox(width: 12),
+            const SizedBox(width: AppSpacing.md),
             Text(
               'New terminal',
               style: TextStyle(

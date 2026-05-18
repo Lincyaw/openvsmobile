@@ -21,6 +21,7 @@
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
+import '../ui/app_tokens.dart';
 
 /// Signature of the diff fetch the viewer uses. Production wires this to
 /// `AppState.gitDiff`; widget tests inject a fake to render against a
@@ -95,7 +96,7 @@ class _DiffViewerScreenState extends State<DiffViewerScreen> {
                     height: 18,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   ),
-                  SizedBox(height: 12),
+                  SizedBox(height: AppSpacing.md),
                   Text('Loading diff…'),
                 ],
               ),
@@ -150,7 +151,7 @@ class _DiffBody extends StatelessWidget {
     if (hunks.isEmpty) {
       return Center(
         child: Padding(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.all(AppSpacing.xl),
           child: Text(
             'No changes vs HEAD.',
             style: theme.textTheme.bodyLarge,
@@ -171,7 +172,7 @@ class _DiffBody extends StatelessWidget {
         _DiffHeader(path: path, adds: adds, dels: dels),
         Expanded(
           child: ListView.builder(
-            padding: const EdgeInsets.only(bottom: 24),
+            padding: const EdgeInsets.only(bottom: AppSpacing.xl),
             itemCount: hunks.length * 2 - 1,
             itemBuilder: (context, i) {
               if (i.isEven) {
@@ -231,7 +232,8 @@ class _DiffHeader extends StatelessWidget {
     return Container(
       width: double.infinity,
       color: theme.colorScheme.surfaceContainerHighest,
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppDensity.bannerHPad, vertical: AppDensity.bannerVPad),
       child: Row(
         children: [
           Expanded(
@@ -251,7 +253,7 @@ class _DiffHeader extends StatelessWidget {
               fontSize: 12,
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: AppSpacing.sm),
           Text(
             '-$dels',
             style: TextStyle(
@@ -261,7 +263,7 @@ class _DiffHeader extends StatelessWidget {
               fontSize: 12,
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: AppSpacing.sm),
           Text(
             'vs HEAD',
             style: TextStyle(
@@ -283,20 +285,21 @@ class _HunkCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      margin: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.sm, vertical: AppSpacing.xs),
       decoration: BoxDecoration(
         border: Border.all(
           color: theme.colorScheme.outlineVariant,
         ),
-        borderRadius: BorderRadius.circular(4),
+        borderRadius: BorderRadius.circular(AppRadius.sm),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Container(
             color: theme.colorScheme.surfaceContainer,
-            padding:
-                const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            padding: const EdgeInsets.symmetric(
+                horizontal: AppSpacing.sm, vertical: AppSpacing.xs),
             child: Text(
               '@@ -${hunk.oldStart},${hunk.oldLines} '
               '+${hunk.newStart},${hunk.newLines} @@',
@@ -347,12 +350,12 @@ class _DiffLineRow extends StatelessWidget {
     }
     return Container(
       color: bg,
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
+      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm, vertical: 1),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-            width: 12,
+            width: AppSpacing.md,
             child: Text(
               marker,
               style: TextStyle(
@@ -362,7 +365,7 @@ class _DiffLineRow extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(width: 4),
+          const SizedBox(width: AppSpacing.xs),
           Expanded(
             child: SelectableText(
               line.text,
@@ -388,8 +391,9 @@ class _GapStrip extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      padding: const EdgeInsets.symmetric(vertical: 4),
+      margin: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.sm, vertical: 2),
+      padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
       alignment: Alignment.center,
       child: Text(
         '… $unchanged unchanged line${unchanged == 1 ? '' : 's'} …',
@@ -419,10 +423,10 @@ class _DiffPlaceholder extends StatelessWidget {
     };
     return Center(
       child: Padding(
-        padding: const EdgeInsets.all(24),
+        padding: const EdgeInsets.all(AppSpacing.xl),
         child: Card(
           child: Padding(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(AppSpacing.lg),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -435,7 +439,7 @@ class _DiffPlaceholder extends StatelessWidget {
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: AppSpacing.sm),
                 Text(reason, style: theme.textTheme.bodyMedium),
               ],
             ),
@@ -456,18 +460,18 @@ class _DiffErrorView extends StatelessWidget {
     final theme = Theme.of(context);
     return Center(
       child: Padding(
-        padding: const EdgeInsets.all(24),
+        padding: const EdgeInsets.all(AppSpacing.xl),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(Icons.error_outline, color: theme.colorScheme.error),
-            const SizedBox(height: 8),
+            const SizedBox(height: AppSpacing.sm),
             Text(
               'Could not load diff for $path',
               style: theme.textTheme.bodyLarge,
               textAlign: TextAlign.center,
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: AppSpacing.sm),
             Text(
               message,
               style: TextStyle(

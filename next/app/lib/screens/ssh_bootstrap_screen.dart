@@ -14,6 +14,7 @@ import 'package:flutter/services.dart';
 import '../app_state.dart';
 import '../services/ssh_bootstrap.dart';
 import '../settings_store.dart';
+import '../ui/app_tokens.dart';
 
 enum _AuthMode { password, key }
 
@@ -181,27 +182,27 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Install backend via SSH')),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(AppSpacing.lg),
         child: Form(
           key: _formKey,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _credentialFields(),
-              const SizedBox(height: 16),
+              const SizedBox(height: AppSpacing.lg),
               FilledButton.icon(
                 onPressed: _running ? null : _start,
                 icon: const Icon(Icons.cloud_download),
                 label: Text(_running ? 'Working…' : 'Install and connect'),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: AppSpacing.lg),
               if (_status.isNotEmpty || _log.isNotEmpty) _progressBlock(),
               if (success != null) ...[
-                const SizedBox(height: 16),
+                const SizedBox(height: AppSpacing.lg),
                 _successCard(success),
               ],
               if (failure != null) ...[
-                const SizedBox(height: 16),
+                const SizedBox(height: AppSpacing.lg),
                 _failureCard(failure),
               ],
             ],
@@ -225,7 +226,7 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
           validator: (v) =>
               (v == null || v.trim().isEmpty) ? 'required' : null,
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: AppSpacing.md),
         TextFormField(
           controller: _portCtrl,
           enabled: !_running,
@@ -237,7 +238,7 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
             return null;
           },
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: AppSpacing.md),
         TextFormField(
           controller: _userCtrl,
           enabled: !_running,
@@ -245,7 +246,7 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
           validator: (v) =>
               (v == null || v.trim().isEmpty) ? 'required' : null,
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: AppSpacing.md),
         SegmentedButton<_AuthMode>(
           segments: const [
             ButtonSegment(value: _AuthMode.password, label: Text('Password')),
@@ -256,7 +257,7 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
               ? null
               : (s) => setState(() => _authMode = s.first),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: AppSpacing.md),
         if (_authMode == _AuthMode.password)
           TextFormField(
             controller: _passwordCtrl,
@@ -290,7 +291,7 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
               return null;
             },
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: AppSpacing.md),
           TextFormField(
             controller: _passphraseCtrl,
             enabled: !_running,
@@ -300,7 +301,7 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
             ),
           ),
         ],
-        const SizedBox(height: 8),
+        const SizedBox(height: AppSpacing.sm),
         ExpansionTile(
           tilePadding: EdgeInsets.zero,
           title: const Text('Advanced'),
@@ -327,7 +328,7 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
   Widget _progressBlock() {
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.all(AppSpacing.md),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -339,20 +340,20 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
                     height: 14,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   ),
-                if (_running) const SizedBox(width: 8),
+                if (_running) const SizedBox(width: AppSpacing.sm),
                 Expanded(
                   child: Text(_status,
                       style: const TextStyle(fontWeight: FontWeight.bold)),
                 ),
               ],
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: AppSpacing.sm),
             ConstrainedBox(
               constraints: const BoxConstraints(maxHeight: 240),
               child: Container(
                 width: double.infinity,
                 color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                padding: const EdgeInsets.all(8),
+                padding: const EdgeInsets.all(AppSpacing.sm),
                 child: SingleChildScrollView(
                   controller: _scrollCtrl,
                   child: SelectableText(
@@ -375,20 +376,20 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
     return Card(
       color: Theme.of(context).colorScheme.primaryContainer,
       child: Padding(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.all(AppSpacing.md),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text('Backend ${s.version} is running on port ${s.port}.',
                 style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 4),
+            const SizedBox(height: AppSpacing.xs),
             if (!s.linger)
               const Text(
                 'Note: user lingering is disabled — the service stops when '
                 'the user logs out. Enable with `loginctl enable-linger`.',
                 style: TextStyle(fontSize: 12),
               ),
-            const SizedBox(height: 12),
+            const SizedBox(height: AppSpacing.md),
             FilledButton.icon(
               icon: const Icon(Icons.save),
               onPressed: _saveAndSwitch,
@@ -404,7 +405,7 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
     return Card(
       color: Theme.of(context).colorScheme.errorContainer,
       child: Padding(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.all(AppSpacing.md),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -414,17 +415,17 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
                   : 'Bootstrap failed (exit ${f.exitCode})',
               style: Theme.of(context).textTheme.titleMedium,
             ),
-            const SizedBox(height: 4),
+            const SizedBox(height: AppSpacing.xs),
             Text(f.reason),
             if (f.lastStderr.isNotEmpty) ...[
-              const SizedBox(height: 8),
+              const SizedBox(height: AppSpacing.sm),
               const Text('Last stderr:',
                   style: TextStyle(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 4),
+              const SizedBox(height: AppSpacing.xs),
               Container(
                 width: double.infinity,
                 color: Theme.of(context).colorScheme.surface,
-                padding: const EdgeInsets.all(8),
+                padding: const EdgeInsets.all(AppSpacing.sm),
                 child: SelectableText(
                   f.lastStderr.join('\n'),
                   style: const TextStyle(
@@ -434,14 +435,14 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
                 ),
               ),
             ],
-            const SizedBox(height: 12),
+            const SizedBox(height: AppSpacing.md),
             Row(
               children: [
                 FilledButton.tonal(
                   onPressed: _running ? null : _start,
                   child: const Text('Try again'),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: AppSpacing.sm),
                 TextButton.icon(
                   onPressed: _copyLog,
                   icon: const Icon(Icons.copy),

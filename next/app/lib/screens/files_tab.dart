@@ -17,6 +17,7 @@ import '../app_state.dart';
 import '../backend_client.dart';
 import '../models.dart';
 import '../state/workspace_model.dart';
+import '../ui/app_tokens.dart';
 import 'diff_viewer.dart';
 import 'file_viewer.dart';
 
@@ -355,10 +356,10 @@ class _FilesTabState extends State<FilesTab> {
       },
       child: Padding(
         padding: EdgeInsets.only(
-          left: 8.0 + depth * 16.0,
-          right: 8,
-          top: 6,
-          bottom: 6,
+          left: AppSpacing.sm + depth * AppSpacing.lg,
+          right: AppSpacing.sm,
+          top: AppSpacing.xs + 2,
+          bottom: AppSpacing.xs + 2,
         ),
         child: Row(
           children: [
@@ -368,14 +369,14 @@ class _FilesTabState extends State<FilesTab> {
                       ? Icons.keyboard_arrow_down
                       : Icons.keyboard_arrow_right)
                   : Icons.insert_drive_file_outlined,
-              size: 18,
+              size: AppIconSize.sm,
             ),
-            const SizedBox(width: 4),
+            const SizedBox(width: AppSpacing.xs),
             Icon(
               node.isDir ? Icons.folder_outlined : Icons.description_outlined,
-              size: 18,
+              size: AppIconSize.sm,
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: AppSpacing.sm),
             Expanded(
               child: Text(
                 node.name,
@@ -430,7 +431,7 @@ class _FilesTabState extends State<FilesTab> {
     if (wsId == null || cur == null) {
       return const Center(
         child: Padding(
-          padding: EdgeInsets.all(24),
+          padding: EdgeInsets.all(AppSpacing.xl),
           child: Text(
             'No workspace open.\n'
             'Tap the title bar to choose one.',
@@ -485,7 +486,7 @@ class _FilesTabState extends State<FilesTab> {
                               height: 18,
                               child: CircularProgressIndicator(strokeWidth: 2),
                             ),
-                            SizedBox(height: 12),
+                            SizedBox(height: AppSpacing.md),
                             Text('Loading workspace…'),
                           ],
                         ),
@@ -526,7 +527,8 @@ class _SearchBar extends StatelessWidget {
     return Material(
       color: theme.colorScheme.surface,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+        padding: const EdgeInsets.fromLTRB(
+            AppSpacing.md, AppSpacing.xs, AppSpacing.md, AppSpacing.xs),
         child: TextField(
           controller: controller,
           focusNode: focusNode,
@@ -536,7 +538,7 @@ class _SearchBar extends StatelessWidget {
           decoration: InputDecoration(
             isDense: true,
             hintText: 'Search files',
-            prefixIcon: const Icon(Icons.search, size: 18),
+            prefixIcon: const Icon(Icons.search, size: AppIconSize.sm),
             prefixIconConstraints:
                 const BoxConstraints(minWidth: 32, minHeight: 32),
             suffixIcon: AnimatedBuilder(
@@ -546,7 +548,7 @@ class _SearchBar extends StatelessWidget {
                   return const SizedBox(width: 0, height: 0);
                 }
                 return IconButton(
-                  iconSize: 18,
+                  iconSize: AppIconSize.sm,
                   visualDensity: VisualDensity.compact,
                   tooltip: 'Clear search',
                   icon: const Icon(Icons.close),
@@ -555,13 +557,13 @@ class _SearchBar extends StatelessWidget {
               },
             ),
             border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(AppRadius.md),
               borderSide: BorderSide(
                 color: theme.colorScheme.outlineVariant,
               ),
             ),
             contentPadding: const EdgeInsets.symmetric(
-              horizontal: 8,
+              horizontal: AppSpacing.sm,
               vertical: 0,
             ),
           ),
@@ -594,7 +596,7 @@ class _SearchResultsView extends StatelessWidget {
     if (error != null) {
       return Center(
         child: Padding(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.all(AppSpacing.xl),
           child: Text(
             'Search failed: $error',
             style: TextStyle(color: theme.colorScheme.error),
@@ -622,7 +624,7 @@ class _SearchResultsView extends StatelessWidget {
     if (r.matches.isEmpty) {
       return Center(
         child: Padding(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.all(AppSpacing.xl),
           child: Text(
             'No matches for "$query"',
             style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
@@ -641,7 +643,8 @@ class _SearchResultsView extends StatelessWidget {
     if (r.truncated) {
       children.add(
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.md, vertical: AppSpacing.sm),
           child: Text(
             'Showing top ${r.matches.length} matches — refine the query for more.',
             style: TextStyle(
@@ -659,8 +662,8 @@ class _SearchResultsView extends StatelessWidget {
         ListView(children: children),
         if (loading)
           Positioned(
-            top: 4,
-            right: 8,
+            top: AppSpacing.xs,
+            right: AppSpacing.sm,
             child: Semantics(
               label: 'Searching',
               container: true,
@@ -700,11 +703,13 @@ class _SearchResultRow extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.md, vertical: AppSpacing.sm),
         child: Row(
           children: [
-            const Icon(Icons.insert_drive_file_outlined, size: 18),
-            const SizedBox(width: 8),
+            const Icon(Icons.insert_drive_file_outlined,
+                size: AppIconSize.sm),
+            const SizedBox(width: AppSpacing.sm),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -829,8 +834,8 @@ class _StatusBar extends StatelessWidget {
         onTap: isGit ? appState.toggleChangesView : null,
         child: Container(
           width: double.infinity,
-          height: 32,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
+          height: AppDensity.statusBarHeight,
+          padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
           child: Row(
             children: [
               if (!isGit && st == null)
@@ -903,10 +908,11 @@ class _OfflinePill extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.sm - 2, vertical: 2),
       decoration: BoxDecoration(
         color: theme.colorScheme.secondaryContainer,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(AppRadius.md),
       ),
       child: Text(
         'offline',
@@ -968,7 +974,7 @@ class _DecorationBadge extends StatelessWidget {
       if (status == null) return const SizedBox.shrink();
       final color = _statusColor(theme, status);
       return Padding(
-        padding: const EdgeInsets.only(left: 8),
+        padding: const EdgeInsets.only(left: AppSpacing.sm),
         child: Text(
           status,
           style: TextStyle(
@@ -986,7 +992,7 @@ class _DecorationBadge extends StatelessWidget {
     final count = decoration.changedCount;
     if (count <= 0) return const SizedBox.shrink();
     return Padding(
-      padding: const EdgeInsets.only(left: 8),
+      padding: const EdgeInsets.only(left: AppSpacing.sm),
       child: Text(
         '●$count',
         style: TextStyle(

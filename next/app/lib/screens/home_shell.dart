@@ -10,6 +10,7 @@ import '../backend_client.dart';
 import '../models.dart';
 import '../services/system_tray.dart';
 import '../settings_store.dart';
+import '../ui/app_tokens.dart';
 import 'files_tab.dart';
 import 'notification_center.dart';
 import 'plugins_tab.dart';
@@ -96,66 +97,35 @@ class _HomeShellState extends State<HomeShell> {
   Widget build(BuildContext context) {
     final cur = widget.appState.currentWorkspace;
     final connState = widget.appState.connectionState;
-    final active = widget.state.activeBackend;
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
-        title: Row(
-          children: [
-            // Backend chip: tap → Backends screen. Always visible so the
-            // user can confirm which server the UI is talking to.
-            InkWell(
-              onTap: widget.onOpenBackends,
-              child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.dns_outlined, size: 18),
-                    const SizedBox(width: 6),
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 120),
-                      child: Text(
-                        active?.name ?? '(no backend)',
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 13),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+        title: InkWell(
+          onTap: _openSwitcher,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.md,
+              vertical: AppSpacing.xs,
             ),
-            const Text('·',
-                style: TextStyle(color: Colors.grey, fontSize: 14)),
-            Expanded(
-              child: InkWell(
-                onTap: _openSwitcher,
-                child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                  child: Row(
-                    children: [
-                      Icon(
-                        cur == null
-                            ? Icons.folder_off_outlined
-                            : Icons.folder_open,
-                        size: 20,
-                      ),
-                      const SizedBox(width: 6),
-                      Flexible(
-                        child: Text(
-                          cur?.label ?? '(choose workspace)',
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                      const Icon(Icons.arrow_drop_down),
-                    ],
+            child: Row(
+              children: [
+                Icon(
+                  cur == null
+                      ? Icons.folder_off_outlined
+                      : Icons.folder_open,
+                  size: AppIconSize.md,
+                ),
+                const SizedBox(width: AppSpacing.sm),
+                Flexible(
+                  child: Text(
+                    cur?.label ?? '(choose workspace)',
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
-              ),
+                const Icon(Icons.arrow_drop_down),
+              ],
             ),
-          ],
+          ),
         ),
         actions: [
           _BellIconAction(
@@ -308,7 +278,10 @@ class _ConnectionBannerState extends State<_ConnectionBanner> {
       return Container(
         width: double.infinity,
         color: theme.colorScheme.errorContainer,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppDensity.bannerHPad,
+          vertical: AppDensity.bannerVPad,
+        ),
         child: Row(
           children: [
             Expanded(
@@ -337,7 +310,10 @@ class _ConnectionBannerState extends State<_ConnectionBanner> {
     return Container(
       width: double.infinity,
       color: theme.colorScheme.secondaryContainer,
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppDensity.bannerHPad,
+        vertical: AppDensity.bannerVPad,
+      ),
       child: Row(
         children: [
           if (withSpinner)
@@ -346,7 +322,7 @@ class _ConnectionBannerState extends State<_ConnectionBanner> {
               height: 14,
               child: CircularProgressIndicator(strokeWidth: 2),
             ),
-          if (withSpinner) const SizedBox(width: 8),
+          if (withSpinner) const SizedBox(width: AppSpacing.sm),
           Expanded(
             child: Text(
               msg,
@@ -399,13 +375,14 @@ class _WorkspaceSwitcherSheet extends StatelessWidget {
     final theme = Theme.of(context);
     return SafeArea(
       child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8),
+        padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const Padding(
-              padding: EdgeInsets.fromLTRB(16, 8, 16, 4),
+              padding: EdgeInsets.fromLTRB(
+                  AppSpacing.lg, AppSpacing.sm, AppSpacing.lg, AppSpacing.xs),
               child: Text(
                 'Open workspaces',
                 style: TextStyle(fontWeight: FontWeight.bold),
@@ -413,7 +390,8 @@ class _WorkspaceSwitcherSheet extends StatelessWidget {
             ),
             if (active.isEmpty)
               const Padding(
-                padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+                padding: EdgeInsets.fromLTRB(
+                    AppSpacing.lg, 0, AppSpacing.lg, AppSpacing.sm),
                 child: Text(
                   'None — open one from Recent or Browse below.',
                   style: TextStyle(fontStyle: FontStyle.italic),
@@ -440,7 +418,8 @@ class _WorkspaceSwitcherSheet extends StatelessWidget {
               ),
             const Divider(),
             const Padding(
-              padding: EdgeInsets.fromLTRB(16, 8, 16, 4),
+              padding: EdgeInsets.fromLTRB(
+                  AppSpacing.lg, AppSpacing.sm, AppSpacing.lg, AppSpacing.xs),
               child: Text(
                 'Recent',
                 style: TextStyle(fontWeight: FontWeight.bold),
@@ -448,7 +427,8 @@ class _WorkspaceSwitcherSheet extends StatelessWidget {
             ),
             if (recentsOnly.isEmpty)
               const Padding(
-                padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+                padding: EdgeInsets.fromLTRB(
+                    AppSpacing.lg, 0, AppSpacing.lg, AppSpacing.sm),
                 child: Text(
                   'No other recents yet.',
                   style: TextStyle(fontStyle: FontStyle.italic),

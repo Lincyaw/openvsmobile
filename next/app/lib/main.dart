@@ -20,6 +20,8 @@ import 'services/deep_link_service.dart';
 import 'services/notification_foreground_service.dart';
 import 'services/system_tray.dart';
 import 'settings_store.dart';
+import 'ui/app_theme.dart';
+import 'ui/app_tokens.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -401,10 +403,7 @@ class _MobileCodeAppState extends State<MobileCodeApp>
     return MaterialApp(
       navigatorKey: _navKey,
       title: 'MobileCode',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
-        useMaterial3: true,
-      ),
+      theme: AppTheme.light(),
       home: _loadingSettings || _appState == null
           ? const _BootSplash()
           : (_state.activeBackend == null)
@@ -438,7 +437,7 @@ class _BootSplash extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             CircularProgressIndicator(),
-            SizedBox(height: 12),
+            SizedBox(height: AppSpacing.md),
             Text('Loading settings…'),
           ],
         ),
