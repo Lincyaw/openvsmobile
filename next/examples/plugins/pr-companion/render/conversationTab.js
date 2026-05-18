@@ -24,6 +24,18 @@ import { filterTopLevelComments, formatRelative } from "./_pure.js";
 // without caring which file owns the canonical implementation.
 export { filterTopLevelComments, formatRelative };
 
+// === Phase 4 additions ===
+// Wire events for the top-level Comment button and per-comment reply.
+// The button itself emits `{type:'tap', nodeId:'prcomp-conv-comment-btn'}`;
+// the per-comment swipe/tap actions carry a hardcoded eventId prefix
+// followed by the GitHub comment id, which index.js parses to look up
+// the original body (for the quote prefill) and route the reply POST.
+export const conversationEvents = {
+  COMMENT_BUTTON_NODE: "prcomp-conv-comment-btn",
+  REPLY_PREFIX: "prcomp-conv-reply:",
+};
+// === end Phase 4 additions ===
+
 /**
  * Build the Conversation tab body.
  *
@@ -95,50 +107,43 @@ export function buildConversationTabBody({ pr, comments, error, nowMs }) {
     const topLevel = filterTopLevelComments(comments);
     for (const c of topLevel) {
       const cBody = typeof c.body === "string" ? c.body.trim() : "";
+      // === Phase 4 additions ===
+      // Comments rendered as listTile (not section/card) so they pick up
+      // swipe-to-reply via UiListTile.swipeActions — UiSection doesn't
+      // expose that slot. This trades full markdown rendering for a
+      // tappable + swipeable shape; the body is collapsed into a
+      // subtitle string. The full body is one tap away (the reply sheet
+      // pre-fills it as a quote block), and the rich render returns in
+      // a future "tap to expand" phase if the regression bites.
+      const when = formatRelative(c.createdAt, nowMs);
+      const title = when.length > 0 ? `${c.user.login} · ${when}` : c.user.login;
+      const subtitle =
+        cBody.length > 0
+          ? cBody.split("\n")[0].slice(0, 140)
+          : "(empty comment)";
       items.push(
-        ui.section({
+        ui.listTile({
           id: `prcomp-detail-conv-comment-${c.id}`,
-          variant: "card",
-          children: [
-            ui.row({
-              id: `prcomp-detail-conv-comment-${c.id}-head`,
-              gap: "sm",
-              children: [
-                ui.avatar({
-                  id: `prcomp-detail-conv-comment-${c.id}-avatar`,
-                  src: c.user.avatarUrl,
-                  size: "sm",
-                }),
-                ui.column({
-                  id: `prcomp-detail-conv-comment-${c.id}-author`,
-                  gap: "xs",
-                  children: [
-                    ui.text({
-                      id: `prcomp-detail-conv-comment-${c.id}-login`,
-                      text: c.user.login,
-                    }),
-                    ui.text({
-                      id: `prcomp-detail-conv-comment-${c.id}-time`,
-                      text: formatRelative(c.createdAt, nowMs),
-                      style: "caption",
-                    }),
-                  ],
-                }),
-              ],
-            }),
-            cBody.length > 0
-              ? ui.markdown({
-                  id: `prcomp-detail-conv-comment-${c.id}-body`,
-                  markdown: cBody,
-                })
-              : ui.text({
-                  id: `prcomp-detail-conv-comment-${c.id}-empty`,
-                  text: "(empty comment)",
-                  style: "caption",
-                }),
+          title,
+          subtitle,
+          leading: ui.avatar({
+            id: `prcomp-detail-conv-comment-${c.id}-avatar`,
+            src: c.user.avatarUrl,
+            size: "sm",
+          }),
+          // Both gestures route to the same reply sheet so phone users
+          // can choose whichever feels natural. The id suffix is the
+          // GitHub comment id; index.js parses it back out.
+          onTapEvent: `${conversationEvents.REPLY_PREFIX}${c.id}`,
+          swipeActions: [
+            {
+              label: "Reply",
+              eventId: `${conversationEvents.REPLY_PREFIX}${c.id}`,
+            },
           ],
         }),
       );
+      // === end Phase 4 additions ===
     }
     if (topLevel.length === 0 && pr !== null) {
       // Successful fetch, just no conversation yet. A brief placeholder
@@ -174,6 +179,28 @@ export function buildConversationTabBody({ pr, comments, error, nowMs }) {
       }),
     );
   }
+
+  // === Phase 4 additions ===
+  // Top-level Comment button at the bottom of the list. Always shown
+  // when the PR loaded (pr !== null), even on the empty-conversation
+  // path — that's the most natural place to start a thread. Suppressed
+  // when the PR fetch itself failed since we don't have a number to
+  // POST against; the user retries once the PR data lands.
+  if (pr !== null) {
+    items.push(
+      ui.section({
+        id: "prcomp-detail-conv-comment-cta",
+        children: [
+          ui.button({
+            id: conversationEvents.COMMENT_BUTTON_NODE,
+            label: "Comment",
+            style: "secondary",
+          }),
+        ],
+      }),
+    );
+  }
+  // === end Phase 4 additions ===
 
   return ui.list({
     id: "prcomp-detail-conv-list",

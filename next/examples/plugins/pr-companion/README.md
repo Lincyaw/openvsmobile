@@ -39,7 +39,7 @@ shell out to a `terminal.*` RPC (the `gh auth token` invocation is a
 plain `node:child_process` call inside our own process), and we never
 persist the token.
 
-## Scope (Phases 1 + 2 + 3 + 5 — shipped)
+## Scope (Phases 1 + 2 + 3 + 4 + 5 — shipped)
 
 Phase 1 — plugin shell:
 
@@ -85,16 +85,40 @@ Phase 3 — read-only PR detail panel:
   tab degrades to a caption. A full-stack failure surfaces as a single
   banner (`unauthed` / `offline` / `rateLimited` / `serverError`).
 
+Phase 4 — review actions:
+
+- "Review…" button on the PR detail header opens an action sheet with
+  Approve / Request changes / Comment only. Picking an option opens a
+  bottom sheet with a textfield (body) + Submit button; submitting
+  POSTs `/repos/{o}/{r}/pulls/{n}/reviews` via the matching
+  `event: APPROVE | REQUEST_CHANGES | COMMENT`.
+- "Comment" button at the bottom of the Conversation tab opens the
+  same bottom-sheet shape and POSTs `/issues/{n}/comments` (the
+  top-level PR-comment endpoint).
+- Tapping (or swiping → "Reply") an existing comment in the
+  Conversation tab opens the same sheet pre-filled with a GitHub-
+  flavored quote block (`> @author wrote:\n> <first line>\n\n`) and
+  POSTs `/pulls/{n}/comments/{commentId}/replies` on submit.
+- On a successful POST the detail panel re-fetches so the new
+  review / comment shows up in Conversation. On failure a danger
+  banner appears above the header naming the failing action and the
+  github.js error kind.
+- Pending state: a module-level `reviewSubmitPending` flag swallows
+  double-tap on Submit during a slow POST. The bottom sheet stays
+  open after success (the SDK does not yet expose plugin-driven
+  dismissal — tracked as `TODO(v1)` in `@openvsmobile/sdk`); the user
+  taps outside to close, and the next tap on Review / Comment opens a
+  fresh sheet with a cleared body.
+
 Phase 5 (partial) — Checks tab:
 
 - The Checks tab renders one row per `check_run` for the PR's
-  `head_sha`, with a feather icon + accent driven by `status` /
-  `conclusion` (success → check-circle, failure / timed-out /
-  action-required → x-circle, neutral / cancelled / skipped →
-  minus-circle, in-progress / queued / pending → clock, anything else →
-  alert-circle). When at least one run is still in flight, a linear
-  `ui.progress` widget at the top of the tab shows the
-  passing-out-of-total ratio.
+  `head_sha`, with an icon + accent driven by `status` / `conclusion`
+  (success → check-circle, failure / timed-out / action-required →
+  x-circle, neutral / cancelled / skipped → minus-circle, in-progress /
+  queued / pending → clock, anything else → alert-circle). When at
+  least one run is still in flight, a linear `ui.progress` widget at
+  the top of the tab shows the passing-out-of-total ratio.
 - Caption per row is `"<duration> · <conclusion>"` (e.g. `"2m 34s ·
   success"`); in-flight runs show `"running 1m 12s"` against
   wall-clock. Duration formatting lives in `_pure.js#formatDuration`.
@@ -108,15 +132,15 @@ Phase 5 (partial) — Checks tab:
   github.js to fetch the run's log content, which it doesn't do
   today).
 
-**Not yet implemented** (Phases 4 / 6):
+**Not yet implemented** (Phase 6):
 
-- Review actions, top-level comment sheet, inline-comment threads
-  (Phase 4 — parallel work).
 - **Background notification fan-out** via `notification.show` is
   deferred. The plugin SDK has no `ctx.showNotification` API yet —
   same pattern as the Phase-0 workspace SDK gap. A follow-up Phase 6
   PR will land the SDK extension and wire the 5-minute background
   poll to it. Per-check log bottom sheet ships in the same Phase 6.
+- Inline-file commenting on the Files tab and reactions are
+  deliberately out of scope for v0.
 
 See the design doc's "Implementation phases" section for the staged
 plan.

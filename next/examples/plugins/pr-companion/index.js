@@ -27,7 +27,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import { createPlugin } from "@openvsmobile/sdk";
+import { createPlugin, ui } from "@openvsmobile/sdk";
 
 import { resolveGhAuth } from "./auth.js";
 import { createGithubClient } from "./github.js";
@@ -35,11 +35,30 @@ import { loadState, saveState } from "./state.js";
 // Phase 2 renderer + event handler.
 import { renderInboxPanel, handleInboxEvent } from "./render/inbox.js";
 // Phase 3 renderer + event handler + polling lifecycle.
+// Phase 4 also pulls in setReviewError / getDetailComment so the
+// review-actions dispatch in this file can mutate the review-error slot
+// and read the cached comment body for reply-prefill without reaching
+// into prDetail.js's module-level state.
 import {
   renderDetailPanel,
   handleDetailEvent,
   stopDetailPolling,
+  setReviewError,
+  getDetailComment,
 } from "./render/prDetail.js";
+// Phase 4 — wire-event constants for the Comment button + reply prefix.
+// Importing the constants instead of re-typing them means a rename in
+// conversationTab.js cannot drift the dispatch silently.
+import { conversationEvents } from "./render/conversationTab.js";
+// Phase 4 — pure helpers shared with render/reviewSheets.test.js.
+// Side-effectful pieces (showActionSheet / showBottomSheet, github POST
+// orchestration) stay inline below.
+import {
+  reviewEvents,
+  reviewSheetHeading,
+  buildReplyQuotePrefill,
+  mapPostError,
+} from "./render/reviewSheets.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -200,6 +219,36 @@ function effectiveScope() {
 // All Phase-3 module-level state lives inside render/prDetail.js
 // (detailState + prDetailCache + detailTimer) — none of it leaks here
 // beyond the cross-phase slots above. Keeps the merge surface minimal.
+
+// ─────────────────────────────────────────────────────────────
+// === Phase 4 (Review actions) state ===
+// ─────────────────────────────────────────────────────────────
+// Single-slot guard so a double-tap on Submit during a slow POST
+// doesn't fire two writes. The bottom sheet has no native loading
+// affordance and the SDK doesn't yet expose a plugin-driven dismissal
+// path (TODO(v1) in @openvsmobile/sdk PluginContext.showBottomSheet),
+// so the user is left to dismiss the sheet themselves on success — the
+// next tap reopens a fresh one. See report (a) for the full UX gap.
+let reviewSubmitPending = false;
+// Body buffer for the open review/comment bottom sheet. Reset whenever
+// a new sheet is opened; updated on every `changed` event from the
+// textfield. Plain string so the submit handler can pass it straight
+// through to github.js.
+let reviewBodyBuffer = "";
+// "Submit context" — what the next Submit tap should do. Picked up from
+// the bottom sheet that opened it; the textfield + submit button live
+// in the sheet's child tree and don't carry per-sheet metadata of their
+// own. Cleared after a successful submit.
+/** @type {{ action: 'approve' | 'request-changes' | 'comment' | 'reply', replyToId?: number } | null} */
+let reviewSubmitContext = null;
+
+// Wire-event constants are imported from render/reviewSheets.js so the
+// test file and the dispatch share one source of truth. Aliased to
+// SCREAMING_CASE locals only where the dispatch reads cleaner with
+// short identifiers; otherwise we reference `reviewEvents.*` directly.
+const NODE_REVIEW_BTN = reviewEvents.REVIEW_BTN_NODE;
+const NODE_REVIEW_BODY_FIELD = reviewEvents.BODY_FIELD_NODE;
+const NODE_REVIEW_SUBMIT_BTN = reviewEvents.SUBMIT_BTN_NODE;
 
 /**
  * Persist `value` as the scope for the active workspace, then save.
@@ -364,6 +413,326 @@ function rebuildGithubClient() {
   }
 }
 
+// ─────────────────────────────────────────────────────────────
+// === Phase 4: Review actions — sheet builders + dispatch ===
+// ─────────────────────────────────────────────────────────────
+// Kept here rather than in render/* because the bottom sheets are
+// imperative (showBottomSheet) and the submit handler needs direct
+// access to githubClient + currentDetailPr + the prDetail re-render
+// entry point. Splitting these into a helper module would force a
+// dependency-injection dance that's heavier than the body itself.
+
+/**
+ * Build the body bottom-sheet (textfield + submit) for any of the four
+ * review/comment actions. Initial textfield value comes from
+ * `reviewBodyBuffer` so the quote-prefill applied at sheet-open time
+ * survives the round-trip into showBottomSheet.
+ *
+ * @param {'approve' | 'request-changes' | 'comment' | 'reply'} action
+ * @param {string | null} replyToAuthor
+ */
+function buildReviewBodySheet(action, replyToAuthor) {
+  const placeholder =
+    action === "approve" || action === "request-changes"
+      ? "Optional summary…"
+      : "Write a comment…";
+  return ui.bottomSheet({
+    id: "prcomp-review-body-sheet",
+    title: reviewSheetHeading(action, replyToAuthor),
+    child: ui.column({
+      id: "prcomp-review-body-col",
+      gap: "md",
+      children: [
+        ui.text({
+          id: "prcomp-review-body-heading",
+          text: reviewSheetHeading(action, replyToAuthor),
+          style: "title",
+        }),
+        ui.textField({
+          id: NODE_REVIEW_BODY_FIELD,
+          label: "Body",
+          // Pass the seeded buffer so the reply quote-prefill survives.
+          // Subsequent keystrokes drive `reviewBodyBuffer` directly via
+          // the `changed` event handler — the value rendered here is
+          // only the initial seed.
+          value: reviewBodyBuffer,
+          placeholder,
+        }),
+        ui.button({
+          id: NODE_REVIEW_SUBMIT_BTN,
+          label: "Submit",
+          style: "primary",
+        }),
+      ],
+    }),
+  });
+}
+
+/**
+ * Open the Review action sheet (Approve / Request changes / Comment
+ * only). User pick lands back as a `detail-review-*` event on the
+ * detail panel, which routes through `handlePhase4ReviewEvent`.
+ *
+ * @param {{ showActionSheet: (panelId: string, sheet: import("@openvsmobile/sdk").UiActionSheet) => Promise<unknown> }} ctx
+ */
+async function openReviewActionSheet(ctx) {
+  await ctx.showActionSheet(DETAIL_PANEL, {
+    id: "prcomp-detail-review-sheet",
+    title: "Review",
+    actions: [
+      { label: "Approve", eventId: reviewEvents.PICK_APPROVE },
+      { label: "Request changes", eventId: reviewEvents.PICK_REQUEST_CHANGES },
+      { label: "Comment only", eventId: reviewEvents.PICK_COMMENT },
+    ],
+  });
+}
+
+/**
+ * Pre-open hook: stash submit context, seed body buffer, then open the
+ * body sheet. `prefillBody` is the quote-block for replies (empty
+ * otherwise); `replyToAuthor` drives the heading text for the reply
+ * case only.
+ *
+ * @param {{ showBottomSheet: (panelId: string, sheet: import("@openvsmobile/sdk").UiBottomSheet) => Promise<unknown> }} ctx
+ * @param {{ action: 'approve' | 'request-changes' | 'comment' | 'reply', replyToId?: number, prefillBody?: string, replyToAuthor?: string | null }} opts
+ */
+async function openReviewBodySheet(ctx, opts) {
+  reviewBodyBuffer = opts.prefillBody ?? "";
+  reviewSubmitContext = {
+    action: opts.action,
+    ...(opts.replyToId !== undefined ? { replyToId: opts.replyToId } : {}),
+  };
+  // Each open clears any stale pending guard from a previous attempt.
+  // The submit handler is the only path that flips `reviewSubmitPending
+  // = true`; if we got back to "user is opening a fresh sheet", any
+  // half-finished prior attempt either resolved or timed out at the
+  // fetch layer (github.js has a 10s timeout).
+  reviewSubmitPending = false;
+  await ctx.showBottomSheet(
+    DETAIL_PANEL,
+    buildReviewBodySheet(opts.action, opts.replyToAuthor ?? null),
+  );
+}
+
+/**
+ * Submit the body buffer against the currently-staged submit context.
+ * Single entry point for all four action POSTs so the pending-guard +
+ * error-mapping + re-fetch flow stays in one place.
+ *
+ * Pending-state UX: the bottom sheet has no host-side spinner and no
+ * plugin-driven dismiss. We guard double-taps with
+ * `reviewSubmitPending`; on success we leave the sheet open (the user
+ * taps outside to close, and a fresh tap on Review/Comment opens a new
+ * sheet with a cleared buffer). See report (a) for the SDK gap.
+ *
+ * @param {{ log: (level: string, msg: string) => void, renderPanel: (panelId: string, tree: unknown) => void }} ctx
+ */
+async function submitReviewBody(ctx) {
+  if (reviewSubmitPending) return true;
+  if (reviewSubmitContext === null) {
+    ctx.log("warn", "prcomp: submit fired without an active review context");
+    return true;
+  }
+  if (githubClient === null) {
+    setReviewError({ kind: "unauthed", action: reviewSubmitContext.action });
+    void renderDetailPanelEntry(ctx);
+    return true;
+  }
+  if (currentDetailPr === null) {
+    ctx.log("warn", "prcomp: submit fired with no PR open");
+    return true;
+  }
+
+  reviewSubmitPending = true;
+  // Clear the prior error so a successful submit doesn't leave a stale
+  // banner up; if THIS submit fails we'll re-set it below.
+  setReviewError(null);
+
+  const ctxRef = reviewSubmitContext;
+  const body = reviewBodyBuffer;
+  const prRef = currentDetailPr;
+  try {
+    /** @type {{ status: string, code?: number }} */
+    let result;
+    if (ctxRef.action === "approve") {
+      result = await githubClient.postReview({
+        owner: prRef.owner,
+        repo: prRef.repo,
+        number: prRef.number,
+        event: "APPROVE",
+        body,
+      });
+    } else if (ctxRef.action === "request-changes") {
+      result = await githubClient.postReview({
+        owner: prRef.owner,
+        repo: prRef.repo,
+        number: prRef.number,
+        event: "REQUEST_CHANGES",
+        body,
+      });
+    } else if (ctxRef.action === "comment") {
+      // Top-level PR comments need a non-empty body — GitHub rejects
+      // empty issue-comment POSTs at the API layer. Surface as a
+      // serverError-style banner without sending the round trip.
+      if (typeof body !== "string" || body.trim().length === 0) {
+        setReviewError({ kind: "serverError", action: "comment", code: 422 });
+        void renderDetailPanelEntry(ctx);
+        return true;
+      }
+      result = await githubClient.postPullComment({
+        owner: prRef.owner,
+        repo: prRef.repo,
+        number: prRef.number,
+        body,
+      });
+    } else {
+      // reply
+      if (typeof body !== "string" || body.trim().length === 0) {
+        setReviewError({ kind: "serverError", action: "reply", code: 422 });
+        void renderDetailPanelEntry(ctx);
+        return true;
+      }
+      if (ctxRef.replyToId === undefined) {
+        ctx.log("warn", "prcomp: reply submit with no replyToId");
+        return true;
+      }
+      result = await githubClient.postPullCommentReply({
+        owner: prRef.owner,
+        repo: prRef.repo,
+        number: prRef.number,
+        replyToId: ctxRef.replyToId,
+        body,
+      });
+    }
+
+    if (result.status === "ok") {
+      // Success path: clear submit context + buffer, kick a re-fetch so
+      // the new review/comment shows up in the Conversation tab. The
+      // sheet stays open (SDK gap — see report (a)); user taps outside
+      // to dismiss.
+      reviewSubmitContext = null;
+      reviewBodyBuffer = "";
+      void renderDetailPanelEntry(ctx);
+      return true;
+    }
+
+    // Failure path: surface a banner that names the failing action.
+    setReviewError({ ...mapPostError(result), action: ctxRef.action });
+    void renderDetailPanelEntry(ctx);
+    return true;
+  } catch (err) {
+    ctx.log(
+      "error",
+      `prcomp: review submit threw: ${err?.message ?? String(err)}`,
+    );
+    setReviewError({ kind: "unknown", action: ctxRef.action });
+    void renderDetailPanelEntry(ctx);
+    return true;
+  } finally {
+    reviewSubmitPending = false;
+  }
+}
+
+/**
+ * Dispatch entry point for every Phase 4 event that lands on the
+ * detail panel id. Returns `true` when handled (so index.js's
+ * onUiEvent can early-return), `false` when the event isn't one of
+ * ours (the warn fall-through then logs it).
+ *
+ * @param {{ log: (level: string, msg: string) => void, renderPanel: (panelId: string, tree: unknown) => void, showActionSheet: (panelId: string, sheet: import("@openvsmobile/sdk").UiActionSheet) => Promise<unknown>, showBottomSheet: (panelId: string, sheet: import("@openvsmobile/sdk").UiBottomSheet) => Promise<unknown> }} ctx
+ * @param {{ type: string, nodeId: string, payload?: unknown }} event
+ */
+async function handlePhase4ReviewEvent(ctx, event) {
+  // Review button on the detail header.
+  if (event.nodeId === NODE_REVIEW_BTN && event.type === "tap") {
+    await openReviewActionSheet(ctx);
+    return true;
+  }
+
+  // Action-sheet picks. Three eventIds all open the same body sheet,
+  // just with different action context.
+  if (event.type === reviewEvents.PICK_APPROVE) {
+    await openReviewBodySheet(ctx, { action: "approve" });
+    return true;
+  }
+  if (event.type === reviewEvents.PICK_REQUEST_CHANGES) {
+    await openReviewBodySheet(ctx, { action: "request-changes" });
+    return true;
+  }
+  if (event.type === reviewEvents.PICK_COMMENT) {
+    await openReviewBodySheet(ctx, { action: "comment" });
+    return true;
+  }
+
+  // Top-level Comment button on the Conversation tab.
+  if (
+    event.nodeId === conversationEvents.COMMENT_BUTTON_NODE &&
+    event.type === "tap"
+  ) {
+    await openReviewBodySheet(ctx, { action: "comment" });
+    return true;
+  }
+
+  // Per-comment reply (swipe action OR row tap, both carry the same
+  // eventId prefix). Look up the cached comment to seed the quote
+  // prefill; if the comment isn't cached (race with PR switch), fall
+  // back to an empty body — the user can still reply, they just don't
+  // get the quote.
+  if (typeof event.type === "string" && event.type.startsWith(conversationEvents.REPLY_PREFIX)) {
+    const idStr = event.type.slice(conversationEvents.REPLY_PREFIX.length);
+    const commentId = Number(idStr);
+    if (!Number.isInteger(commentId) || commentId <= 0) {
+      ctx.log("warn", `prcomp: bad reply comment id ${idStr}`);
+      return true;
+    }
+    const comment = getDetailComment(currentDetailPr, commentId);
+    if (comment === null) {
+      // No cached comment — open a bare reply sheet so the user can
+      // still type. The original-author heading degrades to "Reply to
+      // comment".
+      await openReviewBodySheet(ctx, {
+        action: "reply",
+        replyToId: commentId,
+        prefillBody: "",
+        replyToAuthor: null,
+      });
+      return true;
+    }
+    await openReviewBodySheet(ctx, {
+      action: "reply",
+      replyToId: commentId,
+      prefillBody: buildReplyQuotePrefill(comment),
+      replyToAuthor: comment.user.login,
+    });
+    return true;
+  }
+
+  // TextField content changes — keep the body buffer in sync without
+  // re-rendering on every keystroke (the bottom sheet's textfield owns
+  // its own native focus/value state across renders).
+  if (event.nodeId === NODE_REVIEW_BODY_FIELD && event.type === "changed") {
+    const payload = /** @type {{ value?: unknown } | null | undefined} */ (event.payload);
+    const value = payload !== null && payload !== undefined ? payload.value : undefined;
+    reviewBodyBuffer = typeof value === "string" ? value : "";
+    return true;
+  }
+
+  // Submit button.
+  if (event.nodeId === NODE_REVIEW_SUBMIT_BTN && event.type === "tap") {
+    return submitReviewBody(ctx);
+  }
+
+  return false;
+}
+
+// No `__testing` export from this module: importing index.js at test
+// time would run `plugin.run()` at the bottom, which wires
+// `process.stdin` listeners and tries to bring up the SDK runtime.
+// Phase 4's testable pure helpers live in render/reviewSheets.js
+// (event constants + reply-prefill + error mapping); the dispatch
+// orchestration above is integration-only and exercised end-to-end by
+// the plugin-host smoke tests once those cover Phase 4.
+
 const plugin = createPlugin({
   async onActivate(ctx) {
     currentCtx = ctx;
@@ -493,6 +862,18 @@ const plugin = createPlugin({
         github: githubClient,
       });
       if (handled === true) return;
+
+      // === Phase 4: Review actions ===
+      // Placed inside the Phase 3 panel block so the Phase 5 worker's
+      // detail-side additions (Checks tab events) land cleanly above or
+      // below this section without touching the dispatch we own. All
+      // Phase 4 events ride the detail panel id because the bottom-
+      // sheets we open also carry DETAIL_PANEL (host routes the
+      // resulting onUiEvent back to the same panel id we passed to
+      // showBottomSheet).
+      const phase4Handled = await handlePhase4ReviewEvent(ctx, event);
+      if (phase4Handled === true) return;
+      // === end Phase 4: Review actions ===
     }
 
     // Fall-through: log unknown events so the wire path is observable

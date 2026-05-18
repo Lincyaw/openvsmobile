@@ -82,6 +82,15 @@ function makeDetailState() {
     /** @type {Array<{ id: number, name: string, status: string, conclusion: string | null, startedAt: string | null, completedAt: string | null }> | null} */
     checkRuns: null,
     // === end Phase 5 additions ===
+    // === Phase 4 additions ===
+    // Slot for review/comment POST failures. Distinct from `error` (which
+    // tracks fetch failures from the 30s poll) so a transient write
+    // failure doesn't get masked by a successful subsequent read, and a
+    // stuck read failure doesn't pretend the write also failed. Banner
+    // sits above the fetch-error banner; cleared by setReviewError(null)
+    // on retry or successful POST.
+    /** @type {{ kind: string, action?: string, code?: number } | null} */
+    reviewError: null,
   };
 }
 
@@ -278,8 +287,23 @@ function buildHeader(currentPr, pr) {
           }),
         ],
       }),
-      // NOTE: no review-button row here — Phase 4 will insert it. Leaving
-      // the slot absent keeps Phase 4's diff small.
+      // --- Phase 4: Review button row ---
+      // Single primary button; tapping fires `{type:'tap', nodeId:
+      // 'prcomp-detail-review-btn'}` (UiButton has no onTapEvent slot —
+      // dispatch is by node id, matching the inbox scope-switch pattern).
+      // index.js's Phase-4 dispatch opens an action sheet from here.
+      ui.row({
+        id: "prcomp-detail-header-actions",
+        gap: "sm",
+        children: [
+          ui.button({
+            id: "prcomp-detail-review-btn",
+            label: "Review…",
+            style: "primary",
+          }),
+        ],
+      }),
+      // --- end Phase 4: Review button row ---
     ],
   });
 }
@@ -366,6 +390,14 @@ export function buildDetailPanelTree(currentPr, state, data) {
 
   /** @type {import("@openvsmobile/sdk").UiNode[]} */
   const children = [];
+
+  // === Phase 4 additions ===
+  // Review/comment POST error banner sits above the fetch-error banner
+  // so a write failure is the first thing the user sees on their next
+  // render. Self-dismisses on the next successful POST (or on a retry).
+  const reviewBanner = buildReviewErrorBanner(state.reviewError);
+  if (reviewBanner !== null) children.push(reviewBanner);
+  // === end Phase 4 additions ===
 
   const banner = buildBanner(state.error);
   if (banner !== null) children.push(banner);
@@ -891,6 +923,101 @@ export function handleDetailEvent(ctx, event, deps) {
   return false;
 }
 
+// === Phase 4 additions ===
+// Cross-phase setters/getters for index.js's review-action dispatch.
+// Kept here (rather than threaded through renderDetailPanel deps) so the
+// dispatch can mutate panel state without having to know which slot of
+// `detailState` is which — index.js calls setReviewError and trusts the
+// next render to surface it.
+
+/**
+ * Set or clear the review/comment POST-error slot. Pass `null` to
+ * dismiss the banner; pass `{ kind, action?, code? }` where `kind`
+ * mirrors github.js's error union ("unauthed" | "offline" |
+ * "rateLimited" | "serverError" | "unknown") and `action` is one of
+ * "approve" | "request-changes" | "comment" | "reply" so the banner
+ * can name the failing operation.
+ *
+ * @param {{ kind: string, action?: string, code?: number } | null} err
+ */
+export function setReviewError(err) {
+  detailState.reviewError = err;
+}
+
+/**
+ * Look up a single cached comment for the currently-open PR by id. Used
+ * by index.js's reply-prefill path so the handler can quote the
+ * original author/body without re-fetching. Returns `null` when the PR
+ * isn't cached or the id isn't found.
+ *
+ * @param {{ owner: string, repo: string, number: number } | null} currentPr
+ * @param {number} commentId
+ * @returns {{ id: number, user: { login: string, avatarUrl: string }, body: string } | null}
+ */
+export function getDetailComment(currentPr, commentId) {
+  if (currentPr === null) return null;
+  const entry = prDetailCache.get(cacheKey(currentPr));
+  if (entry === undefined) return null;
+  const comments = /** @type {Array<{ id: number, user: { login: string, avatarUrl: string }, body: string }> | null} */ (entry.comments);
+  if (comments === null || comments === undefined) return null;
+  const found = comments.find((c) => c.id === commentId);
+  return found ?? null;
+}
+
+/**
+ * Banner factory for the review-error slot. Separate from `buildBanner`
+ * (which classifies fetch errors) because the review-error context
+ * names the failing action ("Approve failed", "Comment failed", …) and
+ * uses slightly different copy.
+ *
+ * @param {{ kind: string, action?: string, code?: number } | null} err
+ */
+function buildReviewErrorBanner(err) {
+  if (err === null) return null;
+  const verb = (() => {
+    switch (err.action) {
+      case "approve":
+        return "Approve";
+      case "request-changes":
+        return "Request changes";
+      case "comment":
+        return "Comment";
+      case "reply":
+        return "Reply";
+      default:
+        return "Review";
+    }
+  })();
+  let body;
+  switch (err.kind) {
+    case "unauthed":
+      body = "GitHub rejected the token. Re-auth via `gh auth login`.";
+      break;
+    case "offline":
+      body = "Network unreachable. Retry when back online.";
+      break;
+    case "rateLimited":
+      body = "Rate-limited by GitHub. Wait a few minutes and try again.";
+      break;
+    case "serverError":
+      body =
+        typeof err.code === "number"
+          ? `GitHub returned HTTP ${err.code}.`
+          : "GitHub returned an error.";
+      break;
+    default:
+      body = "Unknown failure. Check the host log.";
+      break;
+  }
+  return ui.banner({
+    id: "prcomp-detail-review-error",
+    title: `${verb} failed`,
+    body,
+    accent: "danger",
+  });
+}
+// === end Phase 4 additions ===
+
 // Exposed for tests / cross-phase introspection. Not part of the public
 // plugin contract.
 export const __testing = {
@@ -898,4 +1025,8 @@ export const __testing = {
   resetDetailState,
   getCache: () => prDetailCache,
   buildDetailPanelTree,
+  // Phase 4 — tests reach in to seed/inspect the review-error slot and
+  // the reply-prefill cache lookup without going through index.js.
+  setReviewError,
+  getDetailComment,
 };
