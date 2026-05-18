@@ -101,13 +101,6 @@ let currentAuth = null;
 let currentWorkspace = null;
 let currentRepo = null;
 
-// Latest ctx captured at the top of every lifecycle hook — used by
-// off-cycle save / log paths (e.g. saveState invocations triggered
-// from a setInterval tick).
-let currentCtx = /** @type {import("@openvsmobile/sdk").PluginContext | null} */ (
-  null
-);
-
 // ─────────────────────────────────────────────────────────────
 // === Cross-phase: shared state ===
 // ─────────────────────────────────────────────────────────────
@@ -121,6 +114,13 @@ let currentDetailPr = null;
 // ─────────────────────────────────────────────────────────────
 // === Phase 2 (Inbox) state ===
 // ─────────────────────────────────────────────────────────────
+
+// Latest ctx captured at the top of every lifecycle hook — used by
+// off-cycle save / log paths (e.g. saveState invocations triggered
+// from a setInterval tick).
+let currentCtx = /** @type {import("@openvsmobile/sdk").PluginContext | null} */ (
+  null
+);
 
 // Persisted across plugin restarts; loaded once in onActivate.
 let persistedState = {
@@ -147,6 +147,12 @@ let githubClient = /** @type {ReturnType<typeof createGithubClient> | null} */ (
 );
 /** @type {NodeJS.Timeout | null} */
 let inboxTimer = null;
+// Single-slot in-flight guard. A workspace switch can fire a manual
+// pollInbox while the 60s interval is mid-flight; without this guard
+// the slow-then-fast race overwrites fresher state (and the etag) with
+// stale data. Skipping the second call is correct here — the existing
+// fetch will finish and update inboxState; the next 60s tick re-polls.
+let pollInFlight = false;
 
 /**
  * Resolve the scope value for the active workspace. Defaults to
@@ -192,55 +198,68 @@ async function addDismissedId(id) {
 
 /**
  * Poll the GitHub Notifications API and update inboxState in place.
- * Caller is expected to `render(ctx)` after — pollInbox does not
- * re-render so the dispatcher gets to batch consecutive state changes
- * (scope-pick → poll → render, rather than scope-pick → render →
- * poll → render).
+ * Returns `true` when something visible changed (so the caller should
+ * re-render), `false` when the call was a pure 304 with no banner
+ * transition (re-rendering would be wasted reconciler work).
  *
- * Tolerates a null client (auth.status !== "ok"): no-op so the panel
- * keeps showing the auth banner.
+ * Tolerates a null client (auth.status !== "ok"): no-op returns false.
+ * Concurrent calls are coalesced: a second invocation while one is in
+ * flight returns false immediately — the in-flight call's completion
+ * will trigger a render on its own.
  *
  * @param {{ log: (level: string, msg: string) => void }} ctx
+ * @returns {Promise<boolean>}
  */
 async function pollInbox(ctx) {
-  if (githubClient === null) return;
-  const result = await githubClient.listNotifications({
-    participating: true,
-    sinceETag: inboxState.etag ?? undefined,
-    sinceLastModified: inboxState.lastModified ?? undefined,
-  });
-  if (result.status === "ok") {
-    inboxState.notifications = result.items;
-    inboxState.etag = result.etag ?? null;
-    inboxState.lastModified = result.lastModified ?? null;
-    inboxState.error = null;
-    inboxState.lastRefreshIso = new Date().toISOString();
-    return;
+  if (githubClient === null) return false;
+  if (pollInFlight) return false;
+  pollInFlight = true;
+  try {
+    const hadError = inboxState.error !== null;
+    const result = await githubClient.listNotifications({
+      participating: true,
+      sinceETag: inboxState.etag ?? undefined,
+      sinceLastModified: inboxState.lastModified ?? undefined,
+    });
+    if (result.status === "ok") {
+      inboxState.notifications = result.items;
+      inboxState.etag = result.etag ?? null;
+      inboxState.lastModified = result.lastModified ?? null;
+      inboxState.error = null;
+      inboxState.lastRefreshIso = new Date().toISOString();
+      return true;
+    }
+    if (result.status === "notModified") {
+      // 304 keeps the existing list; refresh the validators in case
+      // the server rotated them, and clear any transient error
+      // banner. Only flag changed when a banner just disappeared —
+      // the "Last refreshed Xs ago" caption is empty-state-only and
+      // staleness there is acceptable.
+      inboxState.etag = result.etag ?? inboxState.etag;
+      inboxState.error = null;
+      inboxState.lastRefreshIso = new Date().toISOString();
+      return hadError;
+    }
+    // All other branches map onto inboxBanner kinds in render/inbox.js.
+    if (result.status === "unauthed") {
+      inboxState.error = { kind: "unauthed" };
+    } else if (result.status === "rateLimited") {
+      inboxState.error = { kind: "rateLimited", resetAt: result.resetAt };
+    } else if (result.status === "offline") {
+      inboxState.error = { kind: "offline", error: result.error };
+    } else if (result.status === "serverError") {
+      inboxState.error = { kind: "serverError", code: result.code };
+    } else {
+      inboxState.error = { kind: "serverError", code: 0 };
+    }
+    ctx.log(
+      "warn",
+      `prcomp: notifications poll returned ${result.status}`,
+    );
+    return true;
+  } finally {
+    pollInFlight = false;
   }
-  if (result.status === "notModified") {
-    // 304 keeps the existing list; refresh the validators in case the
-    // server rotated them, and clear any transient error banner.
-    inboxState.etag = result.etag ?? inboxState.etag;
-    inboxState.error = null;
-    inboxState.lastRefreshIso = new Date().toISOString();
-    return;
-  }
-  // All other branches map onto inboxBanner kinds in render/inbox.js.
-  if (result.status === "unauthed") {
-    inboxState.error = { kind: "unauthed" };
-  } else if (result.status === "rateLimited") {
-    inboxState.error = { kind: "rateLimited", resetAt: result.resetAt };
-  } else if (result.status === "offline") {
-    inboxState.error = { kind: "offline", error: result.error };
-  } else if (result.status === "serverError") {
-    inboxState.error = { kind: "serverError", code: result.code };
-  } else {
-    inboxState.error = { kind: "serverError", code: 0 };
-  }
-  ctx.log(
-    "warn",
-    `prcomp: notifications poll returned ${result.status}`,
-  );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -337,7 +356,9 @@ const plugin = createPlugin({
       // pollInbox before first paint) holds the user behind a blank
       // panel for the full HTTP round trip.
       pollInbox(ctx)
-        .then(() => render(ctx))
+        .then((changed) => {
+          if (changed) render(ctx);
+        })
         .catch((err) => {
           ctx.log(
             "error",
@@ -350,7 +371,9 @@ const plugin = createPlugin({
       // production.
       inboxTimer = setInterval(() => {
         pollInbox(ctx)
-          .then(() => render(ctx))
+          .then((changed) => {
+            if (changed) render(ctx);
+          })
           .catch((err) => {
             ctx.log(
               "error",
@@ -379,7 +402,9 @@ const plugin = createPlugin({
     // notification list is unchanged.
     if (githubClient !== null) {
       pollInbox(ctx)
-        .then(() => render(ctx))
+        .then((changed) => {
+          if (changed) render(ctx);
+        })
         .catch((err) => {
           ctx.log(
             "error",

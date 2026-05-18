@@ -22,6 +22,9 @@ import { ui } from "@openvsmobile/sdk";
 // shape. Matches the convention the design doc spells out under "Tap a
 // row → push PR detail panel".
 const EVENT_TAB_CHANGED = "inbox-tab-changed";
+// Buttons fire a hardcoded `{type:'tap', nodeId:<id>}` event — the
+// SDK's `ui.button` has no `onTapEvent` field. We dispatch on node id.
+const NODE_SCOPE_SWITCH_BTN = "prcomp-inbox-scope-switch-btn";
 const EVENT_SCOPE_OPEN_SHEET = "inbox-scope-open-sheet";
 const EVENT_SCOPE_PICKED_PREFIX = "inbox-scope-picked:";
 const EVENT_PR_TAPPED_PREFIX = "inbox-pr-tapped:";
@@ -316,7 +319,7 @@ function scopeRow({ scope, repo }) {
     // toggle is forced to All-repos and there's nothing to switch to.
     children.push(
       ui.button({
-        id: "prcomp-inbox-scope-switch-btn",
+        id: NODE_SCOPE_SWITCH_BTN,
         label: "Switch scope…",
         style: "secondary",
       }),
@@ -506,7 +509,7 @@ export function renderInboxPanel(_ctx, opts) {
  *   getDismissedIds: () => Set<string>,
  *   addDismissedId: (id: string) => Promise<void>,
  *   openPrDetail: (ref: { owner: string, repo: string, number: number }) => void,
- *   pollInbox: () => Promise<void>,
+ *   pollInbox: () => Promise<boolean>,
  *   rerender: () => void,
  * }} deps
  */
@@ -520,7 +523,13 @@ export async function handleInboxEvent(ctx, event, deps) {
     return;
   }
 
-  if (event.type === EVENT_SCOPE_OPEN_SHEET) {
+  // Scope-switch button: button widgets fire `{type:'tap', nodeId}`.
+  // We accept either the dispatch via node id (real button path) OR the
+  // synthetic EVENT_SCOPE_OPEN_SHEET for direct test injection.
+  if (
+    (event.type === "tap" && event.nodeId === NODE_SCOPE_SWITCH_BTN) ||
+    event.type === EVENT_SCOPE_OPEN_SHEET
+  ) {
     const repo = deps.getRepo();
     /** @type {import("@openvsmobile/sdk").UiActionSheetAction[]} */
     const actions = [];
@@ -553,8 +562,10 @@ export async function handleInboxEvent(ctx, event, deps) {
     // Trigger a refetch — the visible set is shrinking or growing, so
     // the user sees instant feedback even though the underlying data
     // is the same notifications list (the fetch is essentially free
-    // thanks to ETag → 304).
-    await deps.pollInbox();
+    // thanks to ETag → 304). Re-render only if pollInbox surfaced new
+    // data or a banner transition; 304 with no error change is silent.
+    const changed = await deps.pollInbox();
+    if (changed) deps.rerender();
     return;
   }
 

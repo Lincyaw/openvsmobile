@@ -336,6 +336,23 @@ describe("handleInboxEvent", () => {
     expect(sheet.actions[0].label).toContain("Just this repo");
   });
 
+  it("scope-switch button tap (real UI path) reaches showActionSheet", async () => {
+    // Buttons fire {type:'tap', nodeId} — the handler must route on
+    // the node id, not on a synthetic 'inbox-scope-open-sheet' string.
+    const ctx = fakeCtx();
+    const deps = makeDeps();
+    await handleInboxEvent(
+      ctx,
+      {
+        panelId: "inbox",
+        nodeId: "prcomp-inbox-scope-switch-btn",
+        type: "tap",
+      },
+      deps,
+    );
+    expect(ctx.showActionSheet).toHaveBeenCalledTimes(1);
+  });
+
   it("scope-open-sheet hides 'Just this repo' when repo is null", async () => {
     const ctx = fakeCtx();
     const deps = makeDeps({ getRepo: () => null });
