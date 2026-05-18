@@ -1,33 +1,25 @@
-// PR Companion — Phase 1 skeleton.
+// PR Companion — Phase 2 (Inbox).
 //
-// What this slice ships:
-//   * Two registered panels (`inbox` + `detail`) per the resolved design
-//     (single fixed detail panel + in-plugin nav — see design doc §
-//     "Resolved design choices" #2).
-//   * `gh auth token` resolution on every activation, plus a single
-//     `/user` call to surface the authenticated login in the placeholder.
-//     The token is held only in auth.js's return value and in the
-//     module-scoped `currentAuth` object below; it is never read,
-//     logged, persisted, or serialized into the widget tree. Phase 2's
-//     github.js will receive it explicitly when it lands.
-//   * Workspace detection: on activation and on every
-//     `onWorkspaceActivated` callback we run `git remote get-url origin`
-//     inside the workspace root and parse the result against the
-//     SSH-or-HTTPS GitHub remote regex. The parse result is cached by
-//     workspace id and invalidated when the user switches workspaces.
+// Phase 1 (skeleton + auth + workspace detection) and Phase 2 (this
+// slice — GitHub Notifications fetch with ETag, three-tab filter, scope
+// chip + switcher, swipe-to-dismiss with persistence) coexist in this
+// file. Phase 3 (PR detail) is implemented in `render/prDetail.js` by a
+// parallel worker; the partition between phases here uses explicit
+// section markers so the merge is mechanical.
 //
-// What is intentionally NOT in this slice (see design doc "Implementation
-// phases" — Phase 2-5):
-//   * Any GitHub call beyond `/user`. No /notifications, no PR fetches.
-//   * Scope chip / scope switcher action sheet.
-//   * Swipe-to-dismiss, persistence, undo.
-//   * PR detail rendering (the detail panel is a stub).
-//   * Review actions, comment sheets, checks tab.
-//   * Background polling, notification fan-out.
+// What this file owns:
+//   * Module-level state for inbox + cross-phase navigation target.
+//   * `onActivate` / `onWorkspaceActivated` / `onUiEvent` wiring.
+//   * The `pollInbox` ETag-polling loop (60s foreground cadence).
+//   * Dispatching inbox UI events through `handleInboxEvent`.
 //
-// File-layout note (design doc §"File layout"): this plugin will grow to
-// include github.js / state.js / render/* in later phases. Phase 1
-// keeps the directory to the four files required for a runnable shell.
+// What this file does NOT own:
+//   * Inbox widget-tree construction or filter logic — see
+//     `render/inbox.js`.
+//   * PR-detail rendering — see `render/prDetail.js` (Phase 3 module;
+//     exists after Phase 3 merges).
+//   * Persistence helpers — see `state.js`.
+//   * GitHub HTTP client — see `github.js`.
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -35,13 +27,19 @@ import { promisify } from "node:util";
 import { createPlugin, ui } from "@openvsmobile/sdk";
 
 import { resolveGhAuth } from "./auth.js";
+import { createGithubClient } from "./github.js";
+import { loadState, saveState } from "./state.js";
+// Phase 2 renderer + event handler.
+import { renderInboxPanel, handleInboxEvent } from "./render/inbox.js";
 
 const execFileAsync = promisify(execFile);
 
 const INBOX_PANEL = "inbox";
 const DETAIL_PANEL = "detail";
+const USER_AGENT = "openvsmobile-pr-companion/0.1";
 
 const GIT_TIMEOUT_MS = 5000;
+const INBOX_POLL_INTERVAL_MS = 60_000;
 
 // Regex per design doc § "Workspace model": SSH (`git@github.com:o/r`)
 // and HTTPS (`https://github.com/o/r[.git]`) forms only. Anything else
@@ -103,124 +101,198 @@ let currentAuth = null;
 let currentWorkspace = null;
 let currentRepo = null;
 
-function authBanner(auth) {
-  if (auth.status === "missing") {
-    return ui.section({
-      id: "prcomp-auth-missing",
-      children: [
-        ui.banner({
-          id: "prcomp-auth-missing-banner",
-          title: "GitHub CLI not installed",
-          body: "PR Companion uses the gh CLI to obtain a GitHub token. Install it on the host where the openvsmobile backend runs.",
-          accent: "danger",
-        }),
-        ui.codeBlock({
-          id: "prcomp-auth-missing-hint",
-          code: [
-            "# macOS",
-            "brew install gh",
-            "",
-            "# Debian / Ubuntu",
-            "sudo apt install gh",
-            "",
-            "# Arch",
-            "sudo pacman -S github-cli",
-          ].join("\n"),
-          language: "sh",
-        }),
-      ],
-    });
-  }
-  if (auth.status === "unauthed" || auth.status === "tokenInvalid") {
-    const title =
-      auth.status === "tokenInvalid"
-        ? "GitHub rejected your token"
-        : "GitHub CLI is not signed in";
-    return ui.section({
-      id: "prcomp-auth-unauthed",
-      children: [
-        ui.banner({
-          id: "prcomp-auth-unauthed-banner",
-          title,
-          body: "Run gh auth login in the terminal to (re)authenticate. The plugin re-reads the token on every activation.",
-          accent: "danger",
-        }),
-        ui.codeBlock({
-          id: "prcomp-auth-unauthed-hint",
-          code: "gh auth login",
-          language: "sh",
-        }),
-      ],
-    });
-  }
-  if (auth.status === "offline") {
-    return ui.banner({
-      id: "prcomp-auth-offline-banner",
-      title: "GitHub unreachable",
-      body: "Retrying on next activation.",
-      accent: "info",
-    });
-  }
-  return null;
+// Latest ctx captured at the top of every lifecycle hook — used by
+// off-cycle save / log paths (e.g. saveState invocations triggered
+// from a setInterval tick).
+let currentCtx = /** @type {import("@openvsmobile/sdk").PluginContext | null} */ (
+  null
+);
+
+// ─────────────────────────────────────────────────────────────
+// === Cross-phase: shared state ===
+// ─────────────────────────────────────────────────────────────
+// Read by Phase 2's row-tap handler, read+written by Phase 3's detail
+// renderer. Lives OUTSIDE the per-phase blocks so the Phase 3 merge can
+// reference it without shuffling code.
+
+/** @type {{ owner: string, repo: string, number: number } | null} */
+let currentDetailPr = null;
+
+// ─────────────────────────────────────────────────────────────
+// === Phase 2 (Inbox) state ===
+// ─────────────────────────────────────────────────────────────
+
+// Persisted across plugin restarts; loaded once in onActivate.
+let persistedState = {
+  dismissedIds: /** @type {string[]} */ ([]),
+  lastSeenAt: /** @type {string | null} */ (null),
+  scopeByWorkspace: /** @type {Record<string, "thisRepo" | "allRepos">} */ ({}),
+};
+let dismissedSet = /** @type {Set<string>} */ (new Set());
+
+// Mutable in-memory inbox slot. `notifications` is the most-recent
+// successful fetch; subsequent 304s leave it intact so the user keeps
+// seeing the last good list across transient outages.
+const inboxState = {
+  activeTab: /** @type {"review" | "mentioned" | "assigned"} */ ("review"),
+  notifications: /** @type {import("./render/inbox.js").Notification[]} */ ([]),
+  etag: /** @type {string | null} */ (null),
+  lastModified: /** @type {string | null} */ (null),
+  error: /** @type {{ kind: string, [k: string]: unknown } | null} */ (null),
+  lastRefreshIso: /** @type {string | null} */ (null),
+};
+
+let githubClient = /** @type {ReturnType<typeof createGithubClient> | null} */ (
+  null
+);
+/** @type {NodeJS.Timeout | null} */
+let inboxTimer = null;
+
+/**
+ * Resolve the scope value for the active workspace. Defaults to
+ * `"thisRepo"` when the workspace maps to a GitHub repo, otherwise
+ * forced to `"allRepos"`. Persisted override takes priority when
+ * present.
+ *
+ * @returns {"thisRepo" | "allRepos"}
+ */
+function effectiveScope() {
+  if (currentRepo === null) return "allRepos";
+  if (currentWorkspace === null) return "allRepos";
+  const persisted = persistedState.scopeByWorkspace[currentWorkspace.id];
+  if (persisted === "thisRepo" || persisted === "allRepos") return persisted;
+  return "thisRepo";
 }
 
-function buildInboxTree() {
-  // Auth-failure paths short-circuit the rest of the panel — until we
-  // have a known login + token, there is no useful inbox content to
-  // render. Wrapping the banner in a single-child column keeps the root
-  // shape identical regardless of which branch fired.
-  if (currentAuth === null || currentAuth.status !== "ok") {
-    // onActivate awaits resolveGhAuth() before calling render(), so in
-    // normal flow currentAuth is never null here. The fallback exists
-    // only so this builder is safely callable from a future call site
-    // (e.g. a manual re-render before activation completes).
-    const banner = authBanner(currentAuth ?? { status: "offline", error: new Error("auth not resolved") });
-    return ui.column({
-      id: "prcomp-inbox-root",
-      gap: "md",
-      children: banner !== null ? [banner] : [],
-    });
-  }
+/**
+ * Persist `value` as the scope for the active workspace, then save.
+ * No-op when there's no workspace to key on.
+ *
+ * @param {"thisRepo" | "allRepos"} value
+ */
+async function setScopeForCurrent(value) {
+  if (currentWorkspace === null) return;
+  persistedState.scopeByWorkspace[currentWorkspace.id] = value;
+  await saveState(persistedState, currentCtx ?? undefined);
+}
 
-  const login = currentAuth.user.login;
+/**
+ * Append `id` to the persisted dismissed list (and the in-memory Set
+ * used for fast filter lookups), then save. Idempotent — adding an id
+ * that's already dismissed is a no-op write.
+ *
+ * @param {string} id
+ */
+async function addDismissedId(id) {
+  if (dismissedSet.has(id)) return;
+  dismissedSet.add(id);
+  persistedState.dismissedIds.push(id);
+  await saveState(persistedState, currentCtx ?? undefined);
+}
 
-  // Three success-shaped sub-branches, each a single Text row per the
-  // Phase-1 placeholder contract. Resist any urge to add extra
-  // affordances here — Phase 2 owns the inbox UI in full.
-  let greeting;
-  if (currentWorkspace === null) {
-    greeting = `Hello, @${login} — no workspace active`;
-  } else if (currentRepo !== null) {
-    greeting = `Hello, @${login} — workspace: ${currentRepo.owner}/${currentRepo.repo}`;
-  } else {
-    greeting = `Hello, @${login} — workspace: ${currentWorkspace.label} (not a GitHub repo; will show all repos in Phase 2)`;
-  }
-
-  return ui.column({
-    id: "prcomp-inbox-root",
-    gap: "md",
-    children: [
-      ui.text({ id: "prcomp-inbox-greeting", text: greeting }),
-    ],
+/**
+ * Poll the GitHub Notifications API and update inboxState in place.
+ * Caller is expected to `render(ctx)` after — pollInbox does not
+ * re-render so the dispatcher gets to batch consecutive state changes
+ * (scope-pick → poll → render, rather than scope-pick → render →
+ * poll → render).
+ *
+ * Tolerates a null client (auth.status !== "ok"): no-op so the panel
+ * keeps showing the auth banner.
+ *
+ * @param {{ log: (level: string, msg: string) => void }} ctx
+ */
+async function pollInbox(ctx) {
+  if (githubClient === null) return;
+  const result = await githubClient.listNotifications({
+    participating: true,
+    sinceETag: inboxState.etag ?? undefined,
+    sinceLastModified: inboxState.lastModified ?? undefined,
   });
+  if (result.status === "ok") {
+    inboxState.notifications = result.items;
+    inboxState.etag = result.etag ?? null;
+    inboxState.lastModified = result.lastModified ?? null;
+    inboxState.error = null;
+    inboxState.lastRefreshIso = new Date().toISOString();
+    return;
+  }
+  if (result.status === "notModified") {
+    // 304 keeps the existing list; refresh the validators in case the
+    // server rotated them, and clear any transient error banner.
+    inboxState.etag = result.etag ?? inboxState.etag;
+    inboxState.error = null;
+    inboxState.lastRefreshIso = new Date().toISOString();
+    return;
+  }
+  // All other branches map onto inboxBanner kinds in render/inbox.js.
+  if (result.status === "unauthed") {
+    inboxState.error = { kind: "unauthed" };
+  } else if (result.status === "rateLimited") {
+    inboxState.error = { kind: "rateLimited", resetAt: result.resetAt };
+  } else if (result.status === "offline") {
+    inboxState.error = { kind: "offline", error: result.error };
+  } else if (result.status === "serverError") {
+    inboxState.error = { kind: "serverError", code: result.code };
+  } else {
+    inboxState.error = { kind: "serverError", code: 0 };
+  }
+  ctx.log(
+    "warn",
+    `prcomp: notifications poll returned ${result.status}`,
+  );
 }
+
+// ─────────────────────────────────────────────────────────────
+// === Phase 3 (Detail) state ===
+// ─────────────────────────────────────────────────────────────
+// (Phase 3 owns this section; Phase 2 leaves it absent.)
 
 function buildDetailTree() {
+  // Phase-2-only placeholder. Phase 3 replaces this builder with the
+  // real conversation/files/checks tree driven by `currentDetailPr`.
+  // Until then we paint a friendly note so the panel slot isn't
+  // visually empty.
+  const text =
+    currentDetailPr === null
+      ? "Open a PR from the Inbox tab. (Phase 3)"
+      : `Selected PR: ${currentDetailPr.owner}/${currentDetailPr.repo} #${currentDetailPr.number}. Detail UI lands in Phase 3.`;
   return ui.section({
     id: "prcomp-detail-section",
     title: "PR Detail",
     children: [
-      ui.text({
-        id: "prcomp-detail-placeholder",
-        text: "Open a PR from the Inbox tab. (Phase 3)",
-      }),
+      ui.text({ id: "prcomp-detail-placeholder", text }),
     ],
   });
 }
 
-function render(ctx) {
-  ctx.renderPanel(INBOX_PANEL, buildInboxTree());
+/**
+ * Cross-phase entry point: Phase 2's row-tap handler invokes this
+ * after setting `currentDetailPr`. Phase 3 reshapes the body inside
+ * `buildDetailTree`; the call site here stays unchanged.
+ *
+ * @param {import("@openvsmobile/sdk").PluginContext} ctx
+ */
+function renderDetailPanel(ctx) {
   ctx.renderPanel(DETAIL_PANEL, buildDetailTree());
+}
+
+function render(ctx) {
+  ctx.renderPanel(
+    INBOX_PANEL,
+    renderInboxPanel(ctx, {
+      auth: currentAuth ?? { status: "offline" },
+      workspace: currentWorkspace,
+      repo: currentRepo,
+      scope: effectiveScope(),
+      tab: inboxState.activeTab,
+      notifications: inboxState.notifications,
+      dismissedIds: dismissedSet,
+      error: inboxState.error,
+      lastRefreshIso: inboxState.lastRefreshIso,
+    }),
+  );
+  renderDetailPanel(ctx);
 }
 
 async function hydrateWorkspace(workspace) {
@@ -240,17 +312,59 @@ async function hydrateWorkspace(workspace) {
 
 const plugin = createPlugin({
   async onActivate(ctx) {
+    currentCtx = ctx;
     // Order: workspace first (so a slow git spawn doesn't block the
-    // first paint behind /user latency), then auth, then render. The
-    // first render only happens after both are resolved — there is no
-    // useful interim state (no login, no workspace label) worth
+    // first paint behind /user latency), then auth, then state load,
+    // then first render. The first render only happens after all
+    // three are resolved — there is no useful interim state worth
     // painting before then.
     const workspace = await ctx.currentWorkspace();
     await hydrateWorkspace(workspace);
     currentAuth = await resolveGhAuth();
+
+    // === Phase 2: persisted-state load + client instantiation ===
+    persistedState = await loadState(ctx);
+    dismissedSet = new Set(persistedState.dismissedIds);
+    if (currentAuth !== null && currentAuth.status === "ok") {
+      githubClient = createGithubClient({
+        token: currentAuth.token,
+        userAgent: USER_AGENT,
+      });
+      // First poll runs concurrently with the initial paint — the
+      // paint reflects the empty list + the "no PRs" empty state, then
+      // the next render after the fetch fills it in. Acceptable
+      // because the empty state is brief and the alternative (await
+      // pollInbox before first paint) holds the user behind a blank
+      // panel for the full HTTP round trip.
+      pollInbox(ctx)
+        .then(() => render(ctx))
+        .catch((err) => {
+          ctx.log(
+            "error",
+            `prcomp: initial poll threw: ${err?.message ?? String(err)}`,
+          );
+        });
+      // 60s foreground cadence. The unref() lets the process exit if
+      // every other handle has drained (e.g. tests); the host's
+      // long-lived stdin listener keeps the process alive in
+      // production.
+      inboxTimer = setInterval(() => {
+        pollInbox(ctx)
+          .then(() => render(ctx))
+          .catch((err) => {
+            ctx.log(
+              "error",
+              `prcomp: inbox poll threw: ${err?.message ?? String(err)}`,
+            );
+          });
+      }, INBOX_POLL_INTERVAL_MS);
+      inboxTimer.unref?.();
+    }
+
     render(ctx);
   },
   async onWorkspaceActivated(ctx, workspace) {
+    currentCtx = ctx;
     // Invalidate the cached repo for the workspace we're entering — the
     // remote could have been re-pointed in the terminal between
     // activations. Cheap: one process spawn per workspace switch.
@@ -259,15 +373,57 @@ const plugin = createPlugin({
     }
     await hydrateWorkspace(workspace);
     render(ctx);
+    // Workspace switch = scope change in most cases. Kick a poll so
+    // the user sees instant feedback for the new scope; the ETag
+    // means the call is essentially free on the wire even when the
+    // notification list is unchanged.
+    if (githubClient !== null) {
+      pollInbox(ctx)
+        .then(() => render(ctx))
+        .catch((err) => {
+          ctx.log(
+            "error",
+            `prcomp: post-switch poll threw: ${err?.message ?? String(err)}`,
+          );
+        });
+    }
   },
-  onUiEvent(ctx, event) {
-    // No interactive surfaces in Phase 1 — Phase 2's inbox introduces
-    // the scope chip, the tab bar, and swipe events. Until then we
-    // log unknown events so the wire path is observable without
-    // pretending to handle anything.
+  async onUiEvent(ctx, event) {
+    currentCtx = ctx;
+    // === Phase 2: Inbox events ===
+    if (event.panelId === INBOX_PANEL) {
+      await handleInboxEvent(ctx, event, {
+        getInbox: () => inboxState,
+        setActiveTab: (tabId) => {
+          if (
+            tabId === "review" ||
+            tabId === "mentioned" ||
+            tabId === "assigned"
+          ) {
+            inboxState.activeTab = tabId;
+          }
+        },
+        getScope: effectiveScope,
+        setScope: setScopeForCurrent,
+        getRepo: () => currentRepo,
+        getWorkspace: () => currentWorkspace,
+        getAuth: () => currentAuth ?? { status: "offline" },
+        getDismissedIds: () => dismissedSet,
+        addDismissedId,
+        openPrDetail: (ref) => {
+          currentDetailPr = ref;
+          renderDetailPanel(ctx);
+        },
+        pollInbox: () => pollInbox(ctx),
+        rerender: () => render(ctx),
+      });
+      return;
+    }
+    // === Phase 3: Detail events ===
+    // (Phase 3 inserts its branch here.)
     ctx.log(
       "warn",
-      `pr-companion: unhandled ui.event panel=${event.panelId} node=${event.nodeId} type=${event.type}`,
+      `prcomp: unhandled event ${event.panelId}/${event.type}`,
     );
   },
 });

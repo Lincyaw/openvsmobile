@@ -39,9 +39,9 @@ shell out to a `terminal.*` RPC (the `gh auth token` invocation is a
 plain `node:child_process` call inside our own process), and we never
 persist the token.
 
-## Scope (Phase 1 — this slice)
+## Scope (Phases 1 + 2 — shipped)
 
-Phase 1 ships the plugin shell only:
+Phase 1 ships the plugin shell:
 
 - Two panels are registered (`inbox`, `detail`) with placeholder
   content.
@@ -53,7 +53,21 @@ Phase 1 ships the plugin shell only:
   `owner/repo`, `not a GitHub repo`, or `no workspace active`.
 - A single `GET /user` call surfaces the authenticated login.
 
-**Not yet implemented** (Phases 2–5): GitHub Notifications fetch, scope
-chip, swipe-to-dismiss, PR detail rendering, review actions, checks
-tab, background notification fan-out. See the design doc's
-"Implementation phases" section for the staged plan.
+Phase 2 ships the Inbox:
+
+- `GET /notifications?participating=true` polled every 60 s with
+  `If-None-Match` / `If-Modified-Since` so 304s stay free.
+- Three-tab filter (Review-requested / Mentioned / Assigned) over the
+  notification list, plus a scope chip ("this repo" vs "all repos")
+  with a switcher action sheet. The "this repo" option is hidden when
+  the active workspace has no parseable GitHub remote; in that case
+  the banner explains the All-repos fallback.
+- Swipe-to-dismiss persists dismissed notification ids to
+  `~/.openvsmobile/pr-companion/state.json`; the per-workspace scope
+  toggle is persisted alongside, keyed by the workspace UUID.
+- Tapping a row stages a PR ref for the Detail panel; the detail
+  surface itself is Phase 3.
+
+**Not yet implemented** (Phases 3–5): PR detail rendering, review
+actions, checks tab, background notification fan-out. See the design
+doc's "Implementation phases" section for the staged plan.
