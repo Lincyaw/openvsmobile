@@ -1492,21 +1492,14 @@ export function createPlugin(config: PluginConfig): PluginRunner {
           }
           try {
             await config.onWorkspaceActivated(ctx, wsRef);
-            respond(msg.id, undefined, {});
           } catch (err) {
+            // Notification handler — no JSON-RPC reply to send.
             // Surface the throw via `host.log` so the plugin author
-            // sees it. The host treats this as fire-and-forget, so a
-            // rejection on its end would just be logged — keep the
-            // back-channel limited to `host.log` for symmetry with
-            // `onActivate`'s error reporting above.
+            // sees it, matching `onActivate` above.
             ctx.log(
               "error",
               `onWorkspaceActivated threw: ${(err as Error).message ?? String(err)}`,
             );
-            respond(msg.id, {
-              code: RPC_ERR_INTERNAL,
-              message: (err as Error).message,
-            });
           }
           return;
         }
