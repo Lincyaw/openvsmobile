@@ -32,11 +32,20 @@ class HomeShell extends StatefulWidget {
   /// Forwarded to the Settings tab so SSH bootstrap launched from there
   /// produces the same result as launching it from BackendsScreen.
   final Future<void> Function(BackendTarget target, {required bool makeActive})
-      onBackendInstalled;
+  onBackendInstalled;
 
   /// Called when the notification preferences screen saves a change.
   /// `main.dart` uses this to (re)start or stop the foreground service.
   final Future<void> Function() onNotificationPrefsChanged;
+
+  /// Current theme mode (system / light / dark). Forwarded into the
+  /// Settings tab so the picker renders the active choice.
+  final ThemeMode themeMode;
+
+  /// Persist + apply a new theme mode. Forwarded into the Settings tab's
+  /// Theme picker so changes round-trip into [main.dart] and re-render
+  /// the `MaterialApp`.
+  final Future<void> Function(ThemeMode mode) onThemeModeChanged;
 
   const HomeShell({
     super.key,
@@ -47,6 +56,8 @@ class HomeShell extends StatefulWidget {
     required this.onOpenBackends,
     required this.onBackendInstalled,
     required this.onNotificationPrefsChanged,
+    required this.themeMode,
+    required this.onThemeModeChanged,
   });
 
   @override
@@ -71,9 +82,7 @@ class _HomeShellState extends State<HomeShell> {
   void _onAppStateChanged() {
     final err = widget.appState.lastOperationError;
     if (err != null && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(err)),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
       widget.appState.clearLastOperationError();
     }
     setState(() {});
@@ -110,9 +119,7 @@ class _HomeShellState extends State<HomeShell> {
             child: Row(
               children: [
                 Icon(
-                  cur == null
-                      ? Icons.folder_off_outlined
-                      : Icons.folder_open,
+                  cur == null ? Icons.folder_off_outlined : Icons.folder_open,
                   size: AppIconSize.md,
                 ),
                 const SizedBox(width: AppSpacing.sm),
@@ -159,8 +166,9 @@ class _HomeShellState extends State<HomeShell> {
                   systemTrayController: widget.systemTrayController,
                   onOpenBackends: widget.onOpenBackends,
                   onBackendInstalled: widget.onBackendInstalled,
-                  onNotificationPrefsChanged:
-                      widget.onNotificationPrefsChanged,
+                  onNotificationPrefsChanged: widget.onNotificationPrefsChanged,
+                  themeMode: widget.themeMode,
+                  onThemeModeChanged: widget.onThemeModeChanged,
                 ),
               ],
             ),
@@ -301,7 +309,10 @@ class _ConnectionBannerState extends State<_ConnectionBanner> {
     final (msg, withSpinner) = switch (s) {
       BackendConnectionState.connecting => ('Connecting…', true),
       BackendConnectionState.reconnecting => ('Connecting…', true),
-      BackendConnectionState.waitingForNetwork => ('Waiting for network.', true),
+      BackendConnectionState.waitingForNetwork => (
+        'Waiting for network.',
+        true,
+      ),
       BackendConnectionState.disconnected => ('Disconnected.', false),
       BackendConnectionState.connected => ('', false),
       BackendConnectionState.failed => ('', false), // handled above
@@ -339,8 +350,7 @@ class _WorkspaceSwitcherSheet extends StatelessWidget {
   final AppState appState;
   const _WorkspaceSwitcherSheet({required this.appState});
 
-  Future<void> _confirmClose(
-      BuildContext context, Workspace w) async {
+  Future<void> _confirmClose(BuildContext context, Workspace w) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -369,8 +379,9 @@ class _WorkspaceSwitcherSheet extends StatelessWidget {
   Widget build(BuildContext context) {
     final active = appState.activeWorkspaces;
     final activeRoots = active.map((w) => w.root).toSet();
-    final recentsOnly =
-        appState.recentRoots.where((r) => !activeRoots.contains(r)).toList();
+    final recentsOnly = appState.recentRoots
+        .where((r) => !activeRoots.contains(r))
+        .toList();
     final cur = appState.currentWorkspace;
     final theme = Theme.of(context);
     return SafeArea(
@@ -382,7 +393,11 @@ class _WorkspaceSwitcherSheet extends StatelessWidget {
           children: [
             const Padding(
               padding: EdgeInsets.fromLTRB(
-                  AppSpacing.lg, AppSpacing.sm, AppSpacing.lg, AppSpacing.xs),
+                AppSpacing.lg,
+                AppSpacing.sm,
+                AppSpacing.lg,
+                AppSpacing.xs,
+              ),
               child: Text(
                 'Open workspaces',
                 style: TextStyle(fontWeight: FontWeight.bold),
@@ -391,7 +406,11 @@ class _WorkspaceSwitcherSheet extends StatelessWidget {
             if (active.isEmpty)
               const Padding(
                 padding: EdgeInsets.fromLTRB(
-                    AppSpacing.lg, 0, AppSpacing.lg, AppSpacing.sm),
+                  AppSpacing.lg,
+                  0,
+                  AppSpacing.lg,
+                  AppSpacing.sm,
+                ),
                 child: Text(
                   'None — open one from Recent or Browse below.',
                   style: TextStyle(fontStyle: FontStyle.italic),
@@ -419,7 +438,11 @@ class _WorkspaceSwitcherSheet extends StatelessWidget {
             const Divider(),
             const Padding(
               padding: EdgeInsets.fromLTRB(
-                  AppSpacing.lg, AppSpacing.sm, AppSpacing.lg, AppSpacing.xs),
+                AppSpacing.lg,
+                AppSpacing.sm,
+                AppSpacing.lg,
+                AppSpacing.xs,
+              ),
               child: Text(
                 'Recent',
                 style: TextStyle(fontWeight: FontWeight.bold),
@@ -428,7 +451,11 @@ class _WorkspaceSwitcherSheet extends StatelessWidget {
             if (recentsOnly.isEmpty)
               const Padding(
                 padding: EdgeInsets.fromLTRB(
-                    AppSpacing.lg, 0, AppSpacing.lg, AppSpacing.sm),
+                  AppSpacing.lg,
+                  0,
+                  AppSpacing.lg,
+                  AppSpacing.sm,
+                ),
                 child: Text(
                   'No other recents yet.',
                   style: TextStyle(fontStyle: FontStyle.italic),
@@ -438,11 +465,7 @@ class _WorkspaceSwitcherSheet extends StatelessWidget {
               ListTile(
                 leading: const Icon(Icons.history),
                 title: Text(_recentLabel(r)),
-                subtitle: Text(
-                  r,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
+                subtitle: Text(r, maxLines: 1, overflow: TextOverflow.ellipsis),
                 onTap: () async {
                   Navigator.of(context).pop();
                   await appState.openWorkspace(r);
@@ -452,8 +475,7 @@ class _WorkspaceSwitcherSheet extends StatelessWidget {
             ListTile(
               leading: const Icon(Icons.travel_explore),
               title: const Text('Browse new…'),
-              subtitle:
-                  const Text('Pick a folder by drilling in step-by-step'),
+              subtitle: const Text('Pick a folder by drilling in step-by-step'),
               onTap: () async {
                 Navigator.of(context).pop();
                 await Navigator.of(context).push(
@@ -485,10 +507,7 @@ class _WorkspaceSwitcherSheet extends StatelessWidget {
 class _BellIconAction extends StatelessWidget {
   final AppState appState;
   final SettingsStore settingsStore;
-  const _BellIconAction({
-    required this.appState,
-    required this.settingsStore,
-  });
+  const _BellIconAction({required this.appState, required this.settingsStore});
 
   @override
   Widget build(BuildContext context) {

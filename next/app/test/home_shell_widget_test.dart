@@ -52,6 +52,8 @@ Future<void> _pumpHomeShell(
         onOpenBackends: onOpenBackends ?? () {},
         onBackendInstalled: (target, {required bool makeActive}) async {},
         onNotificationPrefsChanged: () async {},
+        themeMode: ThemeMode.system,
+        onThemeModeChanged: (_) async {},
       ),
     ),
   );
@@ -60,8 +62,9 @@ Future<void> _pumpHomeShell(
 }
 
 void main() {
-  testWidgets('bottom nav shows exactly 4 destinations in the spec order',
-      (tester) async {
+  testWidgets('bottom nav shows exactly 4 destinations in the spec order', (
+    tester,
+  ) async {
     final appState = AppState(client: BackendClient());
     addTearDown(appState.dispose);
     await _pumpHomeShell(tester, appState: appState);
@@ -90,8 +93,9 @@ void main() {
     expect(find.text('More'), findsNothing);
   });
 
-  testWidgets('tapping each destination routes to the matching tab body',
-      (tester) async {
+  testWidgets('tapping each destination routes to the matching tab body', (
+    tester,
+  ) async {
     final appState = AppState(client: BackendClient());
     addTearDown(appState.dispose);
     await _pumpHomeShell(tester, appState: appState);
@@ -165,43 +169,42 @@ void main() {
     },
   );
 
-  testWidgets(
-    'Settings → Backends → back lands on Settings tab, not Files',
-    (tester) async {
-      // Stand in for the production onOpenBackends: push a placeholder
-      // route on the root navigator. The contract under test is "Settings
-      // remains selected when the user pops a child route" — we don't need
-      // BackendsScreen's real wiring.
-      final appState = AppState(client: BackendClient());
-      addTearDown(appState.dispose);
-      late NavigatorState rootNav;
-      await _pumpHomeShell(
-        tester,
-        appState: appState,
-        onOpenBackends: () {
-          rootNav.push(
-            MaterialPageRoute<void>(
-              builder: (_) => const Scaffold(
-                body: Center(child: Text('Backends-test-screen')),
-              ),
+  testWidgets('Settings → Backends → back lands on Settings tab, not Files', (
+    tester,
+  ) async {
+    // Stand in for the production onOpenBackends: push a placeholder
+    // route on the root navigator. The contract under test is "Settings
+    // remains selected when the user pops a child route" — we don't need
+    // BackendsScreen's real wiring.
+    final appState = AppState(client: BackendClient());
+    addTearDown(appState.dispose);
+    late NavigatorState rootNav;
+    await _pumpHomeShell(
+      tester,
+      appState: appState,
+      onOpenBackends: () {
+        rootNav.push(
+          MaterialPageRoute<void>(
+            builder: (_) => const Scaffold(
+              body: Center(child: Text('Backends-test-screen')),
             ),
-          );
-        },
-      );
-      rootNav = tester.state<NavigatorState>(find.byType(Navigator));
+          ),
+        );
+      },
+    );
+    rootNav = tester.state<NavigatorState>(find.byType(Navigator));
 
-      await tester.tap(find.byIcon(Icons.settings_outlined));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Backends'));
-      await tester.pumpAndSettle();
-      expect(find.text('Backends-test-screen'), findsOneWidget);
+    await tester.tap(find.byIcon(Icons.settings_outlined));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Backends'));
+    await tester.pumpAndSettle();
+    expect(find.text('Backends-test-screen'), findsOneWidget);
 
-      rootNav.pop();
-      await tester.pumpAndSettle();
+    rootNav.pop();
+    await tester.pumpAndSettle();
 
-      expect(find.byType(SettingsTab), findsOneWidget);
-      final nav = tester.widget<NavigationBar>(find.byType(NavigationBar));
-      expect(nav.selectedIndex, 3);
-    },
-  );
+    expect(find.byType(SettingsTab), findsOneWidget);
+    final nav = tester.widget<NavigationBar>(find.byType(NavigationBar));
+    expect(nav.selectedIndex, 3);
+  });
 }

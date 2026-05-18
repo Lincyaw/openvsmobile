@@ -45,7 +45,9 @@ class PluginsTab extends StatelessWidget {
         }
         return LayoutBuilder(
           builder: (context, constraints) {
-            final columns = constraints.maxWidth >= _kGridWideBreakpoint ? 5 : 3;
+            final columns = constraints.maxWidth >= _kGridWideBreakpoint
+                ? 5
+                : 3;
             return GridView.builder(
               padding: const EdgeInsets.all(AppSpacing.md),
               gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
@@ -72,7 +74,10 @@ class PluginsTab extends StatelessWidget {
   }
 
   Future<void> _onToggle(
-      BuildContext context, PluginInfo info, bool enabled) async {
+    BuildContext context,
+    PluginInfo info,
+    bool enabled,
+  ) async {
     final messenger = ScaffoldMessenger.maybeOf(context);
     try {
       if (enabled) {
@@ -84,7 +89,8 @@ class PluginsTab extends StatelessWidget {
       messenger?.showSnackBar(
         SnackBar(
           content: Text(
-              'Failed to ${enabled ? "enable" : "disable"} ${info.name}: $e'),
+            'Failed to ${enabled ? "enable" : "disable"} ${info.name}: $e',
+          ),
         ),
       );
     }
@@ -157,7 +163,7 @@ class _PluginGridCard extends StatelessWidget {
     final isCrashed = info.state == PluginWireState.crashed;
 
     return Material(
-      color: AppColors.surfaceContainer,
+      color: theme.colorScheme.surfaceContainer,
       borderRadius: BorderRadius.circular(AppRadius.sm),
       child: InkWell(
         key: ValueKey<String>('plugin-card:${info.id}'),
@@ -167,7 +173,7 @@ class _PluginGridCard extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.all(AppSpacing.md),
           decoration: BoxDecoration(
-            border: Border.all(color: AppColors.outline, width: 1),
+            border: Border.all(color: theme.colorScheme.outline, width: 1),
             borderRadius: BorderRadius.circular(AppRadius.sm),
           ),
           child: Column(
@@ -179,8 +185,7 @@ class _PluginGridCard extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Container(
-                    key: ValueKey<String>(
-                        'plugin-card-dot:${info.id}'),
+                    key: ValueKey<String>('plugin-card-dot:${info.id}'),
                     width: 8,
                     height: 8,
                     decoration: BoxDecoration(
@@ -213,8 +218,8 @@ class _PluginGridCard extends StatelessWidget {
                 style: theme.textTheme.labelLarge?.copyWith(
                   fontWeight: FontWeight.w600,
                   color: isEnabled
-                      ? AppColors.onSurface
-                      : AppColors.onSurfaceVariant,
+                      ? theme.colorScheme.onSurface
+                      : theme.colorScheme.onSurfaceVariant,
                 ),
               ),
               const SizedBox(height: AppSpacing.xs),
@@ -236,13 +241,13 @@ class _PluginGridCard extends StatelessWidget {
   Color _dotColor(ThemeData theme, PluginWireState state) {
     switch (state) {
       case PluginWireState.running:
-        return AppColors.primary;
+        return theme.colorScheme.primary;
       case PluginWireState.crashed:
         return theme.colorScheme.error;
       case PluginWireState.stopped:
       case PluginWireState.disabled:
       case PluginWireState.unknown:
-        return AppColors.outlineVariant;
+        return theme.colorScheme.outlineVariant;
     }
   }
 }
@@ -258,14 +263,15 @@ class _PluginIconAvatar extends StatelessWidget {
     // Material glyph that signals "plugin" regardless of identity. The
     // background tint keeps cards visually distinct from the page
     // surface without introducing per-plugin theming.
-    final fg = dim ? AppColors.onSurfaceVariant : AppColors.onSurface;
+    final scheme = Theme.of(context).colorScheme;
+    final fg = dim ? scheme.onSurfaceVariant : scheme.onSurface;
     return Container(
       width: AppIconSize.lg,
       height: AppIconSize.lg,
       decoration: BoxDecoration(
-        color: AppColors.surfaceContainerHigh,
+        color: scheme.surfaceContainerHigh,
         borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(color: AppColors.outline, width: 1),
+        border: Border.all(color: scheme.outline, width: 1),
       ),
       child: Icon(Icons.extension, size: AppIconSize.md, color: fg),
     );
@@ -280,12 +286,13 @@ class PluginStateBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
     final (label, color) = switch (state) {
-      PluginWireState.running => ('running', AppColors.primary),
-      PluginWireState.stopped => ('stopped', AppColors.onSurfaceVariant),
-      PluginWireState.crashed => ('crashed', theme.colorScheme.error),
-      PluginWireState.disabled => ('disabled', AppColors.onSurfaceVariant),
-      PluginWireState.unknown => ('unknown', AppColors.onSurfaceVariant),
+      PluginWireState.running => ('running', scheme.primary),
+      PluginWireState.stopped => ('stopped', scheme.onSurfaceVariant),
+      PluginWireState.crashed => ('crashed', scheme.error),
+      PluginWireState.disabled => ('disabled', scheme.onSurfaceVariant),
+      PluginWireState.unknown => ('unknown', scheme.onSurfaceVariant),
     };
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -323,6 +330,7 @@ class _PluginsEmptyState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
     return Padding(
       padding: const EdgeInsets.all(AppSpacing.xl),
       child: Center(
@@ -330,8 +338,11 @@ class _PluginsEmptyState extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            Icon(Icons.extension_outlined,
-                size: AppIconSize.lg, color: AppColors.onSurfaceVariant),
+            Icon(
+              Icons.extension_outlined,
+              size: AppIconSize.lg,
+              color: scheme.onSurfaceVariant,
+            ),
             const SizedBox(height: AppSpacing.md),
             Text(
               loaded ? 'No plugins installed' : 'Loading plugins…',
@@ -341,17 +352,15 @@ class _PluginsEmptyState extends StatelessWidget {
             Text(
               'Drop a plugin directory into',
               textAlign: TextAlign.center,
-              style: theme.textTheme.bodyMedium
-                  ?.copyWith(color: AppColors.onSurfaceVariant),
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
             ),
             const SizedBox(height: AppSpacing.xs),
             Text(
               _kFilesystemPluginsDir,
               textAlign: TextAlign.center,
-              style: AppText.mono(
-                fontSize: 13,
-                color: AppColors.onSurface,
-              ),
+              style: AppText.mono(fontSize: 13, color: scheme.onSurface),
             ),
           ],
         ),
@@ -392,38 +401,35 @@ class _PluginActionSheet extends StatelessWidget {
             child: Row(
               children: [
                 Expanded(
-                  child: Text(
-                    info.name,
-                    style: theme.textTheme.titleMedium,
-                  ),
+                  child: Text(info.name, style: theme.textTheme.titleMedium),
                 ),
                 Text(
                   info.version,
-                  style: theme.textTheme.bodySmall
-                      ?.copyWith(color: AppColors.onSurfaceVariant),
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ],
             ),
           ),
           const Divider(height: 1),
           ListTile(
-            key: ValueKey<String>(
-                'plugin-sheet-toggle:${info.id}'),
+            key: ValueKey<String>('plugin-sheet-toggle:${info.id}'),
             leading: Icon(
-                isEnabled ? Icons.toggle_off_outlined : Icons.toggle_on_outlined),
+              isEnabled ? Icons.toggle_off_outlined : Icons.toggle_on_outlined,
+            ),
             title: Text(isEnabled ? 'Disable' : 'Enable'),
             onTap: isEnabled ? onDisable : onEnable,
           ),
           ListTile(
-            key: ValueKey<String>(
-                'plugin-sheet-terminal:${info.id}'),
+            key: ValueKey<String>('plugin-sheet-terminal:${info.id}'),
             leading: const Icon(Icons.terminal),
             title: const Text('Copy cd command'),
             subtitle: Text(
               '$_kFilesystemPluginsDir${info.id}',
               style: AppText.mono(
                 fontSize: 12,
-                color: AppColors.onSurfaceVariant,
+                color: theme.colorScheme.onSurfaceVariant,
               ),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
@@ -470,11 +476,7 @@ class PluginInfoScreen extends StatelessWidget {
 class PluginInfoView extends StatelessWidget {
   final AppState appState;
   final PluginInfo info;
-  const PluginInfoView({
-    super.key,
-    required this.appState,
-    required this.info,
-  });
+  const PluginInfoView({super.key, required this.appState, required this.info});
 
   @override
   Widget build(BuildContext context) {
@@ -502,7 +504,7 @@ class PluginInfoView extends StatelessWidget {
                           info.version,
                           style: AppText.mono(
                             fontSize: 12,
-                            color: AppColors.onSurfaceVariant,
+                            color: theme.colorScheme.onSurfaceVariant,
                           ),
                         ),
                       ],
@@ -537,16 +539,16 @@ class PluginInfoView extends StatelessWidget {
           if (info.panels.isEmpty)
             Text(
               'No panels contributed.',
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(color: AppColors.onSurfaceVariant),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
             )
           else
             Wrap(
               spacing: AppSpacing.sm,
               runSpacing: AppSpacing.sm,
               children: [
-                for (final p in info.panels)
-                  Chip(label: Text(p.title)),
+                for (final p in info.panels) Chip(label: Text(p.title)),
               ],
             ),
           const SizedBox(height: AppSpacing.xl),
@@ -555,16 +557,16 @@ class PluginInfoView extends StatelessWidget {
           if (info.commands.isEmpty)
             Text(
               'No commands contributed.',
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(color: AppColors.onSurfaceVariant),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
             )
           else
             Wrap(
               spacing: AppSpacing.sm,
               runSpacing: AppSpacing.sm,
               children: [
-                for (final c in info.commands)
-                  Chip(label: Text(c.title)),
+                for (final c in info.commands) Chip(label: Text(c.title)),
               ],
             ),
           const SizedBox(height: AppSpacing.xl),
@@ -572,23 +574,25 @@ class PluginInfoView extends StatelessWidget {
           const SizedBox(height: AppSpacing.md),
           Text(
             'Installed at',
-            style: theme.textTheme.bodySmall
-                ?.copyWith(color: AppColors.onSurfaceVariant),
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
           ),
           const SizedBox(height: AppSpacing.xs),
           Text(
             '$_kFilesystemPluginsDir${info.id}/',
             style: AppText.mono(
               fontSize: 13,
-              color: AppColors.onSurface,
+              color: theme.colorScheme.onSurface,
             ),
           ),
           const SizedBox(height: AppSpacing.sm),
           Text(
             'Install and uninstall are filesystem operations — '
             'cp/rm directories under the path above.',
-            style: theme.textTheme.bodySmall
-                ?.copyWith(color: AppColors.onSurfaceVariant),
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
           ),
         ],
       ),
@@ -601,12 +605,13 @@ class _SectionTitle extends StatelessWidget {
   const _SectionTitle(this.text);
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Text(
       text,
-      style: Theme.of(context).textTheme.labelLarge?.copyWith(
-            fontWeight: FontWeight.w600,
-            color: AppColors.onSurfaceVariant,
-          ),
+      style: theme.textTheme.labelLarge?.copyWith(
+        fontWeight: FontWeight.w600,
+        color: theme.colorScheme.onSurfaceVariant,
+      ),
     );
   }
 }
@@ -636,19 +641,18 @@ class _CapabilityChips extends StatelessWidget {
       if (entry.value == true) declared.add(entry.key);
     }
     if (declared.isEmpty) {
+      final theme = Theme.of(context);
       return Text(
         'No capabilities declared.',
-        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: AppColors.onSurfaceVariant,
-            ),
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
       );
     }
     return Wrap(
       spacing: AppSpacing.sm,
       runSpacing: AppSpacing.sm,
-      children: [
-        for (final label in declared) Chip(label: Text(label)),
-      ],
+      children: [for (final label in declared) Chip(label: Text(label))],
     );
   }
 }
@@ -699,9 +703,7 @@ class PluginDetailView extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(
         title: Text(info.name),
-        actions: [
-          _PluginKebabMenu(appState: appState, info: info),
-        ],
+        actions: [_PluginKebabMenu(appState: appState, info: info)],
       ),
       body: _DetailBody(appState: appState, info: info),
     );
@@ -720,9 +722,9 @@ class _PluginKebabMenu extends StatelessWidget {
     // surface the path so the user knows where to tail.
     final path =
         '~/.local/state/openvsmobile-next/plugins/${info.id}.stderr.log';
-    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-      SnackBar(content: Text('Plugin log: $path')),
-    );
+    ScaffoldMessenger.maybeOf(
+      context,
+    )?.showSnackBar(SnackBar(content: Text('Plugin log: $path')));
   }
 
   @override
@@ -743,12 +745,18 @@ class _PluginKebabMenu extends StatelessWidget {
       onSelected: (v) async {
         switch (v) {
           case 'disable':
-            await _safeCall(context, () => appState.plugins.disable(info.id),
-                label: 'Disable ${info.name}');
+            await _safeCall(
+              context,
+              () => appState.plugins.disable(info.id),
+              label: 'Disable ${info.name}',
+            );
             break;
           case 'enable':
-            await _safeCall(context, () => appState.plugins.enable(info.id),
-                label: 'Enable ${info.name}');
+            await _safeCall(
+              context,
+              () => appState.plugins.enable(info.id),
+              label: 'Enable ${info.name}',
+            );
             break;
           case 'log':
             _showLogPath(context);
@@ -802,9 +810,7 @@ class _DetailBody extends StatelessWidget {
         children: [
           TabBar(
             isScrollable: true,
-            tabs: [
-              for (final p in panels) Tab(text: p.title),
-            ],
+            tabs: [for (final p in panels) Tab(text: p.title)],
           ),
           Expanded(
             child: TabBarView(
@@ -871,8 +877,11 @@ class _PanelEmpty extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.hourglass_empty_outlined,
-                size: 36, color: AppColors.onSurfaceVariant),
+            Icon(
+              Icons.hourglass_empty_outlined,
+              size: 36,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
             const SizedBox(height: AppSpacing.sm),
             Text(
               'Waiting for "$title" content from the plugin…',
@@ -911,7 +920,7 @@ class _NoPanelsHint extends StatelessWidget {
               'renders panels.',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodyMedium?.copyWith(
-                color: AppColors.onSurfaceVariant,
+                color: theme.colorScheme.onSurfaceVariant,
               ),
             ),
             if (info.commands.isNotEmpty) ...[
@@ -976,9 +985,9 @@ class _CrashedBanner extends StatelessWidget {
   void _showLog(BuildContext context) {
     final path =
         '~/.local/state/openvsmobile-next/plugins/${info.id}.stderr.log';
-    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-      SnackBar(content: Text('Plugin log: $path')),
-    );
+    ScaffoldMessenger.maybeOf(
+      context,
+    )?.showSnackBar(SnackBar(content: Text('Plugin log: $path')));
   }
 
   @override
@@ -1011,9 +1020,7 @@ class _CrashedBanner extends StatelessWidget {
                   'There is no automatic restart. Inspect the log to see '
                   'why this plugin exited, then tap Reload once you have '
                   'a fix in place.',
-                  style: TextStyle(
-                    color: theme.colorScheme.onErrorContainer,
-                  ),
+                  style: TextStyle(color: theme.colorScheme.onErrorContainer),
                 ),
                 const SizedBox(height: AppSpacing.md),
                 Row(

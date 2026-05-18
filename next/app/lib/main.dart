@@ -42,8 +42,9 @@ class MobileCodeApp extends StatefulWidget {
 class _MobileCodeAppState extends State<MobileCodeApp>
     with WidgetsBindingObserver {
   final SettingsStore _settingsStore = SettingsStore();
-  late final BackendClient _client =
-      BackendClient(probe: ConnectivityPlusProbe());
+  late final BackendClient _client = BackendClient(
+    probe: ConnectivityPlusProbe(),
+  );
   final NotificationServiceController _fgService =
       NotificationServiceController();
   final DeepLinkService _deepLinks = DeepLinkService();
@@ -56,6 +57,7 @@ class _MobileCodeAppState extends State<MobileCodeApp>
   AppPersistedState _state = const AppPersistedState();
   String? _deviceId;
   NotificationPrefs? _notifPrefs;
+  ThemeMode _themeMode = ThemeMode.system;
   bool _loadingSettings = true;
   String? _lastPersistedWorkspaceId;
 
@@ -81,16 +83,19 @@ class _MobileCodeAppState extends State<MobileCodeApp>
         if (raw is! Map<String, dynamic>) return;
         final appNotif = AppNotification.fromJson(raw);
         final prefs = _notifPrefs;
-        unawaited(_tray.show(
-          appNotif,
-          mutedSources: prefs?.mutedSources.toSet() ?? const <String>{},
-          quietStartMinutes: prefs?.quietHoursStartMinutes ?? -1,
-          quietEndMinutes: prefs?.quietHoursEndMinutes ?? -1,
-        ));
+        unawaited(
+          _tray.show(
+            appNotif,
+            mutedSources: prefs?.mutedSources.toSet() ?? const <String>{},
+            quietStartMinutes: prefs?.quietHoursStartMinutes ?? -1,
+            quietEndMinutes: prefs?.quietHoursEndMinutes ?? -1,
+          ),
+        );
       case BackendNotifications.notificationDeleted:
         final p = n.params;
         if (p is! Map<String, dynamic>) return;
-        final ids = (p['ids'] as List?)?.whereType<String>().toList() ??
+        final ids =
+            (p['ids'] as List?)?.whereType<String>().toList() ??
             const <String>[];
         for (final id in ids) {
           unawaited(_tray.cancel(id));
@@ -109,6 +114,7 @@ class _MobileCodeAppState extends State<MobileCodeApp>
     final state = await _settingsStore.loadAppState();
     final did = await _settingsStore.loadOrCreateDeviceId();
     final prefs = await _settingsStore.loadNotificationPrefs();
+    final themeMode = await _settingsStore.loadThemeMode();
     if (!mounted) return;
     final appState = AppState(client: _client, deviceId: did);
     appState.addListener(_onAppStateForWorkspaceTracking);
@@ -116,6 +122,7 @@ class _MobileCodeAppState extends State<MobileCodeApp>
       _state = state;
       _deviceId = did;
       _notifPrefs = prefs;
+      _themeMode = themeMode;
       _appState = appState;
       _loadingSettings = false;
     });
@@ -159,9 +166,11 @@ class _MobileCodeAppState extends State<MobileCodeApp>
         // populate the active list. activateWorkspace is a no-op if the
         // backend doesn't know the id — we then fall back to leaving the
         // user on the switcher.
-        unawaited(Future<void>(() async {
-          await _appState!.activateWorkspace(ws);
-        }));
+        unawaited(
+          Future<void>(() async {
+            await _appState!.activateWorkspace(ws);
+          }),
+        );
       }
     }
 
@@ -210,8 +219,9 @@ class _MobileCodeAppState extends State<MobileCodeApp>
     }
     if (resolved != NotificationPermission.granted) {
       debugPrint('FGS: early return — perm not granted ($resolved)');
-      await _settingsStore
-          .saveNotificationPrefs(prefs.copyWith(backgroundEnabled: false));
+      await _settingsStore.saveNotificationPrefs(
+        prefs.copyWith(backgroundEnabled: false),
+      );
       if (!mounted) return;
       setState(() => _notifPrefs = prefs.copyWith(backgroundEnabled: false));
       return;
@@ -265,8 +275,11 @@ class _MobileCodeAppState extends State<MobileCodeApp>
   /// true and the active backend's connection params changed, restart the
   /// client. (Pure bookkeeping updates like a fresh lastConnectedAt pass
   /// reconnect=false.)
-  Future<void> _replaceBackend(BackendTarget target,
-      {required bool makeActive, required bool reconnect}) async {
+  Future<void> _replaceBackend(
+    BackendTarget target, {
+    required bool makeActive,
+    required bool reconnect,
+  }) async {
     final existing = _state.backends;
     final idx = existing.indexWhere((b) => b.id == target.id);
     final next = [...existing];
@@ -288,9 +301,15 @@ class _MobileCodeAppState extends State<MobileCodeApp>
     }
   }
 
-  Future<void> _addBackend(BackendTarget target,
-      {required bool makeActive}) async {
-    await _replaceBackend(target, makeActive: makeActive, reconnect: makeActive);
+  Future<void> _addBackend(
+    BackendTarget target, {
+    required bool makeActive,
+  }) async {
+    await _replaceBackend(
+      target,
+      makeActive: makeActive,
+      reconnect: makeActive,
+    );
   }
 
   Future<void> _updateBackend(BackendTarget target) async {
@@ -350,6 +369,16 @@ class _MobileCodeAppState extends State<MobileCodeApp>
     _scheduleOpenLastWorkspaceWhenConnected(active);
   }
 
+  /// Persist a new [ThemeMode] choice and re-render the `MaterialApp`
+  /// against it. Called from the Settings tab. Synchronous from the
+  /// user's perspective — we `setState` first so the toggle feels
+  /// immediate, then flush to disk.
+  Future<void> _onThemeModeChanged(ThemeMode mode) async {
+    if (mode == _themeMode) return;
+    setState(() => _themeMode = mode);
+    await _settingsStore.saveThemeMode(mode);
+  }
+
   Future<void> _onNotificationPrefsChanged() async {
     final prefs = await _settingsStore.loadNotificationPrefs();
     if (!mounted) return;
@@ -403,28 +432,30 @@ class _MobileCodeAppState extends State<MobileCodeApp>
     return MaterialApp(
       navigatorKey: _navKey,
       title: 'MobileCode',
-      theme: AppTheme.dark(),
+      theme: AppTheme.light(),
       darkTheme: AppTheme.dark(),
-      themeMode: ThemeMode.dark,
+      themeMode: _themeMode,
       home: _loadingSettings || _appState == null
           ? const _BootSplash()
           : (_state.activeBackend == null)
-              ? _buildBackendsScreen()
-              : HomeShell(
-                  appState: _appState!,
-                  settingsStore: _settingsStore,
-                  state: _state,
-                  systemTrayController: _tray,
-                  onOpenBackends: () {
-                    _navKey.currentState?.push(
-                      MaterialPageRoute<void>(
-                        builder: (_) => _buildBackendsScreen(),
-                      ),
-                    );
-                  },
-                  onBackendInstalled: _addBackend,
-                  onNotificationPrefsChanged: _onNotificationPrefsChanged,
-                ),
+          ? _buildBackendsScreen()
+          : HomeShell(
+              appState: _appState!,
+              settingsStore: _settingsStore,
+              state: _state,
+              systemTrayController: _tray,
+              themeMode: _themeMode,
+              onThemeModeChanged: _onThemeModeChanged,
+              onOpenBackends: () {
+                _navKey.currentState?.push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => _buildBackendsScreen(),
+                  ),
+                );
+              },
+              onBackendInstalled: _addBackend,
+              onNotificationPrefsChanged: _onNotificationPrefsChanged,
+            ),
     );
   }
 }

@@ -132,8 +132,9 @@ class FileViewerScreen extends StatelessWidget {
             tooltip: 'Show full path',
             icon: const Icon(Icons.info_outline),
             onPressed: () {
-              ScaffoldMessenger.of(context)
-                  .showSnackBar(SnackBar(content: Text(path)));
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(SnackBar(content: Text(path)));
             },
           ),
         ],
@@ -183,7 +184,7 @@ class _TextBody extends StatelessWidget {
         child: HighlightView(
           text,
           language: language,
-          theme: appHighlightTheme,
+          theme: highlightThemeForBrightness(Theme.of(context).brightness),
           padding: const EdgeInsets.all(12),
           textStyle: _kCodeTextStyle,
         ),

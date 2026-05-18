@@ -29,8 +29,9 @@ Future<void> _pumpViewer(
 }
 
 void main() {
-  testWidgets('renders a .dart snippet through the highlight pipeline',
-      (tester) async {
+  testWidgets('renders a .dart snippet through the highlight pipeline', (
+    tester,
+  ) async {
     await _pumpViewer(
       tester,
       path: 'lib/sample.dart',
@@ -41,12 +42,16 @@ void main() {
     expect(find.text('sample.dart'), findsOneWidget);
 
     final highlight = tester.widget<HighlightView>(find.byType(HighlightView));
-    expect(highlight.theme, same(appHighlightTheme));
+    // The default `MaterialApp` has no `darkTheme` wired in this harness
+    // so the brightness resolves to light; the helper should return the
+    // matching map.
+    expect(highlight.theme, same(appHighlightThemeLight));
     expect(highlight.language, 'dart');
   });
 
-  testWidgets('unknown extension falls back to plain SelectableText',
-      (tester) async {
+  testWidgets('unknown extension falls back to plain SelectableText', (
+    tester,
+  ) async {
     await _pumpViewer(
       tester,
       path: 'notes/random.unknownext',
@@ -56,8 +61,9 @@ void main() {
     expect(find.byType(SelectableText), findsOneWidget);
   });
 
-  testWidgets('binary content still shows the byte-count placeholder',
-      (tester) async {
+  testWidgets('binary content still shows the byte-count placeholder', (
+    tester,
+  ) async {
     await _pumpViewer(
       tester,
       path: 'assets/blob.bin',
@@ -67,26 +73,27 @@ void main() {
     expect(find.textContaining('Binary file, 4 bytes'), findsOneWidget);
   });
 
-  testWidgets('extensionless known filename routes through highlight pipeline',
-      (tester) async {
-    await _pumpViewer(
-      tester,
-      path: 'Makefile',
-      content: _text('all:\n\techo hi\n'),
-    );
-    expect(tester.takeException(), isNull);
-    final highlight = tester.widget<HighlightView>(find.byType(HighlightView));
-    expect(highlight.language, 'makefile');
-  });
+  testWidgets(
+    'extensionless known filename routes through highlight pipeline',
+    (tester) async {
+      await _pumpViewer(
+        tester,
+        path: 'Makefile',
+        content: _text('all:\n\techo hi\n'),
+      );
+      expect(tester.takeException(), isNull);
+      final highlight = tester.widget<HighlightView>(
+        find.byType(HighlightView),
+      );
+      expect(highlight.language, 'makefile');
+    },
+  );
 
-  testWidgets('files larger than the highlight threshold fall back to plain',
-      (tester) async {
+  testWidgets('files larger than the highlight threshold fall back to plain', (
+    tester,
+  ) async {
     final bigSource = 'void f() {}\n' * 20000;
-    await _pumpViewer(
-      tester,
-      path: 'lib/huge.dart',
-      content: _text(bigSource),
-    );
+    await _pumpViewer(tester, path: 'lib/huge.dart', content: _text(bigSource));
     expect(tester.takeException(), isNull);
     expect(find.byType(HighlightView), findsNothing);
     expect(find.byType(SelectableText), findsOneWidget);

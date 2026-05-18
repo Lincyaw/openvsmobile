@@ -10,17 +10,14 @@
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class Settings {
   final String host;
   final int port;
   final String token;
-  const Settings({
-    required this.host,
-    required this.port,
-    required this.token,
-  });
+  const Settings({required this.host, required this.port, required this.token});
 
   bool get isComplete =>
       host.isNotEmpty && port > 0 && port < 65536 && token.isNotEmpty;
@@ -95,16 +92,16 @@ enum BackendOrigin {
 }
 
 String _originToString(BackendOrigin o) => switch (o) {
-      BackendOrigin.manual => 'manual',
-      BackendOrigin.sshInstall => 'sshInstall',
-      BackendOrigin.discovery => 'discovery',
-    };
+  BackendOrigin.manual => 'manual',
+  BackendOrigin.sshInstall => 'sshInstall',
+  BackendOrigin.discovery => 'discovery',
+};
 
 BackendOrigin _originFromString(String s) => switch (s) {
-      'sshInstall' => BackendOrigin.sshInstall,
-      'discovery' => BackendOrigin.discovery,
-      _ => BackendOrigin.manual,
-    };
+  'sshInstall' => BackendOrigin.sshInstall,
+  'discovery' => BackendOrigin.discovery,
+  _ => BackendOrigin.manual,
+};
 
 /// One reachable backend instance — host:port + bearer token, plus a
 /// user-editable display name and bookkeeping for the last workspace opened
@@ -176,32 +173,32 @@ class BackendTarget {
   }
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'name': name,
-        'host': host,
-        'port': port,
-        'token': token,
-        'origin': _originToString(origin),
-        if (originRef != null) 'originRef': originRef,
-        if (cluster != null) 'cluster': cluster,
-        'addedAt': addedAt,
-        if (lastConnectedAt != null) 'lastConnectedAt': lastConnectedAt,
-        if (lastWorkspaceId != null) 'lastWorkspaceId': lastWorkspaceId,
-      };
+    'id': id,
+    'name': name,
+    'host': host,
+    'port': port,
+    'token': token,
+    'origin': _originToString(origin),
+    if (originRef != null) 'originRef': originRef,
+    if (cluster != null) 'cluster': cluster,
+    'addedAt': addedAt,
+    if (lastConnectedAt != null) 'lastConnectedAt': lastConnectedAt,
+    if (lastWorkspaceId != null) 'lastWorkspaceId': lastWorkspaceId,
+  };
 
   factory BackendTarget.fromJson(Map<String, dynamic> j) => BackendTarget(
-        id: j['id'] as String,
-        name: (j['name'] as String?) ?? '',
-        host: (j['host'] as String?) ?? '',
-        port: (j['port'] as num?)?.toInt() ?? 0,
-        token: (j['token'] as String?) ?? '',
-        origin: _originFromString((j['origin'] as String?) ?? 'manual'),
-        originRef: j['originRef'] as String?,
-        cluster: j['cluster'] as String?,
-        addedAt: (j['addedAt'] as num?)?.toInt() ?? 0,
-        lastConnectedAt: (j['lastConnectedAt'] as num?)?.toInt(),
-        lastWorkspaceId: j['lastWorkspaceId'] as String?,
-      );
+    id: j['id'] as String,
+    name: (j['name'] as String?) ?? '',
+    host: (j['host'] as String?) ?? '',
+    port: (j['port'] as num?)?.toInt() ?? 0,
+    token: (j['token'] as String?) ?? '',
+    origin: _originFromString((j['origin'] as String?) ?? 'manual'),
+    originRef: j['originRef'] as String?,
+    cluster: j['cluster'] as String?,
+    addedAt: (j['addedAt'] as num?)?.toInt() ?? 0,
+    lastConnectedAt: (j['lastConnectedAt'] as num?)?.toInt(),
+    lastWorkspaceId: j['lastWorkspaceId'] as String?,
+  );
 }
 
 /// Source of a list of backends fetched at runtime (k8s LB, custom
@@ -225,22 +222,22 @@ class DiscoverySource {
   });
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'name': name,
-        'url': url,
-        if (authHeader != null) 'authHeader': authHeader,
-        'refreshIntervalSec': refreshIntervalSec,
-        if (lastRefreshedAt != null) 'lastRefreshedAt': lastRefreshedAt,
-      };
+    'id': id,
+    'name': name,
+    'url': url,
+    if (authHeader != null) 'authHeader': authHeader,
+    'refreshIntervalSec': refreshIntervalSec,
+    if (lastRefreshedAt != null) 'lastRefreshedAt': lastRefreshedAt,
+  };
 
   factory DiscoverySource.fromJson(Map<String, dynamic> j) => DiscoverySource(
-        id: j['id'] as String,
-        name: (j['name'] as String?) ?? '',
-        url: (j['url'] as String?) ?? '',
-        authHeader: j['authHeader'] as String?,
-        refreshIntervalSec: (j['refreshIntervalSec'] as num?)?.toInt() ?? 300,
-        lastRefreshedAt: (j['lastRefreshedAt'] as num?)?.toInt(),
-      );
+    id: j['id'] as String,
+    name: (j['name'] as String?) ?? '',
+    url: (j['url'] as String?) ?? '',
+    authHeader: j['authHeader'] as String?,
+    refreshIntervalSec: (j['refreshIntervalSec'] as num?)?.toInt() ?? 300,
+    lastRefreshedAt: (j['lastRefreshedAt'] as num?)?.toInt(),
+  );
 }
 
 /// Top-level persisted state for the backends/discovery surface.
@@ -283,12 +280,11 @@ class AppPersistedState {
   }
 
   Map<String, dynamic> toJson() => {
-        'schemaVersion': schemaVersion,
-        'backends': backends.map((b) => b.toJson()).toList(),
-        if (activeBackendId != null) 'activeBackendId': activeBackendId,
-        'discoverySources':
-            discoverySources.map((d) => d.toJson()).toList(),
-      };
+    'schemaVersion': schemaVersion,
+    'backends': backends.map((b) => b.toJson()).toList(),
+    if (activeBackendId != null) 'activeBackendId': activeBackendId,
+    'discoverySources': discoverySources.map((d) => d.toJson()).toList(),
+  };
 
   factory AppPersistedState.fromJson(Map<String, dynamic> j) {
     final backends = ((j['backends'] as List?) ?? const [])
@@ -318,6 +314,7 @@ class SettingsStore {
   static const _kQuietHoursStart = 'quiet-hours-start';
   static const _kQuietHoursEnd = 'quiet-hours-end';
   static const _kDefaultTtlDays = 'notifications-default-ttl-days';
+  static const _kThemeMode = 'theme-mode';
 
   Future<Settings> load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -459,7 +456,39 @@ class SettingsStore {
     }
     await prefs.setInt(_kDefaultTtlDays, p.defaultTtlDays);
   }
+
+  /// Load the persisted [ThemeMode]. Defaults to [ThemeMode.system] when
+  /// the key is absent (first launch) or carries an unknown string —
+  /// "follow the OS" is the least-surprising default for a brand-new
+  /// install.
+  Future<ThemeMode> loadThemeMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_kThemeMode);
+    return _themeModeFromString(raw);
+  }
+
+  /// Persist [mode]. Stored as `'system' | 'light' | 'dark'` so the
+  /// on-disk blob stays diffable and human-inspectable.
+  Future<void> saveThemeMode(ThemeMode mode) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kThemeMode, _themeModeToString(mode));
+  }
 }
+
+/// Stringify a [ThemeMode] for `SharedPreferences`. Public so widget tests
+/// can seed the underlying preference without going through the
+/// `SettingsStore` API.
+String _themeModeToString(ThemeMode mode) => switch (mode) {
+  ThemeMode.system => 'system',
+  ThemeMode.light => 'light',
+  ThemeMode.dark => 'dark',
+};
+
+ThemeMode _themeModeFromString(String? s) => switch (s) {
+  'light' => ThemeMode.light,
+  'dark' => ThemeMode.dark,
+  _ => ThemeMode.system,
+};
 
 /// Generate a v4-style UUID using `Random.secure`. Crypto-strong randomness
 /// — 122 random bits, same entropy as `crypto.randomUUID()`. Format is

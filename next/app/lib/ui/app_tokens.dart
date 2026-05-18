@@ -35,11 +35,15 @@ class AppDensity {
   static const double statusBarHeight = 32;
 }
 
-/// Project color palette. dark-first; no light variant in v0.
+/// Project color palette — dark variant.
 ///
 /// Hex values are settled in CLAUDE.md and the design tasks; consumers
 /// should reach for `Theme.of(context).colorScheme` first and only refer
-/// to these raw values when wiring a non-Material surface.
+/// to these raw values when wiring a non-Material surface. `AppColors`
+/// stays the canonical dark palette for back-compat with widgets that
+/// still pull tokens directly; brightness-aware surfaces look up via
+/// `colorScheme` and re-render across the light / dark `ThemeData`s
+/// wired in `app_theme.dart`.
 class AppColors {
   const AppColors._();
 
@@ -82,6 +86,59 @@ class AppColors {
   /// Error / destructive accent.
   static const Color error = Color(0xFFFF6B6B);
   static const Color onError = Color(0xFF330000);
+}
+
+/// Project color palette — light variant. Same token *roles* as
+/// [AppColors] (same field names, same downstream semantics); only the
+/// hex values differ. Surfaces sit a hair off pure white to avoid the
+/// glare of `#FFFFFF` on AMOLED panels and to keep 1px outline borders
+/// visible. The brand green is darkened so primary buttons / accents
+/// keep ≥4.5:1 contrast against `surface` and white-on-primary text
+/// remains readable.
+class AppColorsLight {
+  const AppColorsLight._();
+
+  /// Page background. Near-white, slightly cool — keeps a perceptible
+  /// edge against pure-white system chrome and avoids the AMOLED glare
+  /// of `#FFFFFF`.
+  static const Color surface = Color(0xFFFAFAFB);
+
+  /// Lowest container layer above the page surface.
+  static const Color surfaceContainerLow = Color(0xFFF2F3F5);
+
+  /// Default container (panel chrome, nav bar background).
+  static const Color surfaceContainer = Color(0xFFEAECEF);
+
+  /// One step higher (raised cards, header chips, selected nav indicator).
+  static const Color surfaceContainerHigh = Color(0xFFE0E3E7);
+
+  /// Highest container (popovers, focused inputs, tooltip body).
+  static const Color surfaceContainerHighest = Color(0xFFD4D8DD);
+
+  /// Brand accent — darker forest-green so it has ≥4.5:1 contrast on a
+  /// white surface and white text on top stays readable. Same hue family
+  /// as the dark palette's `#7CE38B` so the brand identity carries over.
+  static const Color primary = Color(0xFF1F7A48);
+
+  /// Hairline divider / 1px border on light surfaces.
+  static const Color outline = Color(0xFFD8DCE0);
+
+  /// Slightly stronger outline for focused inputs / active chips.
+  static const Color outlineVariant = Color(0xFFC2C7CD);
+
+  /// Primary text.
+  static const Color onSurface = Color(0xFF1A1C1E);
+
+  /// Secondary text (timestamps, captions, dimmed metadata).
+  static const Color onSurfaceVariant = Color(0xFF5C636B);
+
+  /// Text painted on top of `primary` — white reads cleanly on the
+  /// darker forest green.
+  static const Color onPrimary = Color(0xFFFFFFFF);
+
+  /// Error / destructive accent — darker red so it stays loud on white.
+  static const Color error = Color(0xFFC12B2B);
+  static const Color onError = Color(0xFFFFFFFF);
 }
 
 /// Single canonical entry point for any code-like surface (paths,

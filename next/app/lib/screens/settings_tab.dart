@@ -26,12 +26,21 @@ class SettingsTab extends StatelessWidget {
   /// Mirrors the contract used by BackendsScreen's add-sheet so SSH
   /// bootstrap launched from Settings produces the same outcome.
   final Future<void> Function(BackendTarget target, {required bool makeActive})
-      onBackendInstalled;
+  onBackendInstalled;
 
   /// Notify main.dart that notification preferences changed so it can
   /// (re)start or stop the foreground service. Forwarded straight to
   /// NotificationSettingsScreen.onChanged.
   final Future<void> Function() onNotificationPrefsChanged;
+
+  /// Current app-wide theme mode. Drives the Theme tile's subtitle so the
+  /// user can see the active choice without opening the picker.
+  final ThemeMode themeMode;
+
+  /// Persist + apply a new theme mode. The Theme picker calls this when
+  /// the user selects a radio option; the change becomes visible on the
+  /// next `MaterialApp` rebuild driven from main.dart.
+  final Future<void> Function(ThemeMode mode) onThemeModeChanged;
 
   const SettingsTab({
     super.key,
@@ -41,6 +50,8 @@ class SettingsTab extends StatelessWidget {
     required this.onOpenBackends,
     required this.onBackendInstalled,
     required this.onNotificationPrefsChanged,
+    required this.themeMode,
+    required this.onThemeModeChanged,
   });
 
   void _openSshBootstrap(BuildContext context) {
@@ -71,18 +82,63 @@ class SettingsTab extends StatelessWidget {
   void _openDiagnostics(BuildContext context) {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) =>
-            SystemTrayDebugScreen(controller: systemTrayController),
+        builder: (_) => SystemTrayDebugScreen(controller: systemTrayController),
       ),
     );
   }
 
   void _openAbout(BuildContext context) {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => const AboutScreen(),
-      ),
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute<void>(builder: (_) => const AboutScreen()));
+  }
+
+  Future<void> _openThemePicker(BuildContext context) async {
+    final picked = await showDialog<ThemeMode>(
+      context: context,
+      builder: (dialogContext) {
+        ThemeMode draft = themeMode;
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) => AlertDialog(
+            title: const Text('Theme'),
+            content: RadioGroup<ThemeMode>(
+              groupValue: draft,
+              onChanged: (v) {
+                if (v == null) return;
+                setDialogState(() => draft = v);
+              },
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final entry in _kThemeOptions)
+                    RadioListTile<ThemeMode>(
+                      key: ValueKey<String>(
+                        'theme-option:${_themeModeKey(entry.mode)}',
+                      ),
+                      value: entry.mode,
+                      title: Text(entry.label),
+                      subtitle: Text(entry.hint),
+                      dense: true,
+                    ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(dialogContext).pop(draft),
+                child: const Text('Apply'),
+              ),
+            ],
+          ),
+        );
+      },
     );
+    if (picked == null) return;
+    await onThemeModeChanged(picked);
   }
 
   @override
@@ -94,6 +150,14 @@ class SettingsTab extends StatelessWidget {
           title: const Text('Backends'),
           subtitle: const Text('Add, switch, rename, or remove servers'),
           onTap: onOpenBackends,
+        ),
+        const Divider(height: 1),
+        ListTile(
+          key: const ValueKey<String>('settings-theme-tile'),
+          leading: const Icon(Icons.brightness_6_outlined),
+          title: const Text('Theme'),
+          subtitle: Text(_describeThemeMode(themeMode)),
+          onTap: () => _openThemePicker(context),
         ),
         const Divider(height: 1),
         ListTile(
@@ -129,3 +193,32 @@ class SettingsTab extends StatelessWidget {
     );
   }
 }
+
+/// One row in the Theme picker. Held as a top-level constant so the
+/// list ordering — System / Light / Dark — stays explicit and the
+/// widget-test keys can be derived from `mode` without leaking
+/// internal labels.
+class _ThemeOption {
+  final ThemeMode mode;
+  final String label;
+  final String hint;
+  const _ThemeOption(this.mode, this.label, this.hint);
+}
+
+const List<_ThemeOption> _kThemeOptions = [
+  _ThemeOption(ThemeMode.system, 'System default', 'Follow the OS appearance'),
+  _ThemeOption(ThemeMode.light, 'Light', 'Always use the light palette'),
+  _ThemeOption(ThemeMode.dark, 'Dark', 'Always use the dark palette'),
+];
+
+String _themeModeKey(ThemeMode mode) => switch (mode) {
+  ThemeMode.system => 'system',
+  ThemeMode.light => 'light',
+  ThemeMode.dark => 'dark',
+};
+
+String _describeThemeMode(ThemeMode mode) => switch (mode) {
+  ThemeMode.system => 'System default',
+  ThemeMode.light => 'Light',
+  ThemeMode.dark => 'Dark',
+};
