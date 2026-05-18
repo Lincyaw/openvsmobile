@@ -29,7 +29,24 @@ class UiRenderer extends StatelessWidget {
   final UiNode tree;
   final void Function(UiNodeEvent event) onEvent;
 
-  const UiRenderer({super.key, required this.tree, required this.onEvent});
+  /// Optional screen-local hook: long-press on a [UiAppGrid] tile fires
+  /// with the surrounding grid id + the pressed tile's id. NOT part of
+  /// the widget contract — used by the host's Plugins-tab launcher to
+  /// surface a contextual action sheet (Enable/Disable/Copy path) the
+  /// way iOS / WeChat launchers bind long-press. Plugin-authored panels
+  /// leave this null and the gesture is a no-op.
+  ///
+  /// TODO(batch 4 SwipeAction): once UiAppGrid grows an
+  /// onLongPressEvent in the spec, drive this through the widget
+  /// contract and drop this screen-local hook.
+  final void Function(String gridId, String tileId)? onAppTileLongPress;
+
+  const UiRenderer({
+    super.key,
+    required this.tree,
+    required this.onEvent,
+    this.onAppTileLongPress,
+  });
 
   @override
   Widget build(BuildContext context) => _render(context, tree);
@@ -169,14 +186,31 @@ class UiRenderer extends StatelessWidget {
     }
     final label = node.text ?? (node.count != null ? '${node.count}' : '');
     final scheme = Theme.of(context).colorScheme;
-    // Pick foreground for readable contrast: bright accents (brand/info)
-    // pair with onPrimary; muted accents pair with onSurface.
-    final fg = node.accent == AccentToken.muted
-        ? scheme.onSurface
-        : scheme.onPrimary;
+    // Pick foreground for readable contrast. Each accent paints onto a
+    // specific scheme color and must pair with the matched on-* role:
+    //   * danger → onError (matches scheme.error background)
+    //   * muted  → onSurface (matches the dim outline accent)
+    //   * everything else → onPrimary (the bright-accent default)
+    // Using onPrimary for danger is a contrast accident — the pair
+    // isn't guaranteed to read as ≥4.5:1 against scheme.error.
+    final Color fg;
+    switch (node.accent) {
+      case AccentToken.danger:
+        fg = scheme.onError;
+        break;
+      case AccentToken.muted:
+        fg = scheme.onSurface;
+        break;
+      default:
+        fg = scheme.onPrimary;
+        break;
+    }
     return Container(
       key: key,
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      padding: EdgeInsets.symmetric(
+        horizontal: StyleSlotResolver.spacing(SpacingToken.sm) - 2,
+        vertical: 2,
+      ),
       decoration: BoxDecoration(
         color: accent,
         borderRadius: BorderRadius.circular(
@@ -235,6 +269,7 @@ class UiRenderer extends StatelessWidget {
           itemCount: node.items.length,
           itemBuilder: (context, i) {
             final tile = node.items[i];
+            final longPress = onAppTileLongPress;
             return _AppGridTile(
               tile: tile,
               gridId: node.id,
@@ -243,6 +278,9 @@ class UiRenderer extends StatelessWidget {
                 type: node.onLaunchEvent ?? 'launch',
                 payload: {'tileId': tile.id},
               )),
+              onLongPress: longPress == null
+                  ? null
+                  : () => longPress(node.id, tile.id),
             );
           },
         );
@@ -335,10 +373,14 @@ class _AppGridTile extends StatelessWidget {
   final UiAppTile tile;
   final String gridId;
   final VoidCallback onTap;
+  /// Screen-local long-press hook (Plugins-tab launcher only). Null for
+  /// plugin-authored panels.
+  final VoidCallback? onLongPress;
   const _AppGridTile({
     required this.tile,
     required this.gridId,
     required this.onTap,
+    this.onLongPress,
   });
 
   @override
@@ -353,6 +395,7 @@ class _AppGridTile extends StatelessWidget {
       borderRadius: BorderRadius.circular(AppRadius.sm),
       child: InkWell(
         onTap: onTap,
+        onLongPress: onLongPress,
         borderRadius: BorderRadius.circular(AppRadius.sm),
         child: Container(
           padding: const EdgeInsets.all(AppSpacing.sm),

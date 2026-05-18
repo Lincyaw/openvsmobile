@@ -17,6 +17,7 @@
 // matching `plugin.stateChanged` push to flip the wire-state.
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../app_state.dart';
 import '../state/plugins_model.dart';
@@ -51,6 +52,15 @@ class PluginsTab extends StatelessWidget {
           child: UiRenderer(
             tree: grid,
             onEvent: (e) => _onGridEvent(context, plugins, e),
+            // Long-press on a launcher tile opens the contextual action
+            // sheet (Enable/Disable + Copy cd command), matching the
+            // iOS / WeChat launcher gesture. The hook is screen-local
+            // (not part of the UiAppGrid wire contract) — plugin-
+            // authored UiAppGrid panels don't carry this affordance.
+            // TODO(batch 4 SwipeAction): once UiAppGrid grows an
+            // onLongPressEvent, drive this through the widget.
+            onAppTileLongPress: (gridId, tileId) =>
+                _showActionSheet(context, plugins, tileId),
           ),
         );
       },
@@ -124,6 +134,140 @@ class PluginsTab extends StatelessWidget {
       MaterialPageRoute<void>(
         builder: (_) =>
             PluginDetailScreen(appState: appState, pluginId: info.id),
+      ),
+    );
+  }
+
+  Future<void> _onToggle(
+    BuildContext context,
+    PluginInfo info,
+    bool enabled,
+  ) async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    try {
+      if (enabled) {
+        await appState.plugins.enable(info.id);
+      } else {
+        await appState.plugins.disable(info.id);
+      }
+    } catch (e) {
+      messenger?.showSnackBar(
+        SnackBar(
+          content: Text(
+            'Failed to ${enabled ? "enable" : "disable"} ${info.name}: $e',
+          ),
+        ),
+      );
+    }
+  }
+
+  void _showActionSheet(
+    BuildContext context,
+    List<PluginInfo> plugins,
+    String tileId,
+  ) {
+    final info = plugins.firstWhere(
+      (p) => p.id == tileId,
+      orElse: () => plugins.first,
+    );
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (sheetContext) => _PluginActionSheet(
+        info: info,
+        onEnable: () async {
+          Navigator.of(sheetContext).pop();
+          await _onToggle(context, info, true);
+        },
+        onDisable: () async {
+          Navigator.of(sheetContext).pop();
+          await _onToggle(context, info, false);
+        },
+        onOpenInTerminal: () async {
+          Navigator.of(sheetContext).pop();
+          final cmd = 'cd $_kFilesystemPluginsDir${info.id}';
+          await Clipboard.setData(ClipboardData(text: cmd));
+          if (context.mounted) {
+            ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+              SnackBar(content: Text('Copied to clipboard: $cmd')),
+            );
+          }
+        },
+      ),
+    );
+  }
+}
+
+/// Long-press contextual sheet on a launcher tile. Surfaces the
+/// Enable/Disable toggle and a "copy cd command" shortcut so the user
+/// can jump into the plugin's directory from a terminal without
+/// retyping the path. Restored in the review pass — pre-Batch-1 had
+/// this gesture and the launcher feels much worse without it.
+class _PluginActionSheet extends StatelessWidget {
+  final PluginInfo info;
+  final VoidCallback onEnable;
+  final VoidCallback onDisable;
+  final VoidCallback onOpenInTerminal;
+  const _PluginActionSheet({
+    required this.info,
+    required this.onEnable,
+    required this.onDisable,
+    required this.onOpenInTerminal,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isEnabled = info.state != PluginWireState.disabled;
+    return SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.lg,
+              AppSpacing.md,
+              AppSpacing.lg,
+              AppSpacing.sm,
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(info.name, style: theme.textTheme.titleMedium),
+                ),
+                Text(
+                  info.version,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          ListTile(
+            key: ValueKey<String>('plugin-sheet-toggle:${info.id}'),
+            leading: Icon(
+              isEnabled ? Icons.toggle_off_outlined : Icons.toggle_on_outlined,
+            ),
+            title: Text(isEnabled ? 'Disable' : 'Enable'),
+            onTap: isEnabled ? onDisable : onEnable,
+          ),
+          ListTile(
+            key: ValueKey<String>('plugin-sheet-terminal:${info.id}'),
+            leading: const Icon(Icons.terminal),
+            title: const Text('Copy cd command'),
+            subtitle: Text(
+              '$_kFilesystemPluginsDir${info.id}',
+              style: AppText.mono(
+                fontSize: 12,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            onTap: onOpenInTerminal,
+          ),
+        ],
       ),
     );
   }
@@ -522,6 +666,12 @@ class PluginDetailView extends StatelessWidget {
 /// with `primary` swapped to the plugin's color so the `brand`
 /// `AccentToken` resolves inside the plugin's panel only. Plugins
 /// without a `themeColor` get the surrounding theme verbatim.
+///
+/// Scope is the panel host (`PluginDetailView`) only — the brand color
+/// is for the plugin's content surface, not its metadata card. The
+/// info screen (`PluginInfoView`, for disabled plugins) deliberately
+/// inherits the app's default theme so the metadata reads as host
+/// chrome, not plugin chrome.
 class _PluginThemeScope extends StatelessWidget {
   final String? themeColor;
   final Widget child;

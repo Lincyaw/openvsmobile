@@ -5,7 +5,7 @@
 // reference icons by kebab-case name (Feather's canonical form); we
 // translate to `flutter_feather_icons`' camelCase constants.
 //
-// Curated subset (~120 names) chosen for breadth of common needs:
+// Curated subset (~155 names) chosen for breadth of common needs:
 // navigation, file/folder, code/terminal, status, communication, media,
 // security, system. We do not ship the full ~280 — every icon adds glyph
 // data to the font, and the typed-widget-tree philosophy favors a small

@@ -19,13 +19,18 @@ import 'package:mobilecode/ui/icon_catalog.dart';
 import 'package:mobilecode/ui/ui_node.dart';
 import 'package:mobilecode/ui/ui_renderer.dart';
 
-Widget _host(UiNode tree, {void Function(UiNodeEvent)? onEvent}) {
+Widget _host(
+  UiNode tree, {
+  void Function(UiNodeEvent)? onEvent,
+  void Function(String gridId, String tileId)? onAppTileLongPress,
+}) {
   return MaterialApp(
     home: Scaffold(
       body: SingleChildScrollView(
         child: UiRenderer(
           tree: tree,
           onEvent: onEvent ?? (_) {},
+          onAppTileLongPress: onAppTileLongPress,
         ),
       ),
     ),
@@ -370,6 +375,44 @@ void main() {
     expect(events.single.type, 'launch');
   });
 
+  testWidgets(
+      'UiAppGrid long-press fires the screen-local onAppTileLongPress hook',
+      (tester) async {
+    final longPresses = <(String, String)>[];
+    const tree = UiAppGrid(
+      id: 'g',
+      items: [
+        UiAppTile(id: 't1', name: 'Alpha', icon: UiAppTileIconName('home')),
+      ],
+    );
+    await tester.pumpWidget(_host(
+      tree,
+      onAppTileLongPress: (gridId, tileId) =>
+          longPresses.add((gridId, tileId)),
+    ));
+    await tester.longPress(find.text('Alpha'));
+    await tester.pump();
+    expect(longPresses, [('g', 't1')]);
+  });
+
+  testWidgets('UiBadge danger pill pairs the foreground with onError',
+      (tester) async {
+    // Regression guard for the contrast accident: danger background is
+    // scheme.error, so the matched on-* role is onError. Using onPrimary
+    // would degrade contrast on a theme whose primary != error.
+    const tree = UiBadge(
+      id: 'b',
+      variant: UiBadgeVariant.pill,
+      text: '99',
+      accent: AccentToken.danger,
+    );
+    await tester.pumpWidget(_host(tree));
+    final textWidget = tester.widget<Text>(find.text('99'));
+    final scheme =
+        Theme.of(tester.element(find.text('99'))).colorScheme;
+    expect(textWidget.style?.color, scheme.onError);
+  });
+
   test('UiAppTile.fromJson reads the catalog-name icon shape', () {
     final tile = UiAppTile.fromJson(<String, dynamic>{
       'id': 't',
@@ -457,6 +500,57 @@ void main() {
       StyleSlotResolver.accent(capturedCtx, AccentToken.danger),
       scheme.error,
     );
+  });
+
+  testWidgets('StyleSlotResolver: info / success / warning paint distinct hues',
+      (tester) async {
+    // Regression guard: pre-review these collapsed to scheme.tertiary
+    // (info+warning) and a hardcoded green hex (success). Each must
+    // resolve to a different Color so plugin authors using the three
+    // tokens get visually distinguishable accents.
+    late BuildContext ctx;
+    await tester.pumpWidget(MaterialApp(
+      home: Builder(builder: (c) {
+        ctx = c;
+        return const SizedBox.shrink();
+      }),
+    ));
+    final info = StyleSlotResolver.accent(ctx, AccentToken.info);
+    final success = StyleSlotResolver.accent(ctx, AccentToken.success);
+    final warning = StyleSlotResolver.accent(ctx, AccentToken.warning);
+    expect(info, isNot(equals(success)));
+    expect(info, isNot(equals(warning)));
+    expect(success, isNot(equals(warning)));
+  });
+
+  testWidgets('StyleSlotResolver: brightness flips info between light & dark',
+      (tester) async {
+    // Same accent token reads differently on a light vs dark surface —
+    // the resolver picks a tuned hue per brightness so the contrast
+    // intent survives mode switches.
+    Color? darkInfo;
+    await tester.pumpWidget(MaterialApp(
+      home: Theme(
+        data: ThemeData(brightness: Brightness.dark),
+        child: Builder(builder: (ctx) {
+          darkInfo = StyleSlotResolver.accent(ctx, AccentToken.info);
+          return const SizedBox.shrink();
+        }),
+      ),
+    ));
+    Color? lightInfo;
+    await tester.pumpWidget(MaterialApp(
+      home: Theme(
+        data: ThemeData(brightness: Brightness.light),
+        child: Builder(builder: (ctx) {
+          lightInfo = StyleSlotResolver.accent(ctx, AccentToken.info);
+          return const SizedBox.shrink();
+        }),
+      ),
+    ));
+    expect(darkInfo, isNotNull);
+    expect(lightInfo, isNotNull);
+    expect(darkInfo, isNot(equals(lightInfo)));
   });
 
   test('resolvePluginThemeColor handles every documented palette name', () {

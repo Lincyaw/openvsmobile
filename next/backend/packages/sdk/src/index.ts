@@ -224,7 +224,11 @@ export type UiNode =
 /// verbatim — that is the only way to keep focus / scroll state alive
 /// across re-renders.
 export const ui = {
-  column(p: { id?: string; gap?: number; children: UiNode[] }): UiColumn {
+  column(p: {
+    id?: string;
+    gap?: StyleSlot<SpacingToken>;
+    children: UiNode[];
+  }): UiColumn {
     const out: UiColumn = {
       kind: "Column",
       id: ensureId(p.id),
@@ -233,7 +237,11 @@ export const ui = {
     if (p.gap !== undefined) out.gap = p.gap;
     return out;
   },
-  row(p: { id?: string; gap?: number; children: UiNode[] }): UiRow {
+  row(p: {
+    id?: string;
+    gap?: StyleSlot<SpacingToken>;
+    children: UiNode[];
+  }): UiRow {
     const out: UiRow = {
       kind: "Row",
       id: ensureId(p.id),
@@ -266,7 +274,7 @@ export const ui = {
     if (p.style !== undefined) out.style = p.style;
     return out;
   },
-  spacer(p: { id?: string; size?: number } = {}): UiSpacer {
+  spacer(p: { id?: string; size?: StyleSlot<SpacingToken> } = {}): UiSpacer {
     const out: UiSpacer = { kind: "Spacer", id: ensureId(p.id) };
     if (p.size !== undefined) out.size = p.size;
     return out;

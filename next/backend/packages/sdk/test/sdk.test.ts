@@ -247,6 +247,21 @@ describe("Batch 1 widgets (UiIcon / UiBadge / UiListTile / UiAppGrid)", () => {
     const colNum = ui.column({ id: "c2", gap: 8, children: [] });
     expect(colNum.gap).toBe(8);
   });
+
+  it("ui.column / ui.row / ui.spacer accept a bare token string for gap/size", () => {
+    // Direct literal — no intermediate `as StyleSlot<...>` cast. If the
+    // constructor parameter narrows back to `number`, this fails TS
+    // compile before the runtime assertion ever runs.
+    const col = ui.column({ id: "tc", gap: "sm", children: [] });
+    const row = ui.row({ id: "tr", gap: "lg", children: [] });
+    const sp = ui.spacer({ id: "ts", size: "md" });
+    expect(col.gap).toBe("sm");
+    expect(row.gap).toBe("lg");
+    expect(sp.size).toBe("md");
+    // Numeric path still compiles for the same constructors.
+    const colNum = ui.column({ id: "tcn", gap: 12, children: [] });
+    expect(colNum.gap).toBe(12);
+  });
 });
 
 describe("createPlugin: renderPanel round-trip", () => {

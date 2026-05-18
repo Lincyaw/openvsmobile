@@ -396,20 +396,31 @@ class StyleSlotResolver {
   /// theme's primary, so the per-plugin theme override (Batch 1) flips
   /// `brand` on a panel-by-panel basis without touching the global scheme.
   /// `muted` is the dim-text / outline color for de-emphasized accents.
+  ///
+  /// Brightness-aware: info / success / warning each carry a tuned pair
+  /// so the same token reads as ≥4.5:1 contrast on both light and dark
+  /// surface containers. The dark-mode values are the bright-on-dark
+  /// (500-weight) hue; the light-mode values are the darker (700-weight)
+  /// hue tuned for legibility on a near-white surface.
   static Color accent(BuildContext context, AccentToken token) {
-    final scheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final isDark = theme.brightness == Brightness.dark;
     switch (token) {
       case AccentToken.brand:
         return scheme.primary;
       case AccentToken.info:
-        return scheme.tertiary;
+        return isDark
+            ? const Color(0xFF3B82F6) // blue-500
+            : const Color(0xFF1D4ED8); // blue-700
       case AccentToken.success:
-        // Re-use the brand green for success — keeps the palette honest;
-        // we deliberately don't introduce a fourth-color token until
-        // batch 2's UiSection.variant pass forces the issue.
-        return const Color(0xFF1F7A48);
+        return isDark
+            ? const Color(0xFF22C55E) // green-500
+            : const Color(0xFF15803D); // green-700
       case AccentToken.warning:
-        return scheme.tertiary;
+        return isDark
+            ? const Color(0xFFF59E0B) // amber-500
+            : const Color(0xFFB45309); // amber-700
       case AccentToken.danger:
         return scheme.error;
       case AccentToken.muted:
