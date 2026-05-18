@@ -352,6 +352,12 @@ export function createGithubClient({ token, userAgent }) {
    * `linkHeader`, distinct `notFound` status today) and forking the
    * helper keeps each callsite's envelope obvious at a glance.
    *
+   * **Security invariant — do not break:** Node's spec-compliant fetch
+   * (undici) strips the `Authorization` header on cross-origin redirects,
+   * so the GitHub token is NOT forwarded to the signed-URL host during
+   * the 302 follow. Do not add `redirect: 'manual'` or a custom redirect
+   * handler — either would re-introduce the token-leak path.
+   *
    * The `notFound` (404) status is surfaced distinctly because GitHub
    * returns 404 both for never-existed jobs and for jobs whose logs have
    * been pruned by the workflow's log-retention setting — the UI wants
