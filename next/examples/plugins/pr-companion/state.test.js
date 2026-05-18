@@ -50,10 +50,13 @@ describe("defaultState", () => {
       dismissedIds: [],
       lastSeenAt: null,
       scopeByWorkspace: {},
+      shownNotifIds: [],
     });
     // Each call returns a fresh object — mutations don't leak.
     s.dismissedIds.push("x");
+    s.shownNotifIds.push("y");
     expect(mod.defaultState().dismissedIds).toEqual([]);
+    expect(mod.defaultState().shownNotifIds).toEqual([]);
   });
 });
 
@@ -114,6 +117,7 @@ describe("saveState", () => {
       dismissedIds: ["x", "y"],
       lastSeenAt: "2026-05-18T00:00:00Z",
       scopeByWorkspace: { ws1: "allRepos" },
+      shownNotifIds: [],
     };
     await mod.saveState(s);
 
@@ -151,5 +155,127 @@ describe("saveState", () => {
       mod2.saveState(mod2.defaultState(), { log }),
     ).resolves.toBeUndefined();
     expect(log).toHaveBeenCalled();
+  });
+});
+
+// === Phase 6: shownNotifIds field + appendShownNotifId helper ===
+//
+// Covers: default value, malformed-file normalization, file-on-disk
+// over-cap trimming on load, round-trip persistence of populated
+// values, and the soft-cap eviction logic.
+
+describe("shownNotifIds (Phase 6)", () => {
+  it("loads as an empty array when the file does not exist", async () => {
+    const mod = await loadModule();
+    const s = await mod.loadState();
+    expect(s.shownNotifIds).toEqual([]);
+  });
+
+  it("filters non-string / empty entries on load", async () => {
+    const mod = await loadModule();
+    await mkdir(join(HOME, ".openvsmobile", "pr-companion"), {
+      recursive: true,
+    });
+    await writeFile(
+      join(HOME, ".openvsmobile", "pr-companion", "state.json"),
+      JSON.stringify({
+        shownNotifIds: ["n1", "", null, 42, "n2", undefined, "n3"],
+      }),
+      "utf8",
+    );
+    const s = await mod.loadState();
+    expect(s.shownNotifIds).toEqual(["n1", "n2", "n3"]);
+  });
+
+  it("trims to SHOWN_NOTIF_CAP on load when the file is over the limit", async () => {
+    const mod = await loadModule();
+    // Pre-cap value sourced from the module so this test follows
+    // wherever the constant moves. Build a list of size cap+5.
+    const cap = mod.SHOWN_NOTIF_CAP;
+    const ids = Array.from({ length: cap + 5 }, (_, i) => `n${i}`);
+    await mkdir(join(HOME, ".openvsmobile", "pr-companion"), {
+      recursive: true,
+    });
+    await writeFile(
+      join(HOME, ".openvsmobile", "pr-companion", "state.json"),
+      JSON.stringify({ shownNotifIds: ids }),
+      "utf8",
+    );
+    const s = await mod.loadState();
+    expect(s.shownNotifIds).toHaveLength(cap);
+    // The MOST-RECENT entries survive — the head is the eviction
+    // target. `n0..n4` should be gone; `n5..n(cap+4)` should remain.
+    expect(s.shownNotifIds[0]).toBe("n5");
+    expect(s.shownNotifIds[s.shownNotifIds.length - 1]).toBe(`n${cap + 4}`);
+  });
+
+  it("round-trips populated shownNotifIds through save+load", async () => {
+    const mod = await loadModule();
+    /** @type {import("./state.js").PersistedState} */
+    const s = {
+      dismissedIds: [],
+      lastSeenAt: null,
+      scopeByWorkspace: {},
+      shownNotifIds: ["a", "b", "c"],
+    };
+    await mod.saveState(s);
+    const reloaded = await mod.loadState();
+    expect(reloaded.shownNotifIds).toEqual(["a", "b", "c"]);
+  });
+});
+
+describe("appendShownNotifId", () => {
+  it("appends a fresh id to the end of the list", async () => {
+    const mod = await loadModule();
+    const s = mod.defaultState();
+    mod.appendShownNotifId(s, "n1");
+    mod.appendShownNotifId(s, "n2");
+    expect(s.shownNotifIds).toEqual(["n1", "n2"]);
+  });
+
+  it("is a no-op when the id is the most-recent entry", async () => {
+    const mod = await loadModule();
+    const s = mod.defaultState();
+    mod.appendShownNotifId(s, "n1");
+    mod.appendShownNotifId(s, "n1");
+    expect(s.shownNotifIds).toEqual(["n1"]);
+  });
+
+  it("moves an existing-but-non-tail id to the tail", async () => {
+    const mod = await loadModule();
+    const s = mod.defaultState();
+    mod.appendShownNotifId(s, "n1");
+    mod.appendShownNotifId(s, "n2");
+    mod.appendShownNotifId(s, "n3");
+    mod.appendShownNotifId(s, "n1");
+    expect(s.shownNotifIds).toEqual(["n2", "n3", "n1"]);
+  });
+
+  it("ignores empty / non-string ids", async () => {
+    const mod = await loadModule();
+    const s = mod.defaultState();
+    // @ts-expect-error — exercising the runtime guard
+    mod.appendShownNotifId(s, "");
+    // @ts-expect-error
+    mod.appendShownNotifId(s, null);
+    // @ts-expect-error
+    mod.appendShownNotifId(s, 42);
+    expect(s.shownNotifIds).toEqual([]);
+  });
+
+  it("evicts the oldest entry FIFO when the cap is exceeded", async () => {
+    const mod = await loadModule();
+    const cap = mod.SHOWN_NOTIF_CAP;
+    const s = mod.defaultState();
+    for (let i = 0; i < cap; i += 1) {
+      mod.appendShownNotifId(s, `n${i}`);
+    }
+    expect(s.shownNotifIds).toHaveLength(cap);
+    expect(s.shownNotifIds[0]).toBe("n0");
+    // One past cap → drop the head.
+    mod.appendShownNotifId(s, `n${cap}`);
+    expect(s.shownNotifIds).toHaveLength(cap);
+    expect(s.shownNotifIds[0]).toBe("n1");
+    expect(s.shownNotifIds[s.shownNotifIds.length - 1]).toBe(`n${cap}`);
   });
 });

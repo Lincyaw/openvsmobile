@@ -39,7 +39,7 @@ shell out to a `terminal.*` RPC (the `gh auth token` invocation is a
 plain `node:child_process` call inside our own process), and we never
 persist the token.
 
-## Scope (Phases 1 + 2 + 3 + 4 + 5 — shipped)
+## Scope (Phases 1 + 2 + 3 + 4 + 5 + 6 — shipped)
 
 Phase 1 — plugin shell:
 
@@ -127,20 +127,45 @@ Phase 5 (partial) — Checks tab:
   parallel with the other three, fresh PRs fall back to a sequential
   second stage (one extra round-trip on first paint). It piggybacks
   the existing 30-second ETag polling — no new timer.
-- Tapping a check row currently just logs at debug; opening a per-run
-  log bottom sheet is left as a `TODO Phase 6` marker (requires
-  github.js to fetch the run's log content, which it doesn't do
-  today).
+- Tapping a check row opens a bottom sheet with the last 200 lines of
+  the workflow-job log (see Phase 6 below for the consumer side).
 
-**Not yet implemented** (Phase 6):
+Phase 6 — notification fan-out + per-check log sheet:
 
-- **Background notification fan-out** via `notification.show` is
-  deferred. The plugin SDK has no `ctx.showNotification` API yet —
-  same pattern as the Phase-0 workspace SDK gap. A follow-up Phase 6
-  PR will land the SDK extension and wire the 5-minute background
-  poll to it. Per-check log bottom sheet ships in the same Phase 6.
-- Inline-file commenting on the Files tab and reactions are
-  deliberately out of scope for v0.
+- **Background notification fan-out.** On every successful 60s inbox
+  poll, genuinely-new `review_requested` / `mention` / `team_mention` /
+  `assign` items fire a system toast via `ctx.showNotification`
+  (Phase-6A SDK extension). Toasts carry `groupKey: "pr-companion"` so
+  the OS collapses bursts, and `ttl: 3600` so stale ones expire from
+  the host's notification store. Cold-start no-spam: on the very first
+  poll after activation (i.e. `shownNotifIds` empty on disk) the
+  plugin pre-populates the persisted shown-set with the entire
+  current inbox without firing — subsequent polls then only fan out
+  ids that are genuinely new since startup.
+- **Persistence of shown ids.** `state.json` gains a `shownNotifIds`
+  array soft-capped at 500 entries (FIFO eviction). The eviction
+  edge-case — an evicted id reappearing in the inbox could re-fire —
+  is acceptable given the 1-hour toast TTL.
+- **Per-check log bottom sheet.** Tapping a check row in the Checks
+  tab fetches the last 200 lines of the job log via
+  `github.js#getCheckRunLog` (Phase-6B) and opens a bottom sheet with
+  a `ui.codeBlock` (language=bash). Error envelopes map to inline
+  banners: `notFound` → "log unavailable (pruned by retention)",
+  `unauthed` → "token revoked, run gh auth login", `rateLimited` →
+  "rate-limited until HH:MM", `offline` → "offline", `serverError` →
+  "GitHub returned HTTP <code>". Fetch-first / sheet-after pattern
+  (same as Phase 4): no spinner-then-content swap, at the cost of
+  ≤10s between tap and sheet (github.js's request timeout bound).
+
+**Deferred** (not in Phase 6):
+
+- **Deep-linking from a toast back into the plugin's inbox panel** is
+  not yet wired. Requires extending `NotificationAction` in the SDK
+  with an `open-plugin-panel` variant; today the union is just
+  `{open-url, copy, open-workspace}`. The Phase-6 toast carries no
+  `action` field — it is informational only.
+- **Inline-file commenting on the Files tab** and **reactions** remain
+  out of scope for v0.
 
 See the design doc's "Implementation phases" section for the staged
 plan.

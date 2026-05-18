@@ -16,6 +16,21 @@
 //                          scoped to its own repo while B browses
 //                          everything; the key is the workspace's
 //                          stable UUID per design doc.
+//   * `shownNotifIds`    — notification ids the plugin has already
+//                          fanned out as a system notification via
+//                          `ctx.showNotification`. Prevents a poll's
+//                          worth of duplicates on every 60s tick (the
+//                          inbox always re-includes still-unread items),
+//                          and — crucially — gates the cold-start
+//                          no-spam behavior in index.js: on first
+//                          activation we pre-populate this list with
+//                          the entire initial poll without firing any
+//                          toasts, so subsequent polls only fan out
+//                          genuinely-new ids. Soft-capped at 500
+//                          entries (FIFO eviction); the oldest dropped
+//                          id could re-fire if it reappears in the
+//                          inbox, which is acceptable given the toast
+//                          itself carries a 1-hour TTL.
 //
 // Token is INTENTIONALLY NOT stored here. Auth lives in `gh auth token`,
 // re-read on every activation — see auth.js header.
@@ -42,7 +57,17 @@ const STATE_TMP_PATH = `${STATE_PATH}.tmp`;
  * @property {string[]} dismissedIds
  * @property {string | null} lastSeenAt
  * @property {Record<string, "thisRepo" | "allRepos">} scopeByWorkspace
+ * @property {string[]} shownNotifIds
  */
+
+/**
+ * Soft cap on `shownNotifIds`. Once we cross this, the oldest entries
+ * are dropped FIFO on every append. Sized to comfortably cover a few
+ * weeks of an active reviewer's inbox without the file growing
+ * unboundedly; the exact number is not load-bearing — see the module
+ * header for the eviction-edge-case rationale.
+ */
+export const SHOWN_NOTIF_CAP = 500;
 
 /**
  * Default-shaped persisted state, returned when no file exists yet or
@@ -56,6 +81,7 @@ export function defaultState() {
     dismissedIds: [],
     lastSeenAt: null,
     scopeByWorkspace: {},
+    shownNotifIds: [],
   };
 }
 
@@ -97,7 +123,54 @@ function normalize(raw) {
       }
     }
   }
+  if (Array.isArray(obj.shownNotifIds)) {
+    // Same string-filter shape as dismissedIds; if the file ever grew
+    // past the soft cap (e.g. an older build saved with no cap), trim
+    // to the most-recent SHOWN_NOTIF_CAP entries so we don't carry
+    // forever-growing files across upgrades.
+    const filtered = obj.shownNotifIds
+      .filter((id) => typeof id === "string" && id.length > 0)
+      .map((id) => /** @type {string} */ (id));
+    out.shownNotifIds =
+      filtered.length > SHOWN_NOTIF_CAP
+        ? filtered.slice(filtered.length - SHOWN_NOTIF_CAP)
+        : filtered;
+  }
   return out;
+}
+
+/**
+ * Append `id` to `shownNotifIds` with FIFO eviction at SHOWN_NOTIF_CAP.
+ * Mutates `state` in place and returns it for call-chaining. No-op when
+ * `id` is already present — the in-memory Set in index.js short-circuits
+ * the common case, but the in-place check here keeps the helper safe to
+ * call without a separate dedup gate.
+ *
+ * @param {PersistedState} state
+ * @param {string} id
+ * @returns {PersistedState}
+ */
+export function appendShownNotifId(state, id) {
+  if (typeof id !== "string" || id.length === 0) return state;
+  // Cheap dedup against the tail — the common-case repeat is a
+  // just-fanned id appearing again in the next 60s tick, so checking
+  // the tail catches almost all redundant appends without an O(n) scan.
+  if (state.shownNotifIds.length > 0) {
+    if (state.shownNotifIds[state.shownNotifIds.length - 1] === id) {
+      return state;
+    }
+  }
+  // Full O(n) dedup for correctness — keeping a duplicate around would
+  // burn a slot of the soft cap and slightly skew the FIFO order.
+  const existingIdx = state.shownNotifIds.indexOf(id);
+  if (existingIdx !== -1) {
+    state.shownNotifIds.splice(existingIdx, 1);
+  }
+  state.shownNotifIds.push(id);
+  while (state.shownNotifIds.length > SHOWN_NOTIF_CAP) {
+    state.shownNotifIds.shift();
+  }
+  return state;
 }
 
 /**

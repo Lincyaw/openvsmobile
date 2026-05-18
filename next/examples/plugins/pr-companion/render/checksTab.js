@@ -15,10 +15,13 @@
 //       └── for each check_run: ui.row[icon · name · "duration · conclusion"]
 //
 // Status → icon mapping is centralized in `iconForStatus` so the test
-// can exercise every branch from a tiny table. Tap on a row currently
-// just emits the event id — opening a per-check log bottom sheet
-// requires github.js to fetch the run's log content, which it does
-// not do today; left as a TODO Phase 6 marker.
+// can exercise every branch from a tiny table. Tap on a row emits a
+// `${CHECK_LOG_EVENT_PREFIX}<idx>` event that index.js's Phase-6
+// dispatch picks up — see render/logSheet.js for the resulting bottom-
+// sheet body. The legacy Phase-5 `detail-check-tapped:<idx>` event is
+// still emitted by prDetail.js's handler-swallow path (it logs at
+// debug + returns true), so the new event uses a distinct prefix to
+// route around it cleanly without modifying prDetail.js.
 //
 // Empty / error states mirror filesTab's pattern: caption inside a
 // `ui.section` so the panel never collapses to nothing.
@@ -30,6 +33,19 @@ import { iconForStatus, captionForRun } from "./_pure.js";
 // Re-export so the test file (and any future caller) can import either
 // from here or directly from _pure.js without caring where it lives.
 export { iconForStatus, captionForRun };
+
+/**
+ * Event-id prefix fired when the user taps a check row. Index.js's
+ * dispatch parses the suffix as the row index and looks up the
+ * corresponding CheckRun in the prDetail cache. Exported so the
+ * dispatch and this renderer share one source of truth.
+ *
+ * Distinct from Phase-5's `detail-check-tapped:` prefix on purpose:
+ * prDetail.js's existing handler swallows that one with a debug log,
+ * and we'd rather not modify prDetail.js to re-route. The two
+ * prefixes coexist; only the new one is wired up today.
+ */
+export const CHECK_LOG_EVENT_PREFIX = "detail-check-log:";
 
 /**
  * Whether a run is still in-flight. Used to gate the linear progress
@@ -69,7 +85,7 @@ function buildRow(run, idx) {
     title: run.name,
     leading: ui.icon({ id: `${rowId}-leading`, name, accent }),
     subtitle: caption.length > 0 ? caption : undefined,
-    onTapEvent: `detail-check-tapped:${idx}`,
+    onTapEvent: `${CHECK_LOG_EVENT_PREFIX}${idx}`,
   });
 }
 
