@@ -310,4 +310,44 @@ void main() {
     expect(find.text('B'), findsOneWidget);
     expect(find.text('panel A content'), findsOneWidget);
   });
+
+  testWidgets('grid renders one card per plugin with a card key',
+      (tester) async {
+    final appState = await _appStateWithSeed([
+      _info(id: 'alpha', state: PluginWireState.running),
+      _info(id: 'beta', state: PluginWireState.disabled),
+    ]);
+    addTearDown(appState.dispose);
+    await tester.pumpWidget(_wrap(PluginsTab(appState: appState)));
+    await tester.pump();
+
+    expect(find.byType(GridView), findsOneWidget);
+    expect(find.byKey(const ValueKey<String>('plugin-card:alpha')),
+        findsOneWidget);
+    expect(
+        find.byKey(const ValueKey<String>('plugin-card:beta')), findsOneWidget);
+  });
+
+  testWidgets('tapping a disabled plugin opens the info screen with path hint',
+      (tester) async {
+    final appState = await _appStateWithSeed([
+      _info(id: 'sleepy', state: PluginWireState.disabled),
+    ]);
+    addTearDown(appState.dispose);
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(body: PluginsTab(appState: appState)),
+    ));
+    await tester.pump();
+
+    await tester.tap(find.text('sleepy'));
+    await tester.pumpAndSettle();
+
+    // Info screen shows the filesystem path and an Enable button.
+    expect(find.textContaining('~/.local/share/openvsmobile-next/plugins/'),
+        findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('plugin-info-toggle:sleepy')),
+      findsOneWidget,
+    );
+  });
 }
