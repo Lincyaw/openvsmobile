@@ -84,19 +84,43 @@ class UiRenderer extends StatelessWidget {
             axis: Axis.horizontal,
           ),
         );
-      case UiSection(:final title, :final variant, :final children):
+      case UiSection(:final title, :final variant, :final collapsible, :final children):
         // Dispatch on the optional `variant`. Omitted → `plain` so any
         // pre-Batch-2 tree (no variant on the wire) renders identically
         // to the old Section path. `card` reuses the renderer's Card
         // branch so the visual stays one source of truth.
-        switch (variant ?? UiSectionVariant.plain) {
-          case UiSectionVariant.plain:
-            return _buildPlainSection(context, key, title, children);
-          case UiSectionVariant.card:
-            return _buildCardSection(context, key, title, children);
-          case UiSectionVariant.inset:
-            return _buildInsetSection(context, key, title, children);
+        final v = variant ?? UiSectionVariant.plain;
+        if (!collapsible) {
+          switch (v) {
+            case UiSectionVariant.plain:
+              return _buildPlainSection(context, key, title, children);
+            case UiSectionVariant.card:
+              return _buildCardSection(context, key, title, children);
+            case UiSectionVariant.inset:
+              return _buildInsetSection(context, key, title, children);
+          }
         }
+        // Collapsible: stateful wrapper owns expand state keyed by the
+        // section's node id. Re-render with the same id → State object
+        // survives (Flutter reconciles by Key) → expand state persists.
+        // Re-render with a different id → fresh State → default expanded.
+        return _CollapsibleSection(
+          key: ValueKey<String>('ui:${node.id}:collapsible'),
+          title: title,
+          renderBody: (bool expanded) {
+            final body = expanded
+                ? Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: children
+                        .map((c) => _render(context, c))
+                        .toList(),
+                  )
+                : const SizedBox.shrink();
+            return body;
+          },
+          variant: v,
+        );
       case UiCard(:final children):
         // Deprecated alias kept for one minor version. Delegates through
         // the same code path as `UiSection { variant: 'card' }` so a
@@ -170,6 +194,65 @@ class UiRenderer extends StatelessWidget {
         return _buildProgress(context, key, node);
       case UiSpinner():
         return _buildSpinner(context, key, node);
+      case UiGrid():
+        return _buildGrid(context, key, node);
+      case UiStack():
+        return _buildStack(context, key, node);
+      case UiAspect(:final ratio, :final child):
+        return AspectRatio(
+          key: key,
+          aspectRatio: ratio,
+          child: _render(context, child),
+        );
+      case UiFlex(:final flex, :final child):
+        // Inside a Row/Column the wrapper turns into an `Expanded`
+        // claiming `flex` shares; the renderer's _render dispatch is
+        // unaware of the outer axis. To keep behavior predictable in
+        // both contexts we expose the Expanded here and trust the
+        // surrounding Row/Column to interpret it. Outside a Row/Column
+        // Expanded would assert at layout time, so callers placing
+        // UiFlex outside a flex container are misusing the widget;
+        // that contract is documented on the SDK side.
+        return Expanded(
+          key: key,
+          flex: flex <= 0 ? 1 : flex.round().clamp(1, 1 << 20),
+          child: _render(context, child),
+        );
+      case UiScroll(:final axis, :final child):
+        return SingleChildScrollView(
+          key: key,
+          scrollDirection: (axis ?? UiScrollAxis.vertical) ==
+                  UiScrollAxis.horizontal
+              ? Axis.horizontal
+              : Axis.vertical,
+          child: _render(context, child),
+        );
+      case UiTabBar():
+        return _buildTabBar(context, key, node);
+      case UiSearchField():
+        return _UiSearchFieldRenderer(
+          key: key,
+          node: node,
+          onEvent: onEvent,
+        );
+      case UiCheckbox():
+        return _UiCheckboxRenderer(
+          key: key,
+          node: node,
+          onEvent: onEvent,
+        );
+      case UiRadioGroup():
+        return _UiRadioGroupRenderer(
+          key: key,
+          node: node,
+          onEvent: onEvent,
+        );
+      case UiSlider():
+        return _UiSliderRenderer(
+          key: key,
+          node: node,
+          onEvent: onEvent,
+        );
     }
   }
 
@@ -951,6 +1034,118 @@ class UiRenderer extends StatelessWidget {
     }
   }
 
+  // ---- Batch 5 widgets (§4.3) — long tail ----
+
+  Widget _buildGrid(BuildContext context, Key key, UiGrid node) {
+    final gap = node.gap == null
+        ? AppSpacing.sm
+        : StyleSlotResolver.spacingSlot(
+            numeric: node.gap!.numeric,
+            token: node.gap!.token,
+          );
+    return LayoutBuilder(
+      key: key,
+      builder: (context, constraints) {
+        int columns;
+        if (node.columns.fixed != null) {
+          columns = node.columns.fixed!;
+        } else {
+          // Adaptive: target ~120dp per cell. Clamp to >=1 so very-narrow
+          // viewports still render at least one column.
+          const target = 120.0;
+          final w = constraints.maxWidth.isFinite ? constraints.maxWidth : 360.0;
+          columns = (w / target).floor().clamp(1, 1 << 8);
+        }
+        return GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          padding: EdgeInsets.zero,
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: columns,
+            mainAxisSpacing: gap,
+            crossAxisSpacing: gap,
+            childAspectRatio: 1,
+          ),
+          itemCount: node.children.length,
+          itemBuilder: (context, i) => _render(context, node.children[i]),
+        );
+      },
+    );
+  }
+
+  Widget _buildStack(BuildContext context, Key key, UiStack node) {
+    final alignment = _stackAlignmentToFlutter(node.alignment);
+    return Stack(
+      key: key,
+      alignment: alignment,
+      children: node.children.map((c) => _render(context, c)).toList(),
+    );
+  }
+
+  static Alignment _stackAlignmentToFlutter(UiStackAlignment? a) {
+    switch (a ?? UiStackAlignment.center) {
+      case UiStackAlignment.topStart:
+        return Alignment.topLeft;
+      case UiStackAlignment.topCenter:
+        return Alignment.topCenter;
+      case UiStackAlignment.topEnd:
+        return Alignment.topRight;
+      case UiStackAlignment.centerStart:
+        return Alignment.centerLeft;
+      case UiStackAlignment.center:
+        return Alignment.center;
+      case UiStackAlignment.centerEnd:
+        return Alignment.centerRight;
+      case UiStackAlignment.bottomStart:
+        return Alignment.bottomLeft;
+      case UiStackAlignment.bottomCenter:
+        return Alignment.bottomCenter;
+      case UiStackAlignment.bottomEnd:
+        return Alignment.bottomRight;
+    }
+  }
+
+  Widget _buildTabBar(BuildContext context, Key key, UiTabBar node) {
+    // iOS-style segmented control. Active tab gets a raised pill;
+    // inactive tabs are bare label rows. Tap → fire onChangeEvent with
+    // payload { tabId }. Switching content is the plugin's job.
+    final scheme = Theme.of(context).colorScheme;
+    final activeId = node.tabs.any((t) => t.id == node.activeId)
+        ? node.activeId
+        : node.tabs.first.id;
+    return Container(
+      key: key,
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainer,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final tab in node.tabs)
+            Expanded(
+              child: _UiTabBarItem(
+                key: ValueKey<String>('tab:${node.id}/${tab.id}'),
+                tab: tab,
+                selected: tab.id == activeId,
+                onTap: () {
+                  final evt = node.onChangeEvent;
+                  if (evt != null) {
+                    onEvent(UiNodeEvent(
+                      nodeId: node.id,
+                      type: evt,
+                      payload: {'tabId': tab.id},
+                    ));
+                  }
+                },
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildSpinner(BuildContext context, Key key, UiSpinner node) {
     final theme = Theme.of(context);
     final size = node.size != null
@@ -1390,6 +1585,142 @@ class _UiSelectRendererState extends State<_UiSelectRenderer> {
   }
 }
 
+/// Stateful wrapper that owns the expand/collapse state for a
+/// [UiSection] when `collapsible: true`. Default state is expanded.
+/// Because the wrapper sits behind a ValueKey derived from the section
+/// id, re-renders with the same id reuse the same State object — so
+/// the user's toggle survives until either the id changes or the
+/// renderer rebuilds without `collapsible`.
+class _CollapsibleSection extends StatefulWidget {
+  final String? title;
+  final Widget Function(bool expanded) renderBody;
+  final UiSectionVariant variant;
+  const _CollapsibleSection({
+    super.key,
+    required this.title,
+    required this.renderBody,
+    required this.variant,
+  });
+
+  @override
+  State<_CollapsibleSection> createState() => _CollapsibleSectionState();
+}
+
+class _CollapsibleSectionState extends State<_CollapsibleSection> {
+  bool _expanded = true;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final hasTitle = widget.title != null && widget.title!.isNotEmpty;
+    final chevron = AnimatedRotation(
+      turns: _expanded ? 0 : -0.25,
+      duration: const Duration(milliseconds: 180),
+      child: Icon(
+        resolveIconByName('chevron-down') ?? Icons.expand_more,
+        size: AppIconSize.sm,
+        color: scheme.onSurfaceVariant,
+      ),
+    );
+    final header = InkWell(
+      onTap: () => setState(() => _expanded = !_expanded),
+      borderRadius: BorderRadius.circular(AppRadius.sm),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.sm,
+          vertical: AppSpacing.sm,
+        ),
+        child: Row(
+          children: [
+            if (hasTitle)
+              Expanded(
+                child: Text(
+                  widget.title!,
+                  style: widget.variant == UiSectionVariant.inset
+                      ? theme.textTheme.labelSmall?.copyWith(
+                            color: scheme.onSurfaceVariant,
+                            letterSpacing: 0.6,
+                            fontWeight: FontWeight.w600,
+                          )
+                      : theme.textTheme.titleMedium,
+                ),
+              )
+            else
+              const Spacer(),
+            chevron,
+          ],
+        ),
+      ),
+    );
+    final body = widget.renderBody(_expanded);
+    // For the `card` variant, keep the body inside a Material Card so
+    // the chrome stays consistent. For `inset`, drop the body inside an
+    // [InsetSection] surface when expanded so the dividers + rounded
+    // edge still render correctly.
+    Widget content;
+    switch (widget.variant) {
+      case UiSectionVariant.plain:
+        content = Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            header,
+            if (_expanded) body,
+          ],
+        );
+        break;
+      case UiSectionVariant.card:
+        content = Card(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                header,
+                if (_expanded)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(
+                      AppSpacing.sm,
+                      0,
+                      AppSpacing.sm,
+                      AppSpacing.sm,
+                    ),
+                    child: body,
+                  ),
+              ],
+            ),
+          ),
+        );
+        break;
+      case UiSectionVariant.inset:
+        content = Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.lg,
+            vertical: AppSpacing.sm,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              header,
+              if (_expanded)
+                Material(
+                  color: scheme.surfaceContainer,
+                  borderRadius: BorderRadius.circular(AppRadius.lg),
+                  clipBehavior: Clip.antiAlias,
+                  child: body,
+                ),
+            ],
+          ),
+        );
+        break;
+    }
+    return content;
+  }
+}
+
 /// Slim corner badge for [UiAppTile]. Renders a small pill with the
 /// count (or text); empty badges degrade to a danger-accented dot.
 class _AppTileBadge extends StatelessWidget {
@@ -1421,6 +1752,371 @@ class _AppTileBadge extends StatelessWidget {
               fontWeight: FontWeight.w700,
             ),
       ),
+    );
+  }
+}
+
+
+/// Single segmented-control tab inside [UiTabBar]. Active tabs raise
+/// to the surface-container-highest with a subtle border; inactive
+/// tabs sit flush.
+class _UiTabBarItem extends StatelessWidget {
+  final UiTabBarTab tab;
+  final bool selected;
+  final VoidCallback onTap;
+  const _UiTabBarItem({
+    super.key,
+    required this.tab,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final iconData = tab.icon == null ? null : resolveIconByName(tab.icon!);
+    final pill = Container(
+      decoration: BoxDecoration(
+        color: selected ? scheme.surfaceContainerHighest : null,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        border: selected
+            ? Border.all(color: scheme.outline, width: 1)
+            : null,
+      ),
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.sm,
+        vertical: AppSpacing.xs,
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          if (iconData != null)
+            Padding(
+              padding: const EdgeInsets.only(right: AppSpacing.xs),
+              child: Icon(
+                iconData,
+                size: AppIconSize.sm,
+                color: selected ? scheme.onSurface : scheme.onSurfaceVariant,
+              ),
+            ),
+          Text(
+            tab.label,
+            style: theme.textTheme.labelLarge?.copyWith(
+              color: selected ? scheme.onSurface : scheme.onSurfaceVariant,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+            ),
+          ),
+        ],
+      ),
+    );
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(AppRadius.sm),
+      child: pill,
+    );
+  }
+}
+
+/// Stateful inner renderer for [UiSearchField]. Holds its own
+/// `TextEditingController` so the clear button can wipe the text
+/// without round-tripping through the plugin first; the controller's
+/// text is the source of local truth between renders.
+class _UiSearchFieldRenderer extends StatefulWidget {
+  final UiSearchField node;
+  final void Function(UiNodeEvent event) onEvent;
+  const _UiSearchFieldRenderer({
+    super.key,
+    required this.node,
+    required this.onEvent,
+  });
+
+  @override
+  State<_UiSearchFieldRenderer> createState() => _UiSearchFieldRendererState();
+}
+
+class _UiSearchFieldRendererState extends State<_UiSearchFieldRenderer> {
+  late TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.node.value ?? '');
+  }
+
+  @override
+  void didUpdateWidget(_UiSearchFieldRenderer old) {
+    super.didUpdateWidget(old);
+    final next = widget.node.value ?? '';
+    if (widget.node.value != old.node.value && _controller.text != next) {
+      _controller.text = next;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _emit(String value) {
+    final evt = widget.node.onChangeEvent;
+    if (evt == null) return;
+    widget.onEvent(UiNodeEvent(
+      nodeId: widget.node.id,
+      type: evt,
+      payload: {'value': value},
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final hasText = _controller.text.isNotEmpty;
+        return TextField(
+          controller: _controller,
+          decoration: InputDecoration(
+            prefixIcon: Icon(
+              resolveIconByName('search') ?? Icons.search,
+              size: AppIconSize.sm,
+              color: scheme.onSurfaceVariant,
+            ),
+            suffixIcon: hasText
+                ? IconButton(
+                    icon: Icon(
+                      resolveIconByName('x') ?? Icons.close,
+                      size: AppIconSize.sm,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                    tooltip: 'Clear',
+                    onPressed: () {
+                      _controller.clear();
+                      _emit('');
+                    },
+                  )
+                : null,
+            hintText: widget.node.placeholder,
+            border: const OutlineInputBorder(),
+            isDense: true,
+          ),
+          onChanged: _emit,
+        );
+      },
+    );
+  }
+}
+
+/// Stateful inner renderer for [UiCheckbox]. Same optimistic-local +
+/// authoritative-wire contract as [UiSwitch].
+class _UiCheckboxRenderer extends StatefulWidget {
+  final UiCheckbox node;
+  final void Function(UiNodeEvent event) onEvent;
+  const _UiCheckboxRenderer({
+    super.key,
+    required this.node,
+    required this.onEvent,
+  });
+
+  @override
+  State<_UiCheckboxRenderer> createState() => _UiCheckboxRendererState();
+}
+
+class _UiCheckboxRendererState extends State<_UiCheckboxRenderer> {
+  late bool _value;
+
+  @override
+  void initState() {
+    super.initState();
+    _value = widget.node.value;
+  }
+
+  @override
+  void didUpdateWidget(_UiCheckboxRenderer old) {
+    super.didUpdateWidget(old);
+    if (widget.node.value != _value) {
+      _value = widget.node.value;
+    }
+  }
+
+  void _toggle(bool? next) {
+    if (next == null) return;
+    setState(() => _value = next);
+    final evt = widget.node.onChangeEvent;
+    if (evt != null) {
+      widget.onEvent(UiNodeEvent(
+        nodeId: widget.node.id,
+        type: evt,
+        payload: {'value': next},
+      ));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final label = widget.node.label;
+    final box = Checkbox(value: _value, onChanged: _toggle);
+    if (label == null || label.isEmpty) return box;
+    return InkWell(
+      onTap: () => _toggle(!_value),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          box,
+          const SizedBox(width: AppSpacing.xs),
+          Flexible(child: Text(label)),
+        ],
+      ),
+    );
+  }
+}
+
+/// Stateful inner renderer for [UiRadioGroup]. Same contract as
+/// [UiSwitch].
+class _UiRadioGroupRenderer extends StatefulWidget {
+  final UiRadioGroup node;
+  final void Function(UiNodeEvent event) onEvent;
+  const _UiRadioGroupRenderer({
+    super.key,
+    required this.node,
+    required this.onEvent,
+  });
+
+  @override
+  State<_UiRadioGroupRenderer> createState() => _UiRadioGroupRendererState();
+}
+
+class _UiRadioGroupRendererState extends State<_UiRadioGroupRenderer> {
+  String? _value;
+
+  @override
+  void initState() {
+    super.initState();
+    _value = widget.node.value;
+  }
+
+  @override
+  void didUpdateWidget(_UiRadioGroupRenderer old) {
+    super.didUpdateWidget(old);
+    if (widget.node.value != _value) {
+      _value = widget.node.value;
+    }
+  }
+
+  void _pick(String? next) {
+    if (next == null || next == _value) return;
+    setState(() => _value = next);
+    final evt = widget.node.onChangeEvent;
+    if (evt != null) {
+      widget.onEvent(UiNodeEvent(
+        nodeId: widget.node.id,
+        type: evt,
+        payload: {'value': next},
+      ));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Wrap in RadioGroup<String> per the post-3.32 API: Radio widgets
+    // bind to the nearest RadioGroup ancestor for group value + change
+    // callback, replacing the per-Radio `groupValue` / `onChanged`
+    // arguments that were deprecated in 3.32.
+    return RadioGroup<String>(
+      groupValue: _value,
+      onChanged: _pick,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (final opt in widget.node.options)
+            InkWell(
+              key: ValueKey<String>('radio:${widget.node.id}/${opt.value}'),
+              onTap: () => _pick(opt.value),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
+                child: Row(
+                  children: [
+                    Radio<String>(value: opt.value),
+                    const SizedBox(width: AppSpacing.xs),
+                    Flexible(child: Text(opt.label)),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Stateful inner renderer for [UiSlider]. Continuous when [UiSlider.step]
+/// is null; stepped otherwise. Same optimistic-local + authoritative-
+/// wire contract as the other inputs.
+class _UiSliderRenderer extends StatefulWidget {
+  final UiSlider node;
+  final void Function(UiNodeEvent event) onEvent;
+  const _UiSliderRenderer({
+    super.key,
+    required this.node,
+    required this.onEvent,
+  });
+
+  @override
+  State<_UiSliderRenderer> createState() => _UiSliderRendererState();
+}
+
+class _UiSliderRendererState extends State<_UiSliderRenderer> {
+  late double _value;
+
+  @override
+  void initState() {
+    super.initState();
+    _value = _clamped(widget.node.value);
+  }
+
+  @override
+  void didUpdateWidget(_UiSliderRenderer old) {
+    super.didUpdateWidget(old);
+    if (widget.node.value != old.node.value) {
+      _value = _clamped(widget.node.value);
+    }
+  }
+
+  double _clamped(double v) => v.clamp(widget.node.min, widget.node.max);
+
+  int? _divisions() {
+    final step = widget.node.step;
+    if (step == null || step <= 0) return null;
+    final span = widget.node.max - widget.node.min;
+    if (span <= 0) return null;
+    final n = (span / step).round();
+    return n > 0 ? n : null;
+  }
+
+  void _onChanged(double v) {
+    setState(() => _value = v);
+    final evt = widget.node.onChangeEvent;
+    if (evt != null) {
+      widget.onEvent(UiNodeEvent(
+        nodeId: widget.node.id,
+        type: evt,
+        payload: {'value': v},
+      ));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Slider(
+      min: widget.node.min,
+      max: widget.node.max,
+      divisions: _divisions(),
+      value: _value,
+      onChanged: _onChanged,
     );
   }
 }

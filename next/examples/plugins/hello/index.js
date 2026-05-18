@@ -50,6 +50,13 @@ plugin.run();
 `;
 
 let name = "";
+// Batch 5 dogfood — the "Playground" section drives a Slider, a
+// Checkbox, and a RadioGroup so each Batch-5 input widget has a
+// visible test. State is purely local; the values are rendered back
+// into a caption so the user can see the round-trip working.
+let volume = 50;
+let agreed = false;
+let theme = "auto";
 
 function renderHome(ctx) {
   ctx.renderPanel(
@@ -108,6 +115,45 @@ function renderHome(ctx) {
             }),
           ],
         }),
+        // Playground — Batch 5 input demo. Each control's state is
+        // mirrored back to a caption so the round-trip is visible
+        // without needing to dig into logs.
+        ui.section({
+          id: "home-playground-section",
+          title: "Playground",
+          variant: "inset",
+          children: [
+            ui.text({
+              id: "home-playground-summary",
+              text: `volume=${volume}  agreed=${agreed}  theme=${theme}`,
+              style: "mono",
+            }),
+            ui.slider({
+              id: "home-volume",
+              min: 0,
+              max: 100,
+              step: 5,
+              value: volume,
+              onChangeEvent: "volume-changed",
+            }),
+            ui.checkbox({
+              id: "home-agree",
+              label: "I agree to be greeted",
+              value: agreed,
+              onChangeEvent: "agree-changed",
+            }),
+            ui.radioGroup({
+              id: "home-theme",
+              value: theme,
+              onChangeEvent: "theme-changed",
+              options: [
+                { value: "auto", label: "Auto" },
+                { value: "light", label: "Light" },
+                { value: "dark", label: "Dark" },
+              ],
+            }),
+          ],
+        }),
       ],
     }),
   );
@@ -125,6 +171,28 @@ const plugin = createPlugin({
     }
     if (event.nodeId === "greet-btn" && event.type === "tap") {
       renderHome(ctx);
+      return;
+    }
+    if (event.nodeId === "home-volume" && event.type === "volume-changed") {
+      const v = event.payload && event.payload.value;
+      if (typeof v === "number" && Number.isFinite(v)) {
+        volume = Math.round(v);
+        renderHome(ctx);
+      }
+      return;
+    }
+    if (event.nodeId === "home-agree" && event.type === "agree-changed") {
+      const v = event.payload && event.payload.value;
+      agreed = v === true;
+      renderHome(ctx);
+      return;
+    }
+    if (event.nodeId === "home-theme" && event.type === "theme-changed") {
+      const v = event.payload && event.payload.value;
+      if (typeof v === "string") {
+        theme = v;
+        renderHome(ctx);
+      }
     }
   },
 });

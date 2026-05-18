@@ -99,6 +99,21 @@ const PROGRESS_VARIANTS: ReadonlySet<string> = new Set([
   "linear",
   "circular",
 ]);
+const STACK_ALIGNMENTS: ReadonlySet<string> = new Set([
+  "topStart",
+  "topCenter",
+  "topEnd",
+  "centerStart",
+  "center",
+  "centerEnd",
+  "bottomStart",
+  "bottomCenter",
+  "bottomEnd",
+]);
+const SCROLL_AXES: ReadonlySet<string> = new Set([
+  "vertical",
+  "horizontal",
+]);
 
 export interface UiColumn {
   kind: "Column";
@@ -125,6 +140,11 @@ export interface UiSection {
   id: string;
   title?: string;
   variant?: UiSectionVariant;
+  /// When `true`, the renderer adds a tap-to-expand-collapse header
+  /// chevron. Default state is expanded; the renderer persists the
+  /// expanded/collapsed state per node id across re-renders. Omitted =
+  /// not collapsible.
+  collapsible?: boolean;
   children: UiNode[];
 }
 /// Deprecated alias kept for one minor version: behaves exactly like
@@ -372,6 +392,130 @@ export interface UiSpinner {
   size?: StyleSlot<SizeToken>;
 }
 
+// ---- Batch 5 widgets (§4.3) — long tail ----
+
+/// Fixed-column / adaptive grid. `columns` accepts a positive integer
+/// or the literal `'adaptive'` (renderer picks a sensible column count
+/// for the viewport). Children flow row-major.
+export type UiGridColumns = number | "adaptive";
+export interface UiGrid {
+  kind: "Grid";
+  id: string;
+  children: UiNode[];
+  columns: UiGridColumns;
+  gap?: StyleSlot<SpacingToken>;
+}
+
+/// Z-axis stack — children paint on top of each other, anchored by
+/// the optional `alignment` (default: `center`).
+export type UiStackAlignment =
+  | "topStart"
+  | "topCenter"
+  | "topEnd"
+  | "centerStart"
+  | "center"
+  | "centerEnd"
+  | "bottomStart"
+  | "bottomCenter"
+  | "bottomEnd";
+export interface UiStack {
+  kind: "Stack";
+  id: string;
+  children: UiNode[];
+  alignment?: UiStackAlignment;
+}
+
+/// Aspect-ratio enforcer. `ratio` is width / height; finite > 0.
+export interface UiAspect {
+  kind: "Aspect";
+  id: string;
+  ratio: number;
+  child: UiNode;
+}
+
+/// Flex distribution hint for a Row/Column child. `flex` must be a
+/// non-negative finite number; outside a Row/Column the renderer falls
+/// back to a plain child without claiming space.
+export interface UiFlex {
+  kind: "Flex";
+  id: string;
+  flex: number;
+  child: UiNode;
+}
+
+/// Explicit scroll region. `axis` defaults to `vertical`.
+export type UiScrollAxis = "vertical" | "horizontal";
+export interface UiScroll {
+  kind: "Scroll";
+  id: string;
+  axis?: UiScrollAxis;
+  child: UiNode;
+}
+
+/// Segmented tab control. `activeId` must match one of `tabs[*].id`;
+/// the host renders the chrome but switching panel content on tap is
+/// the plugin's responsibility (re-render with new `activeId` + the
+/// matching tab's content elsewhere in the tree).
+export interface UiTabBarTab {
+  id: string;
+  label: string;
+  icon?: string;
+}
+export interface UiTabBar {
+  kind: "TabBar";
+  id: string;
+  tabs: UiTabBarTab[];
+  activeId: string;
+  onChangeEvent?: string;
+}
+
+/// Search variant of [UiTextField]. Renderer adds a leading magnifier
+/// icon + a trailing clear button when the field is non-empty.
+export interface UiSearchField {
+  kind: "SearchField";
+  id: string;
+  value?: string;
+  placeholder?: string;
+  onChangeEvent?: string;
+}
+
+/// Standalone checkbox. Same reconciliation contract as [UiSwitch].
+export interface UiCheckbox {
+  kind: "Checkbox";
+  id: string;
+  label?: string;
+  value: boolean;
+  onChangeEvent?: string;
+}
+
+export interface UiRadioOption {
+  value: string;
+  label: string;
+}
+
+/// Single-selection radio list. Same reconciliation contract as
+/// [UiSwitch].
+export interface UiRadioGroup {
+  kind: "RadioGroup";
+  id: string;
+  options: UiRadioOption[];
+  value?: string;
+  onChangeEvent?: string;
+}
+
+/// Continuous (omit `step`) or stepped (with `step`) slider. The
+/// validator requires `min < max`, `value` finite (the renderer clamps
+/// to range), and `step > 0` when present.
+export interface UiSlider {
+  kind: "Slider";
+  id: string;
+  min: number;
+  max: number;
+  step?: number;
+  value: number;
+  onChangeEvent?: string;
+}
+
 export type UiNode =
   | UiColumn
   | UiRow
@@ -395,7 +539,17 @@ export type UiNode =
   | UiMarkdown
   | UiCodeBlock
   | UiProgress
-  | UiSpinner;
+  | UiSpinner
+  | UiGrid
+  | UiStack
+  | UiAspect
+  | UiFlex
+  | UiScroll
+  | UiTabBar
+  | UiSearchField
+  | UiCheckbox
+  | UiRadioGroup
+  | UiSlider;
 
 /// Thrown by `validateUiTree` for any structural problem (unknown kind,
 /// missing required field, duplicate id). The host translates this into
@@ -473,6 +627,26 @@ function parseNode(raw: unknown, seen: Set<string>, path: string): UiNode {
       return parseProgress(r, path, id);
     case "Spinner":
       return parseSpinner(r, path, id);
+    case "Grid":
+      return parseGrid(r, seen, path, id);
+    case "Stack":
+      return parseStack(r, seen, path, id);
+    case "Aspect":
+      return parseAspect(r, seen, path, id);
+    case "Flex":
+      return parseFlexNode(r, seen, path, id);
+    case "Scroll":
+      return parseScroll(r, seen, path, id);
+    case "TabBar":
+      return parseTabBar(r, path, id);
+    case "SearchField":
+      return parseSearchField(r, path, id);
+    case "Checkbox":
+      return parseCheckbox(r, path, id);
+    case "RadioGroup":
+      return parseRadioGroup(r, path, id);
+    case "Slider":
+      return parseSlider(r, path, id);
     default:
       throw new UiValidationError(
         `${path}: unknown node kind ${JSON.stringify(kind)}`,
@@ -528,6 +702,15 @@ function parseSection(
       );
     }
     out.variant = variant as UiSectionVariant;
+  }
+  const collapsible = r.collapsible;
+  if (collapsible !== undefined && collapsible !== null) {
+    if (typeof collapsible !== "boolean") {
+      throw new UiValidationError(
+        `${path}.collapsible: must be a boolean when provided`,
+      );
+    }
+    out.collapsible = collapsible;
   }
   return out;
 }
@@ -1091,6 +1274,310 @@ function parseSpinner(
   return out;
 }
 
+// ---- Batch 5 parsers ----
+
+function parseGrid(
+  r: Record<string, unknown>,
+  seen: Set<string>,
+  path: string,
+  id: string,
+): UiGrid {
+  const children = parseChildren(r.children, seen, path, "children");
+  const columnsRaw = r.columns;
+  let columns: UiGridColumns;
+  if (columnsRaw === "adaptive") {
+    columns = "adaptive";
+  } else if (typeof columnsRaw === "number") {
+    if (!Number.isInteger(columnsRaw) || columnsRaw < 1) {
+      throw new UiValidationError(
+        `${path}.columns: must be a positive integer or "adaptive"`,
+      );
+    }
+    columns = columnsRaw;
+  } else {
+    throw new UiValidationError(
+      `${path}.columns: must be a positive integer or "adaptive"`,
+    );
+  }
+  const out: UiGrid = { kind: "Grid", id, children, columns };
+  const gap = optSpacing(r.gap, path, "gap");
+  if (gap !== undefined) out.gap = gap;
+  return out;
+}
+
+function parseStack(
+  r: Record<string, unknown>,
+  seen: Set<string>,
+  path: string,
+  id: string,
+): UiStack {
+  const children = parseChildren(r.children, seen, path, "children");
+  const out: UiStack = { kind: "Stack", id, children };
+  const alignment = r.alignment;
+  if (alignment !== undefined && alignment !== null) {
+    if (typeof alignment !== "string" || !STACK_ALIGNMENTS.has(alignment)) {
+      throw new UiValidationError(
+        `${path}.alignment: must be one of ${[...STACK_ALIGNMENTS]
+          .map((t) => `"${t}"`)
+          .join(" | ")}`,
+      );
+    }
+    out.alignment = alignment as UiStackAlignment;
+  }
+  return out;
+}
+
+function parseAspect(
+  r: Record<string, unknown>,
+  seen: Set<string>,
+  path: string,
+  id: string,
+): UiAspect {
+  const ratio = r.ratio;
+  if (typeof ratio !== "number" || !Number.isFinite(ratio) || ratio <= 0) {
+    throw new UiValidationError(
+      `${path}.ratio: must be a positive finite number`,
+    );
+  }
+  if (r.child === undefined || r.child === null) {
+    throw new UiValidationError(`${path}.child: required`);
+  }
+  const child = parseNode(r.child, seen, `${path}.child`);
+  return { kind: "Aspect", id, ratio, child };
+}
+
+function parseFlexNode(
+  r: Record<string, unknown>,
+  seen: Set<string>,
+  path: string,
+  id: string,
+): UiFlex {
+  const flex = r.flex;
+  if (typeof flex !== "number" || !Number.isFinite(flex) || flex < 0) {
+    throw new UiValidationError(
+      `${path}.flex: must be a non-negative finite number`,
+    );
+  }
+  if (r.child === undefined || r.child === null) {
+    throw new UiValidationError(`${path}.child: required`);
+  }
+  const child = parseNode(r.child, seen, `${path}.child`);
+  return { kind: "Flex", id, flex, child };
+}
+
+function parseScroll(
+  r: Record<string, unknown>,
+  seen: Set<string>,
+  path: string,
+  id: string,
+): UiScroll {
+  if (r.child === undefined || r.child === null) {
+    throw new UiValidationError(`${path}.child: required`);
+  }
+  const child = parseNode(r.child, seen, `${path}.child`);
+  const out: UiScroll = { kind: "Scroll", id, child };
+  const axis = r.axis;
+  if (axis !== undefined && axis !== null) {
+    if (typeof axis !== "string" || !SCROLL_AXES.has(axis)) {
+      throw new UiValidationError(
+        `${path}.axis: must be "vertical" | "horizontal"`,
+      );
+    }
+    out.axis = axis as UiScrollAxis;
+  }
+  return out;
+}
+
+function parseTabBar(
+  r: Record<string, unknown>,
+  path: string,
+  id: string,
+): UiTabBar {
+  const rawTabs = r.tabs;
+  if (!Array.isArray(rawTabs) || rawTabs.length === 0) {
+    throw new UiValidationError(
+      `${path}.tabs: must be a non-empty array`,
+    );
+  }
+  const tabs: UiTabBarTab[] = [];
+  const seenIds = new Set<string>();
+  for (let i = 0; i < rawTabs.length; i++) {
+    const raw = rawTabs[i];
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new UiValidationError(`${path}.tabs[${i}]: must be an object`);
+    }
+    const t = raw as Record<string, unknown>;
+    const tabId = t.id;
+    if (typeof tabId !== "string" || tabId.length === 0) {
+      throw new UiValidationError(
+        `${path}.tabs[${i}].id: must be a non-empty string`,
+      );
+    }
+    if (seenIds.has(tabId)) {
+      throw new UiValidationError(
+        `${path}.tabs[${i}]: duplicate tab id "${tabId}"`,
+      );
+    }
+    seenIds.add(tabId);
+    const label = t.label;
+    if (typeof label !== "string" || label.length === 0) {
+      throw new UiValidationError(
+        `${path}.tabs[${i}].label: must be a non-empty string`,
+      );
+    }
+    const tab: UiTabBarTab = { id: tabId, label };
+    const icon = optString(t.icon, path, `tabs[${i}].icon`);
+    if (icon !== undefined) tab.icon = icon;
+    tabs.push(tab);
+  }
+  const activeId = r.activeId;
+  if (typeof activeId !== "string" || activeId.length === 0) {
+    throw new UiValidationError(
+      `${path}.activeId: must be a non-empty string`,
+    );
+  }
+  // A mismatched activeId would silently fall through to "first tab"
+  // in the renderer. Surface as a validation error so the plugin
+  // author notices the typo at render time.
+  if (!seenIds.has(activeId)) {
+    throw new UiValidationError(
+      `${path}.activeId: must match one of the tabs' id`,
+    );
+  }
+  const out: UiTabBar = { kind: "TabBar", id, tabs, activeId };
+  const onChangeEvent = optString(r.onChangeEvent, path, "onChangeEvent");
+  if (onChangeEvent !== undefined) out.onChangeEvent = onChangeEvent;
+  return out;
+}
+
+function parseSearchField(
+  r: Record<string, unknown>,
+  path: string,
+  id: string,
+): UiSearchField {
+  const out: UiSearchField = { kind: "SearchField", id };
+  const value = optString(r.value, path, "value");
+  if (value !== undefined) out.value = value;
+  const placeholder = optString(r.placeholder, path, "placeholder");
+  if (placeholder !== undefined) out.placeholder = placeholder;
+  const onChangeEvent = optString(r.onChangeEvent, path, "onChangeEvent");
+  if (onChangeEvent !== undefined) out.onChangeEvent = onChangeEvent;
+  return out;
+}
+
+function parseCheckbox(
+  r: Record<string, unknown>,
+  path: string,
+  id: string,
+): UiCheckbox {
+  const value = r.value;
+  if (typeof value !== "boolean") {
+    throw new UiValidationError(`${path}.value: must be a boolean`);
+  }
+  const out: UiCheckbox = { kind: "Checkbox", id, value };
+  const label = optString(r.label, path, "label");
+  if (label !== undefined) out.label = label;
+  const onChangeEvent = optString(r.onChangeEvent, path, "onChangeEvent");
+  if (onChangeEvent !== undefined) out.onChangeEvent = onChangeEvent;
+  return out;
+}
+
+function parseRadioGroup(
+  r: Record<string, unknown>,
+  path: string,
+  id: string,
+): UiRadioGroup {
+  const rawOptions = r.options;
+  if (!Array.isArray(rawOptions) || rawOptions.length === 0) {
+    throw new UiValidationError(
+      `${path}.options: must be a non-empty array`,
+    );
+  }
+  const options: UiRadioOption[] = [];
+  const seenValues = new Set<string>();
+  for (let i = 0; i < rawOptions.length; i++) {
+    const raw = rawOptions[i];
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new UiValidationError(
+        `${path}.options[${i}]: must be an object`,
+      );
+    }
+    const o = raw as Record<string, unknown>;
+    const value = o.value;
+    if (typeof value !== "string" || value.length === 0) {
+      throw new UiValidationError(
+        `${path}.options[${i}].value: must be a non-empty string`,
+      );
+    }
+    const label = o.label;
+    if (typeof label !== "string" || label.length === 0) {
+      throw new UiValidationError(
+        `${path}.options[${i}].label: must be a non-empty string`,
+      );
+    }
+    if (seenValues.has(value)) {
+      throw new UiValidationError(
+        `${path}.options[${i}]: duplicate option value "${value}"`,
+      );
+    }
+    seenValues.add(value);
+    options.push({ value, label });
+  }
+  const out: UiRadioGroup = { kind: "RadioGroup", id, options };
+  const value = optString(r.value, path, "value");
+  if (value !== undefined) {
+    if (!seenValues.has(value)) {
+      throw new UiValidationError(
+        `${path}.value: must match one of the options' value`,
+      );
+    }
+    out.value = value;
+  }
+  const onChangeEvent = optString(r.onChangeEvent, path, "onChangeEvent");
+  if (onChangeEvent !== undefined) out.onChangeEvent = onChangeEvent;
+  return out;
+}
+
+function parseSlider(
+  r: Record<string, unknown>,
+  path: string,
+  id: string,
+): UiSlider {
+  const min = r.min;
+  const max = r.max;
+  const value = r.value;
+  if (typeof min !== "number" || !Number.isFinite(min)) {
+    throw new UiValidationError(
+      `${path}.min: must be a finite number`,
+    );
+  }
+  if (typeof max !== "number" || !Number.isFinite(max)) {
+    throw new UiValidationError(
+      `${path}.max: must be a finite number`,
+    );
+  }
+  if (min >= max) {
+    throw new UiValidationError(`${path}: min must be < max`);
+  }
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new UiValidationError(
+      `${path}.value: must be a finite number`,
+    );
+  }
+  const out: UiSlider = { kind: "Slider", id, min, max, value };
+  if (r.step !== undefined && r.step !== null) {
+    if (typeof r.step !== "number" || !Number.isFinite(r.step) || r.step <= 0) {
+      throw new UiValidationError(
+        `${path}.step: must be a positive finite number when provided`,
+      );
+    }
+    out.step = r.step;
+  }
+  const onChangeEvent = optString(r.onChangeEvent, path, "onChangeEvent");
+  if (onChangeEvent !== undefined) out.onChangeEvent = onChangeEvent;
+  return out;
+}
+
 function optSpacing(
   v: unknown,
   path: string,
@@ -1357,6 +1844,21 @@ export function collectFileUrls(tree: UiNode): FileUrlSite[] {
       case "Avatar":
         if (node.src !== undefined) check(node.src, path);
         return;
+      case "Grid":
+        node.children.forEach((c, i) => walk(c, `${path}.children[${i}]`));
+        return;
+      case "Stack":
+        node.children.forEach((c, i) => walk(c, `${path}.children[${i}]`));
+        return;
+      case "Aspect":
+        walk(node.child, `${path}.child`);
+        return;
+      case "Flex":
+        walk(node.child, `${path}.child`);
+        return;
+      case "Scroll":
+        walk(node.child, `${path}.child`);
+        return;
       // ---- Leaf / non-container kinds: nothing to recurse into ----
       case "Text":
       case "Spacer":
@@ -1373,6 +1875,11 @@ export function collectFileUrls(tree: UiNode): FileUrlSite[] {
       case "CodeBlock":
       case "Progress":
       case "Spinner":
+      case "TabBar":
+      case "SearchField":
+      case "Checkbox":
+      case "RadioGroup":
+      case "Slider":
         return;
       default:
         // Compile-time exhaustiveness: if a new UiNode kind is added

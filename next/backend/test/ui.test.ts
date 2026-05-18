@@ -687,6 +687,473 @@ describe("validateUiTree", () => {
     expect(tree.label).toBeUndefined();
     expect(tree.size).toBeUndefined();
   });
+
+  // ---- Batch 5 widgets (§4.3) — long tail ----
+
+  it("Section.collapsible defaults to undefined and accepts boolean", () => {
+    const omitted = validateUiTree({
+      kind: "Section",
+      id: "s",
+      children: [],
+    });
+    if (omitted.kind !== "Section") throw new Error("unreachable");
+    expect(omitted.collapsible).toBeUndefined();
+    const enabled = validateUiTree({
+      kind: "Section",
+      id: "s2",
+      collapsible: true,
+      children: [],
+    });
+    if (enabled.kind !== "Section") throw new Error("unreachable");
+    expect(enabled.collapsible).toBe(true);
+  });
+
+  it("rejects Section.collapsible with non-boolean value", () => {
+    expect(() =>
+      validateUiTree({
+        kind: "Section",
+        id: "s3",
+        collapsible: "yes",
+        children: [],
+      }),
+    ).toThrow(/collapsible/);
+  });
+
+  it("UiGrid accepts integer columns + adaptive sentinel", () => {
+    const fixed = validateUiTree({
+      kind: "Grid",
+      id: "g",
+      columns: 3,
+      gap: "sm",
+      children: [{ kind: "Text", id: "t", text: "x" }],
+    });
+    if (fixed.kind !== "Grid") throw new Error("unreachable");
+    expect(fixed.columns).toBe(3);
+    expect(fixed.gap).toBe("sm");
+    const adaptive = validateUiTree({
+      kind: "Grid",
+      id: "g2",
+      columns: "adaptive",
+      children: [],
+    });
+    if (adaptive.kind !== "Grid") throw new Error("unreachable");
+    expect(adaptive.columns).toBe("adaptive");
+  });
+
+  it("rejects UiGrid columns <= 0 or non-integer", () => {
+    expect(() =>
+      validateUiTree({
+        kind: "Grid",
+        id: "g3",
+        columns: 0,
+        children: [],
+      }),
+    ).toThrow(/columns/);
+    expect(() =>
+      validateUiTree({
+        kind: "Grid",
+        id: "g4",
+        columns: 2.5,
+        children: [],
+      }),
+    ).toThrow(/columns/);
+    expect(() =>
+      validateUiTree({
+        kind: "Grid",
+        id: "g5",
+        columns: "wide",
+        children: [],
+      }),
+    ).toThrow(/columns/);
+  });
+
+  it("UiStack accepts the nine-point alignment union", () => {
+    for (const alignment of [
+      "topStart",
+      "topCenter",
+      "topEnd",
+      "centerStart",
+      "center",
+      "centerEnd",
+      "bottomStart",
+      "bottomCenter",
+      "bottomEnd",
+    ] as const) {
+      const tree = validateUiTree({
+        kind: "Stack",
+        id: `s-${alignment}`,
+        alignment,
+        children: [],
+      });
+      if (tree.kind !== "Stack") throw new Error("unreachable");
+      expect(tree.alignment).toBe(alignment);
+    }
+  });
+
+  it("rejects UiStack with unknown alignment", () => {
+    expect(() =>
+      validateUiTree({
+        kind: "Stack",
+        id: "s",
+        alignment: "diagonal",
+        children: [],
+      }),
+    ).toThrow(/alignment/);
+  });
+
+  it("UiAspect parses ratio + child", () => {
+    const tree = validateUiTree({
+      kind: "Aspect",
+      id: "a",
+      ratio: 16 / 9,
+      child: { kind: "Text", id: "t", text: "x" },
+    });
+    if (tree.kind !== "Aspect") throw new Error("unreachable");
+    expect(tree.ratio).toBeCloseTo(16 / 9);
+    expect(tree.child.kind).toBe("Text");
+  });
+
+  it("rejects UiAspect with non-positive ratio or missing child", () => {
+    expect(() =>
+      validateUiTree({ kind: "Aspect", id: "a", ratio: 0, child: { kind: "Text", id: "t", text: "x" } }),
+    ).toThrow(/ratio/);
+    expect(() =>
+      validateUiTree({ kind: "Aspect", id: "a2", ratio: 1 }),
+    ).toThrow(/child/);
+  });
+
+  it("UiFlex parses flex + child", () => {
+    const tree = validateUiTree({
+      kind: "Flex",
+      id: "f",
+      flex: 2,
+      child: { kind: "Text", id: "t", text: "x" },
+    });
+    if (tree.kind !== "Flex") throw new Error("unreachable");
+    expect(tree.flex).toBe(2);
+    expect(tree.child.kind).toBe("Text");
+  });
+
+  it("rejects UiFlex with negative flex", () => {
+    expect(() =>
+      validateUiTree({
+        kind: "Flex",
+        id: "f",
+        flex: -1,
+        child: { kind: "Text", id: "t", text: "x" },
+      }),
+    ).toThrow(/flex/);
+  });
+
+  it("UiScroll defaults axis to undefined and accepts horizontal/vertical", () => {
+    const tree = validateUiTree({
+      kind: "Scroll",
+      id: "s",
+      child: { kind: "Text", id: "t", text: "x" },
+    });
+    if (tree.kind !== "Scroll") throw new Error("unreachable");
+    expect(tree.axis).toBeUndefined();
+    const h = validateUiTree({
+      kind: "Scroll",
+      id: "s2",
+      axis: "horizontal",
+      child: { kind: "Text", id: "t2", text: "x" },
+    });
+    if (h.kind !== "Scroll") throw new Error("unreachable");
+    expect(h.axis).toBe("horizontal");
+  });
+
+  it("rejects UiScroll with unknown axis", () => {
+    expect(() =>
+      validateUiTree({
+        kind: "Scroll",
+        id: "s",
+        axis: "diagonal",
+        child: { kind: "Text", id: "t", text: "x" },
+      }),
+    ).toThrow(/axis/);
+  });
+
+  it("UiTabBar parses tabs + activeId + onChangeEvent", () => {
+    const tree = validateUiTree({
+      kind: "TabBar",
+      id: "tb",
+      activeId: "a",
+      onChangeEvent: "tabPicked",
+      tabs: [
+        { id: "a", label: "Alpha", icon: "home" },
+        { id: "b", label: "Beta" },
+      ],
+    });
+    if (tree.kind !== "TabBar") throw new Error("unreachable");
+    expect(tree.tabs).toHaveLength(2);
+    expect(tree.activeId).toBe("a");
+    expect(tree.onChangeEvent).toBe("tabPicked");
+  });
+
+  it("rejects UiTabBar with empty tabs", () => {
+    expect(() =>
+      validateUiTree({
+        kind: "TabBar",
+        id: "tb",
+        activeId: "a",
+        tabs: [],
+      }),
+    ).toThrow(/tabs/);
+  });
+
+  it("rejects UiTabBar with duplicate tab ids", () => {
+    expect(() =>
+      validateUiTree({
+        kind: "TabBar",
+        id: "tb2",
+        activeId: "a",
+        tabs: [
+          { id: "a", label: "A" },
+          { id: "a", label: "A2" },
+        ],
+      }),
+    ).toThrow(/duplicate tab id/);
+  });
+
+  it("rejects UiTabBar with activeId not in tabs", () => {
+    expect(() =>
+      validateUiTree({
+        kind: "TabBar",
+        id: "tb3",
+        activeId: "z",
+        tabs: [{ id: "a", label: "A" }],
+      }),
+    ).toThrow(/activeId/);
+  });
+
+  it("UiSearchField is valid with no fields set", () => {
+    const tree = validateUiTree({ kind: "SearchField", id: "sf" });
+    if (tree.kind !== "SearchField") throw new Error("unreachable");
+    expect(tree.value).toBeUndefined();
+    expect(tree.onChangeEvent).toBeUndefined();
+  });
+
+  it("UiSearchField round-trips value + placeholder + onChangeEvent", () => {
+    const tree = validateUiTree({
+      kind: "SearchField",
+      id: "sf2",
+      value: "ada",
+      placeholder: "search…",
+      onChangeEvent: "q",
+    });
+    if (tree.kind !== "SearchField") throw new Error("unreachable");
+    expect(tree.value).toBe("ada");
+    expect(tree.placeholder).toBe("search…");
+    expect(tree.onChangeEvent).toBe("q");
+  });
+
+  it("UiCheckbox requires boolean value", () => {
+    const tree = validateUiTree({
+      kind: "Checkbox",
+      id: "c",
+      value: true,
+      label: "Subscribe",
+      onChangeEvent: "sub",
+    });
+    if (tree.kind !== "Checkbox") throw new Error("unreachable");
+    expect(tree.value).toBe(true);
+    expect(tree.label).toBe("Subscribe");
+    expect(tree.onChangeEvent).toBe("sub");
+  });
+
+  it("rejects UiCheckbox without value", () => {
+    expect(() =>
+      validateUiTree({ kind: "Checkbox", id: "c2", label: "x" }),
+    ).toThrow(/value/);
+  });
+
+  it("UiRadioGroup parses options + value + onChangeEvent", () => {
+    const tree = validateUiTree({
+      kind: "RadioGroup",
+      id: "r",
+      options: [
+        { value: "x", label: "X" },
+        { value: "y", label: "Y" },
+      ],
+      value: "x",
+      onChangeEvent: "pick",
+    });
+    if (tree.kind !== "RadioGroup") throw new Error("unreachable");
+    expect(tree.options).toHaveLength(2);
+    expect(tree.value).toBe("x");
+  });
+
+  it("rejects UiRadioGroup with duplicate option values", () => {
+    expect(() =>
+      validateUiTree({
+        kind: "RadioGroup",
+        id: "r2",
+        options: [
+          { value: "x", label: "X" },
+          { value: "x", label: "X2" },
+        ],
+      }),
+    ).toThrow(/duplicate option value/);
+  });
+
+  it("rejects UiRadioGroup with value not in options", () => {
+    expect(() =>
+      validateUiTree({
+        kind: "RadioGroup",
+        id: "r3",
+        options: [{ value: "x", label: "X" }],
+        value: "z",
+      }),
+    ).toThrow(/value/);
+  });
+
+  it("UiSlider continuous (no step) is valid", () => {
+    const tree = validateUiTree({
+      kind: "Slider",
+      id: "s",
+      min: 0,
+      max: 100,
+      value: 50,
+    });
+    if (tree.kind !== "Slider") throw new Error("unreachable");
+    expect(tree.step).toBeUndefined();
+    expect(tree.value).toBe(50);
+  });
+
+  it("UiSlider stepped (step > 0) is valid", () => {
+    const tree = validateUiTree({
+      kind: "Slider",
+      id: "s2",
+      min: 0,
+      max: 10,
+      step: 1,
+      value: 5,
+      onChangeEvent: "moved",
+    });
+    if (tree.kind !== "Slider") throw new Error("unreachable");
+    expect(tree.step).toBe(1);
+    expect(tree.onChangeEvent).toBe("moved");
+  });
+
+  it("rejects UiSlider with min >= max", () => {
+    expect(() =>
+      validateUiTree({
+        kind: "Slider",
+        id: "s3",
+        min: 5,
+        max: 5,
+        value: 5,
+      }),
+    ).toThrow(/min/);
+  });
+
+  it("rejects UiSlider with non-positive step", () => {
+    expect(() =>
+      validateUiTree({
+        kind: "Slider",
+        id: "s4",
+        min: 0,
+        max: 10,
+        step: 0,
+        value: 1,
+      }),
+    ).toThrow(/step/);
+  });
+});
+
+describe("collectFileUrls walker (Batch 5 container coverage)", () => {
+  // Every new Batch 5 container kind must recurse so a deeply-nested
+  // `UiImage src='file://outside'` is still caught by the gate. Without
+  // these cases the file:// security boundary would silently degrade.
+  const outsideSrc = "file:///definitely/outside/the/workspace.png";
+
+  function gateImageInside(wrapper: (img: object) => object) {
+    return async () => {
+      const image = { kind: "Image", id: "img", src: outsideSrc };
+      const tree = validateUiTree(wrapper(image));
+      // We pass `noActiveWorkspace=null` to assert the gate fired on the
+      // file:// URL (without a workspace it would emit
+      // `noActiveWorkspace`). Either non-ok code proves the walker
+      // visited the leaf — the point is "the gate ran at all".
+      const res = await validateFileUrlsAgainstWorkspace(tree, "read", null);
+      expect(res.ok).toBe(false);
+    };
+  }
+
+  it(
+    "rejects file:// inside UiGrid",
+    gateImageInside((img) => ({
+      kind: "Grid",
+      id: "g",
+      columns: 2,
+      children: [img],
+    })),
+  );
+
+  it(
+    "rejects file:// inside UiStack",
+    gateImageInside((img) => ({
+      kind: "Stack",
+      id: "s",
+      children: [img],
+    })),
+  );
+
+  it(
+    "rejects file:// inside UiAspect.child",
+    gateImageInside((img) => ({
+      kind: "Aspect",
+      id: "a",
+      ratio: 1,
+      child: img,
+    })),
+  );
+
+  it(
+    "rejects file:// inside UiFlex.child",
+    gateImageInside((img) => ({
+      kind: "Flex",
+      id: "f",
+      flex: 1,
+      child: img,
+    })),
+  );
+
+  it(
+    "rejects file:// inside UiScroll.child",
+    gateImageInside((img) => ({
+      kind: "Scroll",
+      id: "sc",
+      child: img,
+    })),
+  );
+
+  it(
+    "rejects file:// through several Batch 5 containers nested",
+    gateImageInside((img) => ({
+      kind: "Scroll",
+      id: "sc-deep",
+      child: {
+        kind: "Grid",
+        id: "g-deep",
+        columns: 1,
+        children: [
+          {
+            kind: "Aspect",
+            id: "a-deep",
+            ratio: 1,
+            child: {
+              kind: "Flex",
+              id: "f-deep",
+              flex: 1,
+              child: img,
+            },
+          },
+        ],
+      },
+    })),
+  );
 });
 
 describe("file:// URL fs-gating (Batch 3)", () => {

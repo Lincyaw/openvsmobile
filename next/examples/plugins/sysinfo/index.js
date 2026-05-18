@@ -2,18 +2,21 @@
 //
 // All values come from `node:os` / `process` and the panel re-renders
 // every 5 seconds with fixed node ids so the reconciler keeps things
-// in place. Mono-styled text keeps the numeric columns visually
-// aligned without needing a Table widget (which the §4.3 vocabulary
-// doesn't currently expose — see report).
+// in place.
 //
-// Batch 3 (§4.3) widget dogfood: we now render
-//   * `ui.spinner` during the very first activation tick (before the
-//     `loadavg()` sample has stabilized) — the "warming up" caption
-//     gives the user something to see for the second the indicator
-//     lives on screen.
-//   * `ui.progress` (linear, with `value`) for memory and CPU 1-minute
-//     load utilization, instead of raw numbers buried in a mono row.
-//     Numeric companion text keeps the precise reading visible.
+// Batch 5 (§4.3) widget dogfood:
+//   * `ui.tabBar` — top-of-panel segmented control with CPU / Memory /
+//     Disk / Network tabs. Disk and Network are stub views for v0
+//     (`node:os` doesn't expose disk space without an extra dep and
+//     `networkInterfaces()` is just IP info; we render a friendly
+//     "not yet implemented" caption rather than fake numbers).
+//   * `ui.grid` — "at-a-glance" 2x2 grid surfaces the four headline
+//     numbers (host / uptime / mem% / cpu%) in compact tiles so the
+//     user sees the whole picture without scrolling.
+//   * `ui.section { collapsible: true }` — the bottom "Diagnostics"
+//     section is collapsed by default so a user looking at metrics
+//     isn't distracted by node version + process info that only
+//     matters when filing a bug.
 
 import { cpus, freemem, hostname, loadavg, totalmem, uptime } from "node:os";
 
@@ -21,9 +24,15 @@ import { createPlugin, ui } from "@openvsmobile/sdk";
 
 const PANEL_ID = "info";
 const REFRESH_MS = 5000;
-// Used as the "first paint is still warming up" guard so the spinner
-// appears for one render-tick before real samples land.
+const TABS = [
+  { id: "cpu", label: "CPU" },
+  { id: "memory", label: "Memory" },
+  { id: "disk", label: "Disk" },
+  { id: "network", label: "Network" },
+];
+
 let firstSampleReady = false;
+let activeTab = "cpu";
 
 function formatUptime(seconds) {
   const s = Math.floor(seconds);
@@ -37,11 +46,119 @@ function bytesToGb(bytes) {
   return (bytes / (1024 * 1024 * 1024)).toFixed(1);
 }
 
+function sample() {
+  const free = freemem();
+  const total = totalmem();
+  const used = total - free;
+  const memFraction = total > 0 ? used / total : 0;
+  const cpuCount = Math.max(1, cpus().length);
+  const loadRaw = loadavg()[0];
+  const cpuFraction = Math.min(1, Math.max(0, loadRaw / cpuCount));
+  return { used, total, memFraction, cpuCount, loadRaw, cpuFraction };
+}
+
+function accentForFraction(f) {
+  if (f > 0.9) return "danger";
+  if (f > 0.7) return "warning";
+  return "success";
+}
+
+// 2x2 at-a-glance grid: each tile carries one headline number on its
+// own monospaced surface so the grid reads as a dashboard rather than
+// a wall of text.
+function atGlanceGrid(s) {
+  function tile(id, caption, value) {
+    return ui.section({
+      id: `sysinfo-tile-${id}`,
+      variant: "card",
+      children: [
+        ui.text({
+          id: `sysinfo-tile-${id}-caption`,
+          text: caption,
+          style: "caption",
+        }),
+        ui.text({
+          id: `sysinfo-tile-${id}-value`,
+          text: value,
+          style: "mono",
+        }),
+      ],
+    });
+  }
+  return ui.grid({
+    id: "sysinfo-at-glance",
+    columns: 2,
+    gap: "sm",
+    children: [
+      tile("host", "HOST", hostname()),
+      tile("uptime", "UPTIME", formatUptime(uptime())),
+      tile("mem", "MEMORY", `${(s.memFraction * 100).toFixed(0)}%`),
+      tile("cpu", "CPU", `${(s.cpuFraction * 100).toFixed(0)}%`),
+    ],
+  });
+}
+
+function cpuBody(s) {
+  return ui.column({
+    id: "sysinfo-cpu-body",
+    gap: "md",
+    children: [
+      ui.progress({
+        id: "sysinfo-cpu-bar",
+        value: s.cpuFraction,
+        variant: "linear",
+        accent: accentForFraction(s.cpuFraction),
+        label: `load ${s.loadRaw.toFixed(2)} / ${s.cpuCount} cores  (${(s.cpuFraction * 100).toFixed(0)}%)`,
+      }),
+      ui.text({
+        id: "sysinfo-cpu-detail",
+        text: `cores ${s.cpuCount}`,
+        style: "caption",
+      }),
+    ],
+  });
+}
+
+function memoryBody(s) {
+  return ui.column({
+    id: "sysinfo-mem-body",
+    gap: "md",
+    children: [
+      ui.progress({
+        id: "sysinfo-mem-bar",
+        value: s.memFraction,
+        variant: "linear",
+        accent: accentForFraction(s.memFraction),
+        label: `${bytesToGb(s.used)} / ${bytesToGb(s.total)} GB  (${(s.memFraction * 100).toFixed(0)}%)`,
+      }),
+    ],
+  });
+}
+
+function stubBody(id, label) {
+  return ui.text({
+    id: `sysinfo-${id}-stub`,
+    text: `${label} stats not exposed in v0`,
+    style: "caption",
+  });
+}
+
+function bodyForTab(s) {
+  switch (activeTab) {
+    case "memory":
+      return memoryBody(s);
+    case "disk":
+      return stubBody("disk", "Disk");
+    case "network":
+      return stubBody("network", "Network");
+    case "cpu":
+    default:
+      return cpuBody(s);
+  }
+}
+
 function render(ctx) {
   if (!firstSampleReady) {
-    // Activation tick — show only the spinner until the second render
-    // pumps real samples in. The user perceives "loading" instead of
-    // "blank".
     ctx.renderPanel(
       PANEL_ID,
       ui.section({
@@ -58,68 +175,45 @@ function render(ctx) {
     );
     return;
   }
-  const free = freemem();
-  const total = totalmem();
-  const used = total - free;
-  const memFraction = total > 0 ? used / total : 0;
-  // 1-minute load average normalized by cpu count — gives a 0..1
-  // utilization-style figure for the progress bar. Clamp so a spike
-  // over 1.0 doesn't tip the bar past 100%.
-  const cpuCount = Math.max(1, cpus().length);
-  const loadRaw = loadavg()[0];
-  const cpuFraction = Math.min(1, Math.max(0, loadRaw / cpuCount));
+  const s = sample();
   ctx.renderPanel(
     PANEL_ID,
-    ui.section({
-      id: "sysinfo-section",
-      title: "System",
+    ui.column({
+      id: "sysinfo-root",
+      gap: "md",
       children: [
-        ui.column({
-          id: "sysinfo-col",
-          gap: "md",
+        ui.section({
+          id: "sysinfo-glance-section",
+          title: "At a glance",
+          children: [atGlanceGrid(s)],
+        }),
+        ui.tabBar({
+          id: "sysinfo-tabs",
+          tabs: TABS,
+          activeId: activeTab,
+          onChangeEvent: "tab-picked",
+        }),
+        ui.section({
+          id: "sysinfo-tab-body",
+          children: [bodyForTab(s)],
+        }),
+        // Diagnostics collapsed by default — useful for bug reports but
+        // not for the day-to-day metrics view.
+        ui.section({
+          id: "sysinfo-diag",
+          title: "Diagnostics",
+          variant: "inset",
+          collapsible: true,
           children: [
             ui.text({
-              id: "sysinfo-host",
-              text: `host    ${hostname()}`,
-              style: "mono",
-            }),
-            ui.text({
-              id: "sysinfo-uptime",
-              text: `uptime  ${formatUptime(uptime())}`,
-              style: "mono",
-            }),
-            // Memory bar — colored by tier so a near-full system reads
-            // as warning at a glance, even before the user looks at
-            // the absolute numbers in the caption underneath.
-            ui.progress({
-              id: "sysinfo-mem-bar",
-              value: memFraction,
-              variant: "linear",
-              accent:
-                memFraction > 0.9
-                  ? "danger"
-                  : memFraction > 0.7
-                    ? "warning"
-                    : "success",
-              label: `mem  ${bytesToGb(used)} / ${bytesToGb(total)} GB  (${(memFraction * 100).toFixed(0)}%)`,
-            }),
-            // CPU 1-min load normalized by cpu count. Same accent tiers.
-            ui.progress({
-              id: "sysinfo-cpu-bar",
-              value: cpuFraction,
-              variant: "linear",
-              accent:
-                cpuFraction > 0.9
-                  ? "danger"
-                  : cpuFraction > 0.7
-                    ? "warning"
-                    : "success",
-              label: `cpu  load ${loadRaw.toFixed(2)} / ${cpuCount} cores  (${(cpuFraction * 100).toFixed(0)}%)`,
-            }),
-            ui.text({
-              id: "sysinfo-node",
+              id: "sysinfo-diag-node",
               text: `node ${process.version}`,
-              style: "caption",
+              style: "mono",
+            }),
+            ui.text({
+              id: "sysinfo-diag-pid",
+              text: `pid ${process.pid}`,
+              style: "mono",
             }),
           ],
         }),
@@ -132,17 +226,23 @@ let timer = null;
 
 const plugin = createPlugin({
   onActivate(ctx) {
-    // First paint: spinner only.
     render(ctx);
-    // Flip the flag and render again on the next tick of the event
-    // loop so the spinner is observable for one frame even on a fast
-    // host where the activation handler runs in a few microseconds.
     setImmediate(() => {
       firstSampleReady = true;
       render(ctx);
     });
     timer = setInterval(() => render(ctx), REFRESH_MS);
     if (typeof timer.unref === "function") timer.unref();
+  },
+  onUiEvent(ctx, event) {
+    if (event.panelId !== PANEL_ID) return;
+    if (event.nodeId === "sysinfo-tabs" && event.type === "tab-picked") {
+      const tabId = event.payload && event.payload.tabId;
+      if (typeof tabId === "string" && TABS.some((t) => t.id === tabId)) {
+        activeTab = tabId;
+        render(ctx);
+      }
+    }
   },
 });
 

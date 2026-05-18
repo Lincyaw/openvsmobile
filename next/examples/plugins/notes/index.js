@@ -59,7 +59,30 @@ const state = {
   lastSavedIso: null,
   statusMessage: null,
   private: false,
+  // Batch 5 dogfood: a small snippet list with a SearchField filter on
+  // top. The list is canned (curated note templates a plugin might
+  // ship) so the filter has something concrete to operate on; tapping
+  // a snippet appends its body to the buffer.
+  snippetQuery: "",
 };
+
+const SNIPPETS = [
+  { id: "todo", title: "TODO", body: "- [ ] " },
+  { id: "meeting", title: "Meeting notes", body: "# Meeting\nAttendees:\nDecisions:\n" },
+  { id: "journal", title: "Journal entry", body: `${new Date().toISOString().slice(0, 10)} — ` },
+  { id: "command", title: "Shell command", body: "```sh\n\n```" },
+  { id: "quote", title: "Quote", body: "> " },
+  { id: "link", title: "Link", body: "[]()" },
+];
+
+function filteredSnippets() {
+  const q = state.snippetQuery.trim().toLowerCase();
+  if (q.length === 0) return SNIPPETS;
+  return SNIPPETS.filter(
+    (s) =>
+      s.title.toLowerCase().includes(q) || s.body.toLowerCase().includes(q),
+  );
+}
 
 function isDirty() {
   return state.buffer !== state.lastSavedSnapshot;
@@ -135,6 +158,48 @@ function buildTree() {
   // `ui.divider` here to show the spec-defined separator outside that
   // context.
   children.push(ui.divider({ id: "notes-section-divider" }));
+
+  // Snippets list with a SearchField filter on top. Tap a snippet
+  // tile to append its body to the editor. The list is plugin-side
+  // state — `snippet-search`'s `changed` event re-renders with a
+  // filtered set (Batch 5 dogfood for UiSearchField + UiListTile + a
+  // collapsible UiSection).
+  const snippets = filteredSnippets();
+  children.push(
+    ui.section({
+      id: "notes-snippets-section",
+      title: "Snippets",
+      variant: "inset",
+      collapsible: true,
+      children: [
+        ui.searchField({
+          id: "snippet-search",
+          value: state.snippetQuery,
+          placeholder: "Filter snippets…",
+          onChangeEvent: "snippet-query",
+        }),
+        ...snippets.map((s) =>
+          ui.listTile({
+            id: `snippet-${s.id}`,
+            title: s.title,
+            subtitle: s.body.split("\n")[0].slice(0, 40),
+            onTapEvent: "snippet-tap",
+          }),
+        ),
+        // If the filter has no matches, surface a muted caption rather
+        // than just nothing — the user knows it's working.
+        ...(snippets.length === 0
+          ? [
+              ui.text({
+                id: "snippet-empty",
+                text: "No snippets match.",
+                style: "caption",
+              }),
+            ]
+          : []),
+      ],
+    }),
+  );
 
   // Metadata as a second inset section. Caption type for the status
   // line — `text` with `style: 'caption'` carries the muted /
@@ -229,6 +294,28 @@ const plugin = createPlugin({
     if (event.nodeId === "notes-error-banner" && event.type === "clear-error") {
       state.statusMessage = null;
       render(ctx);
+      return;
+    }
+    if (event.nodeId === "snippet-search" && event.type === "snippet-query") {
+      const value = event.payload && event.payload.value;
+      state.snippetQuery = typeof value === "string" ? value : "";
+      render(ctx);
+      return;
+    }
+    if (
+      typeof event.nodeId === "string" &&
+      event.nodeId.startsWith("snippet-") &&
+      event.type === "snippet-tap"
+    ) {
+      const id = event.nodeId.slice("snippet-".length);
+      const snippet = SNIPPETS.find((s) => s.id === id);
+      if (snippet !== undefined) {
+        // Append the snippet body to whatever the user is already
+        // editing; preserves their work and demonstrates the snippet
+        // tap fired correctly.
+        state.buffer = `${state.buffer}${state.buffer.length > 0 ? "\n" : ""}${snippet.body}`;
+        render(ctx);
+      }
       return;
     }
     // The dirty banner's action and the Save button share the same

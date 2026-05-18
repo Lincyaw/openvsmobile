@@ -100,6 +100,11 @@ export interface UiSection {
   id: string;
   title?: string;
   variant?: UiSectionVariant;
+  /// When `true`, the renderer adds a tap-to-expand-collapse header
+  /// chevron. Default state is expanded; the host persists expand/
+  /// collapse state per node id across re-renders. Omitted = not
+  /// collapsible (always expanded, no chevron).
+  collapsible?: boolean;
   children: UiNode[];
 }
 /// Deprecated alias for `UiSection { variant: "card" }`. Kept for one
@@ -364,6 +369,145 @@ export interface UiSpinner {
   size?: StyleSlot<SizeToken>;
 }
 
+// ---- Batch 5 widgets (§4.3) — long tail ----
+
+/// Fixed-column / adaptive grid. `columns` accepts a positive integer
+/// or the literal `'adaptive'` (renderer picks a sensible column count
+/// for the viewport). Children flow row-major.
+export type UiGridColumns = number | "adaptive";
+export interface UiGrid {
+  kind: "Grid";
+  id: string;
+  children: UiNode[];
+  columns: UiGridColumns;
+  gap?: StyleSlot<SpacingToken>;
+}
+
+/// Z-axis stack — children paint on top of each other, anchored by
+/// the optional `alignment` (default: `center`). Same nine-point
+/// alignment grid as Flutter's `Alignment`.
+export type UiStackAlignment =
+  | "topStart"
+  | "topCenter"
+  | "topEnd"
+  | "centerStart"
+  | "center"
+  | "centerEnd"
+  | "bottomStart"
+  | "bottomCenter"
+  | "bottomEnd";
+export interface UiStack {
+  kind: "Stack";
+  id: string;
+  children: UiNode[];
+  alignment?: UiStackAlignment;
+}
+
+/// Aspect-ratio enforcer. `ratio` is width / height (so `16/9 ≈ 1.78`
+/// for landscape video). Renderer sizes the child to fill the available
+/// width and computes height from `ratio`.
+export interface UiAspect {
+  kind: "Aspect";
+  id: string;
+  ratio: number;
+  child: UiNode;
+}
+
+/// Flex distribution hint for a child of [UiRow] / [UiColumn]. Wrapping
+/// a node in `UiFlex { flex: 2 }` claims 2 shares of the leftover main-
+/// axis space relative to its siblings. Outside a Row/Column the
+/// renderer falls back to the bare child without taking extra space.
+export interface UiFlex {
+  kind: "Flex";
+  id: string;
+  flex: number;
+  child: UiNode;
+}
+
+/// Explicit scroll region. `axis` defaults to `vertical`. Use when the
+/// panel root scroller is insufficient (e.g. a horizontal carousel of
+/// cards inside a vertically-scrolling panel).
+export type UiScrollAxis = "vertical" | "horizontal";
+export interface UiScroll {
+  kind: "Scroll";
+  id: string;
+  axis?: UiScrollAxis;
+  child: UiNode;
+}
+
+/// Segmented tab control. `activeId` must match one of `tabs[*].id`
+/// (the renderer falls back to the first tab if not). Tapping a tab
+/// fires `onChangeEvent` with `payload: { tabId }`. The host shows
+/// the chrome only — switching panel content on tap is the plugin's
+/// responsibility.
+export interface UiTabBarTab {
+  id: string;
+  label: string;
+  /// Optional Feather catalog name. Unknown names render no icon.
+  icon?: string;
+}
+export interface UiTabBar {
+  kind: "TabBar";
+  id: string;
+  tabs: UiTabBarTab[];
+  activeId: string;
+  onChangeEvent?: string;
+}
+
+/// Search variant of [UiTextField]. The renderer adds a leading
+/// magnifier icon + a trailing clear button (appears only when the
+/// field has content). `onChangeEvent` carries `payload: { value }`
+/// the same way [UiTextField] does.
+export interface UiSearchField {
+  kind: "SearchField";
+  id: string;
+  value?: string;
+  placeholder?: string;
+  onChangeEvent?: string;
+}
+
+/// Standalone checkbox + optional label. Same reconciliation contract
+/// as [UiSwitch]: the renderer flips locally on tap and fires
+/// `onChangeEvent` with `payload: { value: boolean }`; the plugin's
+/// next render is authoritative.
+export interface UiCheckbox {
+  kind: "Checkbox";
+  id: string;
+  label?: string;
+  value: boolean;
+  onChangeEvent?: string;
+}
+
+export interface UiRadioOption {
+  value: string;
+  label: string;
+}
+
+/// Single-selection radio list. Same reconciliation contract as
+/// [UiSwitch] / [UiCheckbox]: optimistic local update on tap +
+/// authoritative plugin re-render. Event payload is
+/// `{ value: string }`.
+export interface UiRadioGroup {
+  kind: "RadioGroup";
+  id: string;
+  options: UiRadioOption[];
+  value?: string;
+  onChangeEvent?: string;
+}
+
+/// Continuous (omit `step`) or stepped (with `step`) slider. `value`
+/// is clamped to `[min, max]` by the renderer; `min` must be < `max`.
+/// Same reconciliation contract as the other inputs.
+export interface UiSlider {
+  kind: "Slider";
+  id: string;
+  min: number;
+  max: number;
+  step?: number;
+  value: number;
+  onChangeEvent?: string;
+}
+
 export type UiNode =
   | UiColumn
   | UiRow
@@ -387,7 +531,17 @@ export type UiNode =
   | UiMarkdown
   | UiCodeBlock
   | UiProgress
-  | UiSpinner;
+  | UiSpinner
+  | UiGrid
+  | UiStack
+  | UiAspect
+  | UiFlex
+  | UiScroll
+  | UiTabBar
+  | UiSearchField
+  | UiCheckbox
+  | UiRadioGroup
+  | UiSlider;
 
 /// Constructors mirroring the §4.3 widget vocabulary. IDs may be
 /// omitted; an omitted id is replaced with `crypto.randomUUID()` so the
@@ -426,6 +580,7 @@ export const ui = {
     id?: string;
     title?: string;
     variant?: UiSectionVariant;
+    collapsible?: boolean;
     children: UiNode[];
   }): UiSection {
     const out: UiSection = {
@@ -435,6 +590,7 @@ export const ui = {
     };
     if (p.title !== undefined) out.title = p.title;
     if (p.variant !== undefined) out.variant = p.variant;
+    if (p.collapsible !== undefined) out.collapsible = p.collapsible;
     return out;
   },
   card(p: { id?: string; children: UiNode[] }): UiCard {
@@ -672,6 +828,142 @@ export const ui = {
     const out: UiSpinner = { kind: "Spinner", id: ensureId(p.id) };
     if (p.label !== undefined) out.label = p.label;
     if (p.size !== undefined) out.size = p.size;
+    return out;
+  },
+  // ---- Batch 5 constructors ----
+  grid(p: {
+    id?: string;
+    children: UiNode[];
+    columns: UiGridColumns;
+    gap?: StyleSlot<SpacingToken>;
+  }): UiGrid {
+    const out: UiGrid = {
+      kind: "Grid",
+      id: ensureId(p.id),
+      children: p.children,
+      columns: p.columns,
+    };
+    if (p.gap !== undefined) out.gap = p.gap;
+    return out;
+  },
+  stack(p: {
+    id?: string;
+    children: UiNode[];
+    alignment?: UiStackAlignment;
+  }): UiStack {
+    const out: UiStack = {
+      kind: "Stack",
+      id: ensureId(p.id),
+      children: p.children,
+    };
+    if (p.alignment !== undefined) out.alignment = p.alignment;
+    return out;
+  },
+  aspect(p: { id?: string; ratio: number; child: UiNode }): UiAspect {
+    return {
+      kind: "Aspect",
+      id: ensureId(p.id),
+      ratio: p.ratio,
+      child: p.child,
+    };
+  },
+  flex(p: { id?: string; flex: number; child: UiNode }): UiFlex {
+    return {
+      kind: "Flex",
+      id: ensureId(p.id),
+      flex: p.flex,
+      child: p.child,
+    };
+  },
+  scroll(p: {
+    id?: string;
+    axis?: UiScrollAxis;
+    child: UiNode;
+  }): UiScroll {
+    const out: UiScroll = {
+      kind: "Scroll",
+      id: ensureId(p.id),
+      child: p.child,
+    };
+    if (p.axis !== undefined) out.axis = p.axis;
+    return out;
+  },
+  tabBar(p: {
+    id?: string;
+    tabs: UiTabBarTab[];
+    activeId: string;
+    onChangeEvent?: string;
+  }): UiTabBar {
+    const out: UiTabBar = {
+      kind: "TabBar",
+      id: ensureId(p.id),
+      tabs: p.tabs,
+      activeId: p.activeId,
+    };
+    if (p.onChangeEvent !== undefined) out.onChangeEvent = p.onChangeEvent;
+    return out;
+  },
+  searchField(
+    p: {
+      id?: string;
+      value?: string;
+      placeholder?: string;
+      onChangeEvent?: string;
+    } = {},
+  ): UiSearchField {
+    const out: UiSearchField = { kind: "SearchField", id: ensureId(p.id) };
+    if (p.value !== undefined) out.value = p.value;
+    if (p.placeholder !== undefined) out.placeholder = p.placeholder;
+    if (p.onChangeEvent !== undefined) out.onChangeEvent = p.onChangeEvent;
+    return out;
+  },
+  checkbox(p: {
+    id?: string;
+    label?: string;
+    value: boolean;
+    onChangeEvent?: string;
+  }): UiCheckbox {
+    const out: UiCheckbox = {
+      kind: "Checkbox",
+      id: ensureId(p.id),
+      value: p.value,
+    };
+    if (p.label !== undefined) out.label = p.label;
+    if (p.onChangeEvent !== undefined) out.onChangeEvent = p.onChangeEvent;
+    return out;
+  },
+  radioGroup(p: {
+    id?: string;
+    options: UiRadioOption[];
+    value?: string;
+    onChangeEvent?: string;
+  }): UiRadioGroup {
+    const out: UiRadioGroup = {
+      kind: "RadioGroup",
+      id: ensureId(p.id),
+      options: p.options,
+    };
+    if (p.value !== undefined) out.value = p.value;
+    if (p.onChangeEvent !== undefined) out.onChangeEvent = p.onChangeEvent;
+    return out;
+  },
+  slider(p: {
+    id?: string;
+    min: number;
+    max: number;
+    step?: number;
+    value: number;
+    onChangeEvent?: string;
+  }): UiSlider {
+    const out: UiSlider = {
+      kind: "Slider",
+      id: ensureId(p.id),
+      min: p.min,
+      max: p.max,
+      value: p.value,
+    };
+    if (p.step !== undefined) out.step = p.step;
+    if (p.onChangeEvent !== undefined) out.onChangeEvent = p.onChangeEvent;
     return out;
   },
 };

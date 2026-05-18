@@ -80,6 +80,38 @@ enum UiImageFit { cover, contain, fill }
 /// Variant of [UiProgress]. Default is [linear].
 enum UiProgressVariant { linear, circular }
 
+/// Nine-point alignment for [UiStack]. Matches Flutter's `Alignment`
+/// constants minus the LTR/RTL flip — we keep the start/end naming so
+/// authors don't accidentally reach for `left`/`right` and break RTL.
+enum UiStackAlignment {
+  topStart,
+  topCenter,
+  topEnd,
+  centerStart,
+  center,
+  centerEnd,
+  bottomStart,
+  bottomCenter,
+  bottomEnd,
+}
+
+/// Axis for [UiScroll]. Default is [vertical].
+enum UiScrollAxis { vertical, horizontal }
+
+/// Discriminated columns for [UiGrid] — a positive integer or the
+/// `'adaptive'` sentinel.
+@immutable
+class UiGridColumns {
+  final int? fixed;
+  final bool adaptive;
+  const UiGridColumns._({this.fixed, this.adaptive = false});
+
+  factory UiGridColumns.fixedCount(int n) =>
+      UiGridColumns._(fixed: n);
+  factory UiGridColumns.adaptiveCount() =>
+      const UiGridColumns._(adaptive: true);
+}
+
 /// Base type for every node in the descriptor tree. Every concrete node
 /// carries an `id` which is mandatory and must be unique within the
 /// tree — that uniqueness is enforced server-side; the renderer relies
@@ -118,6 +150,7 @@ sealed class UiNode {
           id: id,
           title: _asString(raw['title']),
           variant: _sectionVariant(raw['variant']),
+          collapsible: _asBool(raw['collapsible']) ?? false,
           children: _children(raw['children']),
         );
       case 'Card':
@@ -345,9 +378,272 @@ sealed class UiNode {
           label: _asString(raw['label']),
           size: _sizeSlot(raw['size']),
         );
+      case 'Grid':
+        return UiGrid(
+          id: id,
+          children: _children(raw['children']),
+          columns: _gridColumns(raw['columns']),
+          gap: _spacingSlot(raw['gap']),
+        );
+      case 'Stack':
+        return UiStack(
+          id: id,
+          children: _children(raw['children']),
+          alignment: _stackAlignment(raw['alignment']),
+        );
+      case 'Aspect':
+        final ratio = raw['ratio'];
+        if (ratio is! num || !ratio.isFinite || ratio <= 0) {
+          throw const FormatException(
+            'UiAspect.ratio must be a positive finite number',
+          );
+        }
+        final childRaw = raw['child'];
+        if (childRaw == null) {
+          throw const FormatException('UiAspect.child is required');
+        }
+        return UiAspect(
+          id: id,
+          ratio: ratio.toDouble(),
+          child: UiNode.fromJson(childRaw),
+        );
+      case 'Flex':
+        final flex = raw['flex'];
+        if (flex is! num || !flex.isFinite || flex < 0) {
+          throw const FormatException(
+            'UiFlex.flex must be a non-negative finite number',
+          );
+        }
+        final childRaw = raw['child'];
+        if (childRaw == null) {
+          throw const FormatException('UiFlex.child is required');
+        }
+        return UiFlex(
+          id: id,
+          flex: flex.toDouble(),
+          child: UiNode.fromJson(childRaw),
+        );
+      case 'Scroll':
+        final childRaw = raw['child'];
+        if (childRaw == null) {
+          throw const FormatException('UiScroll.child is required');
+        }
+        return UiScroll(
+          id: id,
+          axis: _scrollAxis(raw['axis']),
+          child: UiNode.fromJson(childRaw),
+        );
+      case 'TabBar':
+        return UiTabBar(
+          id: id,
+          tabs: _tabBarTabs(raw['tabs']),
+          activeId: _requiredString(raw['activeId'], 'UiTabBar.activeId'),
+          onChangeEvent: _asString(raw['onChangeEvent']),
+        );
+      case 'SearchField':
+        return UiSearchField(
+          id: id,
+          value: _asString(raw['value']),
+          placeholder: _asString(raw['placeholder']),
+          onChangeEvent: _asString(raw['onChangeEvent']),
+        );
+      case 'Checkbox':
+        final value = raw['value'];
+        if (value is! bool) {
+          throw const FormatException('UiCheckbox.value must be a bool');
+        }
+        return UiCheckbox(
+          id: id,
+          value: value,
+          label: _asString(raw['label']),
+          onChangeEvent: _asString(raw['onChangeEvent']),
+        );
+      case 'RadioGroup':
+        return UiRadioGroup(
+          id: id,
+          options: _radioOptions(raw['options']),
+          value: _asString(raw['value']),
+          onChangeEvent: _asString(raw['onChangeEvent']),
+        );
+      case 'Slider':
+        final minRaw = raw['min'];
+        final maxRaw = raw['max'];
+        final valueRaw = raw['value'];
+        if (minRaw is! num || !minRaw.isFinite) {
+          throw const FormatException('UiSlider.min must be a finite number');
+        }
+        if (maxRaw is! num || !maxRaw.isFinite) {
+          throw const FormatException('UiSlider.max must be a finite number');
+        }
+        if (minRaw >= maxRaw) {
+          throw const FormatException('UiSlider: min must be < max');
+        }
+        if (valueRaw is! num || !valueRaw.isFinite) {
+          throw const FormatException(
+            'UiSlider.value must be a finite number',
+          );
+        }
+        double? step;
+        final stepRaw = raw['step'];
+        if (stepRaw != null) {
+          if (stepRaw is! num || !stepRaw.isFinite || stepRaw <= 0) {
+            throw const FormatException(
+              'UiSlider.step must be a positive finite number when provided',
+            );
+          }
+          step = stepRaw.toDouble();
+        }
+        return UiSlider(
+          id: id,
+          min: minRaw.toDouble(),
+          max: maxRaw.toDouble(),
+          step: step,
+          value: valueRaw.toDouble(),
+          onChangeEvent: _asString(raw['onChangeEvent']),
+        );
       default:
         throw FormatException('UiNode: unknown kind "$kind"');
     }
+  }
+
+  static bool? _asBool(Object? raw) {
+    if (raw == null) return null;
+    if (raw is bool) return raw;
+    throw FormatException(
+      'UiNode: expected bool, got ${raw.runtimeType}',
+    );
+  }
+
+  static String _requiredString(Object? raw, String field) {
+    if (raw is! String || raw.isEmpty) {
+      throw FormatException('$field must be a non-empty string');
+    }
+    return raw;
+  }
+
+  static UiGridColumns _gridColumns(Object? raw) {
+    if (raw == 'adaptive') return UiGridColumns.adaptiveCount();
+    if (raw is int && raw >= 1) return UiGridColumns.fixedCount(raw);
+    if (raw is double && raw == raw.truncateToDouble() && raw >= 1) {
+      return UiGridColumns.fixedCount(raw.toInt());
+    }
+    throw const FormatException(
+      'UiGrid.columns must be a positive integer or "adaptive"',
+    );
+  }
+
+  static UiStackAlignment? _stackAlignment(Object? raw) {
+    if (raw == null) return null;
+    if (raw is! String) {
+      throw const FormatException('UiStack.alignment must be a string');
+    }
+    switch (raw) {
+      case 'topStart':
+        return UiStackAlignment.topStart;
+      case 'topCenter':
+        return UiStackAlignment.topCenter;
+      case 'topEnd':
+        return UiStackAlignment.topEnd;
+      case 'centerStart':
+        return UiStackAlignment.centerStart;
+      case 'center':
+        return UiStackAlignment.center;
+      case 'centerEnd':
+        return UiStackAlignment.centerEnd;
+      case 'bottomStart':
+        return UiStackAlignment.bottomStart;
+      case 'bottomCenter':
+        return UiStackAlignment.bottomCenter;
+      case 'bottomEnd':
+        return UiStackAlignment.bottomEnd;
+    }
+    throw FormatException('UiStack: unknown alignment "$raw"');
+  }
+
+  static UiScrollAxis? _scrollAxis(Object? raw) {
+    if (raw == null) return null;
+    if (raw is! String) {
+      throw const FormatException('UiScroll.axis must be a string');
+    }
+    switch (raw) {
+      case 'vertical':
+        return UiScrollAxis.vertical;
+      case 'horizontal':
+        return UiScrollAxis.horizontal;
+    }
+    throw FormatException('UiScroll: unknown axis "$raw"');
+  }
+
+  static List<UiTabBarTab> _tabBarTabs(Object? raw) {
+    if (raw is! List || raw.isEmpty) {
+      throw const FormatException(
+        'UiTabBar.tabs must be a non-empty array',
+      );
+    }
+    final out = <UiTabBarTab>[];
+    final seen = <String>{};
+    for (final entry in raw) {
+      if (entry is! Map<String, dynamic>) {
+        throw const FormatException(
+          'UiTabBar.tabs[*] must be a JSON object',
+        );
+      }
+      final id = entry['id'];
+      final label = entry['label'];
+      if (id is! String || id.isEmpty) {
+        throw const FormatException(
+          'UiTabBar.tabs[*].id must be a non-empty string',
+        );
+      }
+      if (seen.contains(id)) {
+        throw FormatException('UiTabBar: duplicate tab id "$id"');
+      }
+      seen.add(id);
+      if (label is! String || label.isEmpty) {
+        throw const FormatException(
+          'UiTabBar.tabs[*].label must be a non-empty string',
+        );
+      }
+      out.add(UiTabBarTab(id: id, label: label, icon: _asString(entry['icon'])));
+    }
+    return out;
+  }
+
+  static List<UiRadioOption> _radioOptions(Object? raw) {
+    if (raw is! List || raw.isEmpty) {
+      throw const FormatException(
+        'UiRadioGroup.options must be a non-empty array',
+      );
+    }
+    final out = <UiRadioOption>[];
+    final seen = <String>{};
+    for (final entry in raw) {
+      if (entry is! Map<String, dynamic>) {
+        throw const FormatException(
+          'UiRadioGroup.options[*] must be a JSON object',
+        );
+      }
+      final value = entry['value'];
+      final label = entry['label'];
+      if (value is! String || value.isEmpty) {
+        throw const FormatException(
+          'UiRadioGroup.options[*].value must be a non-empty string',
+        );
+      }
+      if (seen.contains(value)) {
+        throw FormatException(
+          'UiRadioGroup: duplicate option value "$value"',
+        );
+      }
+      seen.add(value);
+      if (label is! String || label.isEmpty) {
+        throw const FormatException(
+          'UiRadioGroup.options[*].label must be a non-empty string',
+        );
+      }
+      out.add(UiRadioOption(value: value, label: label));
+    }
+    return out;
   }
 
   static List<UiNode> _children(Object? raw) {
@@ -592,11 +888,16 @@ class UiRow extends UiNode {
 class UiSection extends UiNode {
   final String? title;
   final UiSectionVariant? variant;
+  /// When true the renderer adds a tap-to-expand-collapse header
+  /// chevron. The renderer persists the expanded/collapsed state per
+  /// node id across re-renders.
+  final bool collapsible;
   final List<UiNode> children;
   const UiSection({
     required String id,
     this.title,
     this.variant,
+    this.collapsible = false,
     required this.children,
   }) : super(id);
 }
@@ -964,6 +1265,158 @@ class UiSpinner extends UiNode {
   final String? label;
   final SizeSlot? size;
   const UiSpinner({required String id, this.label, this.size}) : super(id);
+}
+
+// ---- Batch 5 widgets (§4.3) — long tail ----
+
+/// Fixed-column / adaptive grid (Batch 5). Children flow row-major.
+class UiGrid extends UiNode {
+  final List<UiNode> children;
+  final UiGridColumns columns;
+  final SpacingSlot? gap;
+  const UiGrid({
+    required String id,
+    required this.children,
+    required this.columns,
+    this.gap,
+  }) : super(id);
+}
+
+/// Z-axis stack (Batch 5). Children paint on top of each other,
+/// anchored by [alignment] (default center).
+class UiStack extends UiNode {
+  final List<UiNode> children;
+  final UiStackAlignment? alignment;
+  const UiStack({
+    required String id,
+    required this.children,
+    this.alignment,
+  }) : super(id);
+}
+
+/// Aspect-ratio enforcer (Batch 5). [ratio] is width / height.
+class UiAspect extends UiNode {
+  final double ratio;
+  final UiNode child;
+  const UiAspect({
+    required String id,
+    required this.ratio,
+    required this.child,
+  }) : super(id);
+}
+
+/// Flex distribution hint for a Row/Column child (Batch 5). Outside a
+/// Row/Column the renderer falls back to the bare child without
+/// claiming extra space.
+class UiFlex extends UiNode {
+  final double flex;
+  final UiNode child;
+  const UiFlex({
+    required String id,
+    required this.flex,
+    required this.child,
+  }) : super(id);
+}
+
+/// Explicit scroll region (Batch 5). Default axis is vertical.
+class UiScroll extends UiNode {
+  final UiScrollAxis? axis;
+  final UiNode child;
+  const UiScroll({
+    required String id,
+    this.axis,
+    required this.child,
+  }) : super(id);
+}
+
+/// Tab entry inside [UiTabBar] (Batch 5).
+@immutable
+class UiTabBarTab {
+  final String id;
+  final String label;
+  final String? icon;
+  const UiTabBarTab({required this.id, required this.label, this.icon});
+}
+
+/// Segmented tab control (Batch 5). The host renders the chrome; the
+/// plugin owns content-switching behavior on tap.
+class UiTabBar extends UiNode {
+  final List<UiTabBarTab> tabs;
+  final String activeId;
+  final String? onChangeEvent;
+  const UiTabBar({
+    required String id,
+    required this.tabs,
+    required this.activeId,
+    this.onChangeEvent,
+  }) : super(id);
+}
+
+/// Search variant of [UiTextField] (Batch 5). The renderer adds a
+/// magnifier prefix + a clear-button suffix.
+class UiSearchField extends UiNode {
+  final String? value;
+  final String? placeholder;
+  final String? onChangeEvent;
+  const UiSearchField({
+    required String id,
+    this.value,
+    this.placeholder,
+    this.onChangeEvent,
+  }) : super(id);
+}
+
+/// Standalone checkbox (Batch 5). Same reconciliation contract as
+/// [UiSwitch].
+class UiCheckbox extends UiNode {
+  final String? label;
+  final bool value;
+  final String? onChangeEvent;
+  const UiCheckbox({
+    required String id,
+    required this.value,
+    this.label,
+    this.onChangeEvent,
+  }) : super(id);
+}
+
+@immutable
+class UiRadioOption {
+  final String value;
+  final String label;
+  const UiRadioOption({required this.value, required this.label});
+}
+
+/// Single-selection radio list (Batch 5). Same reconciliation contract
+/// as [UiSwitch] / [UiCheckbox].
+class UiRadioGroup extends UiNode {
+  final List<UiRadioOption> options;
+  final String? value;
+  final String? onChangeEvent;
+  const UiRadioGroup({
+    required String id,
+    required this.options,
+    this.value,
+    this.onChangeEvent,
+  }) : super(id);
+}
+
+/// Continuous or stepped slider (Batch 5). Renderer clamps [value] to
+/// [min, max] and snaps to [step] when set.
+class UiSlider extends UiNode {
+  final double min;
+  final double max;
+  final double? step;
+  final double value;
+  final String? onChangeEvent;
+  const UiSlider({
+    required String id,
+    required this.min,
+    required this.max,
+    required this.value,
+    this.step,
+    this.onChangeEvent,
+  }) : super(id);
 }
 
 /// What the renderer fires when the user interacts with a leaf widget.

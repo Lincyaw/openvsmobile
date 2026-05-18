@@ -25,15 +25,25 @@ import {
   type StyleSlot,
   type UiAppGrid,
   type UiAppTile,
+  type UiAspect,
   type UiBadge,
+  type UiCheckbox,
   type UiDivider,
   type UiEventInput,
+  type UiFlex,
+  type UiGrid,
   type UiIcon,
   type UiInlineBanner,
   type UiListTile,
+  type UiRadioGroup,
+  type UiScroll,
+  type UiSearchField,
   type UiSection,
   type UiSelect,
+  type UiSlider,
+  type UiStack,
   type UiSwitch,
+  type UiTabBar,
 } from "../src/index.js";
 
 interface Harness {
@@ -478,5 +488,162 @@ describe("createPlugin: ui.event dispatch", () => {
     };
     expect(ackMsg.id).toBe(99);
     expect(ackMsg.error?.code).toBe(-32601);
+  });
+});
+
+describe("Batch 5 widgets (long tail)", () => {
+  it("ui.grid carries children + columns + gap", () => {
+    const g: UiGrid = ui.grid({
+      id: "g",
+      columns: 3,
+      gap: "md",
+      children: [
+        ui.text({ id: "t1", text: "a" }),
+        ui.text({ id: "t2", text: "b" }),
+      ],
+    });
+    expect(g.kind).toBe("Grid");
+    expect(g.columns).toBe(3);
+    expect(g.gap).toBe("md");
+    expect(g.children).toHaveLength(2);
+  });
+
+  it("ui.grid accepts the 'adaptive' columns sentinel", () => {
+    const g = ui.grid({ id: "g2", columns: "adaptive", children: [] });
+    expect(g.columns).toBe("adaptive");
+  });
+
+  it("ui.stack carries children + alignment", () => {
+    const s: UiStack = ui.stack({
+      id: "s",
+      alignment: "bottomEnd",
+      children: [ui.text({ id: "x", text: "x" })],
+    });
+    expect(s.kind).toBe("Stack");
+    expect(s.alignment).toBe("bottomEnd");
+  });
+
+  it("ui.aspect carries ratio + child", () => {
+    const a: UiAspect = ui.aspect({
+      id: "a",
+      ratio: 16 / 9,
+      child: ui.text({ id: "t", text: "hi" }),
+    });
+    expect(a.kind).toBe("Aspect");
+    expect(a.ratio).toBeCloseTo(16 / 9);
+    expect(a.child.kind).toBe("Text");
+  });
+
+  it("ui.flex carries flex + child", () => {
+    const f: UiFlex = ui.flex({
+      id: "f",
+      flex: 2,
+      child: ui.text({ id: "t", text: "x" }),
+    });
+    expect(f.kind).toBe("Flex");
+    expect(f.flex).toBe(2);
+  });
+
+  it("ui.scroll defaults axis to undefined", () => {
+    const s: UiScroll = ui.scroll({
+      id: "sc",
+      child: ui.text({ id: "t", text: "x" }),
+    });
+    expect(s.kind).toBe("Scroll");
+    expect(s.axis).toBeUndefined();
+    const h = ui.scroll({
+      id: "sc2",
+      axis: "horizontal",
+      child: ui.text({ id: "t2", text: "x" }),
+    });
+    expect(h.axis).toBe("horizontal");
+  });
+
+  it("ui.tabBar carries tabs + activeId + onChangeEvent", () => {
+    const tb: UiTabBar = ui.tabBar({
+      id: "tb",
+      activeId: "a",
+      onChangeEvent: "tabPicked",
+      tabs: [
+        { id: "a", label: "Alpha", icon: "home" },
+        { id: "b", label: "Beta" },
+      ],
+    });
+    expect(tb.kind).toBe("TabBar");
+    expect(tb.tabs).toHaveLength(2);
+    expect(tb.tabs[0].icon).toBe("home");
+    expect(tb.activeId).toBe("a");
+    expect(tb.onChangeEvent).toBe("tabPicked");
+  });
+
+  it("ui.searchField defaults all optional fields to undefined", () => {
+    const s: UiSearchField = ui.searchField();
+    expect(s.kind).toBe("SearchField");
+    expect(s.value).toBeUndefined();
+    const populated = ui.searchField({
+      id: "sf",
+      value: "ada",
+      placeholder: "search…",
+      onChangeEvent: "q",
+    });
+    expect(populated.value).toBe("ada");
+    expect(populated.placeholder).toBe("search…");
+    expect(populated.onChangeEvent).toBe("q");
+  });
+
+  it("ui.checkbox carries value + label + onChangeEvent", () => {
+    const c: UiCheckbox = ui.checkbox({
+      id: "c",
+      value: true,
+      label: "Subscribe",
+      onChangeEvent: "sub",
+    });
+    expect(c.kind).toBe("Checkbox");
+    expect(c.value).toBe(true);
+    expect(c.label).toBe("Subscribe");
+    expect(c.onChangeEvent).toBe("sub");
+  });
+
+  it("ui.radioGroup carries options + value + onChangeEvent", () => {
+    const r: UiRadioGroup = ui.radioGroup({
+      id: "r",
+      value: "x",
+      onChangeEvent: "pick",
+      options: [
+        { value: "x", label: "X" },
+        { value: "y", label: "Y" },
+      ],
+    });
+    expect(r.kind).toBe("RadioGroup");
+    expect(r.options).toHaveLength(2);
+    expect(r.value).toBe("x");
+    expect(r.onChangeEvent).toBe("pick");
+  });
+
+  it("ui.slider carries min + max + step + value + onChangeEvent", () => {
+    const s: UiSlider = ui.slider({
+      id: "s",
+      min: 0,
+      max: 100,
+      step: 5,
+      value: 50,
+      onChangeEvent: "moved",
+    });
+    expect(s.kind).toBe("Slider");
+    expect(s.min).toBe(0);
+    expect(s.max).toBe(100);
+    expect(s.step).toBe(5);
+    expect(s.value).toBe(50);
+    expect(s.onChangeEvent).toBe("moved");
+    // Continuous variant: step omitted.
+    const cont = ui.slider({ id: "s2", min: 0, max: 1, value: 0.5 });
+    expect(cont.step).toBeUndefined();
+  });
+
+  it("ui.section carries the new collapsible flag", () => {
+    const s = ui.section({ id: "s", collapsible: true, children: [] });
+    expect(s.collapsible).toBe(true);
+    const omitted = ui.section({ id: "s2", children: [] });
+    expect(omitted.collapsible).toBeUndefined();
   });
 });
