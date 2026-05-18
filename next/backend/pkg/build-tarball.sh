@@ -286,6 +286,33 @@ if [[ -d "$BACKEND_DIR/bin" ]]; then
   find "$BUNDLE_DIR/bin" -type f -name '*.mjs' -exec chmod +x {} +
 fi
 
+# Example plugins. install.sh seeds these into the user's plugins dir on
+# first install so a fresh environment isn't a blank Plugins tab. The
+# settled "filesystem-only install" decision still holds: the source of
+# truth is the user's plugins dir; this just gives them a starter set
+# they can delete. Bundle clock / notes / sysinfo — small, no npm deps,
+# each exercises a different slice of the host (timer, fs read+write,
+# os introspection). We never ship a plugin's node_modules even if one
+# accidentally appears in-tree; the host SDK is injected at runtime.
+EXAMPLES_SRC="$BACKEND_DIR/../examples/plugins"
+EXAMPLES_DEST="$BUNDLE_DIR/share/example-plugins"
+if [[ -d "$EXAMPLES_SRC" ]]; then
+  mkdir -p "$EXAMPLES_DEST"
+  for plugin in clock notes sysinfo; do
+    src="$EXAMPLES_SRC/$plugin"
+    if [[ ! -d "$src" ]]; then
+      echo "error: example plugin '$plugin' missing at $src" >&2
+      exit 1
+    fi
+    # rsync would be cleaner but isn't guaranteed on minimal CI runners;
+    # fall back to cp + a defensive find to strip any node_modules.
+    rm -rf "$EXAMPLES_DEST/$plugin"
+    cp -R "$src" "$EXAMPLES_DEST/$plugin"
+    find "$EXAMPLES_DEST/$plugin" -type d -name node_modules -prune -exec rm -rf {} +
+  done
+  log "bundled example plugins: clock notes sysinfo"
+fi
+
 # A "production-mode" package.json — same content, but stripped of
 # devDependencies and scripts that aren't useful at runtime.
 node -e "

@@ -200,6 +200,28 @@ having put them there"). Adding network-pulling install would require a
 separate design discussion about trust, signing, and uninstall is not in
 scope until install is.
 
+### Bundled example plugins (first-install seed)
+
+The release tarball carries three small example plugins under
+`share/example-plugins/`: **clock** (timer-driven re-render),
+**notes** (TextField + filesystem read/write), and **sysinfo**
+(`node:os` snapshot). On a host that has never seen `install.sh`
+before, the installer copies these into
+`~/.local/share/openvsmobile-next/plugins/` (or
+`$OPENVSMOBILE_PLUGINS_DIR` if set) so the Plugins tab isn't blank on
+first boot.
+
+After that initial seed `install.sh` drops a hidden `.seeded` sentinel
+in the plugins dir and never seeds again on subsequent installs or
+upgrades. Deleting a seeded plugin directory is a permanent uninstall:
+re-running `install.sh` will not bring it back. This is intentional —
+the filesystem is still the single source of truth, and an upgrade
+must not resurrect a plugin the user removed. The sentinel does not
+need to be preserved if you want a clean re-seed; remove it together
+with everything else in the plugins dir and the next install will
+re-bootstrap. The seed is filesystem-only — no network fetch — and
+honours the "Plugin install is filesystem-only" settled decision.
+
 ### UI descriptor protocol (`ui.*`)
 
 Plugins describe their UI as a typed `UiNode` tree (design §4.3). The

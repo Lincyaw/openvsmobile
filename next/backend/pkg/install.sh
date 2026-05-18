@@ -253,6 +253,53 @@ ln -snf "$INSTALL_DIR" "$TMP_LINK"
 mv -Tf "$TMP_LINK" "$CURRENT_LINK"
 log "current -> $INSTALL_DIR"
 
+# ----- seed example plugins on first install -----
+# A fresh environment otherwise lands on an empty Plugins tab. We bundle
+# clock / notes / sysinfo in the tarball under share/example-plugins/ and
+# copy them into the user's plugins dir the FIRST time install.sh runs,
+# but never on subsequent runs — so removing a plugin sticks across
+# upgrades. The settled "filesystem-only install" decision (CLAUDE.md)
+# is preserved: the user's plugins dir remains the single source of
+# truth; this just gives them a non-empty starter set on a host they've
+# never installed to before.
+#
+# "First install" is detected via a sentinel file (.seeded) inside the
+# plugins dir. Without it, "delete clock/" would re-seed clock on the
+# next upgrade; with it, the seed runs at most once per plugins dir.
+PLUGINS_DIR="${OPENVSMOBILE_PLUGINS_DIR:-$HOME/.local/share/openvsmobile-next/plugins}"
+EXAMPLES_DIR="$BUNDLE_DIR/share/example-plugins"
+SENTINEL="$PLUGINS_DIR/.seeded"
+if [[ -d "$EXAMPLES_DIR" ]]; then
+  should_seed=0
+  if [[ ! -d "$PLUGINS_DIR" ]]; then
+    should_seed=1
+  elif [[ ! -e "$SENTINEL" ]] && [[ -z "$(ls -A "$PLUGINS_DIR" 2>/dev/null)" ]]; then
+    # Pre-existing but empty plugins dir (e.g. user mkdir'd it themselves)
+    # AND no prior seed marker → treat as first install.
+    should_seed=1
+  fi
+  if [[ "$should_seed" -eq 1 ]]; then
+    mkdir -p "$PLUGINS_DIR"
+    # cp each top-level dir individually so a future addition to
+    # share/example-plugins doesn't silently propagate to existing users.
+    seeded=()
+    for plugin in clock notes sysinfo; do
+      if [[ -d "$EXAMPLES_DIR/$plugin" ]]; then
+        cp -R "$EXAMPLES_DIR/$plugin" "$PLUGINS_DIR/"
+        seeded+=("$plugin")
+      fi
+    done
+    # Sentinel goes last so a crash mid-copy leaves the dir in the
+    # "non-empty, not sentineled" state and the next run will retry.
+    : > "$SENTINEL"
+    if [[ ${#seeded[@]} -gt 0 ]]; then
+      log "seeded example plugins into $PLUGINS_DIR: ${seeded[*]} — delete a subdir to uninstall (no re-seed on upgrade)"
+    fi
+  else
+    log "plugins dir already initialised at $PLUGINS_DIR; skipping example seed"
+  fi
+fi
+
 # ----- write systemd unit -----
 mkdir -p "$(dirname "$UNIT_PATH")"
 UNIT_CONTENT=$(cat <<UNIT

@@ -7,6 +7,15 @@ filesystem reads.
 
 ## Install
 
+This plugin is seeded by `install.sh` on first install — if you're
+reading the README at
+`~/.local/share/openvsmobile-next/plugins/sysinfo/`, it was copied
+there automatically. Delete this directory to uninstall; re-running
+`install.sh` will **not** re-seed it, because the parent plugins dir is
+no longer in its first-install state (sentinel `.seeded`).
+
+To install manually from a checkout:
+
 ```
 cp -R . ~/.local/share/openvsmobile-next/plugins/sysinfo/
 ```
