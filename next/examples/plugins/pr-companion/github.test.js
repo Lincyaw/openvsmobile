@@ -20,13 +20,19 @@ import {
  * Build a minimal Response-shaped object. We don't use the real
  * `Response` constructor because we need precise control over the
  * `headers.get` lookup keys and the body deserialization.
+ *
+ * Pass `text: "..."` instead of `body` for the plain-text endpoints
+ * (currently only the action-log download); the resulting response
+ * exposes `.text()` returning the string and `.json()` throwing
+ * SyntaxError, mirroring real fetch behaviour for non-JSON payloads.
  */
-function fakeResponse({ status = 200, body = {}, headers = {} } = {}) {
+function fakeResponse({ status = 200, body = {}, text, headers = {} } = {}) {
   /** @type {Record<string, string>} */
   const lower = {};
   for (const [k, v] of Object.entries(headers)) {
     if (v !== null && v !== undefined) lower[k.toLowerCase()] = String(v);
   }
+  const isText = typeof text === "string";
   return {
     status,
     headers: {
@@ -35,7 +41,12 @@ function fakeResponse({ status = 200, body = {}, headers = {} } = {}) {
       },
     },
     async json() {
+      if (isText) throw new SyntaxError("Unexpected token in JSON");
       return body;
+    },
+    async text() {
+      if (isText) return text;
+      return typeof body === "string" ? body : JSON.stringify(body);
     },
   };
 }
@@ -405,6 +416,135 @@ describe("listCheckRuns", () => {
     expect(result.checkRuns[0].conclusion).toBe("success");
     expect(result.checkRuns[1].conclusion).toBeNull();
     expect(result.checkRuns[1].logUrl).toBeNull();
+  });
+});
+
+describe("getCheckRunLog", () => {
+  const LOG_TEXT = "2026-01-01T00:00:00Z setup\n2026-01-01T00:00:01Z run tests\nok\n";
+
+  it("happy path: 200 with plain-text body returns ok + body + rateLimit", async () => {
+    fetchImpl = () =>
+      Promise.resolve(
+        fakeResponse({
+          status: 200,
+          text: LOG_TEXT,
+          headers: RATE_HEADERS,
+        }),
+      );
+
+    const client = newClient();
+    const result = await client.getCheckRunLog({ owner: "octo", repo: "repo", runId: 12345 });
+
+    expect(result.status).toBe("ok");
+    expect(result.body).toBe(LOG_TEXT);
+    expect(result.rateLimit.limit).toBe(5000);
+
+    // Outgoing request sanity: URL shape, method, headers.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe(
+      "https://api.github.com/repos/octo/repo/actions/jobs/12345/logs",
+    );
+    expect(calls[0].init.method).toBe("GET");
+    expect(calls[0].init.headers.Authorization).toBe("token test-token");
+    expect(calls[0].init.headers["User-Agent"]).toBe("pr-companion-test/0.1");
+    expect(calls[0].init.headers["X-GitHub-Api-Version"]).toBe("2022-11-28");
+  });
+
+  it("404 returns notFound (distinct from serverError, for deleted-log case)", async () => {
+    fetchImpl = () => Promise.resolve(fakeResponse({ status: 404, headers: RATE_HEADERS }));
+
+    const client = newClient();
+    const result = await client.getCheckRunLog({ owner: "o", repo: "r", runId: 1 });
+
+    expect(result.status).toBe("notFound");
+    // Specifically NOT serverError — the UI hangs a distinct message
+    // off this status.
+    expect("code" in result).toBe(false);
+  });
+
+  it("401 returns unauthed", async () => {
+    fetchImpl = () => Promise.resolve(fakeResponse({ status: 401, headers: RATE_HEADERS }));
+
+    const client = newClient();
+    const result = await client.getCheckRunLog({ owner: "o", repo: "r", runId: 1 });
+
+    expect(result.status).toBe("unauthed");
+  });
+
+  it("403 with remaining=0 returns rateLimited", async () => {
+    fetchImpl = () =>
+      Promise.resolve(
+        fakeResponse({
+          status: 403,
+          headers: {
+            "x-ratelimit-limit": "5000",
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": "1700000500",
+          },
+        }),
+      );
+
+    const client = newClient();
+    const result = await client.getCheckRunLog({ owner: "o", repo: "r", runId: 1 });
+
+    expect(result.status).toBe("rateLimited");
+    expect(result.resetAt).toBeInstanceOf(Date);
+    expect(result.resetAt.getTime()).toBe(1700000500 * 1000);
+  });
+
+  it("403 without rate-limit-zero header returns serverError 403", async () => {
+    fetchImpl = () => Promise.resolve(fakeResponse({ status: 403 }));
+
+    const client = newClient();
+    const result = await client.getCheckRunLog({ owner: "o", repo: "r", runId: 1 });
+
+    expect(result.status).toBe("serverError");
+    expect(result.code).toBe(403);
+  });
+
+  it("5xx returns serverError with the response code", async () => {
+    fetchImpl = () => Promise.resolve(fakeResponse({ status: 502, headers: RATE_HEADERS }));
+
+    const client = newClient();
+    const result = await client.getCheckRunLog({ owner: "o", repo: "r", runId: 1 });
+
+    expect(result.status).toBe("serverError");
+    expect(result.code).toBe(502);
+  });
+
+  it("network reject (fetch throws) returns offline", async () => {
+    fetchImpl = () => Promise.reject(new TypeError("fetch failed: connection refused"));
+
+    const client = newClient();
+    const result = await client.getCheckRunLog({ owner: "o", repo: "r", runId: 1 });
+
+    expect(result.status).toBe("offline");
+    expect(result.error).toBeInstanceOf(Error);
+    expect(result.error.message).toContain("fetch failed");
+  });
+
+  it("AbortError (timeout) returns offline with error.name === 'AbortError'", async () => {
+    fetchImpl = () => {
+      const err = new Error("The operation was aborted.");
+      err.name = "AbortError";
+      return Promise.reject(err);
+    };
+
+    const client = newClient();
+    const result = await client.getCheckRunLog({ owner: "o", repo: "r", runId: 1 });
+
+    expect(result.status).toBe("offline");
+    expect(result.error.name).toBe("AbortError");
+  });
+
+  it("rejects non-positive-integer runId via a TypeError", async () => {
+    const client = newClient();
+    await expect(
+      client.getCheckRunLog({ owner: "o", repo: "r", runId: /** @type {any} */ (0) }),
+    ).rejects.toBeInstanceOf(TypeError);
+    await expect(
+      client.getCheckRunLog({ owner: "o", repo: "r", runId: /** @type {any} */ (1.5) }),
+    ).rejects.toBeInstanceOf(TypeError);
   });
 });
 

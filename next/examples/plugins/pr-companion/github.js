@@ -24,6 +24,12 @@
 // as the source of truth; extending them later is a one-line addition,
 // rendering fields we never expose is permanent bloat.
 //
+// Envelope vocabulary: every method returns one of
+//   ok | notModified | unauthed | rateLimited | offline | serverError | notFound
+// where `notFound` is method-specific (currently only `getCheckRunLog`
+// returns it, for the GitHub-deletes-old-logs case — distinguishing it
+// from serverError lets the UI render "log unavailable" cleanly).
+//
 const GITHUB_API = "https://api.github.com";
 const ACCEPT = "application/vnd.github+json";
 const API_VERSION = "2022-11-28";
@@ -333,6 +339,72 @@ export function createGithubClient({ token, userAgent }) {
       etag: response.headers.get("etag"),
       lastModified: response.headers.get("last-modified"),
       linkHeader: response.headers.get("link"),
+      rateLimit,
+    };
+  }
+
+  /**
+   * Internal helper: GET a URL expecting a plain-text body. Used by the
+   * action-log endpoint, which returns the raw log file (or, in
+   * practice, a 302 to a signed S3-style URL that `fetch` follows
+   * transparently). Sibling of `getJson` rather than a `format` param on
+   * `getJson` itself — the response shapes diverge (no `body` parse, no
+   * `linkHeader`, distinct `notFound` status today) and forking the
+   * helper keeps each callsite's envelope obvious at a glance.
+   *
+   * The `notFound` (404) status is surfaced distinctly because GitHub
+   * returns 404 both for never-existed jobs and for jobs whose logs have
+   * been pruned by the workflow's log-retention setting — the UI wants
+   * to render "log unavailable" for that, not "server error".
+   *
+   * @param {string} url
+   * @returns {Promise<
+   *   | { status: 'ok', body: string, rateLimit: RateLimitInfo | null }
+   *   | { status: 'unauthed' }
+   *   | { status: 'rateLimited', resetAt: Date }
+   *   | { status: 'offline', error: Error }
+   *   | { status: 'serverError', code: number }
+   *   | { status: 'notFound' }
+   * >}
+   */
+  async function getText(url) {
+    const init = buildInit({
+      token,
+      userAgent,
+      method: "GET",
+      signal: /** @type {AbortSignal} */ (/** @type {unknown} */ (undefined)),
+    });
+    const result = await fetchOnce(url, init);
+    if (result.kind === "offline") {
+      return { status: /** @type {const} */ ("offline"), error: result.error };
+    }
+    const { response, rateLimit } = result;
+    // Custom 404 handling first — `classify` collapses 404 into
+    // serverError, which is the right call for the JSON endpoints but
+    // not for this method. Check before delegating.
+    if (response.status === 404) {
+      return { status: /** @type {const} */ ("notFound") };
+    }
+    const classified = classify(response, rateLimit);
+    if (classified !== null) {
+      // notModified is unreachable here — no conditional headers sent —
+      // but if it ever surfaced we'd want to flag it as a serverError
+      // rather than invent an `etag` field on this envelope.
+      if (classified.status === "notModified") {
+        return { status: /** @type {const} */ ("serverError"), code: 304 };
+      }
+      return classified;
+    }
+    let body;
+    try {
+      body = await response.text();
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      return { status: /** @type {const} */ ("serverError"), code: response.status, error: err };
+    }
+    return {
+      status: /** @type {const} */ ("ok"),
+      body,
       rateLimit,
     };
   }
@@ -707,6 +779,39 @@ export function createGithubClient({ token, userAgent }) {
   }
 
   /**
+   * GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs — download the
+   * raw log file for a single workflow job (one row of the Checks tab,
+   * i.e. one `CheckRun`).
+   *
+   * GitHub naming gotcha: the URL path segment is `job_id` and the API
+   * docs call it that, but the value to pass is exactly the
+   * `CheckRun.id` we receive from `listCheckRuns` — for the Actions
+   * surface, a check run IS a workflow job. To keep the parameter name
+   * congruent with `CheckRun.id`, we accept it as `runId` here. See
+   * https://docs.github.com/en/rest/actions/workflow-jobs#download-job-logs-for-a-workflow-run.
+   *
+   * The endpoint returns plain text (often via a 302 to a signed S3-style
+   * URL that fetch follows). We use `getText` rather than `getJson`.
+   *
+   * 404 is surfaced as `{ status: 'notFound' }` rather than
+   * `serverError` because GitHub returns 404 both for nonexistent jobs
+   * AND for jobs whose logs have aged past the workflow's retention
+   * setting — the UI wants a "log unavailable" message for that, not
+   * the generic error path. No ETag / conditional GET — log content is
+   * large, fetched on-demand from a tap, never polled.
+   *
+   * @param {{ owner: string, repo: string, runId: number }} params
+   */
+  async function getCheckRunLog(params) {
+    const { owner, repo, runId } = params;
+    if (!Number.isInteger(runId) || runId <= 0) {
+      throw new TypeError("getCheckRunLog: runId must be a positive integer");
+    }
+    const url = `${GITHUB_API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/jobs/${runId}/logs`;
+    return getText(url);
+  }
+
+  /**
    * POST /repos/{owner}/{repo}/pulls/{number}/reviews — submit a review
    * with one of three events. The design doc names these as the only
    * three v0 review actions; merge / close / request-reviewer
@@ -773,6 +878,7 @@ export function createGithubClient({ token, userAgent }) {
     listPullFiles,
     listPullComments,
     listCheckRuns,
+    getCheckRunLog,
     postReview,
     postPullComment,
     postPullCommentReply,
