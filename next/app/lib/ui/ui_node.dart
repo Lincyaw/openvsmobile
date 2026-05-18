@@ -72,6 +72,14 @@ enum UiInlineBannerAccent { info, success, warning, danger }
 /// Orientation for [UiDivider].
 enum UiDividerOrientation { horizontal, vertical }
 
+/// Fit mode for [UiImage] — subset of Flutter's `BoxFit` so the wire
+/// contract stays narrow (plugin authors can't reach for `fitWidth` and
+/// assume it works everywhere).
+enum UiImageFit { cover, contain, fill }
+
+/// Variant of [UiProgress]. Default is [linear].
+enum UiProgressVariant { linear, circular }
+
 /// Base type for every node in the descriptor tree. Every concrete node
 /// carries an `id` which is mandatory and must be unique within the
 /// tree — that uniqueness is enforced server-side; the renderer relies
@@ -261,6 +269,82 @@ sealed class UiNode {
           id: id,
           orientation: _dividerOrientation(raw['orientation']),
         );
+      case 'Image':
+        final src = raw['src'];
+        if (src is! String || src.isEmpty) {
+          throw const FormatException(
+            'UiImage.src must be a non-empty string',
+          );
+        }
+        return UiImage(
+          id: id,
+          src: src,
+          fit: _imageFit(raw['fit']),
+          size: _sizeSlot(raw['size']),
+        );
+      case 'Avatar':
+        final src = _asString(raw['src']);
+        final initial = _asString(raw['initial']);
+        if (src == null && initial == null) {
+          throw const FormatException(
+            'UiAvatar requires src or initial',
+          );
+        }
+        return UiAvatar(
+          id: id,
+          src: src,
+          initial: initial,
+          size: _sizeSlot(raw['size']),
+          accent: accentTokenFromString(_asString(raw['accent'])),
+        );
+      case 'Markdown':
+        final markdown = raw['markdown'];
+        if (markdown is! String) {
+          throw const FormatException(
+            'UiMarkdown.markdown must be a string',
+          );
+        }
+        return UiMarkdown(id: id, markdown: markdown);
+      case 'CodeBlock':
+        final code = raw['code'];
+        if (code is! String) {
+          throw const FormatException('UiCodeBlock.code must be a string');
+        }
+        return UiCodeBlock(
+          id: id,
+          code: code,
+          language: _asString(raw['language']),
+        );
+      case 'Progress':
+        final rawValue = raw['value'];
+        double? value;
+        if (rawValue == null) {
+          value = null;
+        } else if (rawValue is num) {
+          value = rawValue.toDouble();
+          if (!value.isFinite || value < 0 || value > 1) {
+            throw const FormatException(
+              'UiProgress.value must be in [0, 1] when provided',
+            );
+          }
+        } else {
+          throw const FormatException(
+            'UiProgress.value must be a number when provided',
+          );
+        }
+        return UiProgress(
+          id: id,
+          value: value,
+          variant: _progressVariant(raw['variant']),
+          label: _asString(raw['label']),
+          accent: accentTokenFromString(_asString(raw['accent'])),
+        );
+      case 'Spinner':
+        return UiSpinner(
+          id: id,
+          label: _asString(raw['label']),
+          size: _sizeSlot(raw['size']),
+        );
       default:
         throw FormatException('UiNode: unknown kind "$kind"');
     }
@@ -385,6 +469,36 @@ sealed class UiNode {
         return UiInlineBannerAccent.danger;
     }
     throw FormatException('UiInlineBanner: unknown accent "$raw"');
+  }
+
+  static UiImageFit? _imageFit(Object? raw) {
+    if (raw == null) return null;
+    if (raw is! String) {
+      throw const FormatException('UiImage.fit must be a string');
+    }
+    switch (raw) {
+      case 'cover':
+        return UiImageFit.cover;
+      case 'contain':
+        return UiImageFit.contain;
+      case 'fill':
+        return UiImageFit.fill;
+    }
+    throw FormatException('UiImage: unknown fit "$raw"');
+  }
+
+  static UiProgressVariant? _progressVariant(Object? raw) {
+    if (raw == null) return null;
+    if (raw is! String) {
+      throw const FormatException('UiProgress.variant must be a string');
+    }
+    switch (raw) {
+      case 'linear':
+        return UiProgressVariant.linear;
+      case 'circular':
+        return UiProgressVariant.circular;
+    }
+    throw FormatException('UiProgress: unknown variant "$raw"');
   }
 
   static UiDividerOrientation? _dividerOrientation(Object? raw) {
@@ -774,6 +888,82 @@ class UiInlineBanner extends UiNode {
 class UiDivider extends UiNode {
   final UiDividerOrientation? orientation;
   const UiDivider({required String id, this.orientation}) : super(id);
+}
+
+/// Network / inline / local-file image (Batch 3 — §4.3). The renderer
+/// dispatches on the `src` URL scheme; `file://` URLs reach the client
+/// only after the host has cleared them against the plugin's fs cap.
+class UiImage extends UiNode {
+  final String src;
+  final UiImageFit? fit;
+  final SizeSlot? size;
+  const UiImage({
+    required String id,
+    required this.src,
+    this.fit,
+    this.size,
+  }) : super(id);
+}
+
+/// Profile circle (Batch 3 — §4.3). With [src] → renders the image
+/// (same URL schemes as [UiImage]). Without [src] → renders the first
+/// 1–2 chars of [initial] on a deterministic hashed color. [accent]
+/// overrides the hash color. Validator guarantees at least one of
+/// [src] / [initial] is present.
+class UiAvatar extends UiNode {
+  final String? src;
+  final String? initial;
+  final SizeSlot? size;
+  final AccentToken? accent;
+  const UiAvatar({
+    required String id,
+    this.src,
+    this.initial,
+    this.size,
+    this.accent,
+  }) : super(id);
+}
+
+/// Strict-subset Markdown (Batch 3 — §4.3). Out-of-subset constructs
+/// (raw HTML, tables, images) degrade to plain text on render.
+class UiMarkdown extends UiNode {
+  final String markdown;
+  const UiMarkdown({required String id, required this.markdown}) : super(id);
+}
+
+/// Pre-formatted source code block (Batch 3 — §4.3). Reuses the app's
+/// existing `flutter_highlight` stack and shared highlight theme.
+class UiCodeBlock extends UiNode {
+  final String code;
+  final String? language;
+  const UiCodeBlock({
+    required String id,
+    required this.code,
+    this.language,
+  }) : super(id);
+}
+
+/// Progress indicator (Batch 3 — §4.3). [value] in [0, 1] → determinate;
+/// null → indeterminate. [variant] defaults to [UiProgressVariant.linear].
+class UiProgress extends UiNode {
+  final double? value;
+  final UiProgressVariant? variant;
+  final String? label;
+  final AccentToken? accent;
+  const UiProgress({
+    required String id,
+    this.value,
+    this.variant,
+    this.label,
+    this.accent,
+  }) : super(id);
+}
+
+/// Indeterminate spinner (Batch 3 — §4.3).
+class UiSpinner extends UiNode {
+  final String? label;
+  final SizeSlot? size;
+  const UiSpinner({required String id, this.label, this.size}) : super(id);
 }
 
 /// What the renderer fires when the user interacts with a leaf widget.

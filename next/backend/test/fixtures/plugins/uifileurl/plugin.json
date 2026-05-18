@@ -1,0 +1,8 @@
+{
+  "id": "uifileurl",
+  "name": "ui file:// fixture",
+  "version": "0.0.0",
+  "entry": { "kind": "node", "path": "index.js" },
+  "activation": ["onStartup"],
+  "capabilities": { "ui": true }
+}

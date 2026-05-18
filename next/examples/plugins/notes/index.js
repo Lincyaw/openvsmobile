@@ -23,7 +23,7 @@
 //     shows the widget rendering outside an inset context.
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 
 import { createPlugin, ui } from "@openvsmobile/sdk";
@@ -31,6 +31,21 @@ import { createPlugin, ui } from "@openvsmobile/sdk";
 const PANEL_ID = "home";
 const NOTES_DIR = join(homedir(), ".openvsmobile");
 const NOTES_PATH = join(NOTES_DIR, "notes.md");
+
+// Resolved once at module load. The username drives the initial-
+// fallback avatar so the metadata row has a stable visual identity
+// without requiring any user input. Falls back to "?" if the host
+// can't read userInfo() (e.g. in some container environments).
+function ownerInitial() {
+  try {
+    const u = userInfo().username;
+    if (typeof u === "string" && u.length > 0) return u.slice(0, 1);
+  } catch {
+    // Some sandboxed environments (e.g. Android) throw from userInfo().
+    // Fall through to the default.
+  }
+  return "?";
+}
 
 // In-memory state. The buffer is what the user is currently editing;
 // `lastSavedSnapshot` is the buffer at the time of the last successful
@@ -124,16 +139,26 @@ function buildTree() {
   // Metadata as a second inset section. Caption type for the status
   // line — `text` with `style: 'caption'` carries the muted /
   // secondary-text role that pairs naturally with the inset surface.
+  // Batch 3 dogfood: an avatar derived from the host user's initial
+  // sits as the leading element of a ListTile so the metadata row
+  // looks like an iOS Settings "signed in as" header. The avatar's
+  // color is hashed from the initial, so the same machine always
+  // shows the same hue.
   children.push(
     ui.section({
       id: "notes-meta-section",
       title: "Status",
       variant: "inset",
       children: [
-        ui.text({
-          id: "notes-caption",
-          text: metadataCaption(),
-          style: "caption",
+        ui.listTile({
+          id: "notes-owner-tile",
+          title: "Local notes",
+          subtitle: metadataCaption(),
+          leading: ui.avatar({
+            id: "notes-owner-avatar",
+            initial: ownerInitial(),
+            size: "md",
+          }),
         }),
       ],
     }),

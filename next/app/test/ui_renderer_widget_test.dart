@@ -13,6 +13,8 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_highlight/flutter_highlight.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 
 import 'package:mobilecode/ui/app_tokens.dart';
 import 'package:mobilecode/ui/icon_catalog.dart';
@@ -896,6 +898,297 @@ void main() {
       'orientation': 'vertical',
     });
     expect((div as UiDivider).orientation, UiDividerOrientation.vertical);
+  });
+
+  // ---- Batch 3 widgets (§4.3) — rich display ----
+
+  testWidgets('UiImage renders a NetworkImage for an https:// src',
+      (tester) async {
+    const tree = UiImage(
+      id: 'img',
+      src: 'https://example.com/x.png',
+      fit: UiImageFit.contain,
+    );
+    await tester.pumpWidget(_host(tree));
+    expect(tester.takeException(), isNull);
+    expect(find.byKey(const ValueKey<String>('ui:img')), findsOneWidget);
+    // The widget is an Image — assert the underlying provider type via
+    // the rendered Image widget. Network loading itself isn't exercised
+    // (no network in widget tests).
+    final image = tester.widget<Image>(find.byType(Image));
+    expect(image.image, isA<NetworkImage>());
+  });
+
+  testWidgets('UiImage renders a MemoryImage for a data: URL',
+      (tester) async {
+    // 1x1 transparent PNG, base64 encoded.
+    const onePixelPng =
+        'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+    const tree = UiImage(id: 'data-img', src: onePixelPng);
+    await tester.pumpWidget(_host(tree));
+    expect(tester.takeException(), isNull);
+    final image = tester.widget<Image>(find.byType(Image));
+    expect(image.image, isA<MemoryImage>());
+  });
+
+  testWidgets('UiImage with unknown scheme renders the broken-image placeholder',
+      (tester) async {
+    const tree = UiImage(id: 'broken', src: 'rocket://nowhere');
+    await tester.pumpWidget(_host(tree));
+    expect(tester.takeException(), isNull);
+    // Placeholder uses Icons.broken_image_outlined; no Image widget rendered.
+    expect(find.byIcon(Icons.broken_image_outlined), findsOneWidget);
+    expect(find.byType(Image), findsNothing);
+  });
+
+  testWidgets(
+      'UiAvatar with no src renders the initial glyph on a hashed color',
+      (tester) async {
+    const tree = UiAvatar(id: 'av', initial: 'AB');
+    await tester.pumpWidget(_host(tree));
+    expect(tester.takeException(), isNull);
+    // Glyph is uppercased to "AB" by the renderer's _avatarGlyph helper.
+    expect(find.text('AB'), findsOneWidget);
+    expect(find.byType(Image), findsNothing);
+  });
+
+  testWidgets('UiAvatar hash color is deterministic for the same initial',
+      (tester) async {
+    // Two avatars with the same initial must paint identical container
+    // colors; two with different initials should differ (with very high
+    // probability across the 8-bucket palette). The Avatar widget IS
+    // a Container (no nested chrome), so we read the keyed Container's
+    // decoration directly — `find.descendant + Container` would match
+    // both the avatar AND any enclosing surface, breaking `widget()`.
+    const tree = UiRow(id: 'r', children: [
+      UiAvatar(id: 'a1', initial: 'A'),
+      UiAvatar(id: 'a2', initial: 'A'),
+      UiAvatar(id: 'a3', initial: 'Z'),
+    ]);
+    await tester.pumpWidget(_host(tree));
+    Color? colorFor(String avatarId) {
+      final container = tester.widget<Container>(
+        find.byKey(ValueKey<String>('ui:$avatarId')),
+      );
+      return (container.decoration as BoxDecoration).color;
+    }
+    final c1 = colorFor('a1');
+    final c2 = colorFor('a2');
+    final c3 = colorFor('a3');
+    expect(c1, equals(c2));
+    expect(c1, isNot(equals(c3)));
+  });
+
+  testWidgets('UiAvatar accent overrides the hash color',
+      (tester) async {
+    const tree = UiAvatar(
+      id: 'av-accent',
+      initial: 'X',
+      accent: AccentToken.warning,
+    );
+    await tester.pumpWidget(_host(tree));
+    expect(tester.takeException(), isNull);
+    expect(find.text('X'), findsOneWidget);
+    // The presence of the accent color is enough — we don't assert on
+    // the exact value because that's owned by StyleSlotResolver.
+  });
+
+  testWidgets('UiMarkdown renders body text without throwing',
+      (tester) async {
+    const tree = UiMarkdown(
+      id: 'md',
+      markdown: '# Heading\n\nThis is **bold** text with `code`.',
+    );
+    await tester.pumpWidget(_host(tree));
+    expect(tester.takeException(), isNull);
+    expect(find.byKey(const ValueKey<String>('ui:md')), findsOneWidget);
+    // MarkdownBody is the widget the renderer constructs; existence
+    // alone is the smoke signal.
+    expect(find.byType(MarkdownBody), findsOneWidget);
+  });
+
+  testWidgets('UiMarkdown out-of-subset constructs do not crash',
+      (tester) async {
+    // Tables and raw HTML are out of subset — they should degrade to
+    // escaped text rather than crashing.
+    const tree = UiMarkdown(
+      id: 'md2',
+      markdown:
+          'Hello\n\n| col1 | col2 |\n|------|------|\n| a | b |\n\n<script>x</script>',
+    );
+    await tester.pumpWidget(_host(tree));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('UiCodeBlock with known language renders HighlightView',
+      (tester) async {
+    const tree = UiCodeBlock(
+      id: 'cb',
+      code: 'const x = 1;',
+      language: 'javascript',
+    );
+    await tester.pumpWidget(_host(tree));
+    expect(tester.takeException(), isNull);
+    expect(find.byType(HighlightView), findsOneWidget);
+  });
+
+  testWidgets('UiCodeBlock without language falls back to plain monospace',
+      (tester) async {
+    const tree = UiCodeBlock(id: 'cb-plain', code: 'plain text');
+    await tester.pumpWidget(_host(tree));
+    expect(tester.takeException(), isNull);
+    expect(find.byType(HighlightView), findsNothing);
+    expect(find.text('plain text'), findsOneWidget);
+  });
+
+  testWidgets('UiProgress determinate linear renders LinearProgressIndicator',
+      (tester) async {
+    const tree = UiProgress(id: 'pg', value: 0.4, label: '40%');
+    await tester.pumpWidget(_host(tree));
+    expect(tester.takeException(), isNull);
+    final ind = tester.widget<LinearProgressIndicator>(
+      find.byType(LinearProgressIndicator),
+    );
+    expect(ind.value, 0.4);
+    expect(find.text('40%'), findsOneWidget);
+  });
+
+  testWidgets('UiProgress indeterminate has null value',
+      (tester) async {
+    const tree = UiProgress(id: 'pg2');
+    await tester.pumpWidget(_host(tree));
+    final ind = tester.widget<LinearProgressIndicator>(
+      find.byType(LinearProgressIndicator),
+    );
+    expect(ind.value, isNull);
+  });
+
+  testWidgets('UiProgress circular variant renders CircularProgressIndicator',
+      (tester) async {
+    const tree = UiProgress(
+      id: 'pg3',
+      value: 0.7,
+      variant: UiProgressVariant.circular,
+      label: 'syncing',
+    );
+    await tester.pumpWidget(_host(tree));
+    final ind = tester.widget<CircularProgressIndicator>(
+      find.byType(CircularProgressIndicator),
+    );
+    expect(ind.value, 0.7);
+    expect(find.text('syncing'), findsOneWidget);
+  });
+
+  testWidgets('UiSpinner renders CircularProgressIndicator with optional label',
+      (tester) async {
+    const tree = UiSpinner(id: 'sp', label: 'refreshing…');
+    await tester.pumpWidget(_host(tree));
+    expect(tester.takeException(), isNull);
+    final ind = tester.widget<CircularProgressIndicator>(
+      find.byType(CircularProgressIndicator),
+    );
+    // Spinner is indeterminate.
+    expect(ind.value, isNull);
+    expect(find.text('refreshing…'), findsOneWidget);
+  });
+
+  testWidgets('UiSpinner without label still renders the indicator',
+      (tester) async {
+    const tree = UiSpinner(id: 'sp2');
+    await tester.pumpWidget(_host(tree));
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+  });
+
+  test(
+      'UiNode.fromJson parses Batch 3 widgets (Image / Avatar / Markdown / CodeBlock / Progress / Spinner)',
+      () {
+    final img = UiNode.fromJson(<String, dynamic>{
+      'kind': 'Image',
+      'id': 'i',
+      'src': 'https://x/y.png',
+      'fit': 'contain',
+      'size': 'lg',
+    });
+    expect((img as UiImage).src, 'https://x/y.png');
+    expect(img.fit, UiImageFit.contain);
+    expect(img.size?.token, SizeToken.lg);
+
+    final av = UiNode.fromJson(<String, dynamic>{
+      'kind': 'Avatar',
+      'id': 'a',
+      'initial': 'AB',
+      'accent': 'info',
+    });
+    expect((av as UiAvatar).initial, 'AB');
+    expect(av.accent, AccentToken.info);
+
+    final mdNode = UiNode.fromJson(<String, dynamic>{
+      'kind': 'Markdown',
+      'id': 'm',
+      'markdown': '# h',
+    });
+    expect((mdNode as UiMarkdown).markdown, '# h');
+
+    final cb = UiNode.fromJson(<String, dynamic>{
+      'kind': 'CodeBlock',
+      'id': 'c',
+      'code': 'x=1',
+      'language': 'python',
+    });
+    expect((cb as UiCodeBlock).code, 'x=1');
+    expect(cb.language, 'python');
+
+    final pg = UiNode.fromJson(<String, dynamic>{
+      'kind': 'Progress',
+      'id': 'p',
+      'value': 0.3,
+      'variant': 'circular',
+      'label': 'go',
+      'accent': 'success',
+    });
+    expect((pg as UiProgress).value, 0.3);
+    expect(pg.variant, UiProgressVariant.circular);
+    expect(pg.label, 'go');
+    expect(pg.accent, AccentToken.success);
+
+    final sp = UiNode.fromJson(<String, dynamic>{
+      'kind': 'Spinner',
+      'id': 's',
+      'label': 'loading',
+      'size': 'md',
+    });
+    expect((sp as UiSpinner).label, 'loading');
+    expect(sp.size?.token, SizeToken.md);
+  });
+
+  test('UiAvatar.fromJson rejects when neither src nor initial is set', () {
+    expect(
+      () => UiNode.fromJson(<String, dynamic>{'kind': 'Avatar', 'id': 'a'}),
+      throwsFormatException,
+    );
+  });
+
+  test('UiProgress.fromJson rejects value outside [0, 1]', () {
+    expect(
+      () => UiNode.fromJson(<String, dynamic>{
+        'kind': 'Progress',
+        'id': 'p',
+        'value': 1.5,
+      }),
+      throwsFormatException,
+    );
+  });
+
+  test('UiImage.fromJson rejects unknown fit', () {
+    expect(
+      () => UiNode.fromJson(<String, dynamic>{
+        'kind': 'Image',
+        'id': 'i',
+        'src': 'https://x',
+        'fit': 'scaleDown',
+      }),
+      throwsFormatException,
+    );
   });
 
   test('icon catalog covers a few essential names', () {

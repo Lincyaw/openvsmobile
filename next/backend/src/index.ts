@@ -84,6 +84,11 @@ async function main(): Promise<void> {
   // (chicken-and-egg). See docs/design/mobile-code-platform.md §3.
   const pluginHost = new PluginHost({
     onStateChanged: (change) => state.broadcastPluginStateChanged(change),
+    // Active-workspace lookup for Batch-3 `file://` URL gating in
+    // `ui.render`. The host invokes this on every render carrying an
+    // `Image` / `Avatar` with a `file://` src; resolves to the same
+    // path the read-only `fs.*` RPCs rely on for isolation.
+    workspaceRootResolver: () => state.workspaces.current()?.root ?? null,
   });
   state.pluginHost = pluginHost;
   await pluginHost.start();

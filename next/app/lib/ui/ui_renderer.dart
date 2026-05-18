@@ -11,9 +11,17 @@
 //   * Updates are full re-renders in v0; incremental `ui.update` patches
 //     are reserved for v1 (CLAUDE.md §"Plugin model").
 
+import 'dart:convert';
+import 'dart:io' show File;
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_highlight/flutter_highlight.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:markdown/markdown.dart' as md;
 
 import 'app_tokens.dart';
+import 'highlight_theme.dart';
 import 'icon_catalog.dart';
 import 'inset_section.dart';
 
@@ -150,6 +158,18 @@ class UiRenderer extends StatelessWidget {
         return _buildBanner(context, key, node);
       case UiDivider():
         return _buildDivider(context, key, node);
+      case UiImage():
+        return _buildImage(context, key, node);
+      case UiAvatar():
+        return _buildAvatar(context, key, node);
+      case UiMarkdown():
+        return _buildMarkdown(context, key, node);
+      case UiCodeBlock():
+        return _buildCodeBlock(context, key, node);
+      case UiProgress():
+        return _buildProgress(context, key, node);
+      case UiSpinner():
+        return _buildSpinner(context, key, node);
     }
   }
 
@@ -593,7 +613,387 @@ class UiRenderer extends StatelessWidget {
       token: slot.token,
     );
   }
+
+  // ---- Batch 3 widgets (§4.3) — rich display ----
+
+  Widget _buildImage(BuildContext context, Key key, UiImage node) {
+    // `size` is the longest-edge constraint. Default to a sensible
+    // "thumbnail" so a plugin that forgets to specify one doesn't
+    // accidentally render a full-bleed image inside a Settings row.
+    final size = node.size != null
+        ? StyleSlotResolver.sizeSlot(
+            numeric: node.size!.numeric,
+            token: node.size!.token,
+          )
+        : 96.0;
+    final fit = _resolveImageFit(node.fit);
+    final provider = _imageProvider(node.src);
+    if (provider == null) {
+      // Unknown / unsupported URL scheme. Render the broken-image
+      // placeholder so the failure is visible without crashing.
+      return _brokenImage(context, key, size);
+    }
+    return SizedBox(
+      key: key,
+      width: size,
+      height: size,
+      child: Image(
+        image: provider,
+        fit: fit,
+        // ErrorBuilder collapses a load failure into the same broken-
+        // image placeholder, so an unreachable URL behaves the same
+        // way as an unknown scheme.
+        errorBuilder: (ctx, _, _) => _brokenImage(ctx, null, size),
+      ),
+    );
+  }
+
+  Widget _brokenImage(BuildContext context, Key? key, double size) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      key: key,
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        border: Border.all(color: scheme.outline, width: 1),
+      ),
+      child: Icon(
+        Icons.broken_image_outlined,
+        size: size * 0.4,
+        color: scheme.onSurfaceVariant,
+      ),
+    );
+  }
+
+  BoxFit _resolveImageFit(UiImageFit? fit) {
+    switch (fit ?? UiImageFit.cover) {
+      case UiImageFit.cover:
+        return BoxFit.cover;
+      case UiImageFit.contain:
+        return BoxFit.contain;
+      case UiImageFit.fill:
+        return BoxFit.fill;
+    }
+  }
+
+  /// Dispatches `src` to a Flutter `ImageProvider`. Returns null for
+  /// unknown / unsupported schemes; the renderer paints the broken-image
+  /// placeholder in that case.
+  ///
+  /// `file://` URLs reach this code path **only** after the host has
+  /// already validated them against the plugin's fs capability and the
+  /// active workspace root. The client trusts that gate; it does not
+  /// re-validate here.
+  ImageProvider? _imageProvider(String src) {
+    if (src.startsWith('https://') || src.startsWith('http://')) {
+      return NetworkImage(src);
+    }
+    if (src.startsWith('data:')) {
+      final comma = src.indexOf(',');
+      if (comma <= 0) return null;
+      final meta = src.substring(5, comma); // strip "data:"
+      final body = src.substring(comma + 1);
+      if (!meta.contains(';base64')) return null;
+      try {
+        final bytes = base64Decode(body);
+        return MemoryImage(Uint8List.fromList(bytes));
+      } catch (_) {
+        return null;
+      }
+    }
+    if (src.startsWith('file://')) {
+      final path = Uri.tryParse(src)?.toFilePath();
+      if (path == null) return null;
+      return FileImage(File(path));
+    }
+    return null;
+  }
+
+  Widget _buildAvatar(BuildContext context, Key key, UiAvatar node) {
+    final size = node.size != null
+        ? StyleSlotResolver.sizeSlot(
+            numeric: node.size!.numeric,
+            token: node.size!.token,
+          )
+        : 40.0;
+    final src = node.src;
+    if (src != null && src.isNotEmpty) {
+      final provider = _imageProvider(src);
+      if (provider != null) {
+        return SizedBox(
+          key: key,
+          width: size,
+          height: size,
+          child: ClipOval(
+            child: Image(
+              image: provider,
+              fit: BoxFit.cover,
+              width: size,
+              height: size,
+              errorBuilder: (ctx, _, _) =>
+                  _initialAvatar(ctx, null, node, size),
+            ),
+          ),
+        );
+      }
+      // Unknown URL scheme → fall through to initial fallback so the
+      // avatar always reads as a circle of *something*.
+    }
+    return _initialAvatar(context, key, node, size);
+  }
+
+  Widget _initialAvatar(
+    BuildContext context,
+    Key? key,
+    UiAvatar node,
+    double size,
+  ) {
+    final initial = node.initial ?? '';
+    final glyph = _avatarGlyph(initial);
+    final color = node.accent != null
+        ? StyleSlotResolver.accent(context, node.accent!)
+        : _avatarHashColor(initial);
+    // White-on-saturated reads at ≥4.5:1 on every color in the palette;
+    // the muted onSurfaceVariant pair is reserved for the brand/muted
+    // accent overrides where the bright-white would clash.
+    final fg = node.accent == AccentToken.muted
+        ? Theme.of(context).colorScheme.onSurface
+        : Colors.white;
+    return Container(
+      key: key,
+      width: size,
+      height: size,
+      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+      alignment: Alignment.center,
+      child: Text(
+        glyph,
+        style: TextStyle(
+          color: fg,
+          fontSize: size * 0.42,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+
+  /// Pick the 1–2 character glyph for an initial-fallback avatar. We
+  /// honor whatever the plugin sent (up to two visible characters) so a
+  /// CJK author can pass `"张"` and get a single-character avatar; a
+  /// Latin name like `"AB"` lands as two letters; longer strings are
+  /// truncated to the first two code points.
+  static String _avatarGlyph(String raw) {
+    if (raw.isEmpty) return '?';
+    final runes = raw.runes.toList();
+    if (runes.length == 1) return String.fromCharCode(runes[0]).toUpperCase();
+    return String.fromCharCodes(runes.take(2)).toUpperCase();
+  }
+
+  /// Deterministic color hash over [seed] — same convention as
+  /// Linear / Telegram. Eight buckets keep the palette small enough
+  /// to stay recognizable without colliding too often.
+  static Color _avatarHashColor(String seed) {
+    if (seed.isEmpty) return _avatarPalette[0];
+    int hash = 0;
+    for (final rune in seed.runes) {
+      hash = (hash * 31 + rune) & 0x7fffffff;
+    }
+    return _avatarPalette[hash % _avatarPalette.length];
+  }
+
+  Widget _buildMarkdown(BuildContext context, Key key, UiMarkdown node) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return MarkdownBody(
+      key: key,
+      data: node.markdown,
+      // Strict subset: `ExtensionSet.none` disables tables / footnotes
+      // / autolinks. Block syntaxes default to the CommonMark set; raw-
+      // HTML block + inline syntaxes are excluded via the explicit
+      // syntax lists below so unsupported constructs (a `<table>` from
+      // the plugin author, say) render as escaped plain text instead
+      // of executing as HTML.
+      extensionSet: md.ExtensionSet.none,
+      inlineSyntaxes: const <md.InlineSyntax>[],
+      // Don't render images — the spec is explicit ("no images") and we
+      // already give plugins UiImage for that. Same for raw HTML.
+      sizedImageBuilder: (cfg) => Text(cfg.alt ?? cfg.uri.toString()),
+      onTapLink: null, // links render but aren't tappable in v0
+      styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
+        // Code blocks get the mono font + a subtle background. The
+        // dedicated UiCodeBlock widget owns the syntax-highlighted
+        // path; here we just style the fenced-code body so a plugin
+        // that uses markdown end-to-end still reads cleanly.
+        code: AppText.mono(
+          fontSize: theme.textTheme.bodyMedium?.fontSize,
+          color: scheme.onSurface,
+        ),
+        codeblockDecoration: BoxDecoration(
+          color: scheme.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(AppRadius.sm),
+        ),
+        a: theme.textTheme.bodyMedium?.copyWith(
+          color: scheme.primary,
+          decoration: TextDecoration.underline,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCodeBlock(BuildContext context, Key key, UiCodeBlock node) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final language = node.language ?? '';
+    final monoStyle = AppText.mono(
+      fontSize: theme.textTheme.bodyMedium?.fontSize,
+      color: scheme.onSurface,
+      height: 1.35,
+    );
+    // Vertical scroll lives at the panel level (the renderer's parent
+    // already provides a scroll viewport for the panel). Long lines
+    // need an inner horizontal scroller so we don't wrap code — the
+    // spec is explicit ("horizontal scroll for long lines; don't wrap").
+    Widget body;
+    if (language.isEmpty) {
+      // Unknown / absent language → plain monospace, no highlight stack.
+      body = SelectionArea(
+        child: Text(node.code, style: monoStyle),
+      );
+    } else {
+      body = SelectionArea(
+        child: HighlightView(
+          node.code,
+          language: language,
+          theme: highlightThemeForBrightness(theme.brightness),
+          padding: EdgeInsets.zero,
+          textStyle: monoStyle,
+        ),
+      );
+    }
+    return Container(
+      key: key,
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        border: Border.all(color: scheme.outline, width: 1),
+      ),
+      padding: const EdgeInsets.all(AppSpacing.sm),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: body,
+      ),
+    );
+  }
+
+  Widget _buildProgress(BuildContext context, Key key, UiProgress node) {
+    final theme = Theme.of(context);
+    final color = node.accent != null
+        ? StyleSlotResolver.accent(context, node.accent!)
+        : theme.colorScheme.primary;
+    final variant = node.variant ?? UiProgressVariant.linear;
+    final label = node.label;
+    switch (variant) {
+      case UiProgressVariant.linear:
+        // Label below per spec.
+        return Column(
+          key: key,
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            LinearProgressIndicator(
+              value: node.value,
+              color: color,
+              backgroundColor: theme.colorScheme.surfaceContainerHigh,
+              minHeight: 4,
+            ),
+            if (label != null && label.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: AppSpacing.xs),
+                child: Text(
+                  label,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+          ],
+        );
+      case UiProgressVariant.circular:
+        // Label to the right per spec; size matches the circular
+        // indicator's default so the row reads as one composed unit.
+        final indicator = SizedBox(
+          width: 20,
+          height: 20,
+          child: CircularProgressIndicator(
+            value: node.value,
+            color: color,
+            strokeWidth: 2.5,
+          ),
+        );
+        if (label == null || label.isEmpty) return KeyedSubtree(key: key, child: indicator);
+        return Row(
+          key: key,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            indicator,
+            const SizedBox(width: AppSpacing.sm),
+            Flexible(
+              child: Text(
+                label,
+                style: theme.textTheme.bodyMedium,
+              ),
+            ),
+          ],
+        );
+    }
+  }
+
+  Widget _buildSpinner(BuildContext context, Key key, UiSpinner node) {
+    final theme = Theme.of(context);
+    final size = node.size != null
+        ? StyleSlotResolver.sizeSlot(
+            numeric: node.size!.numeric,
+            token: node.size!.token,
+          )
+        : AppIconSize.md;
+    final indicator = SizedBox(
+      width: size,
+      height: size,
+      child: CircularProgressIndicator(
+        strokeWidth: 2.5,
+        color: theme.colorScheme.primary,
+      ),
+    );
+    final label = node.label;
+    if (label == null || label.isEmpty) {
+      return KeyedSubtree(key: key, child: indicator);
+    }
+    return Row(
+      key: key,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        indicator,
+        const SizedBox(width: AppSpacing.sm),
+        Flexible(child: Text(label, style: theme.textTheme.bodyMedium)),
+      ],
+    );
+  }
 }
+
+/// Eight-color avatar palette. Saturation matched so the eight options
+/// read as obviously distinct and no single seed lands on the brand
+/// green (the brand color is reserved for `accent: 'brand'` overrides).
+const List<Color> _avatarPalette = <Color>[
+  Color(0xFF3B82F6), // blue
+  Color(0xFFA855F7), // violet
+  Color(0xFFEF4444), // red
+  Color(0xFFF97316), // orange
+  Color(0xFFEAB308), // amber
+  Color(0xFF14B8A6), // teal
+  Color(0xFFEC4899), // pink
+  Color(0xFF6366F1), // indigo
+];
 
 /// Single tile inside [UiAppGrid]. Geometry per design §4.3: 48–56px
 /// icon area + caption beneath; touch target ≥ 48dp by virtue of the

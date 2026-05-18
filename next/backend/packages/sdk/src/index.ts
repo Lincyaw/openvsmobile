@@ -276,6 +276,94 @@ export interface UiDivider {
   orientation?: UiDividerOrientation;
 }
 
+// ---- Batch 3 new widgets (§4.3) — rich display ----
+
+/// `BoxFit` for [UiImage]. Matches the doc spec subset; not the full
+/// Flutter enum — we stay narrow on purpose so a plugin author cannot
+/// reach for `fitWidth` and assume it works everywhere.
+export type UiImageFit = "cover" | "contain" | "fill";
+
+/// Network / inline image. `src` accepts three URL schemes:
+///   * `https://…`           — network image (no plugin caps required)
+///   * `data:image/...;base64,…` — inline image (no plugin caps required)
+///   * `file://…`            — local filesystem; host **gates this on
+///                             the plugin's `fs: 'read'` capability AND
+///                             requires the path to resolve inside the
+///                             active workspace root**. Plugins without
+///                             `fs: 'read'` get a `capabilityNotDeclared`
+///                             RPC error on `ui.render`.
+///
+/// Unknown URL scheme → host renders a broken-image placeholder.
+export interface UiImage {
+  kind: "Image";
+  id: string;
+  src: string;
+  fit?: UiImageFit;
+  size?: StyleSlot<SizeToken>;
+}
+
+/// Profile circle. With `src` → renders the image (same URL schemes as
+/// [UiImage], same fs gating for `file://`). Without `src` → renders
+/// the first 1–2 characters of `initial` on a deterministic color
+/// hashed from `initial` (Linear / Telegram convention). `accent`
+/// overrides the hash color.
+///
+/// Always rendered as a circle.
+export interface UiAvatar {
+  kind: "Avatar";
+  id: string;
+  src?: string;
+  initial?: string;
+  size?: StyleSlot<SizeToken>;
+  accent?: AccentToken;
+}
+
+/// Strict-subset Markdown. The renderer accepts headings h1–h4,
+/// paragraphs, lists (ordered/unordered, nested), code blocks (triple-
+/// backtick), inline code, links, bold, italic, blockquotes, horizontal
+/// rules. **No raw HTML, no tables, no images, no nested HTML.**
+/// Out-of-subset constructs render as plain text — the renderer never
+/// throws on a markdown input.
+export interface UiMarkdown {
+  kind: "Markdown";
+  id: string;
+  markdown: string;
+}
+
+/// Pre-formatted source code block. `language` is a highlight.js-style
+/// identifier; unknown languages render as plain monospace. Reuses the
+/// app's existing `flutter_highlight` stack — there is no second syntax-
+/// highlighting pipeline in the renderer.
+export interface UiCodeBlock {
+  kind: "CodeBlock";
+  id: string;
+  code: string;
+  language?: string;
+}
+
+export type UiProgressVariant = "linear" | "circular";
+
+/// Progress indicator. `value` is in [0, 1]; omitted/null → indeterminate
+/// progress. Default `variant` is `linear`. `label` is rendered below
+/// (linear) or to the right (circular).
+export interface UiProgress {
+  kind: "Progress";
+  id: string;
+  value?: number;
+  variant?: UiProgressVariant;
+  label?: string;
+  accent?: AccentToken;
+}
+
+/// Indeterminate spinner. `label` is rendered to the right of the
+/// spinner; `size` controls the spinner diameter.
+export interface UiSpinner {
+  kind: "Spinner";
+  id: string;
+  label?: string;
+  size?: StyleSlot<SizeToken>;
+}
+
 export type UiNode =
   | UiColumn
   | UiRow
@@ -293,7 +381,13 @@ export type UiNode =
   | UiSwitch
   | UiSelect
   | UiInlineBanner
-  | UiDivider;
+  | UiDivider
+  | UiImage
+  | UiAvatar
+  | UiMarkdown
+  | UiCodeBlock
+  | UiProgress
+  | UiSpinner;
 
 /// Constructors mirroring the §4.3 widget vocabulary. IDs may be
 /// omitted; an omitted id is replaced with `crypto.randomUUID()` so the
@@ -507,6 +601,77 @@ export const ui = {
   divider(p: { id?: string; orientation?: UiDividerOrientation } = {}): UiDivider {
     const out: UiDivider = { kind: "Divider", id: ensureId(p.id) };
     if (p.orientation !== undefined) out.orientation = p.orientation;
+    return out;
+  },
+  image(p: {
+    id?: string;
+    src: string;
+    fit?: UiImageFit;
+    size?: StyleSlot<SizeToken>;
+  }): UiImage {
+    const out: UiImage = { kind: "Image", id: ensureId(p.id), src: p.src };
+    if (p.fit !== undefined) out.fit = p.fit;
+    if (p.size !== undefined) out.size = p.size;
+    return out;
+  },
+  avatar(
+    p: {
+      id?: string;
+      src?: string;
+      initial?: string;
+      size?: StyleSlot<SizeToken>;
+      accent?: AccentToken;
+    } = {},
+  ): UiAvatar {
+    const out: UiAvatar = { kind: "Avatar", id: ensureId(p.id) };
+    if (p.src !== undefined) out.src = p.src;
+    if (p.initial !== undefined) out.initial = p.initial;
+    if (p.size !== undefined) out.size = p.size;
+    if (p.accent !== undefined) out.accent = p.accent;
+    return out;
+  },
+  markdown(p: { id?: string; markdown: string }): UiMarkdown {
+    return {
+      kind: "Markdown",
+      id: ensureId(p.id),
+      markdown: p.markdown,
+    };
+  },
+  codeBlock(p: {
+    id?: string;
+    code: string;
+    language?: string;
+  }): UiCodeBlock {
+    const out: UiCodeBlock = {
+      kind: "CodeBlock",
+      id: ensureId(p.id),
+      code: p.code,
+    };
+    if (p.language !== undefined) out.language = p.language;
+    return out;
+  },
+  progress(p: {
+    id?: string;
+    value?: number;
+    variant?: UiProgressVariant;
+    label?: string;
+    accent?: AccentToken;
+  } = {}): UiProgress {
+    const out: UiProgress = { kind: "Progress", id: ensureId(p.id) };
+    if (p.value !== undefined) out.value = p.value;
+    if (p.variant !== undefined) out.variant = p.variant;
+    if (p.label !== undefined) out.label = p.label;
+    if (p.accent !== undefined) out.accent = p.accent;
+    return out;
+  },
+  spinner(p: {
+    id?: string;
+    label?: string;
+    size?: StyleSlot<SizeToken>;
+  } = {}): UiSpinner {
+    const out: UiSpinner = { kind: "Spinner", id: ensureId(p.id) };
+    if (p.label !== undefined) out.label = p.label;
+    if (p.size !== undefined) out.size = p.size;
     return out;
   },
 };

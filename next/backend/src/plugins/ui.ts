@@ -22,6 +22,7 @@
 //     plugin-author bug and surfaces as `-32602 invalidParams` per the
 //     issue spec rather than getting silently rendered as garbage.
 
+import { resolve as nodePathResolve, sep as nodePathSep } from "node:path";
 import type { WebSocket } from "ws";
 
 export type UiTextStyle = "body" | "title" | "caption" | "mono";
@@ -89,6 +90,11 @@ const BANNER_ACCENTS: ReadonlySet<string> = new Set([
 const DIVIDER_ORIENTATIONS: ReadonlySet<string> = new Set([
   "horizontal",
   "vertical",
+]);
+const IMAGE_FITS: ReadonlySet<string> = new Set(["cover", "contain", "fill"]);
+const PROGRESS_VARIANTS: ReadonlySet<string> = new Set([
+  "linear",
+  "circular",
 ]);
 
 export interface UiColumn {
@@ -292,6 +298,77 @@ export interface UiDivider {
   orientation?: UiDividerOrientation;
 }
 
+// ---- Batch 3 new widgets (§4.3) — rich display ----
+
+export type UiImageFit = "cover" | "contain" | "fill";
+
+/// Network / inline / local-file image. `src` URL schemes accepted:
+/// `https://…`, `data:image/...;base64,…`, `file://…`. `file://` URLs
+/// are post-validated by the host (`validateFileUrls`) against the
+/// caller plugin's manifest `fs` capability + the active workspace root.
+export interface UiImage {
+  kind: "Image";
+  id: string;
+  src: string;
+  fit?: UiImageFit;
+  size?: StyleSlot<SizeToken>;
+}
+
+/// Profile circle — image (any [UiImage] URL scheme) when `src` is set,
+/// otherwise the first 1–2 chars of `initial` on a deterministic
+/// hashed color. `accent` overrides the hash color.
+export interface UiAvatar {
+  kind: "Avatar";
+  id: string;
+  src?: string;
+  initial?: string;
+  size?: StyleSlot<SizeToken>;
+  accent?: AccentToken;
+}
+
+/// Strict-subset Markdown. Headings h1–h4, paragraphs, lists
+/// (ordered/unordered, nested), code blocks, inline code, links, bold,
+/// italic, blockquotes, horizontal rules. The validator is intentionally
+/// permissive — out-of-subset constructs (raw HTML, tables, images)
+/// render as escaped plain text on the client, so the host doesn't try
+/// to parse the body here; it only checks that `markdown` is a string.
+export interface UiMarkdown {
+  kind: "Markdown";
+  id: string;
+  markdown: string;
+}
+
+/// Source-code block. `language` is a highlight.js-style identifier;
+/// unknown languages render as unhighlighted monospace on the client.
+export interface UiCodeBlock {
+  kind: "CodeBlock";
+  id: string;
+  code: string;
+  language?: string;
+}
+
+export type UiProgressVariant = "linear" | "circular";
+
+/// Progress indicator. `value` in [0, 1]; omitted/null → indeterminate.
+/// Default `variant` is `linear`.
+export interface UiProgress {
+  kind: "Progress";
+  id: string;
+  value?: number;
+  variant?: UiProgressVariant;
+  label?: string;
+  accent?: AccentToken;
+}
+
+/// Indeterminate spinner (always circular). Optional `label` rendered
+/// to the right; `size` controls spinner diameter.
+export interface UiSpinner {
+  kind: "Spinner";
+  id: string;
+  label?: string;
+  size?: StyleSlot<SizeToken>;
+}
+
 export type UiNode =
   | UiColumn
   | UiRow
@@ -309,7 +386,13 @@ export type UiNode =
   | UiSwitch
   | UiSelect
   | UiInlineBanner
-  | UiDivider;
+  | UiDivider
+  | UiImage
+  | UiAvatar
+  | UiMarkdown
+  | UiCodeBlock
+  | UiProgress
+  | UiSpinner;
 
 /// Thrown by `validateUiTree` for any structural problem (unknown kind,
 /// missing required field, duplicate id). The host translates this into
@@ -375,6 +458,18 @@ function parseNode(raw: unknown, seen: Set<string>, path: string): UiNode {
       return parseBanner(r, path, id);
     case "Divider":
       return parseDivider(r, path, id);
+    case "Image":
+      return parseImage(r, path, id);
+    case "Avatar":
+      return parseAvatar(r, path, id);
+    case "Markdown":
+      return parseMarkdown(r, path, id);
+    case "CodeBlock":
+      return parseCodeBlock(r, path, id);
+    case "Progress":
+      return parseProgress(r, path, id);
+    case "Spinner":
+      return parseSpinner(r, path, id);
     default:
       throw new UiValidationError(
         `${path}: unknown node kind ${JSON.stringify(kind)}`,
@@ -867,6 +962,132 @@ function parseDivider(
   return out;
 }
 
+function parseImage(
+  r: Record<string, unknown>,
+  path: string,
+  id: string,
+): UiImage {
+  const src = r.src;
+  if (typeof src !== "string" || src.length === 0) {
+    throw new UiValidationError(`${path}.src: must be a non-empty string`);
+  }
+  const out: UiImage = { kind: "Image", id, src };
+  const fit = r.fit;
+  if (fit !== undefined && fit !== null) {
+    if (typeof fit !== "string" || !IMAGE_FITS.has(fit)) {
+      throw new UiValidationError(
+        `${path}.fit: must be "cover" | "contain" | "fill"`,
+      );
+    }
+    out.fit = fit as UiImageFit;
+  }
+  const size = optSize(r.size, path, "size");
+  if (size !== undefined) out.size = size;
+  return out;
+}
+
+function parseAvatar(
+  r: Record<string, unknown>,
+  path: string,
+  id: string,
+): UiAvatar {
+  const out: UiAvatar = { kind: "Avatar", id };
+  // `src` and `initial` are both optional individually — but a totally
+  // empty avatar (neither set) is a plugin-author bug because the
+  // renderer would have no glyph to fall back on. Surface as a
+  // validation error rather than rendering a blank circle.
+  const src = optString(r.src, path, "src");
+  if (src !== undefined) out.src = src;
+  const initial = optString(r.initial, path, "initial");
+  if (initial !== undefined) out.initial = initial;
+  if (out.src === undefined && out.initial === undefined) {
+    throw new UiValidationError(
+      `${path}: avatar requires src or initial`,
+    );
+  }
+  const size = optSize(r.size, path, "size");
+  if (size !== undefined) out.size = size;
+  const accent = optAccent(r.accent, path, "accent");
+  if (accent !== undefined) out.accent = accent;
+  return out;
+}
+
+function parseMarkdown(
+  r: Record<string, unknown>,
+  path: string,
+  id: string,
+): UiMarkdown {
+  const markdown = r.markdown;
+  if (typeof markdown !== "string") {
+    throw new UiValidationError(
+      `${path}.markdown: must be a string`,
+    );
+  }
+  return { kind: "Markdown", id, markdown };
+}
+
+function parseCodeBlock(
+  r: Record<string, unknown>,
+  path: string,
+  id: string,
+): UiCodeBlock {
+  const code = r.code;
+  if (typeof code !== "string") {
+    throw new UiValidationError(`${path}.code: must be a string`);
+  }
+  const out: UiCodeBlock = { kind: "CodeBlock", id, code };
+  const language = optString(r.language, path, "language");
+  if (language !== undefined) out.language = language;
+  return out;
+}
+
+function parseProgress(
+  r: Record<string, unknown>,
+  path: string,
+  id: string,
+): UiProgress {
+  const out: UiProgress = { kind: "Progress", id };
+  if (r.value !== undefined && r.value !== null) {
+    if (typeof r.value !== "number" || !Number.isFinite(r.value)) {
+      throw new UiValidationError(
+        `${path}.value: must be a finite number in [0, 1] when provided`,
+      );
+    }
+    if (r.value < 0 || r.value > 1) {
+      throw new UiValidationError(
+        `${path}.value: must be in [0, 1] when provided`,
+      );
+    }
+    out.value = r.value;
+  }
+  if (r.variant !== undefined && r.variant !== null) {
+    if (typeof r.variant !== "string" || !PROGRESS_VARIANTS.has(r.variant)) {
+      throw new UiValidationError(
+        `${path}.variant: must be "linear" | "circular"`,
+      );
+    }
+    out.variant = r.variant as UiProgressVariant;
+  }
+  const label = optString(r.label, path, "label");
+  if (label !== undefined) out.label = label;
+  const accent = optAccent(r.accent, path, "accent");
+  if (accent !== undefined) out.accent = accent;
+  return out;
+}
+
+function parseSpinner(
+  r: Record<string, unknown>,
+  path: string,
+  id: string,
+): UiSpinner {
+  const out: UiSpinner = { kind: "Spinner", id };
+  const label = optString(r.label, path, "label");
+  if (label !== undefined) out.label = label;
+  const size = optSize(r.size, path, "size");
+  if (size !== undefined) out.size = size;
+  return out;
+}
+
 function optSpacing(
   v: unknown,
   path: string,
@@ -949,6 +1170,138 @@ function optNumber(
     );
   }
   return v;
+}
+
+// ----- file:// URL extraction (Batch 3 fs gating) -----
+//
+// `UiImage` and `UiAvatar` can carry a `file://…` src. The host gates
+// such URLs against the calling plugin's manifest `fs` capability AND
+// the active workspace root. Centralizing the URL walk here keeps the
+// gate next to the schema it's gating; the host wires `validateFileUrls`
+// into `ui.render` after the tree validates.
+
+export interface FileUrlSite {
+  /// Absolute filesystem path the `file://` URL resolves to. Already
+  /// percent-decoded; not normalized — the caller normalizes with
+  /// `path.resolve()` against the workspace root.
+  rawPath: string;
+  /// Dot-path of the offending node inside the tree, for error reporting.
+  path: string;
+}
+
+/// Result of [validateFileUrlsAgainstWorkspace] — `ok` means every
+/// `file://` URL in the tree (if any) cleared both the capability and
+/// workspace-prefix checks; otherwise `error` carries the first
+/// violation so the caller can map it to a JSON-RPC error frame.
+export type FileUrlGateResult =
+  | { ok: true }
+  | { ok: false; code: "capabilityNotDeclared" | "outsideWorkspace" | "noActiveWorkspace"; message: string };
+
+/// Apply the Batch-3 `file://` URL gate to a validated tree. Wrapped as
+/// a separate function so unit tests can hit the policy without spinning
+/// up a child process. The host calls this inside `handleUiRender`
+/// immediately after `validateUiTree` succeeds.
+///
+/// Rules (mirror the host wiring):
+///   * No `file://` URLs in the tree → `{ ok: true }` regardless of caps.
+///   * Plugin's manifest `fs` ∈ {"read", "readwrite"} → required for any
+///     `file://` URL. Otherwise → `capabilityNotDeclared`.
+///   * `workspaceRoot === null` (no active workspace) → `noActiveWorkspace`.
+///   * Path must resolve inside `workspaceRoot` (prefix-match with a
+///     trailing separator to defeat `/srv/work` matching `/srv/workroot`).
+///     Otherwise → `outsideWorkspace`.
+export function validateFileUrlsAgainstWorkspace(
+  tree: UiNode,
+  fsCap: "none" | "read" | "readwrite",
+  workspaceRoot: string | null,
+): FileUrlGateResult {
+  const sites = collectFileUrls(tree);
+  if (sites.length === 0) return { ok: true };
+  if (fsCap !== "read" && fsCap !== "readwrite") {
+    return {
+      ok: false,
+      code: "capabilityNotDeclared",
+      message: `${sites[0].path} uses file:// but plugin did not declare capabilities.fs`,
+    };
+  }
+  if (workspaceRoot === null) {
+    return {
+      ok: false,
+      code: "noActiveWorkspace",
+      message: `${sites[0].path} uses file:// but no workspace is currently active`,
+    };
+  }
+  // Lazy import via require? No — caller passes already-normalized root;
+  // we do the comparison with substring + separator.
+  const normalizedRoot = nodePathResolve(workspaceRoot);
+  for (const site of sites) {
+    const resolved = nodePathResolve(site.rawPath);
+    if (
+      resolved !== normalizedRoot &&
+      !resolved.startsWith(normalizedRoot + nodePathSep)
+    ) {
+      return {
+        ok: false,
+        code: "outsideWorkspace",
+        message: `${site.path} file:// path "${site.rawPath}" is outside the active workspace`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+/// Walk `tree` and collect every `file://` URL it references. Returns
+/// an empty array if no UiImage / UiAvatar carries a file:// src.
+/// Caller (`PluginHost.handleUiRender`) uses the returned sites to
+/// enforce the fs capability + workspace-root constraints.
+export function collectFileUrls(tree: UiNode): FileUrlSite[] {
+  const out: FileUrlSite[] = [];
+  walk(tree, "$");
+  return out;
+
+  function walk(node: UiNode, path: string): void {
+    switch (node.kind) {
+      case "Column":
+      case "Row":
+        node.children.forEach((c, i) => walk(c, `${path}.children[${i}]`));
+        return;
+      case "Section":
+        node.children.forEach((c, i) => walk(c, `${path}.children[${i}]`));
+        return;
+      case "Card":
+        node.children.forEach((c, i) => walk(c, `${path}.children[${i}]`));
+        return;
+      case "List":
+        node.items.forEach((c, i) => walk(c, `${path}.items[${i}]`));
+        return;
+      case "ListTile":
+        if (node.leading !== undefined) walk(node.leading, `${path}.leading`);
+        if (node.trailing !== undefined) walk(node.trailing, `${path}.trailing`);
+        return;
+      case "Image":
+        check(node.src, path);
+        return;
+      case "Avatar":
+        if (node.src !== undefined) check(node.src, path);
+        return;
+      default:
+        return;
+    }
+  }
+
+  function check(src: string, path: string): void {
+    if (!src.startsWith("file://")) return;
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(src.substring("file://".length));
+    } catch {
+      // Malformed percent-encoding — treat as a sentinel path that
+      // will fail the workspace-root check downstream. We don't throw
+      // here because the walker promises "collect, don't enforce".
+      decoded = src.substring("file://".length);
+    }
+    out.push({ rawPath: decoded, path });
+  }
 }
 
 // ----- Registry + fan-out -----

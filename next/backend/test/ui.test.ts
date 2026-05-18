@@ -30,6 +30,7 @@ import { PluginHost } from "../src/plugins/host.js";
 import {
   UiPanelRegistry,
   UiValidationError,
+  validateFileUrlsAgainstWorkspace,
   validateUiTree,
   type UiPanelSnapshot,
 } from "../src/plugins/ui.js";
@@ -507,6 +508,310 @@ describe("validateUiTree", () => {
       validateUiTree({ kind: "Divider", id: "d3", orientation: "diagonal" }),
     ).toThrow(/orientation/);
   });
+
+  // ---- Batch 3 widgets (§4.3) — rich display ----
+
+  it("UiImage parses src + fit + tokenized size", () => {
+    const tree = validateUiTree({
+      kind: "Image",
+      id: "img",
+      src: "https://example.com/x.png",
+      fit: "contain",
+      size: "lg",
+    });
+    if (tree.kind !== "Image") throw new Error("unreachable");
+    expect(tree.src).toBe("https://example.com/x.png");
+    expect(tree.fit).toBe("contain");
+    expect(tree.size).toBe("lg");
+  });
+
+  it("UiImage accepts file:// and data: URLs (gate runs in host, not parser)", () => {
+    const tree = validateUiTree({
+      kind: "Image",
+      id: "img2",
+      src: "file:///workspace/icon.png",
+    });
+    if (tree.kind !== "Image") throw new Error("unreachable");
+    expect(tree.src).toBe("file:///workspace/icon.png");
+  });
+
+  it("rejects UiImage missing src", () => {
+    expect(() =>
+      validateUiTree({ kind: "Image", id: "img3" }),
+    ).toThrow(/src/);
+  });
+
+  it("rejects UiImage with unknown fit", () => {
+    expect(() =>
+      validateUiTree({
+        kind: "Image",
+        id: "img4",
+        src: "https://x",
+        fit: "scaleDown",
+      }),
+    ).toThrow(/fit/);
+  });
+
+  it("UiAvatar parses initial + accent fallback", () => {
+    const tree = validateUiTree({
+      kind: "Avatar",
+      id: "av",
+      initial: "AB",
+      size: "md",
+      accent: "info",
+    });
+    if (tree.kind !== "Avatar") throw new Error("unreachable");
+    expect(tree.initial).toBe("AB");
+    expect(tree.accent).toBe("info");
+  });
+
+  it("UiAvatar with src only is valid (no initial required)", () => {
+    const tree = validateUiTree({
+      kind: "Avatar",
+      id: "av2",
+      src: "https://x/pic.png",
+    });
+    if (tree.kind !== "Avatar") throw new Error("unreachable");
+    expect(tree.src).toBe("https://x/pic.png");
+    expect(tree.initial).toBeUndefined();
+  });
+
+  it("rejects UiAvatar with neither src nor initial", () => {
+    expect(() =>
+      validateUiTree({ kind: "Avatar", id: "av3" }),
+    ).toThrow(/src or initial/);
+  });
+
+  it("UiMarkdown round-trips its body unchanged", () => {
+    const body = "# Hello\n\nThis is *bold* and `code`.";
+    const tree = validateUiTree({
+      kind: "Markdown",
+      id: "md",
+      markdown: body,
+    });
+    if (tree.kind !== "Markdown") throw new Error("unreachable");
+    expect(tree.markdown).toBe(body);
+  });
+
+  it("rejects UiMarkdown with non-string markdown", () => {
+    expect(() =>
+      validateUiTree({ kind: "Markdown", id: "md2", markdown: 42 }),
+    ).toThrow(/markdown/);
+  });
+
+  it("UiCodeBlock parses code + language", () => {
+    const tree = validateUiTree({
+      kind: "CodeBlock",
+      id: "cb",
+      code: "const x = 1;",
+      language: "typescript",
+    });
+    if (tree.kind !== "CodeBlock") throw new Error("unreachable");
+    expect(tree.code).toBe("const x = 1;");
+    expect(tree.language).toBe("typescript");
+  });
+
+  it("UiCodeBlock without language is valid (renderer falls back to plain mono)", () => {
+    const tree = validateUiTree({
+      kind: "CodeBlock",
+      id: "cb2",
+      code: "anything",
+    });
+    if (tree.kind !== "CodeBlock") throw new Error("unreachable");
+    expect(tree.language).toBeUndefined();
+  });
+
+  it("rejects UiCodeBlock with non-string code", () => {
+    expect(() =>
+      validateUiTree({ kind: "CodeBlock", id: "cb3", code: null }),
+    ).toThrow(/code/);
+  });
+
+  it("UiProgress parses value/variant/label/accent", () => {
+    const tree = validateUiTree({
+      kind: "Progress",
+      id: "pg",
+      value: 0.42,
+      variant: "circular",
+      label: "Loading…",
+      accent: "info",
+    });
+    if (tree.kind !== "Progress") throw new Error("unreachable");
+    expect(tree.value).toBe(0.42);
+    expect(tree.variant).toBe("circular");
+    expect(tree.label).toBe("Loading…");
+    expect(tree.accent).toBe("info");
+  });
+
+  it("UiProgress with no value is valid (indeterminate)", () => {
+    const tree = validateUiTree({ kind: "Progress", id: "pg2" });
+    if (tree.kind !== "Progress") throw new Error("unreachable");
+    expect(tree.value).toBeUndefined();
+    expect(tree.variant).toBeUndefined();
+  });
+
+  it("rejects UiProgress with value out of [0, 1]", () => {
+    expect(() =>
+      validateUiTree({ kind: "Progress", id: "pg3", value: 1.5 }),
+    ).toThrow(/value/);
+    expect(() =>
+      validateUiTree({ kind: "Progress", id: "pg4", value: -0.1 }),
+    ).toThrow(/value/);
+  });
+
+  it("rejects UiProgress with unknown variant", () => {
+    expect(() =>
+      validateUiTree({
+        kind: "Progress",
+        id: "pg5",
+        variant: "stepped",
+      }),
+    ).toThrow(/variant/);
+  });
+
+  it("UiSpinner parses label + tokenized size", () => {
+    const tree = validateUiTree({
+      kind: "Spinner",
+      id: "sp",
+      label: "refreshing…",
+      size: "lg",
+    });
+    if (tree.kind !== "Spinner") throw new Error("unreachable");
+    expect(tree.label).toBe("refreshing…");
+    expect(tree.size).toBe("lg");
+  });
+
+  it("UiSpinner without label / size is valid", () => {
+    const tree = validateUiTree({ kind: "Spinner", id: "sp2" });
+    if (tree.kind !== "Spinner") throw new Error("unreachable");
+    expect(tree.label).toBeUndefined();
+    expect(tree.size).toBeUndefined();
+  });
+});
+
+describe("file:// URL fs-gating (Batch 3)", () => {
+  const WORKSPACE = "/srv/ws";
+  // Helper: build a UiImage tree carrying the given src.
+  function imageTree(src: string) {
+    return validateUiTree({
+      kind: "Column",
+      id: "root",
+      children: [{ kind: "Image", id: "img", src }],
+    });
+  }
+
+  it("passes when no file:// URLs are present (data: URL)", () => {
+    const tree = imageTree("data:image/png;base64,iVBORw0KGgo=");
+    const res = validateFileUrlsAgainstWorkspace(tree, "none", WORKSPACE);
+    expect(res.ok).toBe(true);
+  });
+
+  it("rejects file:// when plugin has fs: none", () => {
+    const tree = imageTree(`file://${WORKSPACE}/icon.png`);
+    const res = validateFileUrlsAgainstWorkspace(tree, "none", WORKSPACE);
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error("unreachable");
+    expect(res.code).toBe("capabilityNotDeclared");
+  });
+
+  it("accepts file:// when plugin has fs: read and path is inside workspace", () => {
+    const tree = imageTree(`file://${WORKSPACE}/logo.png`);
+    const res = validateFileUrlsAgainstWorkspace(tree, "read", WORKSPACE);
+    expect(res.ok).toBe(true);
+  });
+
+  it("accepts file:// when plugin has fs: readwrite", () => {
+    const tree = imageTree(`file://${WORKSPACE}/sub/dir/logo.png`);
+    const res = validateFileUrlsAgainstWorkspace(tree, "readwrite", WORKSPACE);
+    expect(res.ok).toBe(true);
+  });
+
+  it("rejects file:// with ../ traversal that escapes workspace", () => {
+    const tree = imageTree(`file://${WORKSPACE}/sub/../../etc/passwd`);
+    const res = validateFileUrlsAgainstWorkspace(tree, "read", WORKSPACE);
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error("unreachable");
+    expect(res.code).toBe("outsideWorkspace");
+  });
+
+  it("rejects file:// with absolute path outside the workspace", () => {
+    const tree = imageTree(`file:///etc/passwd`);
+    const res = validateFileUrlsAgainstWorkspace(tree, "read", WORKSPACE);
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error("unreachable");
+    expect(res.code).toBe("outsideWorkspace");
+  });
+
+  it("rejects file:// when no workspace is active", () => {
+    const tree = imageTree(`file:///some/path`);
+    const res = validateFileUrlsAgainstWorkspace(tree, "read", null);
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error("unreachable");
+    expect(res.code).toBe("noActiveWorkspace");
+  });
+
+  it("rejects file:// avoiding partial-prefix match (/srv/ws vs /srv/wsroot)", () => {
+    // `/srv/wsroot/...` must NOT match `/srv/ws` — without the
+    // separator guard a naive `startsWith` would falsely accept this.
+    const tree = imageTree(`file:///srv/wsroot/icon.png`);
+    const res = validateFileUrlsAgainstWorkspace(tree, "read", "/srv/ws");
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error("unreachable");
+    expect(res.code).toBe("outsideWorkspace");
+  });
+
+  it("gate also fires on UiAvatar with file:// src", () => {
+    const tree = validateUiTree({
+      kind: "Avatar",
+      id: "av",
+      src: `file:///etc/shadow`,
+      initial: "A",
+    });
+    const res = validateFileUrlsAgainstWorkspace(tree, "read", "/srv/ws");
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error("unreachable");
+    expect(res.code).toBe("outsideWorkspace");
+  });
+
+  it("UiAvatar with no src (initial-only) is never gated", () => {
+    const tree = validateUiTree({
+      kind: "Avatar",
+      id: "av2",
+      initial: "AB",
+    });
+    const res = validateFileUrlsAgainstWorkspace(tree, "none", null);
+    expect(res.ok).toBe(true);
+  });
+
+  it("walks nested containers and gates a deep file:// site", () => {
+    const tree = validateUiTree({
+      kind: "Column",
+      id: "c1",
+      children: [
+        {
+          kind: "Section",
+          id: "s1",
+          children: [
+            {
+              kind: "ListTile",
+              id: "tile",
+              title: "Header",
+              trailing: {
+                kind: "Image",
+                id: "deep-img",
+                src: `file:///elsewhere/x.png`,
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const res = validateFileUrlsAgainstWorkspace(tree, "read", "/srv/ws");
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error("unreachable");
+    expect(res.code).toBe("outsideWorkspace");
+    expect(res.message).toMatch(/trailing/);
+  });
 });
 
 describe("UiPanelRegistry", () => {
@@ -564,6 +869,40 @@ describe("UiPanelRegistry", () => {
       text: "again",
     });
     expect(fresh.version).toBeGreaterThan(lastRetired);
+  });
+});
+
+describe("ui.render dispatch (file:// gate end-to-end)", () => {
+  it("returns -32011 capabilityNotDeclared to a plugin emitting file:// without fs cap", async () => {
+    const harness = await buildHarness(["uifileurl"]);
+    try {
+      const logPath = join(harness.logDir, "uifileurl.stderr.log");
+      const respLine = await waitFor(async () => {
+        let raw: string;
+        try {
+          raw = await readFile(logPath, "utf8");
+        } catch {
+          return undefined;
+        }
+        const m = /<<RESP>>(.*?)<<END>>/s.exec(raw);
+        return m?.[1];
+      }, 3000);
+      const resp = JSON.parse(respLine) as {
+        id: number;
+        error?: { code: number; message: string };
+      };
+      expect(resp.id).toBe(99);
+      expect(resp.error).toBeDefined();
+      // Without an `fs` capability the host should short-circuit on
+      // capabilityNotDeclared, regardless of whether a workspace is
+      // active or where the path resolves to.
+      expect(resp.error?.code).toBe(-32011);
+      expect(resp.error?.message).toMatch(/capabilities\.fs|file:\/\//);
+      // The render must not have landed.
+      expect(harness.host.ui.activePanels()).toEqual([]);
+    } finally {
+      harness.host.shutdown();
+    }
   });
 });
 

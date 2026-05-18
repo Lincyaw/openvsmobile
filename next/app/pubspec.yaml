@@ -60,6 +60,18 @@ dependencies:
   # main.dart can route to the notification center.
   app_links: ^6.3.2
   flutter_highlight: ^0.7.0
+  # Batch 3 widget vocabulary (§4.3): `UiMarkdown` strict-subset
+  # rendering. Configured with `extensionSet: md.ExtensionSet.none` so
+  # tables / footnotes / autolinks stay off; raw HTML is disabled via
+  # the inline-syntax list. The widget receives the same `Theme.of`
+  # text scale as the rest of the renderer so plugin markdown stays
+  # visually consistent with surrounding `UiText`.
+  flutter_markdown: ^0.7.7+1
+  # `markdown` underpins `flutter_markdown` and we import it directly to
+  # pin `md.ExtensionSet.none` on the strict-subset UiMarkdown renderer
+  # (Batch 3 — §4.3). Listing it explicitly keeps the
+  # `depend_on_referenced_packages` lint quiet.
+  markdown: ^7.3.0
   # UI + monospace fonts. Runtime-fetched and cached by `google_fonts` so we
   # do not bundle font binaries into the APK. When the device is offline and
   # the font has not been cached yet, the package silently falls back to the

@@ -45,6 +45,7 @@ import { StderrLog } from "./stderrLog.js";
 import {
   UiPanelRegistry,
   UiValidationError,
+  validateFileUrlsAgainstWorkspace,
   validateUiTree,
   type UiNotifier,
   type UiPanelSnapshot,
@@ -138,6 +139,13 @@ export interface PluginHostOptions {
   /// so they can assert which sockets received which pushes without
   /// running a real WebSocket. Defaults to `sendNotification` from rpc.ts.
   uiNotifier?: UiNotifier;
+  /// Resolve the currently active workspace root. Used by `ui.render`'s
+  /// `file://` URL gate: a `UiImage` / `UiAvatar` with a `file://` src
+  /// must resolve inside this directory or the entire render is rejected.
+  /// Returning `null` means "no active workspace" — every `file://` URL
+  /// is rejected. Tests substitute a fixed string; production wires this
+  /// to `ProcessState.workspaces.current()?.root`.
+  workspaceRootResolver?: () => string | null;
 }
 
 const DEFAULT_PLUGINS_DIR_REL = [".local", "share", "openvsmobile-next", "plugins"];
@@ -241,6 +249,11 @@ export class PluginHost {
   /// host because plugin lifecycle drives panel lifecycle: plugin exit /
   /// disable retires every panel the plugin had emitted.
   private readonly uiRegistry: UiPanelRegistry;
+  /// Resolves the active workspace root for `file://` URL gating. See
+  /// `PluginHostOptions.workspaceRootResolver`. Defaults to "no active
+  /// workspace" — every `file://` URL is rejected until production wires
+  /// `state.workspaces.current()?.root` here.
+  private readonly workspaceRootResolver: () => string | null;
 
   constructor(opts: PluginHostOptions = {}) {
     this.pluginsDir = opts.pluginsDir ?? resolveDefaultPluginsDir();
@@ -263,6 +276,7 @@ export class PluginHost {
       opts.uiNotifier ??
       ((ws, method, params) => sendNotification(ws, method, params));
     this.uiRegistry = new UiPanelRegistry(uiNotifier);
+    this.workspaceRootResolver = opts.workspaceRootResolver ?? (() => null);
   }
 
   /// UI panel registry. Public so the RPC layer can route `ui.subscribe`
@@ -923,6 +937,27 @@ export class PluginHost {
         throw out;
       }
       throw err;
+    }
+    // Batch 3 file:// URL gate. See validateFileUrlsAgainstWorkspace.
+    // Rejecting the whole `ui.render` (not just the offending node) is
+    // intentional: a partial render would leave the plugin's state
+    // desynced from the panel's contents, and a single bad node is a
+    // plugin-author bug they should see clearly.
+    const gate = validateFileUrlsAgainstWorkspace(
+      tree,
+      plugin.manifest.capabilities.fs,
+      this.workspaceRootResolver(),
+    );
+    if (!gate.ok) {
+      const code =
+        gate.code === "capabilityNotDeclared"
+          ? RPC_ERR.capabilityNotDeclared
+          : RPC_ERR.invalidParams;
+      const out = new Error(`ui.render: ${gate.message}`) as Error & {
+        code: number;
+      };
+      out.code = code;
+      throw out;
     }
     this.uiRegistry.render(plugin.manifest.id, panelId, tree);
   }
