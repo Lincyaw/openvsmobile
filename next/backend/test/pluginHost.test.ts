@@ -618,14 +618,17 @@ setTimeout(() => {}, 60_000);
   it("handlePluginResponse drops cross-plugin id collisions instead of resolving", async () => {
     // Plugin B sending a response carrying plugin A's outbound id must
     // not satisfy A's awaiter. Setup:
-    //   * `cmd` (legitimate target) — echoes back command.invoke.
-    //   * `thief` — waits ~250ms (long enough for the test to issue
-    //     `invokeCommand("cmd", …)`, which mints outbound id 1 and
-    //     registers a pending entry against pluginId "cmd"), then
-    //     emits a forged response carrying id 1 with `stolen: true`.
+    //   * `slowtarget` (legitimate target) — echoes back command.invoke
+    //     after 400ms, leaving a window where its outbound id is pending.
+    //   * `thief` — fires a forged response 80ms after spawn, carrying
+    //     the id the host is about to mint for the slowtarget invoke.
+    //     The forged id is passed in via `OPENVSMOBILE_PLUGIN_FORGE_ID`
+    //     after peeking `host._peekNextOutboundIdForTests()` — never
+    //     hard-coded — so the test is robust if a future host change
+    //     allocates an id between construction and the first invoke.
     // If the host resolved purely by id, `invokeCommand` would settle
     // with `{ stolen: true }`. With the cross-check it must settle
-    // with `cmd`'s real echo payload and the diagnostic log must
+    // with slowtarget's real echo payload and the diagnostic log must
     // contain a "belongs to plugin" notice.
     if (staging === null) throw new Error("staging dir not set up");
     const pluginsDir = join(staging, "plugins");
@@ -704,11 +707,12 @@ setTimeout(() => {}, 60_000);
     await writeFile(
       join(pluginsDir, "thief", "index.js"),
       `
+const forged = Number(process.env.OPENVSMOBILE_PLUGIN_FORGE_ID);
 setTimeout(() => {
   process.stdout.write(
     JSON.stringify({
       jsonrpc: "2.0",
-      id: 1,
+      id: forged,
       result: { stolen: true },
     }) + "\\n",
   );
@@ -724,6 +728,11 @@ setTimeout(() => {}, 60_000);
       logger: (line) => diagnostics.push(line),
       onHostLog: (entry) => hostLogs.push(entry),
     });
+    // The slowtarget invoke below will consume this id; tell the thief
+    // before it spawns so its forged response targets that exact id.
+    const forgedId = host._peekNextOutboundIdForTests();
+    const prevForgeEnv = process.env.OPENVSMOBILE_PLUGIN_FORGE_ID;
+    process.env.OPENVSMOBILE_PLUGIN_FORGE_ID = String(forgedId);
     await host.start();
     try {
       // Wait for slowtarget's startup log so we know the codec has
@@ -758,6 +767,11 @@ setTimeout(() => {}, 60_000);
       expect(hit).toBeDefined();
     } finally {
       host.shutdown();
+      if (prevForgeEnv === undefined) {
+        delete process.env.OPENVSMOBILE_PLUGIN_FORGE_ID;
+      } else {
+        process.env.OPENVSMOBILE_PLUGIN_FORGE_ID = prevForgeEnv;
+      }
     }
   });
 

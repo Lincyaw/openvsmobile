@@ -902,6 +902,15 @@ export class PluginHost {
     return this.nextOutboundId++;
   }
 
+  /// @internal — test-only seam. Returns the id the next `allocateOutboundId`
+  /// call will mint, without advancing the counter. Used by the
+  /// id-collision test so it can tell a fixture which id to forge without
+  /// hard-coding `1` (which silently lies if a future host change consumes
+  /// an id between construction and the first invoke).
+  public _peekNextOutboundIdForTests(): number {
+    return this.nextOutboundId;
+  }
+
   // ----- Frontend-facing surface: enable / disable / invokeCommand -----
 
   /// Project an internal registry entry to the wire-shape the frontend

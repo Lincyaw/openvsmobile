@@ -168,6 +168,7 @@ class TerminalsNotifier extends ChangeNotifier {
     if (sessions.isNotEmpty) {
       _focusedTermBySpace[workspaceId] ??= sessions.first.id;
     }
+    refreshTerminalSubscription();
     notifyListeners();
   }
 
@@ -213,22 +214,32 @@ class TerminalsNotifier extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Drop every session, Terminal, and backlog entry. Called from
-  /// AppState's connection-state listener whenever the socket leaves the
-  /// `connected` state (the IDs may still be alive on the backend, but
-  /// our local Terminal objects are tied to the previous in-memory
-  /// lifetime).
-  void resetAll() {
-    _termsByWorkspace.clear();
-    _focusedTermBySpace.clear();
-    _xterms.clear();
-    _xtermGen.clear();
-    _lastWrittenSeq.clear();
-    _backlog.clear();
-    _backlogBytes.clear();
-    _previewBuffer.clear();
-    _previewLastDataAt.clear();
-    notifyListeners();
+  /// Tell the backend which terminal ids this connection cares about. The
+  /// backend defaults to subscribe-all for a connection that never calls
+  /// `terminal.subscribe`; that's fine for a single-client setup but in a
+  /// phone+laptop pairing it means each peer receives the other's PTY
+  /// frames. Scoping to our own known sessions stops the leak.
+  ///
+  /// Fire-and-forget. A failure on the wire (e.g. mid-disconnect) just
+  /// means we stay on the previous subscription — when the connection
+  /// settles the next call rectifies it. Called from AppState on
+  /// reconnect, and locally on every mutation of the known-id set.
+  void refreshTerminalSubscription() {
+    final ids = <String>[
+      for (final list in _termsByWorkspace.values)
+        for (final t in list) t.id,
+    ];
+    // Backend semantic: `terminal.subscribe` with an empty/omitted `ids` is
+    // explicit subscribe-ALL (legacy compatibility). We want "subscribe to
+    // exactly my zero sessions" in that case, so map empty → unsubscribe.
+    final method = ids.isEmpty ? 'terminal.unsubscribe' : 'terminal.subscribe';
+    final params = ids.isEmpty ? <String, dynamic>{} : {'ids': ids};
+    _client.call(method, params).catchError(
+      (Object e) {
+        debugPrint('TerminalsNotifier.refreshTerminalSubscription failed: $e');
+        return <String, dynamic>{};
+      },
+    );
   }
 
   // ---- Public actions ----
@@ -269,6 +280,7 @@ class TerminalsNotifier extends ChangeNotifier {
       _focusedTermBySpace[wsId] = sid;
       // Fresh session — no history to fetch.
       _lastWrittenSeq[sid] = 0;
+      refreshTerminalSubscription();
       notifyListeners();
       return session;
     } catch (e) {
@@ -395,6 +407,7 @@ class TerminalsNotifier extends ChangeNotifier {
         entry.value.removeWhere((t) => t.id == sessionId);
       }
     }
+    refreshTerminalSubscription();
     notifyListeners();
   }
 

@@ -26,6 +26,18 @@ import 'state/terminals_notifier.dart';
 import 'state/workspace_model.dart';
 import 'ui/ui_panels_model.dart';
 
+/// Diff-cache key. Either `workspaceHead` is set (probe key — looked up when
+/// HEAD has not moved) OR `baseSha`+`headSha` are set (content-addressed key
+/// per first principle #3). Records are value-equal so the LinkedHashMap
+/// dedupes correctly and `removeWhere` can match on individual fields.
+typedef _DiffCacheKey = ({
+  String workspaceId,
+  String? workspaceHead,
+  String? baseSha,
+  String? headSha,
+  String path,
+});
+
 class AppState extends ChangeNotifier {
   final BackendClient client;
 
@@ -66,8 +78,15 @@ class AppState extends ChangeNotifier {
   // we'd rather rebuild from the backend (which has its own cache) than hold
   // megabytes of patch text on a phone.
   static const int _kDiffCacheCap = 32;
-  final LinkedHashMap<String, Map<String, dynamic>> _diffCache =
-      LinkedHashMap<String, Map<String, dynamic>>();
+  // Two cache shapes share this map:
+  //   * "probe" — workspaceHead set, baseSha/headSha null. Looked up by the
+  //     next gitDiff call when HEAD has not moved.
+  //   * "content" — baseSha+headSha set, workspaceHead null. Per first
+  //     principle #3 (content-addressed); survives HEAD reverting onto a
+  //     previously-cached commit.
+  // Records are value-equal so the LinkedHashMap behaves as LRU per-key.
+  final LinkedHashMap<_DiffCacheKey, Map<String, dynamic>> _diffCache =
+      LinkedHashMap<_DiffCacheKey, Map<String, dynamic>>();
 
   // ---- Workspace picker (ephemeral) ----
   PickerState? _pickerState;
@@ -267,6 +286,13 @@ class AppState extends ChangeNotifier {
       // briefly wipe cached entries.
       unawaited(_plugins.subscribe());
       unawaited(_uiPanels.subscribe());
+      // Pin this connection's terminal fan-out scope to our known session
+      // set (empty → unsubscribe) so a peer client's PTY data does not
+      // leak into us. refreshWorkspaces() will refresh this again once it
+      // adopts each workspace's session list, but asserting it here
+      // narrows the window where we'd otherwise sit on the backend's
+      // legacy implicit-subscribe-all default.
+      _terminals.refreshTerminalSubscription();
       notifyListeners();
       return;
     }
@@ -374,23 +400,22 @@ class AppState extends ChangeNotifier {
   }
 
   /// Drop `_diffCache` entries for the workspace+paths mutated by a
-  /// decoration-delta push. The cache is keyed by `(workspaceId, headSha,
-  /// path)` (probe) and `(workspaceId, baseSha, headSha, path)` (content);
-  /// since both keys end in ` $path`, we scan-and-suffix-match. The cache
-  /// cap is 32 so the scan is trivially cheap.
+  /// decoration-delta push. Field-level match — no substring matching, no
+  /// risk of a workspaceId or path containing a separator confusing things.
   void _invalidateDiffCacheForDecorationDelta(Map<String, dynamic> params) {
     final wsId = params['workspaceId'];
     if (wsId is! String) return;
     final entries = params['entries'];
     if (entries is! List) return;
-    for (final e in entries) {
-      if (e is! Map<String, dynamic>) continue;
-      final path = e['path'];
-      if (path is! String) continue;
-      _diffCache.removeWhere(
-        (k, _) => k.endsWith(' $path') && k.contains(wsId),
-      );
-    }
+    final paths = <String>{
+      for (final e in entries)
+        if (e is Map<String, dynamic> && e['path'] is String)
+          e['path'] as String,
+    };
+    if (paths.isEmpty) return;
+    _diffCache.removeWhere(
+      (k, _) => k.workspaceId == wsId && paths.contains(k.path),
+    );
   }
 
   /// Drop every `_diffCache` entry for [workspaceId]. Used on a full
@@ -398,7 +423,7 @@ class AppState extends ChangeNotifier {
   /// the per-path delta list doesn't enumerate.
   void _invalidateDiffCacheForWorkspace(String? workspaceId) {
     if (workspaceId == null) return;
-    _diffCache.removeWhere((k, _) => k.contains(workspaceId));
+    _diffCache.removeWhere((k, _) => k.workspaceId == workspaceId);
   }
 
   void _onWorkspaceClosed(String id) {
@@ -811,7 +836,7 @@ class AppState extends ChangeNotifier {
     return r;
   }
 
-  void _putDiffCache(String key, Map<String, dynamic> value) {
+  void _putDiffCache(_DiffCacheKey key, Map<String, dynamic> value) {
     _diffCache.remove(key);
     _diffCache[key] = value;
     while (_diffCache.length > _kDiffCacheCap) {
@@ -819,26 +844,35 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  /// Probe key — derived from the workspace's commit-level HEAD sha. The
-  /// space separator can't appear in a sha or workspaceId; paths with
-  /// spaces still produce distinct keys because the prefix length pins
-  /// the workspaceId+sha components in fixed positions.
-  static String _diffProbeKey(
+  /// Probe key — derived from the workspace's commit-level HEAD sha.
+  static _DiffCacheKey _diffProbeKey(
     String workspaceId,
     String workspaceHead,
     String path,
   ) =>
-      'h $workspaceId $workspaceHead $path';
+      (
+        workspaceId: workspaceId,
+        workspaceHead: workspaceHead,
+        baseSha: null,
+        headSha: null,
+        path: path,
+      );
 
   /// Content-addressed key — derived from the per-blob baseSha + headSha
   /// returned by the backend. Per first principle #3.
-  static String _diffContentKey(
+  static _DiffCacheKey _diffContentKey(
     String workspaceId,
     String baseSha,
     String headSha,
     String path,
   ) =>
-      'c $workspaceId $baseSha $headSha $path';
+      (
+        workspaceId: workspaceId,
+        workspaceHead: null,
+        baseSha: baseSha,
+        headSha: headSha,
+        path: path,
+      );
 
   /// Number of cached diff results. Test hook for the LRU contract; widgets
   /// have no reason to read this.
