@@ -59,7 +59,7 @@ next/
 - **Plugins** — entry point for every plugin panel. Lists active plugin panels; drills into the declarative UI tree.
 - **Settings** — server URL/token, pairing, plugin management, About.
 
-Current `next/app/` is mid-migration: ships **Files / Terminal / More** today; More holds Settings + SSH bootstrap + About as a transitional layout. Moving to the proper 4-tab arrangement (split More → Settings tab + add Plugins tab) is pending work, not a redesign.
+The 4-tab arrangement is live in `home_shell.dart`. Earlier drafts of this doc described a transitional "Files / Terminal / More" layout; that migration is complete — Settings is its own tab and Plugins is in place. SSH bootstrap and About are reachable from inside Settings.
 
 ### Core (v0) capabilities — everything else is a plugin
 

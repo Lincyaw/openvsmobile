@@ -185,20 +185,23 @@ async function main(): Promise<void> {
   });
 
   let shuttingDown = false;
-  const shutdown = (sig: string): void => {
+  const shutdown = async (sig: string): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.error(`[openvsmobile-next] ${sig} received, shutting down`);
-    // Kill all PTYs and notify any still-attached subscribers before tearing
-    // down the socket. Best-effort: if a subscriber's send queue is full we
-    // just move on.
+    // Hard deadline — if any step hangs we exit anyway. Armed first so the
+    // process can't get stuck even if the awaits below throw or stall.
+    setTimeout(() => process.exit(1), SHUTDOWN_HARD_EXIT_MS).unref();
     try {
       state.shutdownAll();
     } catch (err) {
       console.error("[openvsmobile-next] shutdown error:", err);
     }
+    // Wait for plugin processes to actually die (SIGTERM → grace → SIGKILL)
+    // before closing the HTTP server; otherwise plugins outlive the socket
+    // they were notifying through.
     try {
-      pluginHost.shutdown();
+      await pluginHost.shutdown();
     } catch (err) {
       console.error("[openvsmobile-next] plugin shutdown error:", err);
     }
@@ -207,18 +210,12 @@ async function main(): Promise<void> {
     } catch (err) {
       console.error("[openvsmobile-next] terminal DB close error:", err);
     }
-    // Best-effort unlink — if the file is already gone (or was never
-    // written), we don't block shutdown on it.
     unlinkRuntimeInfo();
     wss.close();
     httpServer.close(() => process.exit(0));
-    // One-shot deadline — if httpServer.close hasn't drained in time, exit
-    // hard. This is the only `setTimeout` in the backend hot path; it's
-    // explicitly allowed by §1 as a shutdown deadline (not a recurring poll).
-    setTimeout(() => process.exit(1), SHUTDOWN_HARD_EXIT_MS).unref();
   };
-  process.on("SIGINT", () => shutdown("SIGINT"));
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
 main().catch((err) => {

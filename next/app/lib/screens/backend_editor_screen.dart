@@ -4,12 +4,7 @@
 // button that attempts a WebSocket handshake and prints diagnostic logs so
 // users can debug network issues.
 //
-// TODO(rename): `SettingsScreen` is a misnomer — the actual settings entry
-// surface lives in `settings_tab.dart`. This file is really the
-// backend-editor dialog; renaming it to `BackendEditorScreen` /
-// `backend_editor_screen.dart` would clarify intent but ripples into
-// `backends_screen.dart`, which a parallel worker is touching. Deferred
-// until that worker's PR has landed to avoid a merge collision.
+// The actual app-wide Settings tab lives in `settings_tab.dart`.
 
 import 'dart:async';
 import 'dart:convert';
@@ -30,12 +25,12 @@ class _LogEntry {
       {required this.time, required this.text, this.isError = false});
 }
 
-class SettingsScreen extends StatefulWidget {
+class BackendEditorScreen extends StatefulWidget {
   final BackendTarget initial;
   final Future<void> Function(BackendTarget) onSave;
   final bool isFirstRun;
 
-  const SettingsScreen({
+  const BackendEditorScreen({
     super.key,
     required this.initial,
     required this.onSave,
@@ -43,10 +38,10 @@ class SettingsScreen extends StatefulWidget {
   });
 
   @override
-  State<SettingsScreen> createState() => _SettingsScreenState();
+  State<BackendEditorScreen> createState() => _BackendEditorScreenState();
 }
 
-class _SettingsScreenState extends State<SettingsScreen> {
+class _BackendEditorScreenState extends State<BackendEditorScreen> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _nameCtrl;
   late final TextEditingController _hostCtrl;

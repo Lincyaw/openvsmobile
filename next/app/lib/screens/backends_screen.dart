@@ -11,7 +11,7 @@ import 'package:flutter/material.dart';
 import '../app_state.dart';
 import '../settings_store.dart';
 import '../version.dart';
-import 'settings_screen.dart';
+import 'backend_editor_screen.dart';
 import 'ssh_bootstrap_screen.dart';
 
 class BackendsScreen extends StatelessWidget {
@@ -112,7 +112,7 @@ class BackendsScreen extends StatelessWidget {
     final navigator = Navigator.of(context);
     await navigator.push<void>(
       MaterialPageRoute(
-        builder: (_) => SettingsScreen(
+        builder: (_) => BackendEditorScreen(
           initial: draft,
           isFirstRun: true,
           onSave: (saved) async {
@@ -128,7 +128,7 @@ class BackendsScreen extends StatelessWidget {
     final navigator = Navigator.of(context);
     await navigator.push<void>(
       MaterialPageRoute(
-        builder: (_) => SettingsScreen(
+        builder: (_) => BackendEditorScreen(
           initial: existing,
           onSave: (updated) async {
             await onUpdate(updated);
