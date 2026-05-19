@@ -146,8 +146,23 @@ class TerminalsNotifier extends ChangeNotifier {
   /// minimal: the widget formats `text` (already ANSI-stripped and
   /// truncated) and `lastDataAt` (epoch ms, last byte arrival) for display.
   TerminalPreview previewFor(String sessionId) {
-    final buffer = _previewBuffer[sessionId];
     final ts = _previewLastDataAt[sessionId];
+    // Prefer the live xterm screen buffer when we have one — full-screen
+    // TUIs like zellij / tmux / claude repaint their entire viewport on
+    // every frame, so the raw byte stream is just a slurry of cursor
+    // positioning + status-bar chrome. The interpreted buffer holds the
+    // actual rendered cells, which is what the user sees.
+    final term = _xterms[sessionId];
+    if (term != null) {
+      final fromBuffer = extractPreviewFromTerminal(term);
+      if (fromBuffer != null) {
+        return TerminalPreview(text: fromBuffer, lastDataAt: ts);
+      }
+    }
+    // Fallback for sessions that haven't materialised a Terminal yet
+    // (e.g. preview row visible before the user has focused the
+    // session). Byte-stream stripping is best-effort.
+    final buffer = _previewBuffer[sessionId];
     final text = buffer == null ? null : extractPreviewLine(buffer);
     return TerminalPreview(text: text, lastDataAt: ts);
   }
@@ -541,6 +556,66 @@ class TerminalPreview {
   final int? lastDataAt;
 
   const TerminalPreview({required this.text, required this.lastDataAt});
+}
+
+/// Scan [terminal]'s interpreted screen buffer for the most recent line
+/// the user would consider "substantive output" — i.e. shell output, not
+/// the multiplexer's chrome. Starts at the cursor row (where the active
+/// shell is currently writing) and walks upward, skipping rows that are
+/// blank or composed entirely of decorative glyphs (box drawing, arrows,
+/// nerdfont/powerline glyphs in the Private Use Area). Returns null if no
+/// row in the visible viewport has substantive content.
+///
+/// The heuristic deliberately ignores rows below the cursor because
+/// zellij / tmux / claude consistently paint their status bar there;
+/// the cursor (and everything above it) tracks the focused pane's
+/// content.
+String? extractPreviewFromTerminal(Terminal terminal, {int maxLen = 60}) {
+  final buffer = terminal.buffer;
+  // Absolute index of the cursor row in the line ring. The visible
+  // viewport starts at `lines.length - viewHeight` and the cursor row
+  // is `viewHeight - 1` lines down from there at most.
+  final cursorAbsY = buffer.absoluteCursorY;
+  // Don't walk above the visible viewport — scrollback would otherwise
+  // give us output from many minutes ago, which is misleading.
+  final viewportTop =
+      (buffer.lines.length - terminal.viewHeight).clamp(0, buffer.lines.length);
+  for (var row = cursorAbsY; row >= viewportTop; row--) {
+    if (row < 0 || row >= buffer.lines.length) continue;
+    final raw = buffer.lines[row].getText().trimRight();
+    if (raw.isEmpty) continue;
+    final stripped = _stripDecorativeChars(raw);
+    if (stripped.trim().length < 2) continue;
+    final line = stripped.trim();
+    if (line.length <= maxLen) return line;
+    return '${line.substring(0, maxLen - 1)}…';
+  }
+  return null;
+}
+
+/// Remove decorative-only Unicode ranges that frame TUIs use to draw
+/// chrome (box drawing, block elements, geometric shapes, arrows,
+/// Private Use Area glyphs from nerdfont/powerline). Anything left is
+/// "real" text the user would recognise.
+String _stripDecorativeChars(String s) {
+  final out = StringBuffer();
+  for (final rune in s.runes) {
+    // Box Drawing 2500–257F, Block Elements 2580–259F,
+    // Geometric Shapes 25A0–25FF, Arrows 2190–21FF,
+    // Supplemental Arrows 2B00–2BFF, Misc Tech 2300–23FF (often used
+    // for power-line separators), PUA E000–F8FF (nerdfont).
+    if ((rune >= 0x2190 && rune <= 0x21FF) ||
+        (rune >= 0x2300 && rune <= 0x23FF) ||
+        (rune >= 0x2500 && rune <= 0x257F) ||
+        (rune >= 0x2580 && rune <= 0x259F) ||
+        (rune >= 0x25A0 && rune <= 0x25FF) ||
+        (rune >= 0x2B00 && rune <= 0x2BFF) ||
+        (rune >= 0xE000 && rune <= 0xF8FF)) {
+      continue;
+    }
+    out.writeCharCode(rune);
+  }
+  return out.toString();
 }
 
 /// Strip ANSI escape sequences from [bytes] (interpreted as UTF-8) and
