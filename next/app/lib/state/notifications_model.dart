@@ -25,15 +25,10 @@ import 'package:flutter/foundation.dart';
 import '../backend_client.dart';
 import '../notification.dart';
 
-/// Method-name constants for the push side. Pulled out so AppState's switch
-/// stays on typed identifiers, not bare strings.
-class NotificationPushMethods {
-  NotificationPushMethods._();
-  static const String show = 'notification.show';
-  static const String readChanged = 'notification.readChanged';
-  static const String deleted = 'notification.deleted';
-  static const String superseded = 'notification.superseded';
-}
+// Push method-name constants live in `BackendNotifications` (see
+// backend_client.dart). The previous in-file `NotificationPushMethods` class
+// duplicated those strings and was unreferenced — removed to keep one source
+// of truth for wire identifiers.
 
 class NotificationsModel extends ChangeNotifier {
   final BackendClient _client;
@@ -205,9 +200,27 @@ class NotificationsModel extends ChangeNotifier {
 
   // ---- RPC actions ----
 
-  Future<void> subscribe() async {
+  /// Highest timestamp (ms since epoch) we've ingested via push or refresh.
+  /// Used as `sinceTs` on reconnect so the backend can deliver the
+  /// incremental tail without resending the whole feed. Returns 0 when the
+  /// local map is empty (first connect).
+  int get lastSeenTs {
+    var max = 0;
+    for (final n in _items.values) {
+      if (n.timestamp > max) max = n.timestamp;
+    }
+    return max;
+  }
+
+  /// Subscribe to push fan-out. [sinceTs], when non-zero, asks the backend to
+  /// deliver only rows newer than the given timestamp on the subscribe ack
+  /// — forward-compatible: backend support for `sinceTs` on
+  /// `notification.subscribe` is pending.
+  Future<void> subscribe({int sinceTs = 0}) async {
     try {
-      await _client.call('notification.subscribe');
+      final params = <String, dynamic>{};
+      if (sinceTs > 0) params['sinceTs'] = sinceTs;
+      await _client.call('notification.subscribe', params);
       _subscribed = true;
       notifyListeners();
     } catch (e) {

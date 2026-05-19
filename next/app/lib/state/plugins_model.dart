@@ -170,6 +170,7 @@ class PluginPanelStub {
 
 class PluginsModel extends ChangeNotifier {
   final BackendClient _client;
+  final void Function(String message)? _reportError;
 
   /// id → info. Insertion order from the most recent `plugin.list` is
   /// preserved by `LinkedHashMap`; widgets read [plugins] which projects
@@ -187,7 +188,11 @@ class PluginsModel extends ChangeNotifier {
     Map<String, dynamic>? params,
   )? debugRpcOverride;
 
-  PluginsModel({required BackendClient client}) : _client = client;
+  PluginsModel({
+    required BackendClient client,
+    void Function(String message)? reportError,
+  })  : _client = client,
+        _reportError = reportError;
 
   Future<dynamic> _call(String method, [Map<String, dynamic>? params]) {
     final ovr = debugRpcOverride;
@@ -205,16 +210,25 @@ class PluginsModel extends ChangeNotifier {
   bool get isSubscribed => _subscribed;
   bool get isLoaded => _loaded;
 
-  /// Pull the current list AND subscribe to push updates. Idempotent —
-  /// safe to call after every reconnect. Failures self-log; the
-  /// connection banner is the user-visible signal for any link issue.
-  Future<void> subscribeAndRefresh() async {
+  /// Subscribe to push updates only. Used on reconnect so we keep the
+  /// last-known plugin list visible (first principle #4) instead of
+  /// briefly wiping it through a full `plugin.list` refresh. The backend
+  /// pushes `plugin.stateChanged` for any state transitions we missed.
+  Future<void> subscribe() async {
     try {
       await _call('plugin.subscribe');
       _subscribed = true;
+      notifyListeners();
     } catch (e) {
       debugPrint('plugin.subscribe failed: $e');
     }
+  }
+
+  /// Pull the current list AND subscribe to push updates. Used by code
+  /// paths that genuinely need an initial snapshot (e.g. cold start with
+  /// no cached data). Reconnect uses [subscribe] alone.
+  Future<void> subscribeAndRefresh() async {
+    await subscribe();
     await refresh();
   }
 
@@ -304,8 +318,17 @@ class PluginsModel extends ChangeNotifier {
   /// Reload a crashed plugin: disable then enable. The interleaving of
   /// state pushes is fine — the model only mutates on the wire state,
   /// and the final `running` push after `enable` wins.
+  ///
+  /// If `enable` fails after `disable` succeeded the plugin is left in a
+  /// disabled state; surface that via [_reportError] so the user has a
+  /// chance to retry instead of silently observing a stuck row.
   Future<void> reload(String pluginId) async {
     await disable(pluginId);
-    await enable(pluginId);
+    try {
+      await enable(pluginId);
+    } catch (e) {
+      _reportError?.call('Could not re-enable $pluginId: $e');
+      rethrow;
+    }
   }
 }

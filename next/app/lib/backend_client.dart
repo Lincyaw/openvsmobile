@@ -111,31 +111,50 @@ class AlwaysOnlineProbe implements ConnectivityProbe {
   Future<bool> isOnline() async => true;
 }
 
-// Backoff schedule used after a connected → drop transition. Capped at 30 s.
-const List<Duration> _kBackoff = [
-  Duration(seconds: 1),
-  Duration(seconds: 2),
-  Duration(seconds: 4),
-  Duration(seconds: 8),
-  Duration(seconds: 16),
-  Duration(seconds: 30),
-];
+/// Tunables for the always-on transport layer. Defaults are the values
+/// production has shipped with since v0; tests inject a fast variant to
+/// avoid 15 s waits in the queue-budget path.
+@immutable
+class BackendClientTiming {
+  /// Heartbeat ping cadence. 25 s detects a silently dropped NAT entry
+  /// well before the typical 60–120 s carrier idle timeout, while staying
+  /// cheap enough that always-on is acceptable.
+  final Duration heartbeatInterval;
 
-// Heartbeat parameters. 25 s interval is short enough to detect a silently
-// dropped NAT entry well before the typical 60–120 s carrier idle timeout,
-// but cheap enough that always-on is acceptable.
-const Duration _kHeartbeatInterval = Duration(seconds: 25);
-const Duration _kHeartbeatTimeout = Duration(seconds: 10);
+  /// How long we wait for the pong before force-closing.
+  final Duration heartbeatGrace;
 
-// How long we hold a queued call hoping for a reconnect. After this we reject
-// the future with a clear "connection unavailable" message.
-const Duration _kQueueBudget = Duration(seconds: 15);
+  /// How long a queued call sits hoping for a reconnect before failing
+  /// with "connection unavailable".
+  final Duration queueBudget;
+
+  /// Reconnect backoff schedule, capped at the last entry.
+  final List<Duration> backoff;
+
+  const BackendClientTiming({
+    this.heartbeatInterval = const Duration(seconds: 25),
+    this.heartbeatGrace = const Duration(seconds: 10),
+    this.queueBudget = const Duration(seconds: 15),
+    this.backoff = const [
+      Duration(seconds: 1),
+      Duration(seconds: 2),
+      Duration(seconds: 4),
+      Duration(seconds: 8),
+      Duration(seconds: 16),
+      Duration(seconds: 30),
+    ],
+  });
+}
+
+const BackendClientTiming _kDefaultTiming = BackendClientTiming();
 
 class BackendClient {
-  BackendClient({ConnectivityProbe? probe})
-      : _probe = probe ?? AlwaysOnlineProbe();
+  BackendClient({ConnectivityProbe? probe, BackendClientTiming? timing})
+      : _probe = probe ?? AlwaysOnlineProbe(),
+        _timing = timing ?? _kDefaultTiming;
 
   final ConnectivityProbe _probe;
+  final BackendClientTiming _timing;
   StreamSubscription<bool>? _connectivitySub;
 
   /// Current connection state. Listenable for UI.
@@ -393,8 +412,8 @@ class BackendClient {
       return;
     }
     _cancelReconnect();
-    final delay = _kBackoff[
-        _backoffStep.clamp(0, _kBackoff.length - 1)];
+    final backoff = _timing.backoff;
+    final delay = backoff[_backoffStep.clamp(0, backoff.length - 1)];
     _backoffStep++;
     state.value = BackendConnectionState.reconnecting;
     _reconnectTimer = Timer(delay, () {
@@ -411,9 +430,9 @@ class BackendClient {
 
   void _startHeartbeat() {
     _stopHeartbeat();
-    _heartbeatTimer = Timer.periodic(_kHeartbeatInterval, (_) {
+    _heartbeatTimer = Timer.periodic(_timing.heartbeatInterval, (_) {
       if (state.value != BackendConnectionState.connected) return;
-      _heartbeatTimeout = Timer(_kHeartbeatTimeout, () {
+      _heartbeatTimeout = Timer(_timing.heartbeatGrace, () {
         // No pong → force-close. _onSocketGone runs and starts backoff.
         lastError.value = 'heartbeat timeout';
         unawaited(_closeSocket());
@@ -454,7 +473,7 @@ class BackendClient {
     // In a transitional state — queue.
     final completer = Completer<dynamic>();
     final entry = _QueuedCall(method: method, params: params, completer: completer);
-    entry.timer = Timer(_kQueueBudget, () {
+    entry.timer = Timer(_timing.queueBudget, () {
       if (_queue.remove(entry) && !completer.isCompleted) {
         completer.completeError(
           BackendRpcException(-1, 'connection unavailable'),

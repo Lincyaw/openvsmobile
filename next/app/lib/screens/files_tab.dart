@@ -492,11 +492,12 @@ class _FilesTabState extends State<FilesTab> {
                         ),
                       ),
                     )
-                  : RefreshIndicator(
-                      onRefresh: () => widget.appState.refreshFileTree(wsId),
-                      child: ListView(
-                        children: _flatten(root, 0, cur, changesActive),
-                      ),
+                  : ListView(
+                      // No pull-to-refresh: per first principle #1 the file
+                      // tree is push-driven via `workspace.tree.delta`. If
+                      // the user perceives the tree as stale, the push path
+                      // is wrong, not the UI.
+                      children: _flatten(root, 0, cur, changesActive),
                     ),
         ),
       ],

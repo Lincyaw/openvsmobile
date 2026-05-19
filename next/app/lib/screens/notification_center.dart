@@ -244,38 +244,39 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
           Expanded(
             child: items.isEmpty
                 ? _EmptyState()
-                : RefreshIndicator(
-                    onRefresh: _refresh,
-                    child: ListView.builder(
-                      padding: const EdgeInsets.symmetric(vertical: 4),
-                      itemCount: groups.length,
-                      itemBuilder: (ctx, i) {
-                        final g = groups[i];
-                        if (g.length == 1) {
-                          return _NotificationCard(
-                            notification: g.first,
-                            expanded: _expanded.contains(g.first.id),
-                            highlighted: g.first.id == widget.highlightId,
-                            onToggleExpand: () {
-                              setState(() {
-                                if (!_expanded.add(g.first.id)) {
-                                  _expanded.remove(g.first.id);
-                                }
-                              });
-                            },
-                            onAction: _onAction,
-                            onLongPressMenu: () =>
-                                _showLongPressMenu(g.first),
-                          );
-                        }
-                        // Grouped: render as collapsible card.
-                        return _GroupCard(
-                          members: g,
-                          deviceId: widget.appState.deviceId,
+                // No pull-to-refresh: per first principle #1 the feed is
+                // push-driven via `notification.show` / `.readChanged` /
+                // `.deleted`. The "Refresh" menu item still pulls a full
+                // snapshot for users who explicitly ask.
+                : ListView.builder(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    itemCount: groups.length,
+                    itemBuilder: (ctx, i) {
+                      final g = groups[i];
+                      if (g.length == 1) {
+                        return _NotificationCard(
+                          notification: g.first,
+                          expanded: _expanded.contains(g.first.id),
+                          highlighted: g.first.id == widget.highlightId,
+                          onToggleExpand: () {
+                            setState(() {
+                              if (!_expanded.add(g.first.id)) {
+                                _expanded.remove(g.first.id);
+                              }
+                            });
+                          },
                           onAction: _onAction,
+                          onLongPressMenu: () =>
+                              _showLongPressMenu(g.first),
                         );
-                      },
-                    ),
+                      }
+                      // Grouped: render as collapsible card.
+                      return _GroupCard(
+                        members: g,
+                        deviceId: widget.appState.deviceId,
+                        onAction: _onAction,
+                      );
+                    },
                   ),
           ),
         ],
