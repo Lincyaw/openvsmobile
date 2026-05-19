@@ -312,7 +312,8 @@ export class WorkspaceModel {
   /// Synthesize a decoration.delta event for tests that need to fill the
   /// journal past `journalMaxEvents` without spawning hundreds of file
   /// operations. Production code never calls this.
-  public testEmitSyntheticDecorationEvent(path: string): void {
+  /// @internal
+  public _testEmitSyntheticDecorationEvent(path: string): void {
     this.emit({
       kind: "decoration.delta",
       version: this.nextVersion(),
@@ -617,9 +618,12 @@ export class WorkspaceModel {
     // including them here would generate a flood of irrelevant events.
     const rel = relative(this.root, absPath);
     if (rel === "" || rel === ".") return false;
-    // Forward-slash branch covers Windows, where `sep === '\\'` but chokidar
-    // occasionally hands us POSIX-style paths via the underlying `readdirp`.
-    // Cheap defensive check; collapses to the same condition on Linux.
+    // The `${sep}` branch is the native one: on Linux it matches a literal
+    // `.git/` prefix, on Windows (where `sep === '\\'`) it matches `.git\`.
+    // The explicit `.git/` branch is a cheap defensive check for the
+    // Windows-only case where chokidar occasionally hands us POSIX-style
+    // paths via the underlying `readdirp`; it's a no-op on Linux because
+    // `sep === '/'` already covered it.
     if (rel === ".git" || rel.startsWith(`.git${sep}`) || rel.startsWith(".git/")) {
       return true;
     }

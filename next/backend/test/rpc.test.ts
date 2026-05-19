@@ -358,6 +358,33 @@ describe("fs.listDir / fs.readFile contract", () => {
     expect(readme?.type).toBe("file");
   });
 
+  it("listDir handles ~200-entry directories without N+1 sequencing", async () => {
+    // Guards the parallel-fan-out shape of listDirAt. The assertion isn't
+    // a wall-clock measurement (flaky in CI); we just confirm every entry
+    // comes back named + kinded + ordered (dirs first, then files,
+    // alphabetical within each kind).
+    const opened = await call<{ workspace: { id: string } }>("workspace.open", {
+      root: repoDir,
+    });
+    const N = 200;
+    await Promise.all(
+      Array.from({ length: N }, (_, i) =>
+        writeWorkspaceFile(repoDir, `bulk-${String(i).padStart(4, "0")}.txt`, "x"),
+      ),
+    );
+    const ls = await call<{
+      entries: Array<{ name: string; kind: string; size?: number }>;
+    }>("fs.listDir", { workspaceId: opened.workspace.id, path: repoDir });
+    const bulk = ls.entries.filter((e) => e.name.startsWith("bulk-"));
+    expect(bulk.length).toBe(N);
+    // size populated → per-entry stat completed
+    expect(bulk.every((e) => e.size === 1)).toBe(true);
+    // Alphabetical ordering preserved despite concurrent stat completion.
+    const names = bulk.map((e) => e.name);
+    const sorted = [...names].sort();
+    expect(names).toEqual(sorted);
+  });
+
   it("readFile ifEtag match returns notModified true", async () => {
     const opened = await call<{ workspace: { id: string } }>("workspace.open", {
       root: repoDir,

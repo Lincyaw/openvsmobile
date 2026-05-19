@@ -286,6 +286,11 @@ export class TerminalRegistry {
         rows,
         cwd,
         env: process.env as { [key: string]: string },
+        // `encoding: null` tells node-pty to deliver raw bytes to onData
+        // instead of decoding UTF-8 with replacement chars at chunk
+        // boundaries. Scrollback must be byte-faithful so a multibyte
+        // sequence split across two reads replays correctly.
+        encoding: null,
       });
     } catch (err) {
       throw new RpcError(
@@ -428,6 +433,8 @@ export class TerminalRegistry {
           rows: entry.rows,
           cwd: entry.cwd,
           env: process.env as { [key: string]: string },
+          // See `create()` — byte-faithful scrollback requires raw Buffers.
+          encoding: null,
         },
       );
     } catch (err) {
@@ -466,8 +473,13 @@ export class TerminalRegistry {
       throw new Error("wirePtyListeners called on a non-live entry");
     }
     const id = entry.id;
-    pty.onData((d) => {
-      const chunk = Buffer.from(d, "utf8");
+    // With `encoding: null` in the spawn options, node-pty delivers raw
+    // Buffers here — but its public `IEvent<string>` type doesn't reflect
+    // that, so we cast the listener payload. Keeping the bytes raw is
+    // what makes the scrollback byte-faithful across multibyte UTF-8
+    // sequences that straddle read boundaries.
+    (pty.onData as unknown as (l: (d: Buffer) => void) => void)((d) => {
+      const chunk = d;
       if (chunk.length === 0) {
         // node-pty very rarely produces empty data events; if it does,
         // ScrollbackBuffer.append is a no-op and seqEnd stays put. Don't
@@ -512,7 +524,10 @@ export class TerminalRegistry {
     this.lazyAttachIfNeeded(entry);
     // entry.pty is non-null after a successful attach; the cast keeps
     // the type narrow without re-reading the field through `?.`.
-    (entry.pty as IPty).write(data.toString("utf8"));
+    // Pass the Buffer through unchanged — node-pty's `write` accepts
+    // `string | Buffer`, and skipping the round-trip avoids any UTF-8
+    // re-encoding artifacts on the input path.
+    (entry.pty as IPty).write(data);
   }
 
   public resize(id: string, cols: number, rows: number): void {
