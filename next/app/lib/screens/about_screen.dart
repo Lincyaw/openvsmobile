@@ -3,6 +3,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../ui/app_tokens.dart';
 import '../version.dart';
 
 class AboutScreen extends StatelessWidget {
@@ -18,10 +19,15 @@ class AboutScreen extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(title: const Text('About')),
       body: ListView(
-        padding: const EdgeInsets.symmetric(vertical: 8),
+        padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 24, 16, 16),
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.lg,
+              AppSpacing.xl,
+              AppSpacing.lg,
+              AppSpacing.lg,
+            ),
             child: Column(
               children: [
                 Icon(

@@ -261,8 +261,7 @@ class _PluginActionSheet extends StatelessWidget {
             title: const Text('Copy cd command'),
             subtitle: Text(
               '$_kFilesystemPluginsDir${info.id}',
-              style: AppText.mono(
-                fontSize: 12,
+              style: AppText.monoCaption(context).copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),
               maxLines: 1,
@@ -384,7 +383,7 @@ class _PluginsEmptyState extends StatelessWidget {
             Text(
               _kFilesystemPluginsDir,
               textAlign: TextAlign.center,
-              style: AppText.mono(fontSize: 13, color: scheme.onSurface),
+              style: AppText.monoCode(context).copyWith(color: scheme.onSurface),
             ),
           ],
         ),
@@ -453,8 +452,7 @@ class PluginInfoView extends StatelessWidget {
                       children: [
                         Text(
                           info.version,
-                          style: AppText.mono(
-                            fontSize: 12,
+                          style: AppText.monoCaption(context).copyWith(
                             color: theme.colorScheme.onSurfaceVariant,
                           ),
                         ),
@@ -532,8 +530,7 @@ class PluginInfoView extends StatelessWidget {
           const SizedBox(height: AppSpacing.xs),
           Text(
             '$_kFilesystemPluginsDir${info.id}/',
-            style: AppText.mono(
-              fontSize: 13,
+            style: AppText.monoCode(context).copyWith(
               color: theme.colorScheme.onSurface,
             ),
           ),

@@ -64,8 +64,18 @@ class HomeShell extends StatefulWidget {
   State<HomeShell> createState() => _HomeShellState();
 }
 
+/// Stable tab indices for the bottom-nav `IndexedStack`. The destinations
+/// list below is the source-of-truth ordering; the named indices below
+/// give the numeric values a meaning so jumps from non-tap code paths
+/// (e.g. the failed-connection banner's Settings button) read as intent
+/// rather than magic numbers. Only the indices we actually reference are
+/// listed; if a future code path needs Files / Terminal / Plugins by
+/// name, extend this block — don't reintroduce raw `0` / `1` / `2`.
+const int _kFilesTabIndex = 0;
+const int _kSettingsTabIndex = 3;
+
 class _HomeShellState extends State<HomeShell> {
-  int _tab = 0;
+  int _tab = _kFilesTabIndex;
 
   @override
   void initState() {
@@ -99,7 +109,7 @@ class _HomeShellState extends State<HomeShell> {
   void _openSettings() {
     // The failed-connection banner's "Settings" button: jump to the
     // Settings tab so the user can fix auth / backend issues from there.
-    setState(() => _tab = 3);
+    setState(() => _tab = _kSettingsTabIndex);
   }
 
   @override

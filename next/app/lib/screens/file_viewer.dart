@@ -11,8 +11,6 @@ import '../models.dart';
 import '../ui/app_tokens.dart';
 import '../ui/highlight_theme.dart';
 
-final _kCodeTextStyle = AppText.mono(fontSize: 14, height: 1.4);
-
 /// Files larger than this render as plain monospace text. Highlighting is
 /// synchronous and would block the UI thread for big files; pure
 /// `SelectableText` stays smooth and keeps the surface usable.
@@ -142,7 +140,7 @@ class FileViewerScreen extends StatelessWidget {
       body: content.isBinary
           ? Center(
               child: Padding(
-                padding: const EdgeInsets.all(24),
+                padding: const EdgeInsets.all(AppSpacing.xl),
                 child: Text(
                   'Binary file, ${content.bytes.length} bytes\n\n'
                   'Preview is not supported in this view.',
@@ -169,11 +167,29 @@ class _TextBody extends StatelessWidget {
     final text = utf8.decode(bytes, allowMalformed: true);
     final language = _languageForPath(path);
     final tooLargeToHighlight = bytes.length > _kHighlightMaxBytes;
+    final codeStyle = AppText.monoCode(context);
+
+    // TODO(structured-selection): CLAUDE.md §2 capability #3 calls for
+    // "structured selection (selection → context object a plugin can
+    // consume)". Today this view exposes a plain `SelectableText` /
+    // `SelectionArea` — the user can copy text to the clipboard, but
+    // nothing produces a typed `{path, range, language, text}` payload
+    // a plugin could subscribe to. When the plugin host lands, replace
+    // the `SelectableText` below with a wrapper that:
+    //   1. tracks the selected `TextRange` and the surrounding line
+    //      numbers (1-based, matching git/lsp expectations);
+    //   2. emits a typed `SelectionContext` event into the plugin event
+    //      bus so any plugin with the `selection` capability can act
+    //      on it (right-click "Explain this", "Find references", etc.);
+    //   3. clears the context on caret loss so plugins don't operate
+    //      on stale ranges.
+    // The same wrapper has to land in `diff_viewer.dart` so a selection
+    // inside a diff carries the new/old line ranges.
 
     if (language == null || tooLargeToHighlight) {
       return SingleChildScrollView(
-        padding: const EdgeInsets.all(12),
-        child: SelectableText(text, style: _kCodeTextStyle),
+        padding: const EdgeInsets.all(AppSpacing.md),
+        child: SelectableText(text, style: codeStyle),
       );
     }
 
@@ -185,8 +201,8 @@ class _TextBody extends StatelessWidget {
           text,
           language: language,
           theme: highlightThemeForBrightness(Theme.of(context).brightness),
-          padding: const EdgeInsets.all(12),
-          textStyle: _kCodeTextStyle,
+          padding: const EdgeInsets.all(AppSpacing.md),
+          textStyle: codeStyle,
         ),
       ),
     );

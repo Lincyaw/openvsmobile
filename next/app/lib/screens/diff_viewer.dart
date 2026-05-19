@@ -92,8 +92,8 @@ class _DiffViewerScreenState extends State<DiffViewerScreen> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   SizedBox(
-                    width: 18,
-                    height: 18,
+                    width: kSpinnerSm,
+                    height: kSpinnerSm,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   ),
                   SizedBox(height: AppSpacing.md),
@@ -241,32 +241,29 @@ class _DiffHeader extends StatelessWidget {
               path,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: AppText.mono(fontSize: 12),
+              style: AppText.monoCaption(context),
             ),
           ),
           Text(
             '+$adds',
-            style: AppText.mono(
+            style: AppText.monoCaption(context).copyWith(
               color: theme.colorScheme.tertiary,
               fontWeight: FontWeight.bold,
-              fontSize: 12,
             ),
           ),
           const SizedBox(width: AppSpacing.sm),
           Text(
             '-$dels',
-            style: AppText.mono(
+            style: AppText.monoCaption(context).copyWith(
               color: theme.colorScheme.error,
               fontWeight: FontWeight.bold,
-              fontSize: 12,
             ),
           ),
           const SizedBox(width: AppSpacing.sm),
           Text(
             'vs HEAD',
-            style: TextStyle(
+            style: theme.textTheme.labelSmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
-              fontSize: 12,
             ),
           ),
         ],
@@ -301,8 +298,7 @@ class _HunkCard extends StatelessWidget {
             child: Text(
               '@@ -${hunk.oldStart},${hunk.oldLines} '
               '+${hunk.newStart},${hunk.newLines} @@',
-              style: AppText.mono(
-                fontSize: 11,
+              style: AppText.monoCaption(context).copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),
             ),
@@ -355,21 +351,24 @@ class _DiffLineRow extends StatelessWidget {
             width: AppSpacing.md,
             child: Text(
               marker,
-              style: AppText.mono(
-                color: fg,
-                fontSize: 12,
-              ),
+              style: AppText.monoCode(context).copyWith(color: fg),
             ),
           ),
           const SizedBox(width: AppSpacing.xs),
+          // TODO(structured-selection): mirrors the comment in
+          // file_viewer.dart. CLAUDE.md §2 capability #3 wants selection
+          // to surface as a typed context object (path + new/old line
+          // ranges in a diff) the plugin host can route to subscribers.
+          // Today this is a plain `SelectableText` so a long-press only
+          // copies to the clipboard. When the plugin host lands, swap
+          // in the same wrapper as the file viewer and have it carry
+          // both old/new line numbers (mapping from the hunk header)
+          // so a plugin can build "blame this added line" / "look up
+          // the deleted line in HEAD" UX without re-parsing the diff.
           Expanded(
             child: SelectableText(
               line.text,
-              style: AppText.mono(
-                color: fg,
-                fontSize: 12,
-                height: 1.35,
-              ),
+              style: AppText.monoCode(context).copyWith(color: fg),
             ),
           ),
         ],
@@ -392,9 +391,8 @@ class _GapStrip extends StatelessWidget {
       alignment: Alignment.center,
       child: Text(
         '… $unchanged unchanged line${unchanged == 1 ? '' : 's'} …',
-        style: AppText.mono(
+        style: AppText.monoCaption(context).copyWith(
           color: theme.colorScheme.onSurfaceVariant,
-          fontSize: 11,
         ),
       ),
     );
@@ -427,8 +425,7 @@ class _DiffPlaceholder extends StatelessWidget {
               children: [
                 Text(
                   path,
-                  style: AppText.mono(
-                    fontSize: 12,
+                  style: AppText.monoCaption(context).copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
                 ),
@@ -467,9 +464,8 @@ class _DiffErrorView extends StatelessWidget {
             const SizedBox(height: AppSpacing.sm),
             Text(
               message,
-              style: TextStyle(
+              style: theme.textTheme.labelSmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
-                fontSize: 12,
               ),
               textAlign: TextAlign.center,
             ),

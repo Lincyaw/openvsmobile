@@ -87,7 +87,10 @@ class _WorkspacePickerScreenState extends State<WorkspacePickerScreen> {
       body: Column(
         children: [
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.md,
+              vertical: AppSpacing.sm,
+            ),
             color: theme.colorScheme.surfaceContainerHighest,
             child: Row(
               children: [
@@ -111,7 +114,7 @@ class _WorkspacePickerScreenState extends State<WorkspacePickerScreen> {
           ),
           if (error != null)
             Padding(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(AppSpacing.md),
               child: Text(error,
                   style: TextStyle(color: theme.colorScheme.error)),
             ),
@@ -151,7 +154,7 @@ class _WorkspacePickerScreenState extends State<WorkspacePickerScreen> {
           SafeArea(
             top: false,
             child: Padding(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(AppSpacing.md),
               child: SizedBox(
                 width: double.infinity,
                 child: FilledButton.icon(
