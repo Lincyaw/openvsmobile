@@ -68,6 +68,13 @@ export class PluginProcess {
   /// Resolves the first time `onExit` fires. Lets `terminate()` callers
   /// block on the actual exit instead of racing the kernel.
   private exitWaiters: Array<() => void> = [];
+  /// Stdin backpressure state. `stdinPaused` flips true the first time
+  /// `write()` returns false; the next `drain` flips it back. Queued
+  /// frames accumulate in `stdinQueue` (and their byte total in
+  /// `stdinQueueBytes` so we don't traverse on every push).
+  private stdinPaused = false;
+  private stdinQueue: Buffer[] = [];
+  private stdinQueueBytes = 0;
 
   constructor(opts: PluginProcessOptions) {
     this.manifest = opts.manifest;
@@ -128,21 +135,56 @@ export class PluginProcess {
     this.child = spawn(command, args, {
       cwd: this.dir,
       stdio: ["pipe", "pipe", "pipe"],
-      // Inherit the host's env. v0 doesn't sandbox env vars — that's a
-      // §3.5 capability concern we'll revisit. Plugins should not be
-      // depending on host env in v0 anyway.
-      env: process.env,
+      // Explicit env whitelist (see `buildPluginEnv`). Plugins inherit
+      // ONLY what they need to behave like a normal process (locale,
+      // home, shell) plus the `OPENVSMOBILE_PLUGIN_*` channel the SDK
+      // loader reads. Everything else — and in particular any
+      // host-side TOKEN/SECRET/API_KEY/PASSWORD — is stripped so a
+      // plugin that calls `child_process` or reads env at startup
+      // can't trivially exfiltrate host credentials.
+      env: buildPluginEnv(),
     });
     this.wireStreams();
   }
 
   /// Send a JSON-RPC message to the plugin. Drops silently if the child
   /// has exited — the host's exit handler will surface the loss.
+  ///
+  /// Tracks per-plugin stdin backpressure: when the kernel pipe fills
+  /// up (`stdin.write()` returns false) we stop scheduling further
+  /// writes until the `drain` event fires, then flush whatever queued
+  /// up. If the queued bytes ever exceed `STDIN_HIGH_WATER_MARK_BYTES`
+  /// (16 MiB) we treat the plugin as wedged and terminate it — a
+  /// runaway plugin that never reads its stdin must not be allowed to
+  /// grow the host's RSS without bound.
   public send(message: object): void {
     if (this.child === null || this.exited) return;
     const stdin = this.child.stdin;
     if (stdin === null || stdin.destroyed) return;
-    stdin.write(this.codec.encode(message));
+    const frame = this.codec.encode(message);
+    // Fast path: pipe has room AND no queued frames waiting on drain.
+    if (!this.stdinPaused && this.stdinQueue.length === 0) {
+      const ok = stdin.write(frame);
+      if (!ok) this.stdinPaused = true;
+      return;
+    }
+    // Slow path: queue and account.
+    this.stdinQueue.push(frame);
+    this.stdinQueueBytes += frame.length;
+    if (this.stdinQueueBytes > STDIN_HIGH_WATER_MARK_BYTES) {
+      this.logger(
+        `[plugin:${this.manifest.id}] stdin backpressure overflow (${this.stdinQueueBytes} bytes queued); terminating`,
+      );
+      // Drop the queue first so a kill cycle doesn't keep paying RSS
+      // for buffers we will never flush.
+      this.stdinQueue = [];
+      this.stdinQueueBytes = 0;
+      try {
+        this.child?.kill("SIGKILL");
+      } catch {
+        // best-effort — kernel may have already torn the child down.
+      }
+    }
   }
 
   /// Force-terminate the plugin. Used at host shutdown. We send SIGTERM
@@ -212,6 +254,14 @@ export class PluginProcess {
   private wireStreams(): void {
     const child = this.child;
     if (child === null) return;
+    const stdin = child.stdin;
+    if (stdin !== null) {
+      stdin.on("drain", () => this.flushStdinQueue());
+      // Silently swallow EPIPE — the plugin exited and the kernel
+      // dropped the pipe. The `exit` event below will fire and let
+      // the host transition state cleanly.
+      stdin.on("error", () => {});
+    }
     const stdout = child.stdout;
     if (stdout !== null) {
       stdout.on("data", (chunk: Buffer) => this.codec.push(chunk));
@@ -229,6 +279,34 @@ export class PluginProcess {
     child.on("exit", (code, signal) => {
       this.markExited(code, signal);
     });
+  }
+
+  /// Drain handler. Called when the kernel pipe has room again. Flushes
+  /// queued frames until either the queue is empty or `write()` returns
+  /// false again (in which case we leave the remainder queued for the
+  /// next drain).
+  private flushStdinQueue(): void {
+    this.stdinPaused = false;
+    if (this.child === null || this.exited) {
+      this.stdinQueue = [];
+      this.stdinQueueBytes = 0;
+      return;
+    }
+    const stdin = this.child.stdin;
+    if (stdin === null || stdin.destroyed) {
+      this.stdinQueue = [];
+      this.stdinQueueBytes = 0;
+      return;
+    }
+    while (this.stdinQueue.length > 0) {
+      const frame = this.stdinQueue.shift() as Buffer;
+      this.stdinQueueBytes -= frame.length;
+      const ok = stdin.write(frame);
+      if (!ok) {
+        this.stdinPaused = true;
+        return;
+      }
+    }
   }
 
   private markExited(
@@ -260,6 +338,51 @@ export class PluginProcess {
     }
     void this.onMessage(this, msg);
   }
+}
+
+/// Stdin backpressure budget. A plugin that wedges and never reads its
+/// stdin would otherwise let the host's queued-frame buffer grow until
+/// the host OOMs. 16 MiB matches the inbound frame cap in `framing.ts`
+/// — symmetric default for both directions.
+const STDIN_HIGH_WATER_MARK_BYTES = 16 * 1024 * 1024;
+
+/// Build the env a plugin child inherits. We deliberately do NOT pass
+/// `process.env` through — a single-user system still benefits from
+/// keeping host credentials out of every plugin's reach. The shape is:
+///
+///   * Pass through a small set of "behave like a normal process"
+///     variables: PATH, HOME, LANG, LC_ALL, TZ, TMPDIR, USER, SHELL.
+///   * Pass through `OPENVSMOBILE_PLUGIN_*` (the channel the SDK
+///     loader uses for per-plugin state, e.g.
+///     OPENVSMOBILE_PLUGIN_STATE_FILE).
+///   * Strip everything else, with a final regex sweep that removes
+///     anything matching /TOKEN|SECRET|API_KEY|PASSWORD/i in case the
+///     whitelist later picks up a key whose value the host considers
+///     sensitive.
+function buildPluginEnv(): NodeJS.ProcessEnv {
+  const passthrough = [
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "TZ",
+    "TMPDIR",
+    "USER",
+    "SHELL",
+  ];
+  const sensitive = /TOKEN|SECRET|API_KEY|PASSWORD/i;
+  const out: NodeJS.ProcessEnv = {};
+  for (const key of passthrough) {
+    const v = process.env[key];
+    if (v !== undefined && !sensitive.test(key)) out[key] = v;
+  }
+  for (const key of Object.keys(process.env)) {
+    if (!key.startsWith("OPENVSMOBILE_PLUGIN_")) continue;
+    if (sensitive.test(key)) continue;
+    const v = process.env[key];
+    if (v !== undefined) out[key] = v;
+  }
+  return out;
 }
 
 /// Cached `file://` URL of the SDK loader hook. `null` means the SDK

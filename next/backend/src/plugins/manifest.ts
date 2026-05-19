@@ -225,6 +225,13 @@ function parseEntry(v: unknown): ManifestEntry {
   return { kind, path };
 }
 
+/// Validate a single activation event against the documented grammar:
+///   * `onStartup` (literal)
+///   * `onCommand:<id>` where `<id>` is the contributed command id
+///   * `onFileType:<ext>` where `<ext>` is a non-empty extension
+/// Anything else is rejected with a manifest parse error. The grammar
+/// is intentionally narrow — if a future activation event lands, widen
+/// this function rather than letting arbitrary strings through.
 function parseActivation(v: unknown): string[] {
   if (v === undefined || v === null) return [];
   if (!Array.isArray(v)) {
@@ -235,9 +242,31 @@ function parseActivation(v: unknown): string[] {
     if (typeof item !== "string" || item.length === 0) {
       throw new ManifestError(`activation entries must be non-empty strings`);
     }
+    validateActivationEvent(item);
     out.push(item);
   }
   return out;
+}
+
+function validateActivationEvent(event: string): void {
+  if (event === "onStartup") return;
+  const colon = event.indexOf(":");
+  if (colon === -1) {
+    throw new ManifestError(
+      `activation event "${event}" is not recognized; expected "onStartup" | "onCommand:<id>" | "onFileType:<ext>"`,
+    );
+  }
+  const prefix = event.substring(0, colon);
+  const suffix = event.substring(colon + 1);
+  if (suffix.length === 0) {
+    throw new ManifestError(
+      `activation event "${event}" has an empty argument after ":"`,
+    );
+  }
+  if (prefix === "onCommand" || prefix === "onFileType") return;
+  throw new ManifestError(
+    `activation event "${event}" is not recognized; expected "onStartup" | "onCommand:<id>" | "onFileType:<ext>"`,
+  );
 }
 
 function parseCapabilities(

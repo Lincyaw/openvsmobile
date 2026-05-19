@@ -87,6 +87,22 @@ describe("FrameCodec", () => {
     expect(out.toString("utf8")).toBe('{"jsonrpc":"2.0","method":"x"}\n');
   });
 
+  it("rejects an oversize Content-Length without consuming the would-be body", () => {
+    const { codec, messages, framingErrors } = collect();
+    // 32 MiB header — well past the 16 MiB MAX_FRAME_SIZE default.
+    const giant = 32 * 1024 * 1024;
+    codec.push(Buffer.from(`Content-Length: ${giant}\r\n\r\n`, "utf8"));
+    expect(framingErrors.length).toBe(1);
+    expect(framingErrors[0]).toContain("exceeds maximum");
+    // After the reject the codec is back to header-seeking and a
+    // subsequent valid frame must parse normally.
+    const body = '{"jsonrpc":"2.0","method":"after"}';
+    codec.push(
+      Buffer.from(`Content-Length: ${body.length}\r\n\r\n${body}`, "utf8"),
+    );
+    expect(messages).toEqual([{ jsonrpc: "2.0", method: "after" }]);
+  });
+
   it("surfaces a framing error on a non-JSON body without breaking the channel", () => {
     const { codec, messages, framingErrors } = collect();
     codec.push(Buffer.from("not json\n", "utf8"));

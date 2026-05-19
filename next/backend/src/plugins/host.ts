@@ -202,13 +202,20 @@ export class PluginHostError extends Error {
   }
 }
 
-/// Capability key required by a method namespace. Methods under `host.*`
-/// require no capability (the host log is intentionally always
-/// available). Anything else maps to a key in the manifest's
-/// `capabilities` block; an unrecognized namespace also maps to "no
-/// capability satisfies this", which the gate translates to
-/// `-32011 capabilityNotDeclared`.
-function requiredCapability(method: string): keyof ManifestCapabilities | null {
+/// Capability key required by a method namespace.
+///
+///   * A `keyof ManifestCapabilities` value names a manifest key the
+///     plugin must have declared.
+///   * `null` means "no capability needed" — currently only `host.*`,
+///     where the host log is intentionally always available.
+///   * `"deny"` means "no capability can satisfy this method". Used for
+///     unknown namespaces so a typo'd or unimplemented namespace doesn't
+///     accidentally pass the gate just because the plugin happened to
+///     declare some capability. The gate translates `"deny"` to
+///     `-32011 capabilityNotDeclared`.
+export type CapabilityRequirement = keyof ManifestCapabilities | "deny" | null;
+
+function requiredCapability(method: string): CapabilityRequirement {
   // host.* — uncategorized, always allowed.
   if (method.startsWith("host.")) return null;
   // The plugin-side API surface from §3.6. The map below is the
@@ -216,21 +223,28 @@ function requiredCapability(method: string): keyof ManifestCapabilities | null {
   // namespace"; widen here when a new host RPC lands.
   if (method.startsWith("fs.") || method.startsWith("workspace.")) return "fs";
   if (method.startsWith("terminal.")) return "terminal";
-  if (method.startsWith("git.")) return "fs";
+  // NOTE: `git.*` is intentionally NOT mapped. v0 git is read-only and
+  // not implemented at the host yet; when it lands, the author must
+  // make an explicit decision about which capability gates it
+  // (probably `fs`, but possibly its own key) and add the entry here.
+  // Until then, unknown-namespace `"deny"` applies.
   if (method.startsWith("network.")) return "network";
   if (method.startsWith("secrets.")) return "secrets";
   if (method.startsWith("ui.") || method.startsWith("notify.")) return "ui";
-  // Unknown namespace → no capability key satisfies it. Treat the same
-  // as "not declared" so misuse from a plugin author surfaces clearly.
-  return "fs";
+  // Unknown namespace → no capability key satisfies it. Return the
+  // explicit `"deny"` sentinel so the gate refuses the call instead of
+  // falling back to a permissive default.
+  return "deny";
 }
 
 function pluginHasCapability(
   caps: ManifestCapabilities,
-  key: keyof ManifestCapabilities,
+  requirement: CapabilityRequirement,
 ): boolean {
-  if (key === "fs") return caps.fs === "read" || caps.fs === "readwrite";
-  return caps[key] === true;
+  if (requirement === null) return true;
+  if (requirement === "deny") return false;
+  if (requirement === "fs") return caps.fs === "read" || caps.fs === "readwrite";
+  return caps[requirement] === true;
 }
 
 /// Internal → wire-state collapse. The frontend only needs the four
@@ -248,6 +262,11 @@ function toWireState(state: PluginState): WirePluginState {
     case "errored":
       return "crashed";
   }
+}
+
+interface HostMethodEntry {
+  capability: CapabilityRequirement;
+  handler: (plugin: PluginProcess, params: unknown) => Promise<unknown>;
 }
 
 interface PendingInvoke {
@@ -384,17 +403,31 @@ export class PluginHost {
     }
   }
 
-  /// Tear every plugin process down. Best-effort; we send SIGTERM and
-  /// move on. Called from the backend's shutdown handler.
-  public shutdown(): void {
+  /// Tear every plugin process down. Sends SIGTERM and escalates to
+  /// SIGKILL after `killGraceMs` so a wedged plugin doesn't block
+  /// backend shutdown. Called from the backend's shutdown handler.
+  ///
+  /// Returns a promise that resolves once every child has actually
+  /// exited. Synchronous callers (signal handlers) may fire-and-forget
+  /// — the inner termination is still scheduled.
+  public async shutdown(): Promise<void> {
     for (const [, pending] of this.pendingInvokes) {
       clearTimeout(pending.timer);
       pending.reject(new Error("backend shutting down"));
     }
     this.pendingInvokes.clear();
+    const pending: Promise<void>[] = [];
     for (const entry of this.plugins.values()) {
-      if (entry.process !== undefined) entry.process.kill();
+      if (entry.process !== undefined) {
+        // Reuse the same SIGTERM-then-SIGKILL escalation the disable
+        // path uses, so shutdown can't hang on an uncooperative
+        // plugin. We don't flip state to `disabled` here — the
+        // process is exiting because the backend is, not because the
+        // user disabled the plugin.
+        pending.push(entry.process.terminate(this.killGraceMs));
+      }
     }
+    await Promise.all(pending);
   }
 
   /// Walk the plugins directory. Each direct child that contains a
@@ -628,6 +661,18 @@ export class PluginHost {
       );
       return;
     }
+    // Cross-plugin spoofing guard: outbound ids are minted from a single
+    // monotonic counter shared across every plugin, so plugin B could in
+    // principle observe (via leaked logs, timing, or a malicious SDK
+    // fork) plugin A's pending id and respond to it. Drop the response
+    // — do NOT resolve plugin A's promise — and leave the pending entry
+    // in place so the legitimate response (or timeout) still lands.
+    if (pending.pluginId !== plugin.manifest.id) {
+      this.logger(
+        `[plugin:${plugin.manifest.id}] discarding response for id ${id}: belongs to plugin "${pending.pluginId}"`,
+      );
+      return;
+    }
     clearTimeout(pending.timer);
     this.pendingInvokes.delete(id);
     if (msg.error !== undefined) {
@@ -650,20 +695,31 @@ export class PluginHost {
     const method = msg.method;
     if (typeof method !== "string") return; // already filtered, kept for narrowing
     // Capability gate first. The conventions doc is explicit: capability
-    // gating is centralized, not scattered through handlers.
-    const required = requiredCapability(method);
-    if (
-      required !== null &&
-      !pluginHasCapability(plugin.manifest.capabilities, required)
-    ) {
+    // gating is centralized, not scattered through handlers. The host
+    // method table (`HOST_METHODS`) is the source of truth for declared
+    // methods; unknown namespaces fall back to `requiredCapability`,
+    // which returns `"deny"` so the gate refuses the call.
+    const tableEntry = this.hostMethods.get(method);
+    const required: CapabilityRequirement =
+      tableEntry !== undefined
+        ? tableEntry.capability
+        : requiredCapability(method);
+    if (!pluginHasCapability(plugin.manifest.capabilities, required)) {
+      const label =
+        required === "deny" ? `unknown namespace` : `capability "${required}"`;
       this.respond(plugin, msg.id, {
         code: RPC_ERR.capabilityNotDeclared,
-        message: `capabilityNotDeclared: ${method} requires capability "${required}"`,
+        message: `capabilityNotDeclared: ${method} requires ${label}`,
       });
       return;
     }
     try {
-      const result = await this.callHostMethod(plugin, method, msg.params);
+      const result = await this.callHostMethod(
+        plugin,
+        method,
+        msg.params,
+        tableEntry,
+      );
       this.respond(plugin, msg.id, undefined, result);
     } catch (err) {
       const code =
@@ -689,52 +745,79 @@ export class PluginHost {
     }
   }
 
-  /// The actual host-method table. v0 has `host.log` and `ui.render`.
-  /// Adding methods here without also widening `requiredCapability`
-  /// would let plugins bypass the gate, so the two must move together.
-  private async callHostMethod(
-    plugin: PluginProcess,
-    method: string,
-    params: unknown,
-  ): Promise<unknown> {
-    if (method === "host.log") {
-      this.handleHostLog(plugin.manifest.id, params);
-      return {};
-    }
-    if (method === "ui.render") {
-      await this.handleUiRender(plugin, params);
-      return {};
-    }
-    if (method === "ui.showAlert") {
-      return await this.handleShowAlert(plugin, params);
-    }
-    if (method === "ui.showActionSheet") {
-      return await this.handleShowActionSheet(plugin, params);
-    }
-    if (method === "ui.showBottomSheet") {
-      return await this.handleShowBottomSheet(plugin, params);
-    }
-    if (method === "workspace.current") {
+  /// Single source of truth for host-method dispatch. Each row pairs a
+  /// `CapabilityRequirement` with a handler — `dispatchPluginRequest`
+  /// reads BOTH from this map. There is no separate `if (method === …)`
+  /// ladder, so adding a method here cannot fall out of sync with the
+  /// capability gate by construction.
+  ///
+  /// The table is populated lazily in `ensureHostMethods()` because
+  /// arrow-handler references to `this.*` are bound only after
+  /// construction.
+  private hostMethodsCache: Map<string, HostMethodEntry> | null = null;
+  private get hostMethods(): Map<string, HostMethodEntry> {
+    if (this.hostMethodsCache !== null) return this.hostMethodsCache;
+    const t = new Map<string, HostMethodEntry>();
+    t.set("host.log", {
+      capability: null,
+      handler: async (plugin, params) => {
+        this.handleHostLog(plugin.manifest.id, params);
+        return {};
+      },
+    });
+    t.set("ui.render", {
+      capability: "ui",
+      handler: async (plugin, params) => {
+        await this.handleUiRender(plugin, params);
+        return {};
+      },
+    });
+    t.set("ui.showAlert", {
+      capability: "ui",
+      handler: (plugin, params) => this.handleShowAlert(plugin, params),
+    });
+    t.set("ui.showActionSheet", {
+      capability: "ui",
+      handler: (plugin, params) => this.handleShowActionSheet(plugin, params),
+    });
+    t.set("ui.showBottomSheet", {
+      capability: "ui",
+      handler: (plugin, params) => this.handleShowBottomSheet(plugin, params),
+    });
+    t.set("workspace.current", {
       // Plugin-side analogue of the frontend's `workspace.current` RPC:
       // a content-free request that returns the active workspace
       // (`{ workspace: WorkspaceRef | null }`) so a repo-aware plugin
       // can do an initial read without waiting for the first
-      // `workspace.activated` notification. Capability gating
-      // (`fs` via `workspace.*` namespace map) has already run upstream.
-      return { workspace: this.workspaceResolver() };
-    }
-    if (method === "notify.show") {
-      return this.handleNotifyShow(plugin, params);
+      // `workspace.activated` notification.
+      capability: "fs",
+      handler: async () => ({ workspace: this.workspaceResolver() }),
+    });
+    t.set("notify.show", {
+      capability: "ui",
+      handler: async (plugin, params) => this.handleNotifyShow(plugin, params),
+    });
+    this.hostMethodsCache = t;
+    return t;
+  }
+
+  private async callHostMethod(
+    plugin: PluginProcess,
+    method: string,
+    params: unknown,
+    tableEntry: HostMethodEntry | undefined,
+  ): Promise<unknown> {
+    if (tableEntry !== undefined) {
+      return await tableEntry.handler(plugin, params);
     }
     // Capability passed, but the method itself doesn't exist yet.
     // Surface as methodNotFound so a plugin author has a clear signal
     // that they declared a capability but the host hasn't wired the
     // corresponding API in this build.
-    const err = new Error(`unknown host method: ${method}`) as Error & {
-      code: number;
-    };
-    err.code = RPC_ERR.methodNotFound;
-    throw err;
+    throw new RpcError(
+      RPC_ERR.methodNotFound,
+      `unknown host method: ${method}`,
+    );
   }
 
   private handleHostLog(pluginId: string, params: unknown): void {
@@ -1241,29 +1324,26 @@ export class PluginHost {
   }): void {
     const entry = this.plugins.get(params.pluginId);
     if (entry === undefined) {
-      const err = new Error(
+      throw new RpcError(
+        RPC_ERR.invalidParams,
         `ui.event: no such plugin "${params.pluginId}"`,
-      ) as Error & { code: number };
-      err.code = RPC_ERR.invalidParams;
-      throw err;
+      );
     }
     if (entry.state !== "active" || entry.process === undefined) {
-      const err = new Error(
+      throw new RpcError(
+        RPC_ERR.invalidParams,
         `ui.event: plugin "${params.pluginId}" is not active (${entry.state})`,
-      ) as Error & { code: number };
-      err.code = RPC_ERR.invalidParams;
-      throw err;
+      );
     }
     // Mirror the capability gate the host applies to plugin-initiated
     // calls: a plugin that never declared `ui` cannot be the target of a
     // host→plugin `ui.event` either. Without this an app could push events
     // at a non-UI plugin and bypass the manifest's `capabilities` contract.
     if (entry.manifest.capabilities.ui !== true) {
-      const err = new Error(
+      throw new RpcError(
+        RPC_ERR.capabilityNotDeclared,
         `ui.event: plugin "${params.pluginId}" did not declare the "ui" capability`,
-      ) as Error & { code: number };
-      err.code = RPC_ERR.capabilityNotDeclared;
-      throw err;
+      );
     }
     const outboundParams: Record<string, unknown> = {
       pluginId: params.pluginId,

@@ -523,6 +523,244 @@ setTimeout(() => {}, 60_000);
     }
   });
 
+  it("an unknown namespace is denied by the capability gate with -32011", async () => {
+    // Build a plugin that calls `mystery.doThing` — a namespace the host
+    // doesn't know about. Even though the plugin declares every
+    // capability the manifest schema knows, the gate must refuse the
+    // call because no capability satisfies an unknown namespace
+    // (`requiredCapability` returns the explicit "deny" sentinel).
+    if (staging === null) throw new Error("staging dir not set up");
+    const pluginsDir = join(staging, "plugins");
+    const logDir = join(staging, "logs");
+    await mkdir(join(pluginsDir, "unknownns"), { recursive: true });
+    await mkdir(logDir, { recursive: true });
+    await writeFile(
+      join(pluginsDir, "unknownns", "plugin.json"),
+      JSON.stringify({
+        id: "unknownns",
+        name: "Unknown-namespace fixture",
+        version: "0.0.1",
+        entry: { kind: "node", path: "index.js" },
+        activation: ["onStartup"],
+        // Declare everything the manifest schema knows — none of these
+        // should satisfy the unknown namespace.
+        capabilities: {
+          fs: "readwrite",
+          terminal: true,
+          network: true,
+          secrets: true,
+          ui: true,
+        },
+      }),
+    );
+    await writeFile(
+      join(pluginsDir, "unknownns", "index.js"),
+      `
+process.stdout.write(
+  JSON.stringify({
+    jsonrpc: "2.0",
+    id: 42,
+    method: "mystery.doThing",
+    params: {},
+  }) + "\\n",
+);
+let buffer = Buffer.alloc(0);
+process.stdin.on("data", (chunk) => {
+  buffer = Buffer.concat([buffer, chunk]);
+  while (true) {
+    const nl = buffer.indexOf(0x0a);
+    if (nl === -1) return;
+    let line = buffer.subarray(0, nl);
+    buffer = buffer.subarray(nl + 1);
+    if (line.length > 0 && line[line.length - 1] === 0x0d) {
+      line = line.subarray(0, line.length - 1);
+    }
+    if (line.length === 0) continue;
+    process.stderr.write("<<RX>>" + line.toString("utf8") + "<<END>>\\n");
+  }
+});
+setTimeout(() => {}, 60_000);
+`,
+    );
+    const host = new PluginHost({
+      pluginsDir,
+      logDir,
+      logger: () => {},
+      onHostLog: () => {},
+    });
+    await host.start();
+    try {
+      const logPath = join(logDir, "unknownns.stderr.log");
+      const reply = await waitFor(async () => {
+        let raw: string;
+        try {
+          raw = await readFile(logPath, "utf8");
+        } catch {
+          return undefined;
+        }
+        const all = [...raw.matchAll(/<<RX>>(.*?)<<END>>/gs)];
+        for (const m of all) {
+          const body = JSON.parse(m[1] as string) as {
+            id?: number;
+            error?: { code?: number; message?: string };
+          };
+          if (body.id === 42 && body.error !== undefined) return body;
+        }
+        return undefined;
+      }, 2000);
+      expect(reply.error?.code).toBe(-32011);
+      expect(String(reply.error?.message)).toContain("capabilityNotDeclared");
+    } finally {
+      host.shutdown();
+    }
+  });
+
+  it("handlePluginResponse drops cross-plugin id collisions instead of resolving", async () => {
+    // Plugin B sending a response carrying plugin A's outbound id must
+    // not satisfy A's awaiter. Setup:
+    //   * `cmd` (legitimate target) — echoes back command.invoke.
+    //   * `thief` — waits ~250ms (long enough for the test to issue
+    //     `invokeCommand("cmd", …)`, which mints outbound id 1 and
+    //     registers a pending entry against pluginId "cmd"), then
+    //     emits a forged response carrying id 1 with `stolen: true`.
+    // If the host resolved purely by id, `invokeCommand` would settle
+    // with `{ stolen: true }`. With the cross-check it must settle
+    // with `cmd`'s real echo payload and the diagnostic log must
+    // contain a "belongs to plugin" notice.
+    if (staging === null) throw new Error("staging dir not set up");
+    const pluginsDir = join(staging, "plugins");
+    const logDir = join(staging, "logs");
+    await mkdir(logDir, { recursive: true });
+    // Slow-echo target: contributes `slow.echo` and responds to
+    // command.invoke after a 400 ms delay, giving the thief a window
+    // to fire its forged response while id 1 is still pending.
+    await mkdir(join(pluginsDir, "slowtarget"), { recursive: true });
+    await writeFile(
+      join(pluginsDir, "slowtarget", "plugin.json"),
+      JSON.stringify({
+        id: "slowtarget",
+        name: "Slow target fixture",
+        version: "0.0.1",
+        entry: { kind: "node", path: "index.js" },
+        activation: ["onStartup"],
+        capabilities: {},
+        contributes: {
+          commands: [{ id: "slow.echo", title: "Slow echo" }],
+        },
+      }),
+    );
+    await writeFile(
+      join(pluginsDir, "slowtarget", "index.js"),
+      `
+// Emit a startup notification so the host's FrameCodec flips to
+// newline mode before any inbound frame arrives.
+process.stdout.write(
+  JSON.stringify({
+    jsonrpc: "2.0",
+    method: "host.log",
+    params: { level: "info", msg: "slowtarget-ready" },
+  }) + "\\n",
+);
+let buffer = Buffer.alloc(0);
+process.stdin.on("data", (chunk) => {
+  buffer = Buffer.concat([buffer, chunk]);
+  while (true) {
+    const nl = buffer.indexOf(0x0a);
+    if (nl === -1) return;
+    const line = buffer.subarray(0, nl).toString("utf8");
+    buffer = buffer.subarray(nl + 1);
+    if (line.length === 0) continue;
+    let msg;
+    try { msg = JSON.parse(line); } catch { continue; }
+    if (msg.method === "command.invoke" && msg.id !== undefined) {
+      const captured = msg;
+      setTimeout(() => {
+        process.stdout.write(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: captured.id,
+            result: { echoed: captured.params && captured.params.args },
+          }) + "\\n",
+        );
+      }, 400);
+    }
+  }
+});
+setTimeout(() => {}, 60_000);
+`,
+    );
+    await mkdir(join(pluginsDir, "thief"), { recursive: true });
+    await writeFile(
+      join(pluginsDir, "thief", "plugin.json"),
+      JSON.stringify({
+        id: "thief",
+        name: "Thief fixture",
+        version: "0.0.1",
+        entry: { kind: "node", path: "index.js" },
+        activation: ["onStartup"],
+        capabilities: {},
+      }),
+    );
+    await writeFile(
+      join(pluginsDir, "thief", "index.js"),
+      `
+setTimeout(() => {
+  process.stdout.write(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      result: { stolen: true },
+    }) + "\\n",
+  );
+}, 80);
+setTimeout(() => {}, 60_000);
+`,
+    );
+    const diagnostics: string[] = [];
+    const hostLogs: HostLogEntry[] = [];
+    const host = new PluginHost({
+      pluginsDir,
+      logDir,
+      logger: (line) => diagnostics.push(line),
+      onHostLog: (entry) => hostLogs.push(entry),
+    });
+    await host.start();
+    try {
+      // Wait for slowtarget's startup log so we know the codec has
+      // flipped to newline mode before the invoke sends a frame.
+      await waitFor(
+        () =>
+          hostLogs.find((e) => e.pluginId === "slowtarget") !== undefined
+            ? true
+            : undefined,
+        2000,
+      );
+      // Issue the legitimate invoke immediately so id 1 is pending
+      // before the thief's forged response arrives.
+      const invokePromise = host.invokeCommand(
+        "slowtarget",
+        "slow.echo",
+        { ping: "pong" },
+      );
+      const result = (await invokePromise) as { echoed?: unknown };
+      // Real echo, not the forged stolen result.
+      expect((result as Record<string, unknown>).stolen).toBeUndefined();
+      expect((result as { echoed?: unknown }).echoed).toEqual({ ping: "pong" });
+      // The diagnostic log must show the cross-plugin rejection. Give
+      // the thief a moment in case its forged frame trailed the real
+      // response.
+      await sleep(100);
+      const hit = diagnostics.find(
+        (d) =>
+          d.includes("[plugin:thief]") &&
+          d.includes("belongs to plugin"),
+      );
+      expect(hit).toBeDefined();
+    } finally {
+      host.shutdown();
+    }
+  });
+
   it("env var OPENVSMOBILE_PLUGINS_DIR overrides the discovery root", () => {
     const previous = process.env.OPENVSMOBILE_PLUGINS_DIR;
     process.env.OPENVSMOBILE_PLUGINS_DIR = "/tmp/openvsmobile-test-marker";
