@@ -265,7 +265,7 @@ class _SessionTile extends StatelessWidget {
                           // font so they read as terminal artefacts, not
                           // chat-room titles.
                           style: AppText.mono(
-                            fontSize: 15,
+                            fontSize: theme.textTheme.bodyMedium?.fontSize,
                             fontWeight: FontWeight.w500,
                           ),
                           overflow: TextOverflow.ellipsis,
@@ -276,7 +276,9 @@ class _SessionTile extends StatelessWidget {
                           padding: const EdgeInsets.only(left: AppSpacing.sm),
                           child: Text(
                             cwdBasename,
-                            style: TextStyle(fontSize: 12, color: dim),
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: dim,
+                            ),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
@@ -288,7 +290,7 @@ class _SessionTile extends StatelessWidget {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: AppText.mono(
-                      fontSize: 13,
+                      fontSize: theme.textTheme.bodySmall?.fontSize,
                       color: dim,
                       fontStyle: previewText == null
                           ? FontStyle.italic
@@ -301,7 +303,7 @@ class _SessionTile extends StatelessWidget {
             const SizedBox(width: AppSpacing.sm),
             Text(
               timestamp,
-              style: TextStyle(fontSize: 12, color: dim),
+              style: theme.textTheme.labelSmall?.copyWith(color: dim),
             ),
           ],
         ),
@@ -330,8 +332,7 @@ class _NewSessionTile extends StatelessWidget {
             const SizedBox(width: AppSpacing.md),
             Text(
               'New terminal',
-              style: TextStyle(
-                fontSize: 15,
+              style: theme.textTheme.bodyMedium?.copyWith(
                 fontWeight: FontWeight.w500,
                 color: theme.colorScheme.primary,
               ),

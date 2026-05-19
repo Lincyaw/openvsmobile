@@ -3,6 +3,13 @@
 // for editing details of an existing one. Includes a "Test connection"
 // button that attempts a WebSocket handshake and prints diagnostic logs so
 // users can debug network issues.
+//
+// TODO(rename): `SettingsScreen` is a misnomer — the actual settings entry
+// surface lives in `settings_tab.dart`. This file is really the
+// backend-editor dialog; renaming it to `BackendEditorScreen` /
+// `backend_editor_screen.dart` would clarify intent but ripples into
+// `backends_screen.dart`, which a parallel worker is touching. Deferred
+// until that worker's PR has landed to avoid a merge collision.
 
 import 'dart:async';
 import 'dart:convert';
@@ -219,7 +226,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         title: Text(widget.isFirstRun ? 'New backend' : 'Edit backend'),
       ),
       body: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(AppSpacing.lg),
         child: Form(
           key: _formKey,
           child: Column(
@@ -301,12 +308,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 8),
                 Expanded(
                   child: Container(
-                    padding: const EdgeInsets.all(8),
+                    padding: const EdgeInsets.all(AppSpacing.sm),
                     decoration: BoxDecoration(
                       color: Theme.of(context)
                           .colorScheme
                           .surfaceContainerHighest,
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(AppRadius.md),
                     ),
                     child: ListView.builder(
                       itemCount: _testLogs.length,
@@ -316,8 +323,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           '[${log.time.hour.toString().padLeft(2, '0')}:'
                           '${log.time.minute.toString().padLeft(2, '0')}:'
                           '${log.time.second.toString().padLeft(2, '0')}] ${log.text}',
-                          style: AppText.mono(
-                            fontSize: 12,
+                          style: AppText.monoCaption(context).copyWith(
                             color: log.isError
                                 ? Theme.of(context).colorScheme.error
                                 : null,

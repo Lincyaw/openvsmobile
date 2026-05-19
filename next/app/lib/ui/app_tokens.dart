@@ -27,6 +27,12 @@ class AppIconSize {
   static const double lg = 48;
 }
 
+/// Inline-spinner sizing. Most "loading…" rows / button-leading spinners
+/// in the app are around 18px — calling that out as a named const keeps
+/// the value in one place instead of leaking `SizedBox(width: 18, ...)`
+/// into every loading state.
+const double kSpinnerSm = 18;
+
 class AppDensity {
   const AppDensity._();
 
@@ -207,6 +213,34 @@ class AppText {
       decorationThickness: decorationThickness,
       fontStyle: fontStyle,
     ).copyWith(fontFamilyFallback: monoFontFamilyFallback);
+  }
+
+  /// Canonical "code body" style — used by both the file viewer and the
+  /// diff viewer for the actual code lines so the two surfaces stay
+  /// visually identical. Reads its size/weight from the theme's
+  /// `bodyMedium` ramp (so a future text-theme tweak rolls through every
+  /// code surface) and re-applies JetBrains Mono on top. A line-height
+  /// of 1.35 keeps multi-line snippets legible at the small body size.
+  static TextStyle monoCode(BuildContext context) {
+    final base = Theme.of(context).textTheme.bodyMedium;
+    return mono(
+      fontSize: base?.fontSize,
+      fontWeight: base?.fontWeight,
+      color: base?.color,
+      height: 1.35,
+    );
+  }
+
+  /// Canonical "code caption" style — hunk headers, diff gutters,
+  /// in-line metadata strips inside the code surface. One step smaller
+  /// than [monoCode], drawn from the theme's `labelSmall` ramp.
+  static TextStyle monoCaption(BuildContext context) {
+    final base = Theme.of(context).textTheme.labelSmall;
+    return mono(
+      fontSize: base?.fontSize,
+      fontWeight: base?.fontWeight,
+      color: base?.color,
+    );
   }
 }
 

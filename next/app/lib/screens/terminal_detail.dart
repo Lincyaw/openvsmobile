@@ -14,6 +14,7 @@ import 'package:xterm/xterm.dart';
 
 import '../app_state.dart';
 import '../services/terminal_scroll_adapter.dart';
+import '../ui/app_tokens.dart';
 
 class TerminalDetailScreen extends StatelessWidget {
   final AppState appState;
@@ -44,7 +45,7 @@ class TerminalDetailScreen extends StatelessWidget {
             // "slim back affordance" the brief calls for.
             title: Text(
               title,
-              style: const TextStyle(fontSize: 16),
+              style: Theme.of(context).textTheme.titleMedium,
             ),
             titleSpacing: 0,
           ),
@@ -326,7 +327,10 @@ class _KeyToolbar extends StatelessWidget {
           height: 44,
           child: ListView(
             scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+            padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.xs,
+              vertical: AppSpacing.xs,
+            ),
             children: [
               _KeyBtn(label: 'Esc', onTap: () => onKey(TerminalKey.escape)),
               _KeyBtn(label: 'Tab', onTap: () => onKey(TerminalKey.tab)),
@@ -364,10 +368,10 @@ class _KeyBtn extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const padding = EdgeInsets.symmetric(horizontal: 12);
+    const padding = EdgeInsets.symmetric(horizontal: AppSpacing.md);
     const minSize = Size(40, 36);
     const density = VisualDensity.compact;
-    final text = Text(label, style: const TextStyle(fontSize: 13));
+    final text = Text(label, style: Theme.of(context).textTheme.labelMedium);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 3),
       child: highlighted

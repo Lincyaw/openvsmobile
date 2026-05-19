@@ -11,6 +11,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../app_state.dart';
 import '../settings_store.dart';
+import '../ui/app_tokens.dart';
 
 class NotificationSettingsScreen extends StatefulWidget {
   final AppState appState;
@@ -215,11 +216,11 @@ class _NotificationSettingsScreenState
             mainAxisSize: MainAxisSize.min,
             children: const [
               SizedBox(
-                width: 16,
-                height: 16,
+                width: kSpinnerSm,
+                height: kSpinnerSm,
                 child: CircularProgressIndicator(strokeWidth: 2),
               ),
-              SizedBox(width: 12),
+              SizedBox(width: AppSpacing.md),
               Text('Loading notification preferences…'),
             ],
           ),
@@ -258,7 +259,12 @@ class _NotificationSettingsScreenState
           ),
           if (permPermanentlyDenied)
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              padding: const EdgeInsets.fromLTRB(
+                AppSpacing.lg,
+                0,
+                AppSpacing.lg,
+                AppSpacing.sm,
+              ),
               child: OutlinedButton.icon(
                 onPressed: openAppSettings,
                 icon: const Icon(Icons.open_in_new, size: 16),
@@ -266,14 +272,21 @@ class _NotificationSettingsScreenState
               ),
             ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(72, 0, 16, 12),
+            padding: const EdgeInsets.fromLTRB(
+              72,
+              0,
+              AppSpacing.lg,
+              AppSpacing.md,
+            ),
             child: Text(
               'On Xiaomi / Oppo / Huawei phones, also add MobileCode '
               'to the battery whitelist — same trade-off as Telegram and '
               'K-9 Mail. See docs/notifications-android.md.',
-              style: TextStyle(
-                fontSize: 12,
-                color: theme.colorScheme.outline,
+              // Helper text role is `onSurfaceVariant`, not `outline`
+              // (which is the divider role) — fixes a slot mismatch
+              // where the hint read as a 1px hairline color.
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
               ),
             ),
           ),
@@ -300,7 +313,7 @@ class _NotificationSettingsScreenState
                 : null,
           ),
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
+            padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
             child: Row(
               children: [
                 Expanded(
@@ -310,7 +323,7 @@ class _NotificationSettingsScreenState
                     child: Text('Start: ${_fmtMinutes(p.quietHoursStartMinutes)}'),
                   ),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: AppSpacing.sm),
                 Expanded(
                   child: OutlinedButton(
                     onPressed:
@@ -344,7 +357,12 @@ class _NotificationSettingsScreenState
           ),
           const Divider(height: 32),
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.lg,
+              AppSpacing.sm,
+              AppSpacing.lg,
+              AppSpacing.xs,
+            ),
             child: Text(
               'Per-source mute',
               style: theme.textTheme.titleSmall,
@@ -352,7 +370,12 @@ class _NotificationSettingsScreenState
           ),
           if (sources.isEmpty)
             const Padding(
-              padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
+              padding: EdgeInsets.fromLTRB(
+                AppSpacing.lg,
+                0,
+                AppSpacing.lg,
+                AppSpacing.md,
+              ),
               child: Text(
                 'No sources seen yet. The mute list grows as notifications '
                 'arrive.',

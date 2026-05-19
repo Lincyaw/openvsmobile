@@ -74,7 +74,7 @@ class _SystemTrayDebugScreenState extends State<SystemTrayDebugScreen> {
         ],
       ),
       body: ListView(
-        padding: const EdgeInsets.symmetric(vertical: 8),
+        padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
         children: [
           _Section('State', [
             _kv('Initialized', c.isInitialized ? 'yes' : 'no'),
@@ -129,12 +129,17 @@ class _SystemTrayDebugScreenState extends State<SystemTrayDebugScreen> {
           ),
           const Divider(),
           const Padding(
-            padding: EdgeInsets.fromLTRB(16, 8, 16, 4),
+            padding: EdgeInsets.fromLTRB(
+              AppSpacing.lg,
+              AppSpacing.sm,
+              AppSpacing.lg,
+              AppSpacing.xs,
+            ),
             child: Text('Log', style: TextStyle(fontWeight: FontWeight.bold)),
           ),
           if (c.logs.value.isEmpty)
             const Padding(
-              padding: EdgeInsets.all(16),
+              padding: EdgeInsets.all(AppSpacing.lg),
               child: Text(
                 'No activity yet. Send a test notification.',
                 style: TextStyle(color: Colors.grey),
@@ -142,10 +147,13 @@ class _SystemTrayDebugScreenState extends State<SystemTrayDebugScreen> {
             )
           else
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              padding: const EdgeInsets.symmetric(
+                horizontal: AppSpacing.lg,
+                vertical: AppSpacing.xs,
+              ),
               child: SelectableText(
                 c.logs.value.reversed.join('\n'),
-                style: AppText.mono(fontSize: 12),
+                style: AppText.monoCaption(context),
               ),
             ),
         ],
@@ -159,7 +167,10 @@ class _SystemTrayDebugScreenState extends State<SystemTrayDebugScreen> {
   Widget _kv(String label, String value, {String? error}) {
     final isError = error != null && error.isNotEmpty;
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.lg,
+        vertical: 6,
+      ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -194,7 +205,12 @@ class _Section extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.lg,
+            AppSpacing.sm,
+            AppSpacing.lg,
+            AppSpacing.xs,
+          ),
           child: Text(title,
               style: const TextStyle(fontWeight: FontWeight.bold)),
         ),

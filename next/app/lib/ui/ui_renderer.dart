@@ -263,14 +263,14 @@ class UiRenderer extends StatelessWidget {
   ) {
     return Padding(
       key: key,
-      padding: const EdgeInsets.symmetric(vertical: 8),
+      padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
         children: [
           if (title != null && title.isNotEmpty)
             Padding(
-              padding: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.only(bottom: AppSpacing.sm),
               child: Text(
                 title,
                 style: Theme.of(context).textTheme.titleMedium,
@@ -290,14 +290,17 @@ class UiRenderer extends StatelessWidget {
   ) {
     return Padding(
       key: key,
-      padding: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
         children: [
           if (title != null && title.isNotEmpty)
             Padding(
-              padding: const EdgeInsets.only(bottom: 8, left: 4),
+              padding: const EdgeInsets.only(
+                bottom: AppSpacing.sm,
+                left: AppSpacing.xs,
+              ),
               child: Text(
                 title,
                 style: Theme.of(context).textTheme.titleMedium,
@@ -305,7 +308,7 @@ class UiRenderer extends StatelessWidget {
             ),
           Card(
             child: Padding(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(AppSpacing.md),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 mainAxisSize: MainAxisSize.min,
