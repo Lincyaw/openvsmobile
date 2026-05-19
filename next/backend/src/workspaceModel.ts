@@ -114,9 +114,50 @@ export interface SubscribeResult {
 /// per-subscriber filtering work has a place to live.
 interface Subscriber {
   ws: WebSocket;
-  // TODO: honor paths filter — see CLAUDE.md first principles #5
+  /// Forward-slash, relative, no trailing slash. `null` means subscribe-all.
+  /// Per first principle #5: the protocol carries scope from day one;
+  /// `emitOne` short-circuits delivery when a scoped event's affected paths
+  /// fall outside this list. Path-less events (`head.changed`,
+  /// `commit.added`) bypass the filter — they're workspace-global signals
+  /// every subscriber needs to see.
   paths: string[] | null;
   lastDeliveredVersion: number;
+}
+
+/// True when `eventPath` (forward-slash relative) lives under any entry in
+/// `prefixes`. A bare match (`eventPath === prefix`) counts as "under" so a
+/// subscription on `"src/foo.ts"` receives that exact file's events.
+function isUnderAny(eventPath: string, prefixes: string[]): boolean {
+  for (const p of prefixes) {
+    if (eventPath === p) return true;
+    // Compare with a trailing slash on the prefix so `"src"` doesn't match
+    // `"src-test/foo"` while still matching `"src/foo"`.
+    const withSlash = p.endsWith("/") ? p : `${p}/`;
+    if (eventPath.startsWith(withSlash)) return true;
+  }
+  return false;
+}
+
+/// Pull every workspace-relative path the event touches, in order to apply a
+/// subscriber's path filter. `head.changed` / `commit.added` have no path
+/// component — those return `null` and the filter is bypassed (callers treat
+/// `null` as "always deliver").
+function eventAffectedPaths(ev: JournalEvent): string[] | null {
+  switch (ev.kind) {
+    case "head.changed":
+    case "commit.added":
+      return null;
+    case "tree.delta": {
+      const out: string[] = [...ev.added, ...ev.removed];
+      for (const r of ev.renamed) {
+        out.push(r.from);
+        out.push(r.to);
+      }
+      return out;
+    }
+    case "decoration.delta":
+      return ev.entries.map((e) => e.path);
+  }
 }
 
 export interface WorkspaceModelOptions {
@@ -249,6 +290,10 @@ export class WorkspaceModel {
       const slice = this.journal.filter((e) => e.version > since);
       queueMicrotask(() => {
         for (const ev of slice) {
+          // Honor the per-subscriber path filter on replay too — without
+          // this, a reconnect would re-deliver out-of-scope events the
+          // subscriber never saw live.
+          if (!eventMatchesScope(ev, subscriber.paths)) continue;
           this.emitOne(ws, ev);
         }
         // Register at the end so live emit only sees us starting from
@@ -683,6 +728,14 @@ export class WorkspaceModel {
       // were already live-fanned in the same tick. See subscribe() for the
       // matching gate on the replay side.
       if (ev.version <= sub.lastDeliveredVersion) continue;
+      // Honor the subscriber's path scope (first principle #5). We still
+      // bump `lastDeliveredVersion` on filtered events so a later in-scope
+      // event isn't accidentally re-delivered via a replay window — the
+      // journal entry exists, the client just isn't entitled to it.
+      if (!eventMatchesScope(ev, sub.paths)) {
+        sub.lastDeliveredVersion = ev.version;
+        continue;
+      }
       this.emitOne(sub.ws, ev);
       sub.lastDeliveredVersion = ev.version;
     }
@@ -730,6 +783,22 @@ export class WorkspaceModel {
   public absolutePath(rel: string): string {
     return resolve(this.root, rel);
   }
+}
+
+/// True when the event is in-scope for a subscriber whose path filter is
+/// `paths`. `paths === null` is subscribe-all → always true. Path-less
+/// events (head.changed / commit.added) are workspace-global and always
+/// match. For path-carrying events, any single affected path under any
+/// prefix is enough to deliver the whole event — we don't split a single
+/// `decoration.delta` across subscribers in v0.
+function eventMatchesScope(ev: JournalEvent, paths: string[] | null): boolean {
+  if (paths === null) return true;
+  const affected = eventAffectedPaths(ev);
+  if (affected === null) return true;
+  for (const p of affected) {
+    if (isUnderAny(p, paths)) return true;
+  }
+  return false;
 }
 
 function headInfoEqual(a: GitHeadInfo | null, b: GitHeadInfo | null): boolean {

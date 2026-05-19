@@ -103,7 +103,7 @@ export function initNtfySender(
   const token =
     env.NTFY_TOKEN && env.NTFY_TOKEN.length > 0 ? env.NTFY_TOKEN : undefined;
 
-  console.log(`[ntfy] enabled: ${url}/${topic}`);
+  console.error(`[ntfy] enabled: ${url}/${topic}`);
 
   const cfg: NtfyConfig = { url, topic, token };
   return makeSender(cfg);

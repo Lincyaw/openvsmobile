@@ -166,6 +166,47 @@ describe("WorkspaceModel head.changed", () => {
   });
 });
 
+describe("WorkspaceModel path-scoped subscription", () => {
+  it("filters decoration deltas to subscribed path prefix", async () => {
+    model = await newModel(repoDir);
+    const sock = new FakeWebSocket();
+    // Subscribe with a path filter limited to "src/".
+    model.subscribe(sock as unknown as WebSocket, {
+      sinceVersion: model.currentVersion(),
+      paths: ["src"],
+    });
+    // Write a file outside the scope — should not be delivered.
+    await writeWorkspaceFile(repoDir, "outside.txt", "noise\n");
+    await model.drainOnce();
+    // Write a file inside the scope — must be delivered.
+    await writeWorkspaceFile(repoDir, "src/in-scope.ts", "ok\n");
+    await model.drainOnce();
+
+    const deltas = sock.notifications("workspace.decoration.delta");
+    const entries = deltas.flatMap(
+      (d) =>
+        (d.params as { entries: Array<{ path: string }> }).entries,
+    );
+    // The in-scope file shows up.
+    expect(entries.some((e) => e.path === "src/in-scope.ts")).toBe(true);
+    // The out-of-scope file is filtered out.
+    expect(entries.some((e) => e.path === "outside.txt")).toBe(false);
+  });
+
+  it("always delivers head.changed (path-less events bypass scope)", async () => {
+    model = await newModel(repoDir);
+    const sock = new FakeWebSocket();
+    model.subscribe(sock as unknown as WebSocket, {
+      sinceVersion: model.currentVersion(),
+      paths: ["src"],
+    });
+    await git(repoDir, ["checkout", "-q", "-b", "feature"]);
+    await model.drainOnce();
+    const heads = sock.notifications("workspace.head.changed");
+    expect(heads.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
 describe("WorkspaceModel decoration snapshot", () => {
   it("buildDecorationSnapshot lists non-clean files only", async () => {
     model = await newModel(repoDir);
