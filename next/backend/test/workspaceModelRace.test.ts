@@ -185,7 +185,7 @@ describe("M6.3: journal overflow falls back to snapshot", () => {
     // Push enough synthetic events to bury baseVersion past the journal cap.
     const cap = WorkspaceModel.journalMaxEvents();
     for (let i = 0; i < cap + 10; i++) {
-      model.testEmitSyntheticDecorationEvent(`tmp/${i}.txt`);
+      model._testEmitSyntheticDecorationEvent(`tmp/${i}.txt`);
     }
     const result = model.subscribe(sock as unknown as WebSocket, {
       sinceVersion: baseVersion,

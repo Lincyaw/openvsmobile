@@ -67,16 +67,23 @@ export async function readHeadInfo(cwd: string): Promise<GitHeadInfo | null> {
     ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
     cwd,
   );
-  let behind = 0;
-  let ahead = 0;
-  if (tracking !== null) {
-    const m = /^(\d+)\s+(\d+)/.exec(tracking.trim());
-    if (m) {
-      behind = Number(m[1]);
-      ahead = Number(m[2]);
-    }
-  }
+  const parsed = tracking !== null ? parseRevListAheadBehind(tracking) : null;
+  const behind = parsed?.behind ?? 0;
+  const ahead = parsed?.ahead ?? 0;
   return { branch: branch.trim(), headSha: headSha.trim(), ahead, behind };
+}
+
+/// Parse the output of `git rev-list --left-right --count
+/// @{upstream}...HEAD`, which prints `<behind>\t<ahead>` — left side is
+/// upstream-only commits (behind), right side is HEAD-only commits
+/// (ahead). Exported so a unit test can pin the orientation; the
+/// behind/ahead order is easy to silently flip during refactors.
+export function parseRevListAheadBehind(
+  raw: string,
+): { behind: number; ahead: number } | null {
+  const m = /^(\d+)\s+(\d+)/.exec(raw.trim());
+  if (!m) return null;
+  return { behind: Number(m[1]), ahead: Number(m[2]) };
 }
 
 /// Run `git status --porcelain=v2 -z --find-renames` and parse it into a flat

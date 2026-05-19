@@ -434,36 +434,42 @@ export async function listDirAt(
       `cannot read directory ${target}: ${(err as Error).message}`,
     );
   }
-  const entries: TreeEntry[] = [];
-  for (const d of dirents) {
-    const isSymlink = d.isSymbolicLink();
-    const kind: TreeEntry["kind"] = isSymlink
-      ? "symlink"
-      : d.isDirectory()
-        ? "dir"
-        : "file";
-    const entry: TreeEntry = {
-      name: d.name,
-      kind,
-      type: kind === "dir" ? "dir" : "file",
-    };
-    const absChild = resolve(target, d.name);
-    if (kind === "file") {
-      try {
-        const st = await fs.stat(absChild);
-        entry.size = st.size;
-      } catch {
-        // Ignore stat failures — we still return the name.
+  // Fan out the per-entry stat/readlink calls. Each child does at most
+  // one syscall and they're independent, so sequential awaits across a
+  // 200-entry directory leave the event loop idle for no reason.
+  // Ordering is reapplied by the sort below, so concurrent completion
+  // is safe.
+  const entries: TreeEntry[] = await Promise.all(
+    dirents.map(async (d): Promise<TreeEntry> => {
+      const isSymlink = d.isSymbolicLink();
+      const kind: TreeEntry["kind"] = isSymlink
+        ? "symlink"
+        : d.isDirectory()
+          ? "dir"
+          : "file";
+      const entry: TreeEntry = {
+        name: d.name,
+        kind,
+        type: kind === "dir" ? "dir" : "file",
+      };
+      const absChild = resolve(target, d.name);
+      if (kind === "file") {
+        try {
+          const st = await fs.stat(absChild);
+          entry.size = st.size;
+        } catch {
+          // Ignore stat failures — we still return the name.
+        }
+      } else if (kind === "symlink") {
+        try {
+          entry.symlinkTarget = await fs.readlink(absChild);
+        } catch {
+          // Broken / unreadable symlink — name only.
+        }
       }
-    } else if (kind === "symlink") {
-      try {
-        entry.symlinkTarget = await fs.readlink(absChild);
-      } catch {
-        // Broken / unreadable symlink — name only.
-      }
-    }
-    entries.push(entry);
-  }
+      return entry;
+    }),
+  );
   entries.sort((a, b) => {
     // Directories first, then symlinks, then files. Matches what users expect
     // and what the previous shape produced.
