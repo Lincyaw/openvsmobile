@@ -22,6 +22,22 @@
 
 const LSP_HEADER_HINT = "Content-Length";
 
+/// Hard cap on a single inbound frame. A malformed or hostile plugin
+/// could otherwise pin the host's heap by sending
+/// `Content-Length: 9999999999\r\n\r\n` and never closing — the parser
+/// would happily wait for 10 GiB of body. 16 MiB is the symmetric
+/// default with `process.ts`'s stdin high-water mark; override via
+/// `OPENVSMOBILE_PLUGIN_MAX_FRAME_BYTES` for tests / unusual cases.
+function resolveMaxFrameSize(): number {
+  const override = process.env.OPENVSMOBILE_PLUGIN_MAX_FRAME_BYTES;
+  if (override !== undefined && override.length > 0) {
+    const n = Number(override);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  }
+  return 16 * 1024 * 1024;
+}
+export const MAX_FRAME_SIZE = resolveMaxFrameSize();
+
 type Mode = "lsp" | "newline" | "unknown";
 
 export interface FrameSink {
@@ -36,17 +52,49 @@ export interface FrameSink {
 
 export class FrameCodec {
   private mode: Mode = "unknown";
-  private buf: Buffer = Buffer.alloc(0);
+  /// Chunk list, not a coalesced Buffer. `Buffer.concat` on every push
+  /// is O(n²) over a sustained burst — keep chunks separate and only
+  /// materialize a Buffer when we're about to inspect or slice. The
+  /// `buf` accessor is lazy: it concats on demand and caches.
+  private chunks: Buffer[] = [];
+  private chunksBytes = 0;
+  private coalesced: Buffer | null = null;
   private readonly sink: FrameSink;
 
   constructor(sink: FrameSink) {
     this.sink = sink;
   }
 
+  private get buf(): Buffer {
+    if (this.coalesced !== null) return this.coalesced;
+    if (this.chunks.length === 0) {
+      this.coalesced = Buffer.alloc(0);
+      return this.coalesced;
+    }
+    if (this.chunks.length === 1) {
+      this.coalesced = this.chunks[0] as Buffer;
+      return this.coalesced;
+    }
+    this.coalesced = Buffer.concat(this.chunks, this.chunksBytes);
+    // Replace the multi-chunk list with the single coalesced buffer so
+    // we don't pay the concat cost again on the next access.
+    this.chunks = [this.coalesced];
+    return this.coalesced;
+  }
+
+  private set buf(b: Buffer) {
+    this.chunks = b.length === 0 ? [] : [b];
+    this.chunksBytes = b.length;
+    this.coalesced = b;
+  }
+
   /// Append bytes from the plugin's stdout. Drains everything we can
   /// parse out of the running buffer before returning.
   public push(chunk: Buffer): void {
-    this.buf = this.buf.length === 0 ? chunk : Buffer.concat([this.buf, chunk]);
+    if (chunk.length === 0) return;
+    this.chunks.push(chunk);
+    this.chunksBytes += chunk.length;
+    this.coalesced = null;
     this.drain();
   }
 
@@ -139,6 +187,18 @@ export class FrameCodec {
       return true;
     }
     const length = Number(lengthMatch[1]);
+    if (!Number.isFinite(length) || length < 0 || length > MAX_FRAME_SIZE) {
+      // Refuse the frame: discard the header bytes we've parsed so far
+      // and reset to header-seeking. We do NOT consume bytes past the
+      // header — we don't know where the body would end, and a hostile
+      // length might be the precursor to a flood. The channel stays
+      // open; subsequent valid frames recover.
+      this.sink.onFramingError(
+        `plugin frame Content-Length ${length} exceeds maximum ${MAX_FRAME_SIZE} (or is invalid)`,
+      );
+      this.buf = this.buf.subarray(headerEnd + 4);
+      return true;
+    }
     const bodyStart = headerEnd + 4;
     if (this.buf.length < bodyStart + length) return false;
     const body = this.buf.subarray(bodyStart, bodyStart + length);
