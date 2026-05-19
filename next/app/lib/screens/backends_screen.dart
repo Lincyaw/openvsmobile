@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 
 import '../app_state.dart';
 import '../settings_store.dart';
+import '../version.dart';
 import 'settings_screen.dart';
 import 'ssh_bootstrap_screen.dart';
 
@@ -103,7 +104,7 @@ class BackendsScreen extends StatelessWidget {
       id: generateUuidV4(),
       name: '',
       host: '',
-      port: 7860,
+      port: kDefaultBackendPort,
       token: '',
       origin: BackendOrigin.manual,
       addedAt: now,

@@ -421,17 +421,29 @@ class TerminalsNotifier extends ChangeNotifier {
   Terminal _buildTerminal(String sessionId) {
     final t = Terminal(maxLines: 5000);
     t.onOutput = (data) {
-      _client.call('terminal.write', {
-        'sessionId': sessionId,
-        'dataBase64': base64Encode(utf8.encode(data)),
-      });
+      // Fire-and-forget. If the socket dropped between callback and send,
+      // the call future rejects with "not connected"; we swallow it here
+      // because the connection banner is the user-visible signal and the
+      // unhandled rejection would otherwise spam the log.
+      _client
+          .call('terminal.write', {
+            'sessionId': sessionId,
+            'dataBase64': base64Encode(utf8.encode(data)),
+          })
+          .catchError((Object e) {
+            debugPrint('terminal.write($sessionId) failed: $e');
+          });
     };
     t.onResize = (w, h, _, _) {
-      _client.call('terminal.resize', {
-        'sessionId': sessionId,
-        'cols': w,
-        'rows': h,
-      });
+      _client
+          .call('terminal.resize', {
+            'sessionId': sessionId,
+            'cols': w,
+            'rows': h,
+          })
+          .catchError((Object e) {
+            debugPrint('terminal.resize($sessionId) failed: $e');
+          });
     };
     return t;
   }

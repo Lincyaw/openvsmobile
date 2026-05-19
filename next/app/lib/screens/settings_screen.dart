@@ -13,6 +13,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../settings_store.dart';
 import '../ui/app_tokens.dart';
+import '../version.dart';
 
 class _LogEntry {
   final DateTime time;
@@ -56,7 +57,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _hostCtrl = TextEditingController(text: widget.initial.host);
     _portCtrl = TextEditingController(
       text: widget.initial.port == 0
-          ? '7860'
+          ? '$kDefaultBackendPort'
           : widget.initial.port.toString(),
     );
     _tokenCtrl = TextEditingController(text: widget.initial.token);

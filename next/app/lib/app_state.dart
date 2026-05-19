@@ -80,6 +80,11 @@ class AppState extends ChangeNotifier {
   BackendConnectionState _connectionState = BackendConnectionState.disconnected;
   String? _lastConnectionError;
 
+  /// True whenever the socket is not in `connected`. Widgets render last-
+  /// known state with an offline indicator overlay while this is true — see
+  /// first principle #4 "Disconnect never clears the UI".
+  bool _offline = false;
+
   // ---- Last operation error (surfaced via SnackBar by the calling screen) ----
   String? _lastOperationError;
 
@@ -106,7 +111,7 @@ class AppState extends ChangeNotifier {
       reportError: _reportOperationError,
     );
     _notifications.addListener(notifyListeners);
-    _plugins = PluginsModel(client: client);
+    _plugins = PluginsModel(client: client, reportError: _reportOperationError);
     _plugins.addListener(notifyListeners);
     _uiPanels = UiPanelsModel(client: client);
     _uiPanels.addListener(notifyListeners);
@@ -168,6 +173,12 @@ class AppState extends ChangeNotifier {
 
   BackendConnectionState get connectionState => _connectionState;
   String? get lastConnectionError => _lastConnectionError;
+
+  /// True iff the socket is in any non-`connected` state. Cached state stays
+  /// intact while this is true; widgets overlay an offline indicator and let
+  /// the user keep reading last-known data. The connected branch reconciles
+  /// via `subscribe(sinceVersion: …)`; nothing is cleared on the way down.
+  bool get offline => _offline;
 
   /// Composed sub-notifier holding per-workspace git/decoration state. Read
   /// from widgets via getters below; mutated only via the subscribe lifecycle
@@ -231,20 +242,30 @@ class AppState extends ChangeNotifier {
     final s = client.state.value;
     _connectionState = s;
     if (s == BackendConnectionState.connected) {
+      _offline = false;
       // Re-fetch workspace + terminal state. With persistent backend state
       // the workspaces and sessions are still there; refreshWorkspaces will
-      // replay each session's scrollback so the UI shows continuity.
+      // replay each session's scrollback so the UI shows continuity. The
+      // per-workspace subscribe inside that call carries `sinceVersion`, so
+      // a journal replay reconciles the existing decoration map instead of
+      // discarding it.
       unawaited(refreshWorkspaces());
-      // (Re)subscribe to notifications and pull the recent backlog so the
-      // bell icon's unread badge is accurate immediately. Failures
-      // self-log; the connection banner is the user-visible signal for any
-      // link issue. Last-known notification state is preserved across the
-      // reconnect (first principle #4: disconnect never clears the UI).
-      unawaited(_notifications.subscribe());
-      unawaited(_notifications.refresh());
+      // (Re)subscribe to notifications. We do NOT call _notifications.refresh()
+      // here — refresh() clears _items on a full reload, which would wipe the
+      // last-known feed during the reconnect window (first principle #4).
+      // The subscribe path is the source of truth; the backend pushes any
+      // missed rows on subscribe. We pass `sinceTs` forward-compatibly so a
+      // future backend can deliver the incremental tail. (Backend support
+      // for `sinceTs` on `notification.subscribe` is pending.)
+      unawaited(_notifications.subscribe(
+        sinceTs: _notifications.lastSeenTs,
+      ));
       // Plugin surface + UI-descriptor fan-out follow the same shape —
-      // subscribe on every successful connect; failures self-log.
-      unawaited(_plugins.subscribeAndRefresh());
+      // subscribe on every successful connect; failures self-log. We do
+      // NOT call subscribeAndRefresh()'s refresh leg or uiPanels.refresh —
+      // the subscribe leg alone is sufficient and `plugin.list` would
+      // briefly wipe cached entries.
+      unawaited(_plugins.subscribe());
       unawaited(_uiPanels.subscribe());
       notifyListeners();
       return;
@@ -252,20 +273,18 @@ class AppState extends ChangeNotifier {
     if (s == BackendConnectionState.connecting) {
       // First connect (no prior session). Nothing to clear yet — the
       // upcoming `connected` transition will populate fresh.
+      _offline = true;
       notifyListeners();
       return;
     }
-    // Any non-connected, non-initial state: the client's view of sessionIds
-    // is stale until we reconfirm with the backend. The IDs themselves may
-    // still be alive on the backend (that's the whole point of persistence),
-    // but we tear down the local Terminal objects so the reconnect replay
-    // path can rebuild them fresh.
-    _active = const [];
-    _current = null;
-    _fileTreeByWorkspace.clear();
-    _diffCache.clear();
-    _terminals.resetAll();
-    // Keep recents — they're useful when reconnecting.
+    // Any non-connected, non-initial state: per first principle #4, leave
+    // every piece of cached state intact (workspaces, file trees, diff
+    // cache, terminals, notifications). The UI overlays an offline
+    // indicator via `offline`; reconnect reconciles via
+    // `subscribe(sinceVersion: …)`. Terminals come back through the
+    // existing per-session history-replay path on the next `connected`
+    // transition; no global reset is needed.
+    _offline = true;
     notifyListeners();
   }
 
@@ -275,71 +294,111 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> _onNotification(BackendNotification n) async {
+    // Defensive: malformed push with non-object params is dropped before any
+    // handler. Lets each branch read fields off a single typed local.
+    final params = n.params;
+    if (params is! Map<String, dynamic>) return;
     switch (n.method) {
       case BackendNotifications.terminalData:
-        _terminals.onTerminalData(n.params as Map<String, dynamic>);
+        _terminals.onTerminalData(params);
         break;
       case BackendNotifications.terminalExit:
-        _terminals.onTerminalExit(n.params as Map<String, dynamic>);
+        _terminals.onTerminalExit(params);
         break;
       case BackendNotifications.workspaceClosed:
-        final id = (n.params as Map<String, dynamic>)['id'] as String;
-        _onWorkspaceClosed(id);
+        final id = params['id'];
+        if (id is String) _onWorkspaceClosed(id);
         break;
       case BackendNotifications.workspaceTreeDelta:
-        _workspacesModel.onTreeDelta(n.params as Map<String, dynamic>);
+        _workspacesModel.onTreeDelta(params);
         break;
       case BackendNotifications.workspaceDecorationDelta:
-        _workspacesModel.onDecorationDelta(n.params as Map<String, dynamic>);
+        _workspacesModel.onDecorationDelta(params);
+        _invalidateDiffCacheForDecorationDelta(params);
         break;
       case BackendNotifications.workspaceDecorationSnapshot:
-        _workspacesModel
-            .onDecorationSnapshot(n.params as Map<String, dynamic>);
+        _workspacesModel.onDecorationSnapshot(params);
+        // A fresh decoration snapshot means the working-tree state may have
+        // shifted arbitrarily — drop the diff cache for the affected
+        // workspace so we don't serve stale unified-diff bytes.
+        _invalidateDiffCacheForWorkspace(
+          params['workspaceId'] as String?,
+        );
         break;
       case BackendNotifications.workspaceHeadChanged:
-        _workspacesModel.onHeadChanged(n.params as Map<String, dynamic>);
+        _workspacesModel.onHeadChanged(params);
         break;
       case BackendNotifications.workspaceCommitAdded:
-        _workspacesModel.onCommitAdded(n.params as Map<String, dynamic>);
+        _workspacesModel.onCommitAdded(params);
         break;
       case BackendNotifications.notificationShow:
-        final p = n.params as Map<String, dynamic>;
-        final raw = p['notification'];
+        final raw = params['notification'];
         if (raw is Map<String, dynamic>) {
           _notifications.onShow(AppNotification.fromJson(raw));
         }
         break;
       case BackendNotifications.notificationReadChanged:
-        final p = n.params as Map<String, dynamic>;
-        final ids = (p['ids'] as List?)?.whereType<String>().toList() ??
+        final ids = (params['ids'] as List?)?.whereType<String>().toList() ??
             const <String>[];
-        final by = p['readByDevice'];
-        final ts = (p['ts'] as num?)?.toInt() ?? 0;
+        final by = params['readByDevice'];
+        final ts = (params['ts'] as num?)?.toInt() ?? 0;
         if (by is String) {
           _notifications.onReadChanged(ids, by, ts);
         }
         break;
       case BackendNotifications.notificationDeleted:
-        final p = n.params as Map<String, dynamic>;
-        final ids = (p['ids'] as List?)?.whereType<String>().toList() ??
+        final ids = (params['ids'] as List?)?.whereType<String>().toList() ??
             const <String>[];
         _notifications.onDeleted(ids);
         break;
       case BackendNotifications.notificationSuperseded:
-        final p = n.params as Map<String, dynamic>;
-        final oldId = p['oldId'];
-        final newId = p['newId'];
+        final oldId = params['oldId'];
+        final newId = params['newId'];
         if (oldId is String && newId is String) {
           _notifications.onSuperseded(oldId, newId);
         }
         break;
       case BackendNotifications.pluginStateChanged:
-        _plugins.onStateChanged(n.params as Map<String, dynamic>);
+        _plugins.onStateChanged(params);
+        break;
+      case 'ui.tree':
+        _uiPanels.onUiTree(params);
+        break;
+      case 'ui.modal':
+        _uiPanels.onUiModal(params);
         break;
       default:
         // Ignore unknown notifications (forward-compat).
         break;
     }
+  }
+
+  /// Drop `_diffCache` entries for the workspace+paths mutated by a
+  /// decoration-delta push. The cache is keyed by `(workspaceId, headSha,
+  /// path)` (probe) and `(workspaceId, baseSha, headSha, path)` (content);
+  /// since both keys end in ` $path`, we scan-and-suffix-match. The cache
+  /// cap is 32 so the scan is trivially cheap.
+  void _invalidateDiffCacheForDecorationDelta(Map<String, dynamic> params) {
+    final wsId = params['workspaceId'];
+    if (wsId is! String) return;
+    final entries = params['entries'];
+    if (entries is! List) return;
+    for (final e in entries) {
+      if (e is! Map<String, dynamic>) continue;
+      final path = e['path'];
+      if (path is! String) continue;
+      _diffCache.removeWhere(
+        (k, _) => k.endsWith(' $path') && k.contains(wsId),
+      );
+    }
+  }
+
+  /// Drop every `_diffCache` entry for [workspaceId]. Used on a full
+  /// decoration snapshot, where the working tree may have shifted in ways
+  /// the per-path delta list doesn't enumerate.
+  void _invalidateDiffCacheForWorkspace(String? workspaceId) {
+    if (workspaceId == null) return;
+    _diffCache.removeWhere((k, _) => k.contains(workspaceId));
   }
 
   void _onWorkspaceClosed(String id) {
