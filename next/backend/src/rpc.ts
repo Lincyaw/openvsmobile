@@ -13,26 +13,13 @@
 //   6. dispatch() + runAuthHandshake() entry points.
 
 import type { WebSocket } from "ws";
-import { randomUUID } from "node:crypto";
 import { listDirAt, readFileAt, type ActiveWorkspace } from "./workspace.js";
 import type { ProcessState, Subscriber } from "./state.js";
-import {
-  hashWorkingFile,
-  indexBlobSha,
-  isGitRepo,
-  pathInIndex,
-  pathInTree,
-  readHeadInfo,
-  readLogPage,
-  readStatus,
-  resolveRef,
-  runDiffArgs,
-} from "./git.js";
-import { parseUnifiedDiff, type DiffHunk } from "./diffParser.js";
 import { findFiles } from "./findFiles.js";
 import { PluginHostError } from "./plugins/host.js";
-import { stat as fsStat } from "node:fs/promises";
-import { join as pathJoin } from "node:path";
+import { safeSend } from "./wsSend.js";
+import { register as registerGitHandlers } from "./rpcHandlers/gitHandlers.js";
+import { register as registerNotificationHandlers } from "./rpcHandlers/notificationHandlers.js";
 
 // -------- 1. Wire types + error catalog --------
 
@@ -71,7 +58,11 @@ export const RPC_ERR = {
   internal: -32603,
   // Custom range (-32000 to -32099 reserved by the spec for application use)
   /// -32001: the caller has not been granted the capability they requested.
-  /// Will fire from the plugin host when it lands; currently unused.
+  /// Reserved for the runtime-revocation path (declared-but-revoked capability)
+  /// that will surface from `src/plugins/host.ts` once C2 lands. The
+  /// manifest-never-declared path uses -32011 (`capabilityNotDeclared`)
+  /// instead. Currently no call sites — leave defined so the wire contract
+  /// is stable when C2 ships.
   capabilityDenied: -32001,
   /// -32002: authentication has not happened yet or the token is wrong.
   unauthorized: -32002,
@@ -112,7 +103,7 @@ export function sendNotification(
 ): void {
   if (ws.readyState !== ws.OPEN) return;
   const msg: JsonRpcNotification = { jsonrpc: "2.0", method, params };
-  ws.send(JSON.stringify(msg));
+  safeSend(ws, JSON.stringify(msg));
 }
 
 export function sendResult(
@@ -122,7 +113,7 @@ export function sendResult(
 ): void {
   if (ws.readyState !== ws.OPEN) return;
   const msg: JsonRpcSuccess = { jsonrpc: "2.0", id, result };
-  ws.send(JSON.stringify(msg));
+  safeSend(ws, JSON.stringify(msg));
 }
 
 export function sendError(
@@ -138,7 +129,7 @@ export function sendError(
     id,
     error: data === undefined ? { code, message } : { code, message, data },
   };
-  ws.send(JSON.stringify(msg));
+  safeSend(ws, JSON.stringify(msg));
 }
 
 export function parseRequest(
@@ -193,9 +184,9 @@ export function parseRequest(
 // recurs across most handlers. These helpers collapse the duplication and
 // give every validation failure a consistent error message.
 
-type ParamBag = Record<string, unknown>;
+export type ParamBag = Record<string, unknown>;
 
-function asBag(params: unknown): ParamBag {
+export function asBag(params: unknown): ParamBag {
   if (params === undefined || params === null) return {};
   if (typeof params !== "object" || Array.isArray(params)) {
     throw new RpcError(
@@ -206,7 +197,7 @@ function asBag(params: unknown): ParamBag {
   return params as ParamBag;
 }
 
-function requireString(p: ParamBag, key: string): string {
+export function requireString(p: ParamBag, key: string): string {
   const v = p[key];
   if (typeof v !== "string" || v.length === 0) {
     throw new RpcError(RPC_ERR.invalidParams, `${key} required`);
@@ -214,7 +205,7 @@ function requireString(p: ParamBag, key: string): string {
   return v;
 }
 
-function optionalString(p: ParamBag, key: string): string | undefined {
+export function optionalString(p: ParamBag, key: string): string | undefined {
   const v = p[key];
   if (v === undefined || v === null) return undefined;
   if (typeof v !== "string") {
@@ -226,7 +217,7 @@ function optionalString(p: ParamBag, key: string): string | undefined {
   return v;
 }
 
-function requirePositiveInt(p: ParamBag, key: string): number {
+export function requirePositiveInt(p: ParamBag, key: string): number {
   const v = p[key];
   if (typeof v !== "number" || !Number.isInteger(v) || v < 1) {
     throw new RpcError(
@@ -237,7 +228,7 @@ function requirePositiveInt(p: ParamBag, key: string): number {
   return v;
 }
 
-function optionalNonNegativeInt(p: ParamBag, key: string): number | undefined {
+export function optionalNonNegativeInt(p: ParamBag, key: string): number | undefined {
   const v = p[key];
   if (v === undefined || v === null) return undefined;
   if (typeof v !== "number" || !Number.isInteger(v) || v < 0) {
@@ -249,7 +240,7 @@ function optionalNonNegativeInt(p: ParamBag, key: string): number | undefined {
   return v;
 }
 
-function optionalPositiveInt(p: ParamBag, key: string): number | undefined {
+export function optionalPositiveInt(p: ParamBag, key: string): number | undefined {
   const v = p[key];
   if (v === undefined || v === null) return undefined;
   if (typeof v !== "number" || !Number.isInteger(v) || v < 1) {
@@ -261,7 +252,7 @@ function optionalPositiveInt(p: ParamBag, key: string): number | undefined {
   return v;
 }
 
-function optionalBool(p: ParamBag, key: string): boolean | undefined {
+export function optionalBool(p: ParamBag, key: string): boolean | undefined {
   const v = p[key];
   if (v === undefined || v === null) return undefined;
   if (typeof v !== "boolean") {
@@ -273,7 +264,7 @@ function optionalBool(p: ParamBag, key: string): boolean | undefined {
   return v;
 }
 
-function optionalStringArray(p: ParamBag, key: string): string[] | undefined {
+export function optionalStringArray(p: ParamBag, key: string): string[] | undefined {
   const v = p[key];
   if (v === undefined || v === null) return undefined;
   if (!Array.isArray(v) || v.some((s) => typeof s !== "string")) {
@@ -326,9 +317,25 @@ export const METHOD_AUTH_HANDSHAKE = "auth.handshake";
 
 // -------- 5. Method table + handlers --------
 
-type Handler = (ctx: RpcContext, params: unknown) => Promise<unknown> | unknown;
+export type Handler = (ctx: RpcContext, params: unknown) => Promise<unknown> | unknown;
+
+/// Extracted-handler modules call `register(methods)` with a writer-shaped
+/// view over the internal map. Keeps the registration API narrow (no
+/// peeking, no clearing, no re-binding) while letting the methods table
+/// itself stay private.
+export interface MethodRegistry {
+  set(name: string, handler: Handler): void;
+}
 
 const methods = new Map<string, Handler>();
+
+// Extracted handler groups. Done at module load so the dispatch table is
+// fully populated before the first call. Import order: rpc.ts → handlers
+// → back to rpc.ts (for helpers / types). No cycles because the handler
+// modules only `import type` from rpc.ts's downstream deps; the runtime
+// imports (`asBag`, `RpcError`, …) are leaves.
+registerGitHandlers(methods);
+registerNotificationHandlers(methods);
 
 methods.set("system.ping", () => ({ now: Date.now() }));
 
@@ -471,352 +478,8 @@ methods.set("workspace.unsubscribe", (ctx, params) => {
   return {};
 });
 
-// Pull RPC for the working-tree status. Pairs with the workspace.subscribe
-// push surface (which carries deltas); callers use this when they need a
-// full snapshot on demand outside the subscribe path.
-methods.set("git.status", async (ctx, params) => {
-  const p = asBag(params);
-  const ws = ctx.state.workspaces.requireById(p.workspaceId);
-  if (!(await isGitRepo(ws.root))) {
-    return {
-      isGitRepo: false,
-      branch: null,
-      ahead: 0,
-      behind: 0,
-      entries: [],
-    };
-  }
-  const [head, entries] = await Promise.all([
-    readHeadInfo(ws.root),
-    readStatus(ws.root),
-  ]);
-  return {
-    isGitRepo: true,
-    branch: head?.branch ?? null,
-    ahead: head?.ahead ?? 0,
-    behind: head?.behind ?? 0,
-    entries: entries.map((e) => ({ path: e.path, status: e.status })),
-  };
-});
 
-methods.set("git.diff", async (ctx, params) => {
-  const p = asBag(params);
-  const ws = ctx.state.workspaces.requireById(p.workspaceId);
-  const path = requireString(p, "path");
-  const base = optionalString(p, "base") ?? "HEAD";
-  // `head` is allowed to be explicitly null (working tree) or a string (ref
-  // / "INDEX"). Missing param is treated as null per the protocol default.
-  const headParam = p.head;
-  if (
-    headParam !== undefined &&
-    headParam !== null &&
-    typeof headParam !== "string"
-  ) {
-    throw new RpcError(
-      RPC_ERR.invalidParams,
-      "head must be a string or null when provided",
-    );
-  }
-  const head: string | null =
-    headParam === undefined || headParam === null
-      ? null
-      : (headParam as string);
-
-  // Existence pre-check. A path that has never lived anywhere (working tree,
-  // index, or either ref's tree) is a caller bug — surface invalidParams
-  // rather than silently returning an empty diff.
-  await assertPathExists(ws.root, path, base, head);
-
-  const baseSha = await resolveBaseSha(ws.root, base, path);
-  const headSha = await resolveHeadSha(ws.root, head, path);
-  // Content-addressed cache key (first principle #3). Two callers asking
-  // for the same (workspace, path, baseSha, headSha) get the same patch
-  // byte-for-byte, so a second resolve short-circuits the git spawn.
-  const cacheKey = `${ws.id} ${path} ${baseSha} ${headSha}`;
-  const cached = ctx.state.diffCache.get(cacheKey) as GitDiffResult | undefined;
-  if (cached !== undefined) return cached;
-
-  const selectorArgs = buildDiffSelectorArgs(base, head);
-  const { stdout, tooLarge: bufferOverflow } = await runDiffArgs(
-    ws.root,
-    selectorArgs,
-    path,
-  );
-
-  // Binary detection. Git auto-detects and emits a literal
-  //   `Binary files a/x and b/x differ`
-  // line inside the patch when the blob has NUL bytes. The marker can show
-  // up at the start of stdout (no `diff --git` preamble in some shapes) or
-  // after it; scanning the body covers every permutation.
-  const isBinary = /(^|\n)Binary files .* and .* differ\n?/.test(stdout);
-
-  const overSize = stdout.length > DIFF_TEXT_LIMIT_BYTES;
-  const tooLarge = bufferOverflow || overSize;
-
-  let hunks: WireHunk[] = [];
-  if (!isBinary && !tooLarge) {
-    hunks = toWireHunks(parseUnifiedDiff(stdout));
-  }
-
-  const result: GitDiffResult = {
-    hunks,
-    baseSha,
-    headSha,
-    isBinary,
-  };
-  if (tooLarge) {
-    result.tooLarge = true;
-  }
-  ctx.state.diffCache.set(cacheKey, result);
-  return result;
-});
-
-// `git.log` page size bounds. The upper cap keeps a single response within
-// a reasonable wire payload (a 200-entry page with bodies is well under
-// 1 MiB in practice); the floor exists because `0` or negative is treated
-// as "I don't care, give me the default" rather than as an error.
-const GIT_LOG_MAX_LIMIT = 200;
-const GIT_LOG_DEFAULT_LIMIT = 50;
-
-methods.set("git.log", async (ctx, params) => {
-  const p = asBag(params);
-  const ws = ctx.state.workspaces.requireById(p.workspaceId);
-  const path = optionalString(p, "path");
-  const cursor = optionalString(p, "cursor");
-  const decoded = decodeLogCursor(cursor);
-  // Clamp limit per the brief: [1, 200], default to 50 on 0/negative/missing.
-  const rawLimit = p.limit;
-  let limit: number;
-  if (rawLimit === undefined || rawLimit === null) {
-    limit = GIT_LOG_DEFAULT_LIMIT;
-  } else if (typeof rawLimit !== "number" || !Number.isFinite(rawLimit)) {
-    throw new RpcError(RPC_ERR.invalidParams, "limit must be a number");
-  } else {
-    const n = Math.trunc(rawLimit);
-    limit = n <= 0 ? GIT_LOG_DEFAULT_LIMIT : Math.min(n, GIT_LOG_MAX_LIMIT);
-  }
-  const opts: { path?: string; limit: number; skip?: number; pinnedSha?: string } = { limit };
-  if (path !== undefined) opts.path = path;
-  if (decoded !== null) {
-    opts.skip = decoded.offset;
-    opts.pinnedSha = decoded.pinnedSha;
-  }
-  const entries = await readLogPage(ws.root, opts);
-  // No entries + no cursor → either a non-git workspace, an empty repo, or
-  // a path that has never been touched. Per the brief, that surfaces as
-  // `{ entries: [] }` (no error, no cursor).
-  if (entries.length === 0) {
-    return { entries };
-  }
-  // Pin to the head of *this* walk. On the first page the head is just
-  // entries[0]. On subsequent pages it's whatever the cursor carried —
-  // never re-resolve HEAD inside a walk, that's how you get duplicates
-  // when new commits land mid-pagination.
-  const pinnedSha = decoded !== null ? decoded.pinnedSha : entries[0].sha;
-  const previousOffset = decoded !== null ? decoded.offset : 0;
-  const nextOffset = previousOffset + entries.length;
-  // Fewer rows than asked-for means git has nothing else to give us, so
-  // we drop the cursor to signal end-of-stream. A full page might or
-  // might not have more; emit a cursor and let the next call return an
-  // empty page if it turns out to be the boundary.
-  if (entries.length < limit) {
-    return { entries };
-  }
-  return { entries, nextCursor: encodeLogCursor(pinnedSha, nextOffset) };
-});
-
-interface DecodedLogCursor {
-  pinnedSha: string;
-  offset: number;
-}
-
-/// `git.log` cursors are opaque on the wire. Today they're a base64-encoded
-/// JSON blob `{ h: <sha>, o: <skipCount> }`; the encoding is *not* part of
-/// the protocol contract — a future change can swap the strategy without
-/// breaking clients as long as the same opaque-token round-trip semantics
-/// hold.
-function encodeLogCursor(pinnedSha: string, offset: number): string {
-  const payload = JSON.stringify({ h: pinnedSha, o: offset });
-  return Buffer.from(payload, "utf8").toString("base64");
-}
-
-function decodeLogCursor(cursor: string | undefined): DecodedLogCursor | null {
-  if (cursor === undefined || cursor.length === 0) return null;
-  let raw: string;
-  try {
-    raw = Buffer.from(cursor, "base64").toString("utf8");
-  } catch {
-    throw new RpcError(RPC_ERR.invalidParams, "cursor is not valid base64");
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new RpcError(RPC_ERR.invalidParams, "cursor is malformed");
-  }
-  if (
-    parsed === null ||
-    typeof parsed !== "object" ||
-    Array.isArray(parsed)
-  ) {
-    throw new RpcError(RPC_ERR.invalidParams, "cursor is malformed");
-  }
-  const obj = parsed as { h?: unknown; o?: unknown };
-  if (
-    typeof obj.h !== "string" ||
-    obj.h.length === 0 ||
-    typeof obj.o !== "number" ||
-    !Number.isInteger(obj.o) ||
-    obj.o < 0
-  ) {
-    throw new RpcError(RPC_ERR.invalidParams, "cursor is malformed");
-  }
-  return { pinnedSha: obj.h, offset: obj.o };
-}
-
-// Cap unified-diff text at 500 KiB. Beyond that we surface `tooLarge: true`
-// rather than ship the patch over a phone link. The cap matches design-doc
-// section 2.2 (binary / >500KB / deleted files render an explanatory
-// placeholder, not the diff); it is intentionally lower than git's own
-// maxBuffer (8 MiB) so the wire payload stays bounded even when git is happy
-// to keep going.
-const DIFF_TEXT_LIMIT_BYTES = 500 * 1024;
-
-/// Wire-shape hunk. Narrows DiffParser's DiffLine.kind to the three values
-/// the protocol commits to. Internal `noNewline` markers are dropped at the
-/// RPC boundary.
-interface WireHunk {
-  oldStart: number;
-  oldLines: number;
-  newStart: number;
-  newLines: number;
-  header: string;
-  lines: { kind: "context" | "add" | "del"; text: string }[];
-}
-
-interface GitDiffResult {
-  hunks: WireHunk[];
-  baseSha: string;
-  headSha: string;
-  isBinary: boolean;
-  tooLarge?: true;
-}
-
-/// Sentinel returned in `baseSha` / `headSha` when the slot has no real blob
-/// to point at: deleted working-tree file, or `INDEX` for a path not in the
-/// index. 40 chars so the wire field is always a fixed-width SHA-like
-/// string.
-const ZERO_SHA = "0000000000000000000000000000000000000000";
-
-/// Translate (base, head) into the args that go AFTER `git diff` and BEFORE
-/// the pathspec. Throws invalidParams for nonsensical combinations.
-function buildDiffSelectorArgs(base: string, head: string | null): string[] {
-  if (head === null) {
-    if (base === "INDEX") {
-      // Bare `git diff -- <path>` = index to working tree.
-      return [];
-    }
-    return [base];
-  }
-  if (head === "INDEX") {
-    if (base === "INDEX") {
-      throw new RpcError(
-        RPC_ERR.invalidParams,
-        "base and head cannot both be INDEX",
-      );
-    }
-    return ["--cached", base];
-  }
-  if (base === "INDEX") {
-    throw new RpcError(
-      RPC_ERR.invalidParams,
-      "INDEX as base only supported with head=null or head=INDEX",
-    );
-  }
-  return [base, head];
-}
-
-async function resolveBaseSha(
-  cwd: string,
-  base: string,
-  path: string,
-): Promise<string> {
-  if (base === "INDEX") {
-    return (await indexBlobSha(cwd, path)) ?? ZERO_SHA;
-  }
-  const sha = await resolveRef(cwd, base);
-  if (sha === null) {
-    throw new RpcError(
-      RPC_ERR.invalidParams,
-      `cannot resolve base ref: ${base}`,
-    );
-  }
-  return sha;
-}
-
-async function resolveHeadSha(
-  cwd: string,
-  head: string | null,
-  path: string,
-): Promise<string> {
-  if (head === null) {
-    return (await hashWorkingFile(cwd, path)) ?? ZERO_SHA;
-  }
-  if (head === "INDEX") {
-    return (await indexBlobSha(cwd, path)) ?? ZERO_SHA;
-  }
-  const sha = await resolveRef(cwd, head);
-  if (sha === null) {
-    throw new RpcError(
-      RPC_ERR.invalidParams,
-      `cannot resolve head ref: ${head}`,
-    );
-  }
-  return sha;
-}
-
-async function assertPathExists(
-  cwd: string,
-  path: string,
-  base: string,
-  head: string | null,
-): Promise<void> {
-  // Working tree first: a present file is the cheapest "yes".
-  try {
-    await fsStat(pathJoin(cwd, path));
-    return;
-  } catch {
-    // not on disk; keep looking
-  }
-  // Index covers staged additions even before the first commit.
-  if (await pathInIndex(cwd, path)) return;
-  // Commit trees on either side of the requested diff.
-  const refs = new Set<string>();
-  if (base !== "INDEX") refs.add(base);
-  if (head !== null && head !== "INDEX") refs.add(head);
-  for (const ref of refs) {
-    const resolved = await resolveRef(cwd, ref);
-    if (resolved === null) continue;
-    if (await pathInTree(cwd, resolved, path)) return;
-  }
-  throw new RpcError(RPC_ERR.invalidParams, `no such path: ${path}`);
-}
-
-function toWireHunks(hunks: DiffHunk[]): WireHunk[] {
-  return hunks.map((h) => ({
-    oldStart: h.oldStart,
-    oldLines: h.oldLines,
-    newStart: h.newStart,
-    newLines: h.newLines,
-    header: h.header,
-    lines: h.lines
-      .filter((l) => l.kind !== "noNewline")
-      .map((l) => ({
-        kind: l.kind as "context" | "add" | "del",
-        text: l.text,
-      })),
-  }));
-}
+// git.* handlers live in ./rpcHandlers/gitHandlers.ts (registered below).
 
 // ---- Terminal ----
 
@@ -872,6 +535,32 @@ methods.set("terminal.list", (ctx, params) => {
   };
 });
 
+// `terminal.subscribe(ids?: string[])` — per-connection fan-out gate for
+// `terminal.data` / `terminal.exit` pushes. Per first principle #5: the
+// protocol carries scope from day one. v0 default (a connection that has
+// never called `terminal.subscribe`) is implicit subscribe-all so legacy
+// single-client peers keep working unchanged; a call with `ids` switches
+// to a filtered set; omitting `ids` (or passing an empty array) is an
+// explicit subscribe-all. `terminal.unsubscribe` opts the connection out
+// of all terminal fan-out for as long as the connection lives.
+methods.set("terminal.subscribe", (ctx, params) => {
+  const sub = requireSubscriber(ctx);
+  const p = asBag(params);
+  const ids = optionalStringArray(p, "ids");
+  if (ids === undefined || ids.length === 0) {
+    sub.terminalsSubscribed = true;
+  } else {
+    sub.terminalsSubscribed = new Set(ids);
+  }
+  return { ok: true };
+});
+
+methods.set("terminal.unsubscribe", (ctx) => {
+  const sub = requireSubscriber(ctx);
+  sub.terminalsSubscribed = false;
+  return { ok: true };
+});
+
 methods.set("terminal.history", (ctx, params) => {
   const p = asBag(params);
   const sessionId = requireString(p, "sessionId");
@@ -894,20 +583,9 @@ function findWorkspaceOwning(
   return ws;
 }
 
-// ---- Notifications ----
-//
-// All under `notification.*`; subscription is per-connection. Fan-out lives
-// in state.ts (consults the per-Subscriber `notificationsSubscribed` flag).
-// See docs/design/mobile-code-platform.md §4.5.
+// notification.* handlers live in ./rpcHandlers/notificationHandlers.ts (registered below).
 
-export const METHOD_NOTIFICATION_SUBSCRIBE = "notification.subscribe";
-export const METHOD_NOTIFICATION_UNSUBSCRIBE = "notification.unsubscribe";
-export const METHOD_NOTIFICATION_LIST = "notification.list";
-export const METHOD_NOTIFICATION_MARK_READ = "notification.markRead";
-export const METHOD_NOTIFICATION_DELETE = "notification.delete";
-export const METHOD_NOTIFICATION_MARK_IMPORTANT = "notification.markImportant";
-
-function requireSubscriber(ctx: RpcContext): Subscriber {
+export function requireSubscriber(ctx: RpcContext): Subscriber {
   // Should never trigger: the connection layer always supplies a Subscriber
   // for authenticated dispatch. Defensive throw so a future refactor doesn't
   // silently lose subscription state.
@@ -917,7 +595,7 @@ function requireSubscriber(ctx: RpcContext): Subscriber {
   return ctx.subscriber;
 }
 
-function requireStringArray(p: ParamBag, key: string): string[] {
+export function requireStringArray(p: ParamBag, key: string): string[] {
   const v = p[key];
   if (!Array.isArray(v)) {
     throw new RpcError(RPC_ERR.invalidParams, `${key} must be an array`);
@@ -935,73 +613,6 @@ function requireStringArray(p: ParamBag, key: string): string[] {
   return out;
 }
 
-methods.set(METHOD_NOTIFICATION_SUBSCRIBE, (ctx) => {
-  const sub = requireSubscriber(ctx);
-  sub.notificationsSubscribed = true;
-  return { ok: true };
-});
-
-methods.set(METHOD_NOTIFICATION_UNSUBSCRIBE, (ctx) => {
-  const sub = requireSubscriber(ctx);
-  sub.notificationsSubscribed = false;
-  return { ok: true };
-});
-
-methods.set(METHOD_NOTIFICATION_LIST, (ctx, params) => {
-  const p = asBag(params);
-  const since = optionalNonNegativeInt(p, "since");
-  const source = optionalString(p, "source");
-  const includeRead = optionalBool(p, "includeRead");
-  const limitRaw = p.limit;
-  let limit = 50;
-  if (limitRaw !== undefined && limitRaw !== null) {
-    if (
-      typeof limitRaw !== "number" ||
-      !Number.isInteger(limitRaw) ||
-      limitRaw < 1 ||
-      limitRaw > 500
-    ) {
-      throw new RpcError(
-        RPC_ERR.invalidParams,
-        "limit must be an integer in [1, 500]",
-      );
-    }
-    limit = limitRaw;
-  }
-  const query: Parameters<typeof ctx.state.notificationHub.list>[0] = { limit };
-  if (since !== undefined) query.since = since;
-  if (source !== undefined) query.source = source;
-  if (includeRead !== undefined) query.includeRead = includeRead;
-  // Pass the caller's deviceId through so the store can apply
-  // `includeRead=false` as a per-device filter. Subscriber is always
-  // present on authenticated dispatch.
-  const sub = ctx.subscriber;
-  if (sub?.notificationDeviceId !== undefined) {
-    query.deviceId = sub.notificationDeviceId;
-  }
-  return ctx.state.notificationHub.list(query);
-});
-
-methods.set(METHOD_NOTIFICATION_MARK_READ, (ctx, params) => {
-  const p = asBag(params);
-  const ids = requireStringArray(p, "ids");
-  const sub = requireSubscriber(ctx);
-  // Old clients that didn't supply client.deviceId on handshake get an
-  // ephemeral id at subscription time so their reads still hit the DB.
-  // Acceptable transition (see task brief §5).
-  if (sub.notificationDeviceId === undefined) {
-    sub.notificationDeviceId = `ephemeral-${randomUUID()}`;
-  }
-  ctx.state.notificationHub.markRead(ids, sub.notificationDeviceId);
-  return { ok: true };
-});
-
-methods.set(METHOD_NOTIFICATION_DELETE, (ctx, params) => {
-  const p = asBag(params);
-  const ids = requireStringArray(p, "ids");
-  ctx.state.notificationHub.delete(ids);
-  return { ok: true };
-});
 
 // ---- UI descriptor protocol (design §4.3, issue #59) ----
 //
@@ -1076,20 +687,6 @@ methods.set("ui.event", (ctx, params) => {
   return {};
 });
 
-methods.set(METHOD_NOTIFICATION_MARK_IMPORTANT, (ctx, params) => {
-  const p = asBag(params);
-  const id = requireString(p, "id");
-  const importantRaw = p.important;
-  if (typeof importantRaw !== "boolean") {
-    throw new RpcError(RPC_ERR.invalidParams, "important must be a boolean");
-  }
-  // Symmetric with `notification.delete`: unknown ids are silently swallowed
-  // (probably already GC'd or never existed on this backend). Returning
-  // `{ ok: true }` lets clients fire-and-forget without needing per-call
-  // error handling.
-  ctx.state.notificationHub.markImportant(id, importantRaw);
-  return { ok: true };
-});
 
 // ---- Plugin host ----
 //
@@ -1106,7 +703,7 @@ export const METHOD_PLUGIN_UNSUBSCRIBE = "plugin.unsubscribe";
 function requirePluginHost(ctx: RpcContext): NonNullable<RpcContext["state"]["pluginHost"]> {
   const host = ctx.state.pluginHost;
   if (host === null) {
-    throw new RpcError(RPC_ERR.internal, "plugin host not initialized");
+    throw new RpcError(RPC_ERR.notReady, "plugin host not initialized");
   }
   return host;
 }

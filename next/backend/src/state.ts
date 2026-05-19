@@ -53,6 +53,17 @@ export interface Subscriber {
   notificationDeviceId?: string;
   notificationsSubscribed?: boolean;
   pluginsSubscribed?: boolean;
+  /// Per-connection terminal subscription. `true` (or unset, see default
+  /// below) means subscribe-all — every `terminal.data` / `terminal.exit`
+  /// fans out to this peer. An explicit `terminal.subscribe(ids: string[])`
+  /// flips this to a `Set<string>` filtering to a specific set of sessions;
+  /// `false` opts out entirely.
+  ///
+  /// v0 default is implicit subscribe-all: legacy single-client setups that
+  /// never call `terminal.subscribe` keep receiving every frame, matching
+  /// the prior behavior. Connections that explicitly subscribe to a scoped
+  /// set get filtered fan-out per first principle #5.
+  terminalsSubscribed?: true | false | Set<string>;
 }
 
 export interface ProcessStateOptions {
@@ -118,24 +129,31 @@ export class ProcessState {
       : {};
     const store = new NotificationStore(storeOpts);
     this.notificationHub = new NotificationHub(store);
+    const notifPred = (sub: Subscriber): boolean =>
+      sub.notificationsSubscribed === true;
     this.notificationHub.attachFanOut({
-      show: (n) => this.broadcastNotification("notification.show", { notification: n }),
+      show: (n) =>
+        this.broadcast("notification.show", { notification: n }, notifPred),
       superseded: (oldId, newId) =>
-        this.broadcastNotification("notification.superseded", { oldId, newId }),
+        this.broadcast(
+          "notification.superseded",
+          { oldId, newId },
+          notifPred,
+        ),
       readChanged: (ids, readByDevice, ts) =>
-        this.broadcastNotification("notification.readChanged", {
-          ids,
-          readByDevice,
-          ts,
-        }),
-      deleted: (ids) => this.broadcastNotification("notification.deleted", { ids }),
+        this.broadcast(
+          "notification.readChanged",
+          { ids, readByDevice, ts },
+          notifPred,
+        ),
+      deleted: (ids) => this.broadcast("notification.deleted", { ids }, notifPred),
     });
 
     const multiplexer: MultiplexerInfo = opts.multiplexer ?? { kind: "none" };
     const terminalPersistence: TerminalPersistenceHook | null =
       opts.terminalPersistence ?? null;
     this.workspaces = new WorkspaceRegistry(
-      // terminal data → broadcast to every subscriber.
+      // terminal data → broadcast filtered by per-connection terminal scope.
       (sessionId, data, seqEnd) => {
         const wsId = this.workspaceIdForTerminal(sessionId);
         if (wsId === null) return;
@@ -145,11 +163,11 @@ export class ProcessState {
           dataBase64: data.toString("base64"),
           seqEnd,
         };
-        for (const sub of this.subscribers) {
-          sendNotification(sub.ws, "terminal.data", params);
-        }
+        this.broadcast("terminal.data", params, (sub) =>
+          terminalSubscriberMatches(sub, sessionId),
+        );
       },
-      // terminal exit → broadcast.
+      // terminal exit → broadcast filtered by per-connection terminal scope.
       (sessionId, exitCode) => {
         const wsId = this.workspaceIdForTerminal(sessionId);
         const params = {
@@ -157,9 +175,9 @@ export class ProcessState {
           workspaceId: wsId, // may be null if workspace was already closed
           exitCode,
         };
-        for (const sub of this.subscribers) {
-          sendNotification(sub.ws, "terminal.exit", params);
-        }
+        this.broadcast("terminal.exit", params, (sub) =>
+          terminalSubscriberMatches(sub, sessionId),
+        );
       },
       multiplexer,
       terminalPersistence,
@@ -194,8 +212,23 @@ export class ProcessState {
   /// for user-initiated closes (so two-client scenarios stay in sync) and for
   /// the process-exit graceful shutdown path.
   public broadcastWorkspaceClosed(id: string): void {
+    this.broadcast("workspace.closed", { id });
+  }
+
+  /// Single fan-out helper. Walks the subscriber set and sends `params`
+  /// under `method` to every peer for which `predicate` returns true
+  /// (default: every peer). Per-namespace gates collapse into one-line
+  /// predicates at the call site — see `broadcastWorkspaceClosed`,
+  /// `broadcastPluginStateChanged`, and the notification / terminal
+  /// fan-out wiring above.
+  public broadcast(
+    method: string,
+    params: unknown,
+    predicate?: (sub: Subscriber) => boolean,
+  ): void {
     for (const sub of this.subscribers) {
-      sendNotification(sub.ws, "workspace.closed", { id });
+      if (predicate !== undefined && !predicate(sub)) continue;
+      sendNotification(sub.ws, method, params);
     }
   }
 
@@ -254,27 +287,31 @@ export class ProcessState {
     this.diffCache.deleteWhere((key) => key.startsWith(`${workspaceId} `));
   }
 
-  /// Broadcast a `notification.*` push frame to every subscriber that has
-  /// called `notification.subscribe`. Unsubscribed connections never see
-  /// these frames — that's how a foreground service can drop notifications
-  /// (e.g. when the user toggles the Settings off) without dropping the
-  /// connection.
-  private broadcastNotification(method: string, params: unknown): void {
-    for (const sub of this.subscribers) {
-      if (sub.notificationsSubscribed !== true) continue;
-      sendNotification(sub.ws, method, params);
-    }
-  }
-
   /// `plugin.stateChanged` fan-out — same per-subscriber subscription
   /// gate as the notification surface. Exposed for the host to call via
   /// the `onStateChanged` constructor hook (see `index.ts`).
   public broadcastPluginStateChanged(change: PluginStateChange): void {
-    for (const sub of this.subscribers) {
-      if (sub.pluginsSubscribed !== true) continue;
-      sendNotification(sub.ws, "plugin.stateChanged", change);
-    }
+    this.broadcast(
+      "plugin.stateChanged",
+      change,
+      (sub) => sub.pluginsSubscribed === true,
+    );
   }
+}
+
+/// True when a `terminal.data`/`terminal.exit` frame for `sessionId` should
+/// reach `sub`. Default (no explicit subscribe) is subscribe-all — preserves
+/// v0 single-client behavior for legacy peers. A `Set<string>` opts into a
+/// specific session list; explicit `false` opts out entirely.
+function terminalSubscriberMatches(
+  sub: Subscriber,
+  sessionId: string,
+): boolean {
+  const t = sub.terminalsSubscribed;
+  if (t === undefined || t === true) return true;
+  if (t === false) return false;
+  if (t.size === 0) return true; // empty set === subscribe-all, see terminal.subscribe
+  return t.has(sessionId);
 }
 
 /// Bounded LRU map. `get` re-inserts the hit key so recency is honored —

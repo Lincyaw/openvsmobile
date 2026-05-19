@@ -41,6 +41,11 @@ export class Connection implements Subscriber {
   /// `notification.subscribe`; fan-out helper in state.ts skips any
   /// subscriber where this is not strictly `true`.
   public notificationsSubscribed?: boolean;
+  /// Per-connection terminal subscription. Unset (default) means implicit
+  /// subscribe-all — v0 backward-compat for single-client peers that
+  /// pre-date `terminal.subscribe`. See state.ts:Subscriber for the full
+  /// semantics.
+  public terminalsSubscribed?: true | false | Set<string>;
   private readonly state: ProcessState;
   private readonly expectedToken: string;
   private readonly serverVersion: string;
@@ -128,7 +133,10 @@ export class Connection implements Subscriber {
     } catch (err) {
       if (err instanceof RpcError && err.code === RPC_ERR.unauthorized) {
         // Reply with the auth error, then close after the send completes so
-        // the client sees the error frame instead of a bare 1008.
+        // the client sees the error frame instead of a bare 1008. This path
+        // intentionally bypasses `safeSend` — we want the close callback to
+        // fire after the frame flushes, which the `ws.send` ack-callback
+        // provides and `safeSend` does not.
         if (this.ws.readyState === this.ws.OPEN) {
           const msg = JSON.stringify({
             jsonrpc: "2.0",
