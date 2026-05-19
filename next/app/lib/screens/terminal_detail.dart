@@ -91,6 +91,9 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
   int? _activePointer;
   VelocityTracker? _dragTracker;
 
+  AnimationStatusListener? _routeAnimListener;
+  Animation<double>? _watchedRouteAnim;
+
   @override
   void initState() {
     super.initState();
@@ -113,7 +116,57 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Defer the initial keyboard request until the page transition has
+    // finished. Triggering it via TerminalView's `autofocus: true` during
+    // the ~300ms MaterialPageRoute push fights with the
+    // soft-keyboard-driven viewport resize: xterm's outer Scrollable
+    // gestures don't settle in the arena until layout is stable, so the
+    // first vertical drag is silently dropped. Tapping later forces
+    // `requestKeyboard` through `_onTapDown`, which is what unsticks it.
+    // By waiting for AnimationStatus.completed we get the same focus +
+    // keyboard outcome without the race.
+    final route = ModalRoute.of(context);
+    final anim = route?.animation;
+    if (anim == _watchedRouteAnim) return;
+    if (_watchedRouteAnim != null && _routeAnimListener != null) {
+      _watchedRouteAnim!.removeStatusListener(_routeAnimListener!);
+    }
+    _watchedRouteAnim = anim;
+    if (anim == null) {
+      _requestKeyboardAfterTransition();
+      return;
+    }
+    if (anim.status == AnimationStatus.completed) {
+      _requestKeyboardAfterTransition();
+      return;
+    }
+    _routeAnimListener = (status) {
+      if (status == AnimationStatus.completed) {
+        anim.removeStatusListener(_routeAnimListener!);
+        _routeAnimListener = null;
+        _requestKeyboardAfterTransition();
+      }
+    };
+    anim.addStatusListener(_routeAnimListener!);
+  }
+
+  void _requestKeyboardAfterTransition() {
+    // One frame after transition end gives xterm's Scrollable a clean
+    // post-layout state before the keyboard opens. Without this delay
+    // we'd just move the race window earlier by a few ms.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _terminalViewKey.currentState?.requestKeyboard();
+    });
+  }
+
+  @override
   void dispose() {
+    if (_watchedRouteAnim != null && _routeAnimListener != null) {
+      _watchedRouteAnim!.removeStatusListener(_routeAnimListener!);
+    }
     // Be defensive: only restore if we're still the installed proxy. If
     // some other layer rewired onOutput / mouseHandler between init and
     // now, leave it alone — touching it would clobber their handler.
@@ -221,7 +274,12 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
               key: _terminalViewKey,
               controller: _ctrl,
               scrollController: _scrollback,
-              autofocus: true,
+              // autofocus is deliberately off — `didChangeDependencies`
+              // requests the keyboard after the MaterialPageRoute push
+              // transition completes. Doing it via xterm's autofocus
+              // races with the route animation and breaks the first
+              // vertical drag (see didChangeDependencies comment).
+              autofocus: false,
               backgroundOpacity: 1.0,
               simulateScroll: false,
               // Bundled in pubspec.yaml. Carries Powerline + Nerd Font
