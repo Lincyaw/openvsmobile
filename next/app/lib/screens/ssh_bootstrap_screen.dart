@@ -44,6 +44,7 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
   final _keyCtrl = TextEditingController();
   final _passphraseCtrl = TextEditingController();
   final _tarballCtrl = TextEditingController();
+  final _mirrorCtrl = TextEditingController();
   final _scrollCtrl = ScrollController();
 
   _AuthMode _authMode = _AuthMode.password;
@@ -70,6 +71,7 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
     _keyCtrl.dispose();
     _passphraseCtrl.dispose();
     _tarballCtrl.dispose();
+    _mirrorCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
   }
@@ -103,6 +105,9 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
       tarballPath: _tarballCtrl.text.trim().isEmpty
           ? null
           : _tarballCtrl.text.trim(),
+      githubMirror: _mirrorCtrl.text.trim().isEmpty
+          ? null
+          : _mirrorCtrl.text.trim(),
     );
 
     _sub = stream.listen((event) {
@@ -317,6 +322,17 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
                     '/home/you/openvsmobile-backend-linux-x64.tar.gz',
                 helperText:
                     'If set, install.sh skips the GitHub download and uses this local file.',
+              ),
+            ),
+            const SizedBox(height: AppSpacing.md),
+            TextFormField(
+              controller: _mirrorCtrl,
+              enabled: !_running,
+              decoration: const InputDecoration(
+                labelText: 'GitHub mirror (optional)',
+                hintText: 'https://ghproxy.com/https://github.com',
+                helperText:
+                    'Override github.com when the releases CDN is slow or blocked. Exported as GITHUB_MIRROR.',
               ),
             ),
           ],

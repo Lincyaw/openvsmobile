@@ -42,6 +42,15 @@ Flags:
                         service is active. Otherwise no effect.
   -h, --help            Show this help.
 
+Env:
+  GITHUB_MIRROR         Override the GitHub host used for release downloads.
+                        Default: https://github.com. Examples:
+                          GITHUB_MIRROR=https://ghproxy.com/https://github.com
+                          GITHUB_MIRROR=https://gh.example.com
+                        Useful when the GitHub releases CDN
+                        (release-assets.githubusercontent.com) is slow or
+                        blocked on the target host.
+
 Exit codes:
   0   success
   1   generic failure (e.g. backend never wrote runtime.json)
@@ -60,6 +69,42 @@ log() { printf '[install] %s\n' "$*" >&2; }
 fatal() { printf '[install] error: %s\n' "${1:-unspecified error}" >&2; exit "${2:-1}"; }
 need() {
   command -v "$1" >/dev/null 2>&1 || fatal "missing dependency: $1 (install it and retry)" 7
+}
+
+# Download a URL to <dest>.part and atomically rename on success.
+#
+# Flags rationale:
+#   --connect-timeout 15  fail the initial TCP/TLS handshake fast.
+#   --max-time 900        absolute cap so a slow trickle can't hang forever.
+#   --speed-time 30       any 30s window averaging below --speed-limit aborts,
+#   --speed-limit 10240   so --retry actually kicks in on a stalled CDN
+#                         (default --retry only fires on hard errors, not
+#                         slow downloads — the original bug here).
+#   --retry 3 --retry-all-errors
+#                         retry on any failure class, including the timeouts
+#                         above.
+# Progress is intentionally NOT streamed: curl over an SSH exec channel sees
+# a non-tty stderr and suppresses its progress meter anyway, and --progress-bar
+# emits \r-overwritten lines that the Flutter client's LineSplitter would
+# buffer indefinitely. We log byte size after each download instead.
+dl() {
+  local url="$1" dest="$2"
+  log "downloading $url"
+  if ! curl -fL \
+      --connect-timeout 15 \
+      --max-time 900 \
+      --speed-time 30 \
+      --speed-limit 10240 \
+      --retry 3 \
+      --retry-all-errors \
+      -o "$dest.part" "$url"; then
+    rm -f "$dest.part"
+    return 1
+  fi
+  mv "$dest.part" "$dest"
+  local sz
+  sz="$(stat -c '%s' "$dest" 2>/dev/null || wc -c <"$dest")"
+  log "downloaded $(basename "$dest") (${sz} bytes)"
 }
 
 # ----- args -----
@@ -138,25 +183,24 @@ if [[ -n "$TARBALL_OVERRIDE" ]]; then
   [[ -f "$SHA_PATH" ]] || fatal "matching sha256 not found: $SHA_PATH" 3
   log "using local tarball: $TARBALL_PATH"
 else
-  RELEASE_BASE="https://github.com/${REPO_SLUG}/releases/download/v${VERSION}"
+  GH_HOST="${GITHUB_MIRROR:-https://github.com}"
+  GH_HOST="${GH_HOST%/}"
+  RELEASE_BASE="$GH_HOST/${REPO_SLUG}/releases/download/v${VERSION}"
   TARBALL_URL="$RELEASE_BASE/$TARBALL_NAME"
   SHA_URL="$RELEASE_BASE/$SHA_NAME"
   TARBALL_PATH="$CACHE_DIR/v${VERSION}-$TARBALL_NAME"
   SHA_PATH="$CACHE_DIR/v${VERSION}-$SHA_NAME"
 
-  log "downloading $TARBALL_URL"
-  if ! curl -fL --retry 3 -o "$TARBALL_PATH.part" "$TARBALL_URL"; then
-    rm -f "$TARBALL_PATH.part"
-    fatal "failed to download tarball (release v$VERSION may not exist)" 3
+  if [[ -n "${GITHUB_MIRROR:-}" ]]; then
+    log "using GITHUB_MIRROR=$GH_HOST"
   fi
-  mv "$TARBALL_PATH.part" "$TARBALL_PATH"
 
-  log "downloading $SHA_URL"
-  if ! curl -fL --retry 3 -o "$SHA_PATH.part" "$SHA_URL"; then
-    rm -f "$SHA_PATH.part"
-    fatal "failed to download .sha256" 3
+  if ! dl "$TARBALL_URL" "$TARBALL_PATH"; then
+    fatal "failed to download tarball (release v$VERSION may not exist, or network is too slow — try setting GITHUB_MIRROR or pre-stage with --tarball)" 3
   fi
-  mv "$SHA_PATH.part" "$SHA_PATH"
+  if ! dl "$SHA_URL" "$SHA_PATH"; then
+    fatal "failed to download .sha256 (try setting GITHUB_MIRROR or pre-stage with --tarball)" 3
+  fi
 fi
 
 # ----- verify checksum -----

@@ -77,6 +77,7 @@ class SshBootstrapService {
     required String username,
     required SshAuth auth,
     String? tarballPath,
+    String? githubMirror,
   }) async* {
     final controller = StreamController<BootstrapEvent>();
     unawaited(_drive(
@@ -86,6 +87,7 @@ class SshBootstrapService {
       username: username,
       auth: auth,
       tarballPath: tarballPath,
+      githubMirror: githubMirror,
     ));
     yield* controller.stream;
   }
@@ -97,6 +99,7 @@ class SshBootstrapService {
     required String username,
     required SshAuth auth,
     String? tarballPath,
+    String? githubMirror,
   }) async {
     SSHClient? client;
     SSHSession? session;
@@ -124,8 +127,12 @@ class SshBootstrapService {
           tarballPath != null && tarballPath.trim().isNotEmpty
               ? " --tarball '${_shellSingleQuote(tarballPath.trim())}'"
               : '';
+      final mirror = githubMirror?.trim();
+      final envPrefix = (mirror != null && mirror.isNotEmpty)
+          ? "GITHUB_MIRROR='${_shellSingleQuote(mirror)}' "
+          : '';
       final command =
-          "bash -s -- '${_shellSingleQuote(kBackendVersion)}'$tarballArg";
+          "${envPrefix}bash -s -- '${_shellSingleQuote(kBackendVersion)}'$tarballArg";
 
       session = await client.execute(command);
 
