@@ -22,7 +22,12 @@ import type {
   TerminalSnapshot,
   TerminalPersistenceHook,
 } from "./terminal.js";
-import type { MultiplexerInfo } from "./multiplexer.js";
+import {
+  listZellijSessions,
+  type ExecRunner,
+  type ExternalSession,
+  type MultiplexerInfo,
+} from "./multiplexer.js";
 import {
   NotificationHub,
   NotificationStore,
@@ -86,6 +91,10 @@ export interface ProcessStateOptions {
   /// when omitted, terminals work but nothing about them is persisted to
   /// disk. Production wires a `TerminalPersistence` here in index.ts.
   terminalPersistence?: TerminalPersistenceHook;
+  /// Test injection point for zellij CLI calls made from RPC handlers
+  /// (currently `terminal.listExternalSessions`). Production leaves this
+  /// undefined and the real `execFile`-backed runner kicks in.
+  execRunner?: ExecRunner;
 }
 
 export interface AttachPluginHostFanOut {
@@ -120,6 +129,14 @@ export class ProcessState {
   /// `ctx.state.pluginHost` to satisfy `plugin.*` and `ui.*` handlers.
   public pluginHost: PluginHost | null = null;
 
+  /// Probe result captured at construction. `listExternalSessions` short-
+  /// circuits to an empty array when the multiplexer is "none" — there's
+  /// nothing to list on a host without zellij.
+  public readonly multiplexer: MultiplexerInfo;
+  /// Test injection for the zellij CLI; production callers leave this
+  /// unset and the real runner kicks in inside `multiplexer.ts`.
+  public readonly execRunner: ExecRunner | undefined;
+
   private readonly subscribers = new Set<Subscriber>();
 
   constructor(opts: ProcessStateOptions = {}) {
@@ -150,8 +167,18 @@ export class ProcessState {
     });
 
     const multiplexer: MultiplexerInfo = opts.multiplexer ?? { kind: "none" };
+    this.multiplexer = multiplexer;
+    this.execRunner = opts.execRunner;
     const terminalPersistence: TerminalPersistenceHook | null =
       opts.terminalPersistence ?? null;
+    const onTerminalDetached = (sessionId: string): void => {
+      const wsId = this.workspaceIdForTerminal(sessionId);
+      this.broadcast(
+        "terminal.detached",
+        { sessionId, workspaceId: wsId },
+        (sub) => terminalSubscriberMatches(sub, sessionId),
+      );
+    };
     this.workspaces = new WorkspaceRegistry(
       // terminal data → broadcast filtered by per-connection terminal scope.
       (sessionId, data, seqEnd) => {
@@ -181,6 +208,7 @@ export class ProcessState {
       },
       multiplexer,
       terminalPersistence,
+      onTerminalDetached,
     );
     this.workspaces.setInvalidateHook((workspaceId) => {
       this.invalidateDiffsForWorkspace(workspaceId);
@@ -285,6 +313,38 @@ export class ProcessState {
   /// output depends on every blob in the working tree.
   public invalidateDiffsForWorkspace(workspaceId: string): void {
     this.diffCache.deleteWhere((key) => key.startsWith(`${workspaceId} `));
+  }
+
+  /// External-session discovery for `terminal.listExternalSessions`.
+  /// Returns `[]` when the multiplexer probe was "none" — nothing to
+  /// list on a host without zellij. Each session is annotated with
+  /// `adopted: true` when ANY active workspace's TerminalRegistry has
+  /// claimed that name as an externalSessionId; adopted rows render
+  /// disabled in the discovery sheet.
+  public async listExternalSessions(): Promise<
+    Array<ExternalSession & { adopted: boolean }>
+  > {
+    if (this.multiplexer.kind !== "zellij") return [];
+    const sessions = await listZellijSessions(this.execRunner);
+    const claimed = new Set<string>();
+    for (const info of this.workspaces.listActive()) {
+      const ws = this.workspaces.get(info.id);
+      for (const name of ws.terminals.externalSessionIds()) {
+        claimed.add(name);
+      }
+    }
+    return sessions.map((s) => ({ ...s, adopted: claimed.has(s.name) }));
+  }
+
+  /// Return true when `sessionName` is currently bound to a terminal in
+  /// ANY active workspace's registry. Used by the adoption handler to
+  /// refuse double-adoption per the task brief.
+  public isExternalSessionAdopted(sessionName: string): boolean {
+    for (const info of this.workspaces.listActive()) {
+      const ws = this.workspaces.get(info.id);
+      if (ws.terminals.externalSessionIds().includes(sessionName)) return true;
+    }
+    return false;
   }
 
   /// `plugin.stateChanged` fan-out — same per-subscriber subscription

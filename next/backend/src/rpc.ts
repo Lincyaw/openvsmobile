@@ -561,6 +561,39 @@ methods.set("terminal.unsubscribe", (ctx) => {
   return { ok: true };
 });
 
+methods.set("terminal.listExternalSessions", async (ctx) => {
+  const sessions = await ctx.state.listExternalSessions();
+  return { sessions };
+});
+
+methods.set("terminal.adoptExternalSession", (ctx, params) => {
+  const p = asBag(params);
+  const sessionName = requireString(p, "sessionName");
+  const cols = requirePositiveInt(p, "cols");
+  const rows = requirePositiveInt(p, "rows");
+  const cwdRaw = optionalString(p, "cwd");
+  if (ctx.state.multiplexer.kind !== "zellij") {
+    throw new RpcError(
+      RPC_ERR.notReady,
+      "adoptExternalSession: zellij not available on this host",
+    );
+  }
+  if (ctx.state.isExternalSessionAdopted(sessionName)) {
+    throw new RpcError(
+      RPC_ERR.invalidParams,
+      `zellij session "${sessionName}" is already adopted by an open workspace`,
+    );
+  }
+  const ws = ctx.state.workspaces.requireById(p.workspaceId);
+  // cwd defaults to the workspace root; the adopted zellij session may
+  // be re-adopted from another workspace later (no exclusive lock) — the
+  // backend treats the chip ↔ session mapping per-workspace, but zellij
+  // itself multiplexes attach clients kernel-side.
+  const cwd = cwdRaw !== undefined && cwdRaw.length > 0 ? cwdRaw : ws.root;
+  const snap = ws.terminals.adopt(sessionName, cols, rows, cwd);
+  return { sessionId: snap.id, workspaceId: ws.id, ...snap };
+});
+
 methods.set("terminal.history", (ctx, params) => {
   const p = asBag(params);
   const sessionId = requireString(p, "sessionId");

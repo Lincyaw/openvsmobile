@@ -94,6 +94,25 @@ class _TerminalTabState extends State<TerminalTab> {
     );
   }
 
+  Future<void> _openDiscoverSheet() async {
+    final w = widget.appState.currentWorkspace;
+    if (w == null) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetCtx) => _DiscoverSessionsSheet(
+        appState: widget.appState,
+        workspaceId: w.id,
+        onAdopted: (session) {
+          Navigator.of(sheetCtx).pop();
+          final sessions = widget.appState.currentTerminals;
+          final idx = sessions.indexWhere((s) => s.id == session.id);
+          _openDetail(session, idx >= 0 ? idx : sessions.length - 1);
+        },
+      ),
+    );
+  }
+
   Future<void> _createAndOpen() async {
     final w = widget.appState.currentWorkspace;
     if (w == null) return;
@@ -143,6 +162,12 @@ class _TerminalTabState extends State<TerminalTab> {
                 icon: const Icon(Icons.add),
                 label: const Text('Start terminal'),
               ),
+              const SizedBox(height: AppSpacing.sm),
+              TextButton.icon(
+                onPressed: _openDiscoverSheet,
+                icon: const Icon(Icons.search),
+                label: const Text('Discover external sessions'),
+              ),
             ],
           ),
         ),
@@ -156,11 +181,14 @@ class _TerminalTabState extends State<TerminalTab> {
       builder: (context, _) {
         final now = DateTime.now();
         return ListView.separated(
-          itemCount: sessions.length + 1,
+          itemCount: sessions.length + 2,
           separatorBuilder: (_, _) => const Divider(height: 1),
           itemBuilder: (context, index) {
             if (index == sessions.length) {
               return _NewSessionTile(onTap: _createAndOpen);
+            }
+            if (index == sessions.length + 1) {
+              return _DiscoverSessionsTile(onTap: _openDiscoverSheet);
             }
             final s = sessions[index];
             final preview = widget.appState.terminalPreviewFor(s.id);
@@ -172,6 +200,7 @@ class _TerminalTabState extends State<TerminalTab> {
                 preview.lastDataAt ?? s.createdAt,
                 now,
               ),
+              detached: s.detached,
               onTap: () => _openDetail(s, index),
               onLongPress: () => _confirmDispose(s),
             );
@@ -221,6 +250,7 @@ class _SessionTile extends StatelessWidget {
   final String cwdBasename;
   final String? previewText;
   final String timestamp;
+  final bool detached;
   final VoidCallback onTap;
   final VoidCallback onLongPress;
   const _SessionTile({
@@ -230,6 +260,7 @@ class _SessionTile extends StatelessWidget {
     required this.timestamp,
     required this.onTap,
     required this.onLongPress,
+    this.detached = false,
   });
 
   @override
@@ -267,10 +298,25 @@ class _SessionTile extends StatelessWidget {
                           style: AppText.mono(
                             fontSize: theme.textTheme.bodyMedium?.fontSize,
                             fontWeight: FontWeight.w500,
+                            fontStyle: detached
+                                ? FontStyle.italic
+                                : FontStyle.normal,
+                            color: detached ? dim : null,
                           ),
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
+                      if (detached)
+                        Padding(
+                          padding: const EdgeInsets.only(left: AppSpacing.sm),
+                          child: Text(
+                            '(detached)',
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: dim,
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                        ),
                       if (cwdBasename.isNotEmpty)
                         Padding(
                           padding: const EdgeInsets.only(left: AppSpacing.sm),
@@ -312,6 +358,34 @@ class _SessionTile extends StatelessWidget {
   }
 }
 
+class _DiscoverSessionsTile extends StatelessWidget {
+  final VoidCallback onTap;
+  const _DiscoverSessionsTile({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final dim = theme.colorScheme.onSurfaceVariant;
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.lg, vertical: AppSpacing.md),
+        child: Row(
+          children: [
+            Icon(Icons.search, color: dim),
+            const SizedBox(width: AppSpacing.md),
+            Text(
+              'Discover external sessions',
+              style: theme.textTheme.bodyMedium?.copyWith(color: dim),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _NewSessionTile extends StatelessWidget {
   final VoidCallback onTap;
   const _NewSessionTile({required this.onTap});
@@ -340,6 +414,199 @@ class _NewSessionTile extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _DiscoverSessionsSheet extends StatefulWidget {
+  final AppState appState;
+  final String workspaceId;
+  final void Function(TerminalSession session) onAdopted;
+  const _DiscoverSessionsSheet({
+    required this.appState,
+    required this.workspaceId,
+    required this.onAdopted,
+  });
+
+  @override
+  State<_DiscoverSessionsSheet> createState() => _DiscoverSessionsSheetState();
+}
+
+class _DiscoverSessionsSheetState extends State<_DiscoverSessionsSheet> {
+  late Future<List<ExternalTerminalSession>> _future;
+  bool _adopting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = widget.appState.listExternalSessions();
+  }
+
+  void _refresh() {
+    setState(() {
+      _future = widget.appState.listExternalSessions();
+    });
+  }
+
+  Future<void> _onTap(ExternalTerminalSession s) async {
+    if (s.adopted || _adopting) return;
+    setState(() => _adopting = true);
+    final session = await widget.appState.adoptExternalSession(
+      workspaceId: widget.workspaceId,
+      sessionName: s.name,
+      cols: 80,
+      rows: 24,
+    );
+    if (!mounted) return;
+    setState(() => _adopting = false);
+    if (session != null) widget.onAdopted(session);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: AppSpacing.md),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'External zellij sessions',
+                      style: theme.textTheme.titleMedium,
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: _refresh,
+                    icon: const Icon(Icons.refresh),
+                    tooltip: 'Refresh',
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: AppSpacing.sm),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 360),
+              child: FutureBuilder<List<ExternalTerminalSession>>(
+                future: _future,
+                builder: (context, snap) {
+                  if (snap.connectionState != ConnectionState.done) {
+                    return const Padding(
+                      padding: EdgeInsets.all(AppSpacing.xl),
+                      child: Center(child: CircularProgressIndicator()),
+                    );
+                  }
+                  if (snap.hasError) {
+                    return Padding(
+                      padding: const EdgeInsets.all(AppSpacing.xl),
+                      child: Text(
+                        'Could not list sessions: ${snap.error}',
+                        style: theme.textTheme.bodyMedium,
+                      ),
+                    );
+                  }
+                  final list = snap.data ?? const <ExternalTerminalSession>[];
+                  if (list.isEmpty) {
+                    return Padding(
+                      padding: const EdgeInsets.all(AppSpacing.xl),
+                      child: Text(
+                        'No zellij sessions found on the backend host.',
+                        style: theme.textTheme.bodyMedium,
+                      ),
+                    );
+                  }
+                  // Active first, exited below.
+                  final active = list.where((s) => s.isActive).toList();
+                  final exited = list.where((s) => !s.isActive).toList();
+                  return ListView(
+                    shrinkWrap: true,
+                    children: [
+                      if (active.isNotEmpty)
+                        _DiscoverSectionHeader('Active'),
+                      for (final s in active)
+                        _DiscoverSessionRow(
+                          session: s,
+                          enabled: !s.adopted && !_adopting,
+                          onTap: () => _onTap(s),
+                        ),
+                      if (exited.isNotEmpty)
+                        _DiscoverSectionHeader('Exited'),
+                      for (final s in exited)
+                        _DiscoverSessionRow(
+                          session: s,
+                          enabled: !s.adopted && !_adopting,
+                          onTap: () => _onTap(s),
+                        ),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DiscoverSectionHeader extends StatelessWidget {
+  final String label;
+  const _DiscoverSectionHeader(this.label);
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+          AppSpacing.lg, AppSpacing.md, AppSpacing.lg, AppSpacing.xs),
+      child: Text(
+        label,
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+}
+
+class _DiscoverSessionRow extends StatelessWidget {
+  final ExternalTerminalSession session;
+  final bool enabled;
+  final VoidCallback onTap;
+  const _DiscoverSessionRow({
+    required this.session,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final dim = theme.colorScheme.onSurfaceVariant;
+    final subtitle = session.adopted
+        ? 'Already adopted'
+        : (session.isActive ? 'Active' : 'Exited (tap to revive)');
+    return ListTile(
+      enabled: enabled,
+      title: Text(
+        session.name,
+        style: AppText.mono(
+          fontSize: theme.textTheme.bodyMedium?.fontSize,
+        ),
+      ),
+      subtitle: Text(
+        subtitle,
+        style: theme.textTheme.labelSmall?.copyWith(color: dim),
+      ),
+      onTap: enabled ? onTap : null,
     );
   }
 }

@@ -179,6 +179,26 @@ void main() {
     expect(preview.endsWith('…'), isTrue);
   });
 
+  testWidgets('detached chip renders the "(detached)" hint',
+      (tester) async {
+    final detached = TerminalSession(
+      id: 'sid-detached-00',
+      workspaceId: _ws.id,
+      cols: 80,
+      rows: 24,
+      cwd: '/tmp/ws-1/src',
+      createdAt: DateTime.now().millisecondsSinceEpoch,
+      detached: true,
+    );
+    final appState = await _appStateWith(sessions: [detached]);
+    addTearDown(appState.dispose);
+    await tester.pumpWidget(_wrap(TerminalTab(appState: appState)));
+    await tester.pump();
+
+    expect(find.text('(detached)'), findsOneWidget);
+    expect(find.text('sh · 1'), findsOneWidget);
+  });
+
   test('extractPreviewLine returns null for empty / whitespace-only input',
       () {
     expect(extractPreviewLine(Uint8List(0)), isNull);

@@ -35,6 +35,7 @@ class BackendNotifications {
   BackendNotifications._();
   static const String terminalData = 'terminal.data';
   static const String terminalExit = 'terminal.exit';
+  static const String terminalDetached = 'terminal.detached';
   static const String workspaceClosed = 'workspace.closed';
   static const String workspaceTreeDelta = 'workspace.tree.delta';
   static const String workspaceDecorationDelta = 'workspace.decoration.delta';

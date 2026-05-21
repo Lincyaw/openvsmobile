@@ -304,6 +304,66 @@ class TerminalsNotifier extends ChangeNotifier {
     }
   }
 
+  /// List external zellij sessions on the backend host. Empty when the
+  /// host has no multiplexer; that's normal, not an error. Errors during
+  /// the RPC bubble up so the caller (the discovery sheet) can show a
+  /// retry affordance.
+  Future<List<ExternalTerminalSession>> listExternalSessions() async {
+    final r = await _client.call('terminal.listExternalSessions', const {})
+        as Map<String, dynamic>;
+    final raw = (r['sessions'] as List?) ?? const [];
+    return raw
+        .cast<Map<String, dynamic>>()
+        .map(ExternalTerminalSession.fromJson)
+        .toList(growable: false);
+  }
+
+  /// Adopt an external zellij session into [workspaceId] at the given size.
+  /// Returns the new TerminalSession; errors bubble so the caller can
+  /// surface them. The session id is fresh; the zellij session NAME is
+  /// preserved (no `ovsm-` prefix forced).
+  Future<TerminalSession?> adoptExternalSession({
+    required String workspaceId,
+    required String sessionName,
+    required int cols,
+    required int rows,
+  }) async {
+    try {
+      final r = await _client.call('terminal.adoptExternalSession', {
+        'workspaceId': workspaceId,
+        'sessionName': sessionName,
+        'cols': cols,
+        'rows': rows,
+      }) as Map<String, dynamic>;
+      final sid = r['sessionId'] as String;
+      final wsId = r['workspaceId'] as String;
+      final root = _rootOf(wsId);
+      if (root == null) {
+        _reportError('Could not adopt session: workspace gone');
+        return null;
+      }
+      final session = TerminalSession(
+        id: sid,
+        workspaceId: wsId,
+        cols: cols,
+        rows: rows,
+        cwd: (r['cwd'] as String?) ?? root,
+        createdAt: (r['createdAt'] as num?)?.toInt() ??
+            DateTime.now().millisecondsSinceEpoch,
+      );
+      final list = _termsByWorkspace.putIfAbsent(wsId, () => []);
+      list.add(session);
+      _focusedTermBySpace[wsId] = sid;
+      _lastWrittenSeq[sid] = 0;
+      refreshTerminalSubscription();
+      notifyListeners();
+      return session;
+    } catch (e) {
+      _reportError('Could not adopt session: $e');
+      return null;
+    }
+  }
+
   /// Tell the backend to kill [sessionId]'s PTY. Local cleanup is driven by
   /// the resulting `terminal.exit` notification, not by this call.
   Future<void> disposeTerminal(
@@ -347,6 +407,9 @@ class TerminalsNotifier extends ChangeNotifier {
     final dataB64 = p['dataBase64'] as String;
     final bytes = Uint8List.fromList(base64Decode(dataB64));
     _appendPreview(sessionId, bytes);
+    // First data after a detach means the lazy-reattach succeeded.
+    // Clear the flag so the chip stops showing "(detached)".
+    _clearDetachedIfSet(sessionId);
     // seqEnd is required by the post-P1.5 backend. Older backends without it
     // will emit null/undefined; we tolerate that by falling back to a running
     // counter derived from chunk length so dedupe still does *something*
@@ -394,6 +457,38 @@ class TerminalsNotifier extends ChangeNotifier {
       list[0] = _BacklogChunk(bytes: trimmed, seqEnd: head.seqEnd);
       _backlogBytes[sessionId] = trimmed.length;
     }
+  }
+
+  /// Handler for the backend's `terminal.detached` push. Mark the matching
+  /// session's chip as detached without pruning it — the user's next
+  /// interaction (write/resize/history) triggers the backend's lazy
+  /// reattach, which clears the flag via the first `terminal.data`.
+  void onTerminalDetached(Map<String, dynamic> p) {
+    final sessionId = p['sessionId'] as String?;
+    if (sessionId == null) return;
+    for (final list in _termsByWorkspace.values) {
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].id == sessionId) {
+          if (!list[i].detached) {
+            list[i] = list[i].copyWith(detached: true);
+          }
+        }
+      }
+    }
+    notifyListeners();
+  }
+
+  void _clearDetachedIfSet(String sessionId) {
+    var changed = false;
+    for (final list in _termsByWorkspace.values) {
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].id == sessionId && list[i].detached) {
+          list[i] = list[i].copyWith(detached: false);
+          changed = true;
+        }
+      }
+    }
+    if (changed) notifyListeners();
   }
 
   void onTerminalExit(Map<String, dynamic> p) {

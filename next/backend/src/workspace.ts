@@ -17,6 +17,7 @@ import { pathIsInside } from "./pathInside.js";
 import {
   TerminalRegistry,
   type TerminalDataSink,
+  type TerminalDetachedSink,
   type TerminalExitSink,
   type TerminalPersistenceHook,
 } from "./terminal.js";
@@ -73,6 +74,7 @@ export class ActiveWorkspace {
     onExit: TerminalExitSink,
     multiplexer: MultiplexerInfo,
     persistence: TerminalPersistenceHook | null,
+    onDetached: TerminalDetachedSink | null,
   ) {
     this.id = randomUUID();
     this.root = root;
@@ -82,6 +84,7 @@ export class ActiveWorkspace {
       multiplexer,
       workspaceRoot: root,
       ...(persistence !== null ? { persistence } : {}),
+      ...(onDetached !== null ? { onDetached } : {}),
     });
   }
 
@@ -157,6 +160,7 @@ export class WorkspaceRegistry {
   private activatedHook: ((ws: ActiveWorkspace | null) => void) | null = null;
   private readonly multiplexer: MultiplexerInfo;
   private readonly terminalPersistence: TerminalPersistenceHook | null;
+  private readonly onTerminalDetached: TerminalDetachedSink | null;
   /// Process-wide set of terminal ids that have already been hydrated
   /// into some ActiveWorkspace. When two workspaces share the same
   /// root in one backend session (rare but legal), the second open
@@ -173,10 +177,12 @@ export class WorkspaceRegistry {
     private readonly onTerminalExit: TerminalExitSink,
     multiplexer: MultiplexerInfo = { kind: "none" },
     terminalPersistence: TerminalPersistenceHook | null = null,
+    onTerminalDetached: TerminalDetachedSink | null = null,
   ) {
     this.recents = loadRecents();
     this.multiplexer = multiplexer;
     this.terminalPersistence = terminalPersistence;
+    this.onTerminalDetached = onTerminalDetached;
   }
 
   /// Wire the per-workspace invalidate callback. Called once at boot from
@@ -236,6 +242,7 @@ export class WorkspaceRegistry {
       this.onTerminalExit,
       this.multiplexer,
       this.terminalPersistence,
+      this.onTerminalDetached,
     );
     // initModel installs watchers + runs initial git status. We await before
     // publishing the workspace so a `workspace.subscribe` immediately after

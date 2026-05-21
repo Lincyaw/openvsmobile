@@ -19,6 +19,7 @@ import { RpcError, RPC_ERR } from "./rpc.js";
 import {
   isSessionIdSafe,
   killZellijSession,
+  listZellijSessions,
   zellijSessionName,
   type ExecRunner,
   type MultiplexerInfo,
@@ -70,6 +71,11 @@ export type TerminalDataSink = (
   seqEnd: number,
 ) => void;
 export type TerminalExitSink = (sessionId: string, exitCode: number) => void;
+/// Fired when a zellij-backed terminal's CLIENT exits cleanly but the
+/// underlying SERVER session is still alive (typical Ctrl-O d detach).
+/// The chip stays in the registry, demoted to `hydrated`; the next user
+/// write/resize/history spawns a fresh `zellij attach`.
+export type TerminalDetachedSink = (sessionId: string) => void;
 
 /// Bounded circular byte buffer. Append always succeeds; if a write would
 /// exceed the cap, the oldest bytes are dropped. O(1) amortized per chunk.
@@ -225,6 +231,11 @@ export interface TerminalRegistryOptions {
   /// from node-pty. Tests pass a fake that records arguments and returns
   /// a stub IPty so no actual process is forked.
   ptySpawner?: PtySpawner;
+  /// Optional fan-out for `terminal.detached` (client exited but session
+  /// is still alive on the zellij side). When omitted, detach collapses
+  /// into the same path as exit — the chip goes away. Production wires
+  /// this through to a wire notification in `state.ts`.
+  onDetached?: TerminalDetachedSink;
 }
 
 export class TerminalRegistry {
@@ -235,6 +246,7 @@ export class TerminalRegistry {
   private readonly persistence: TerminalPersistenceHook | null;
   private readonly execRunner: ExecRunner | undefined;
   private readonly ptySpawner: PtySpawner;
+  private readonly onDetached: TerminalDetachedSink | null;
 
   constructor(
     private readonly onData: TerminalDataSink,
@@ -246,6 +258,101 @@ export class TerminalRegistry {
     this.persistence = options.persistence ?? null;
     this.execRunner = options.execRunner;
     this.ptySpawner = options.ptySpawner ?? ptySpawn;
+    this.onDetached = options.onDetached ?? null;
+  }
+
+  /// Expose the workspace root this registry was constructed against.
+  /// `state.ts` reads it when computing the cwd default for
+  /// `terminal.adoptExternalSession` (the active workspace's root is the
+  /// natural fallback).
+  public getWorkspaceRoot(): string {
+    return this.workspaceRoot;
+  }
+
+  /// Iterate every entry's `externalSessionId`. Used by the cross-workspace
+  /// adoption check in `state.ts` — a session that's already adopted by ANY
+  /// workspace can't be adopted again.
+  public externalSessionIds(): string[] {
+    const out: string[] = [];
+    for (const entry of this.sessions.values()) {
+      if (entry.externalSessionId !== null) out.push(entry.externalSessionId);
+    }
+    return out;
+  }
+
+  /// Adopt an externally-named zellij session (one the user spawned outside
+  /// the backend, e.g. `zellij -s foo` from the desktop). Unlike `create()`,
+  /// the session name is the caller-supplied string, NOT
+  /// `zellijSessionName(id)` — the whole point of adoption is preserving
+  /// whatever name zellij already knows. The underlying session is NOT
+  /// exclusively owned: another workspace may adopt the same session name
+  /// later, which spawns its own attach client. zellij handles the
+  /// multiplexing kernel-side.
+  public adopt(
+    sessionName: string,
+    cols: number,
+    rows: number,
+    cwd: string,
+  ): TerminalSnapshot {
+    if (!Number.isInteger(cols) || cols < 1) {
+      throw new RpcError(RPC_ERR.invalidParams, "cols must be a positive int");
+    }
+    if (!Number.isInteger(rows) || rows < 1) {
+      throw new RpcError(RPC_ERR.invalidParams, "rows must be a positive int");
+    }
+    if (!isExternalSessionNameSafe(sessionName)) {
+      throw new RpcError(
+        RPC_ERR.invalidParams,
+        `sessionName has unsupported characters: ${sessionName}`,
+      );
+    }
+    const id = randomUUID();
+    let pty: IPty;
+    try {
+      pty = this.ptySpawner(
+        "zellij",
+        ["attach", "--create", sessionName],
+        {
+          name: "xterm-256color",
+          cols,
+          rows,
+          cwd,
+          env: process.env as { [key: string]: string },
+          encoding: null,
+        },
+      );
+    } catch (err) {
+      throw new RpcError(
+        RPC_ERR.internal,
+        `failed to attach to zellij session ${sessionName}: ` +
+          `${(err as Error).message}`,
+      );
+    }
+    const entry: Entry = {
+      id,
+      cols,
+      rows,
+      cwd,
+      createdAt: Date.now(),
+      state: "live",
+      pty,
+      scrollback: new ScrollbackBuffer(SCROLLBACK_CAP),
+      externalSessionId: sessionName,
+    };
+    this.sessions.set(id, entry);
+    if (this.persistence !== null) {
+      this.persistence.recordCreate({
+        id,
+        workspaceRoot: this.workspaceRoot,
+        cwd,
+        cols,
+        rows,
+        externalSessionId: sessionName,
+        createdAt: entry.createdAt,
+      });
+    }
+    this.wirePtyListeners(entry);
+    return snapshotOf(entry);
   }
 
   public create(cols: number, rows: number, cwd: string): TerminalSnapshot {
@@ -500,10 +607,63 @@ export class TerminalRegistry {
       // we'd race and wipe the DB row that the shutdown path
       // deliberately preserved.
       if (this.shuttingDown) return;
+      // Zellij-backed sessions need a sniff before we tear down: the
+      // user's Ctrl-O d detach exits the client cleanly (code 0) but
+      // leaves the server session running. Wiping the chip in that case
+      // is the bug we're here to fix. For direct-shell entries (no
+      // externalSessionId) there's no second source of truth — the PTY
+      // *is* the session, so exit collapses straight to dispose.
+      if (entry.externalSessionId !== null) {
+        this.handleZellijClientExit(entry, exitCode);
+        return;
+      }
       this.sessions.delete(id);
       if (this.persistence !== null) this.persistence.recordDispose(id);
       this.onExit(id, exitCode);
     });
+  }
+
+  /// Decide what a zellij client exit means: detach (server still alive) or
+  /// true exit (server gone). Runs `zellij list-sessions` asynchronously and
+  /// then either demotes the entry to hydrated or evicts it. If the entry
+  /// has been removed in the meantime (user tapped X mid-check), both
+  /// branches are no-ops — `dispose()` already did the right thing.
+  private handleZellijClientExit(entry: Entry, exitCode: number): void {
+    const id = entry.id;
+    const sessionName = entry.externalSessionId;
+    if (sessionName === null) return;
+    // Synchronously drop the live PTY references so a racing `write` does
+    // not target a dead handle. The entry stays in the map; we'll either
+    // demote it to hydrated below or remove it once we know the server's
+    // state.
+    entry.state = "hydrated";
+    entry.pty = null;
+    entry.scrollback = null;
+    void (async () => {
+      let stillAlive = false;
+      try {
+        const sessions = await listZellijSessions(this.execRunner);
+        stillAlive = sessions.some(
+          (s) => s.name === sessionName && s.status === "active",
+        );
+      } catch {
+        // If we can't tell, assume gone — better to surface the chip
+        // disappearing than to leave a phantom that the user can't
+        // close from the app.
+        stillAlive = false;
+      }
+      // The user may have disposed the chip while we were waiting; if so,
+      // dispose() already cleaned up and we must not double-emit.
+      if (!this.sessions.has(id)) return;
+      if (this.shuttingDown) return;
+      if (stillAlive) {
+        if (this.onDetached !== null) this.onDetached(id);
+        return;
+      }
+      this.sessions.delete(id);
+      if (this.persistence !== null) this.persistence.recordDispose(id);
+      this.onExit(id, exitCode);
+    })();
   }
 
   /// Tear down a session (live or hydrated) and notify the app via the
@@ -679,4 +839,15 @@ function snapshotOf(entry: Entry): TerminalSnapshot {
 /// Exposed for tests / smoke scripts that want to confirm what cap is active.
 export function scrollbackCapBytes(): number {
   return SCROLLBACK_CAP;
+}
+
+/// Conservative session-name filter for the adoption path. Zellij itself
+/// allows a broader charset, but we're handing this string to `execFile`
+/// argv — anything outside `[A-Za-z0-9._-]` is rejected so a malicious or
+/// careless caller cannot smuggle option-like (`--`) or shell-active
+/// characters even though the kernel call doesn't go through a shell.
+/// Direct re-use of `isSessionIdSafe` is too tight (it forbids `.`).
+const EXTERNAL_SESSION_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+export function isExternalSessionNameSafe(name: string): boolean {
+  return typeof name === "string" && EXTERNAL_SESSION_NAME.test(name);
 }

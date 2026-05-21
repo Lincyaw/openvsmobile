@@ -153,6 +153,12 @@ class TerminalSession {
   final int rows;
   final String cwd;
   final int createdAt;
+  /// True when the backend pushed `terminal.detached` for this session
+  /// (zellij client exited but the server session is still alive). The
+  /// flag clears on the next `terminal.data` for this id — the lazy-
+  /// reattach path repaints, which is the visible cue that the chip is
+  /// live again.
+  final bool detached;
 
   const TerminalSession({
     required this.id,
@@ -161,7 +167,18 @@ class TerminalSession {
     required this.rows,
     required this.cwd,
     required this.createdAt,
+    this.detached = false,
   });
+
+  TerminalSession copyWith({bool? detached}) => TerminalSession(
+        id: id,
+        workspaceId: workspaceId,
+        cols: cols,
+        rows: rows,
+        cwd: cwd,
+        createdAt: createdAt,
+        detached: detached ?? this.detached,
+      );
 
   factory TerminalSession.fromJson(Map<String, dynamic> json) =>
       TerminalSession(
@@ -171,5 +188,31 @@ class TerminalSession {
         rows: (json['rows'] as num).toInt(),
         cwd: json['cwd'] as String,
         createdAt: (json['createdAt'] as num).toInt(),
+      );
+}
+
+/// Wire shape for one row from `terminal.listExternalSessions`. Reflects
+/// the backend's `ExternalSession & { adopted }` shape.
+class ExternalTerminalSession {
+  final String name;
+  /// "active" or "exited". Exited sessions can still be revived via
+  /// `zellij attach --create <name>` — the same code path adoption uses
+  /// — so the UI still allows tapping them.
+  final String status;
+  final bool adopted;
+
+  const ExternalTerminalSession({
+    required this.name,
+    required this.status,
+    required this.adopted,
+  });
+
+  bool get isActive => status == 'active';
+
+  factory ExternalTerminalSession.fromJson(Map<String, dynamic> json) =>
+      ExternalTerminalSession(
+        name: json['name'] as String,
+        status: json['status'] as String,
+        adopted: (json['adopted'] as bool?) ?? false,
       );
 }

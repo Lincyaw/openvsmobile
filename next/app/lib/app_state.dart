@@ -331,6 +331,9 @@ class AppState extends ChangeNotifier {
       case BackendNotifications.terminalExit:
         _terminals.onTerminalExit(params);
         break;
+      case BackendNotifications.terminalDetached:
+        _terminals.onTerminalDetached(params);
+        break;
       case BackendNotifications.workspaceClosed:
         final id = params['id'];
         if (id is String) _onWorkspaceClosed(id);
@@ -578,6 +581,23 @@ class AppState extends ChangeNotifier {
       );
 
   void focusTerminal(String sessionId) => _terminals.focusTerminal(sessionId);
+
+  /// Wrapper for the discovery sheet.
+  Future<List<ExternalTerminalSession>> listExternalSessions() =>
+      _terminals.listExternalSessions();
+
+  Future<TerminalSession?> adoptExternalSession({
+    required String workspaceId,
+    required String sessionName,
+    required int cols,
+    required int rows,
+  }) =>
+      _terminals.adoptExternalSession(
+        workspaceId: workspaceId,
+        sessionName: sessionName,
+        cols: cols,
+        rows: rows,
+      );
 
   // ---- File tree (per workspace) ----
 

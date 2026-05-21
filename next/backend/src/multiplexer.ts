@@ -136,6 +136,78 @@ export async function killZellijSession(
   }
 }
 
+/// One row of `zellij list-sessions` output. `status === "exited"` mirrors
+/// zellij's own "(EXITED - reason)" annotation; everything else is treated
+/// as active. We don't surface timestamps for v0 — zellij's output uses
+/// human strings ("Created 5m ago") that we'd just parse and lose precision
+/// on. See task brief §"Out of scope".
+export interface ExternalSession {
+  readonly name: string;
+  readonly status: "active" | "exited";
+}
+
+const ANSI_ESCAPE = /\x1B\[[0-9;?]*[ -/]*[@-~]/g;
+
+/// Strip ANSI escape sequences and return the visible payload. Zellij's
+/// CLI colorizes output even when stdout isn't a TTY; without this the
+/// session name we extract is wrapped in color codes that don't match
+/// when we look the session up later.
+function stripAnsi(s: string): string {
+  return s.replace(ANSI_ESCAPE, "");
+}
+
+/// Parse one `zellij list-sessions` line. Modern zellij emits
+/// `<name> [Created Xm ago]` for active sessions and
+/// `<name> [Created Xm ago] (EXITED - reason)` for exited ones; older
+/// versions may omit the bracketed timestamp. We anchor only on the
+/// leading session name (first whitespace-delimited token after ANSI
+/// strip) and on the substring "EXITED" to flag the status.
+export function parseZellijListSessions(stdout: string): ExternalSession[] {
+  const out: ExternalSession[] = [];
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    const line = stripAnsi(rawLine).trim();
+    if (line.length === 0) continue;
+    // Zellij prints a friendly "No active zellij sessions found." when
+    // there are none — don't try to parse that as a name.
+    if (/^no .*sessions/i.test(line)) continue;
+    const firstToken = line.split(/\s/, 1)[0];
+    if (firstToken.length === 0) continue;
+    // Be defensive: a token must look like a plausible session name.
+    if (!/^[A-Za-z0-9._-]+$/.test(firstToken)) continue;
+    const status: "active" | "exited" =
+      line.includes("EXITED") ? "exited" : "active";
+    out.push({ name: firstToken, status });
+  }
+  return out;
+}
+
+/// Run `zellij list-sessions` and return the parsed result. Treats a
+/// non-zero exit as "no sessions" rather than throwing — zellij returns
+/// exit 1 when there are no sessions, which is not an error.
+export async function listZellijSessions(
+  runner: ExecRunner = realExecRunner,
+): Promise<ExternalSession[]> {
+  try {
+    const { stdout } = await runner.run("zellij", ["list-sessions"], {
+      timeoutMs: ZELLIJ_CLI_TIMEOUT_MS,
+    });
+    return parseZellijListSessions(stdout);
+  } catch (err) {
+    // "no sessions" surfaces as exit 1 with the friendly string on
+    // stdout. Recent zellij also routes the message through stderr; we
+    // try to recover the payload either way so the caller sees an
+    // empty array instead of an exception.
+    const e = err as { stdout?: string; stderr?: string };
+    if (typeof e.stdout === "string" && e.stdout.length > 0) {
+      return parseZellijListSessions(e.stdout);
+    }
+    if (typeof e.stderr === "string" && e.stderr.length > 0) {
+      return parseZellijListSessions(e.stderr);
+    }
+    return [];
+  }
+}
+
 function describeExecError(err: unknown): string {
   if (err === null || typeof err !== "object") return String(err);
   const e = err as ExecFileException & { signal?: string };

@@ -836,3 +836,232 @@ describe("probeMultiplexer", () => {
     }
   });
 });
+
+describe("zellij detach handling", () => {
+  it("client exit with session still alive demotes to hydrated and fires onDetached", async () => {
+    // The bug we are fixing: Ctrl-O d exits the zellij client cleanly
+    // (code 0) but leaves the server session running. We must keep the
+    // entry and the DB row, and emit `terminal.detached` so the chip
+    // shows a (detached) hint instead of disappearing.
+    const opts = await tempDbPath();
+    const persistence = new TerminalPersistence(opts);
+    const { spawn, calls } = recordingSpawner();
+    // list-sessions reports the session as still alive.
+    const runner: ExecRunner = {
+      async run(command, args) {
+        if (args[0] === "list-sessions") {
+          // Mimic a real zellij output line.
+          return {
+            stdout: `ovsm-detach-1 [Created 5m ago]\n`,
+            stderr: "",
+          };
+        }
+        return { stdout: "", stderr: "" };
+      },
+    };
+    const detached: string[] = [];
+    const exits: Array<{ id: string; code: number }> = [];
+    const reg = new TerminalRegistry(
+      () => {},
+      (id, code) => exits.push({ id, code }),
+      {
+        multiplexer: { kind: "zellij" },
+        workspaceRoot: "/work",
+        persistence,
+        ptySpawner: spawn,
+        execRunner: runner,
+        onDetached: (id) => detached.push(id),
+      },
+    );
+    // Pre-seed so the registry knows the externalSessionId; for adoption
+    // path we use a deterministic name.
+    const snap = reg.adopt("ovsm-detach-1", 80, 24, "/work");
+    expect(calls).toHaveLength(1);
+    const fakePty = calls[0].pty;
+    fakePty._fireExit(0);
+    // The list-sessions probe is async; let it settle.
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    expect(detached).toEqual([snap.id]);
+    expect(exits).toEqual([]);
+    // Row still on disk and entry still in the map (now hydrated).
+    expect(persistence.loadByWorkspaceRoot("/work").map((r) => r.id)).toEqual([
+      snap.id,
+    ]);
+    expect(reg.list().map((t) => t.id)).toEqual([snap.id]);
+    persistence.close();
+  });
+
+  it("client exit with session gone evicts the entry and fires onExit", async () => {
+    const opts = await tempDbPath();
+    const persistence = new TerminalPersistence(opts);
+    const { spawn, calls } = recordingSpawner();
+    const runner: ExecRunner = {
+      async run(command, args) {
+        if (args[0] === "list-sessions") {
+          return { stdout: "No active zellij sessions found.\n", stderr: "" };
+        }
+        return { stdout: "", stderr: "" };
+      },
+    };
+    const detached: string[] = [];
+    const exits: Array<{ id: string; code: number }> = [];
+    const reg = new TerminalRegistry(
+      () => {},
+      (id, code) => exits.push({ id, code }),
+      {
+        multiplexer: { kind: "zellij" },
+        workspaceRoot: "/work",
+        persistence,
+        ptySpawner: spawn,
+        execRunner: runner,
+        onDetached: (id) => detached.push(id),
+      },
+    );
+    const snap = reg.adopt("ovsm-gone-1", 80, 24, "/work");
+    const fakePty = calls[0].pty;
+    fakePty._fireExit(1);
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    expect(detached).toEqual([]);
+    expect(exits).toEqual([{ id: snap.id, code: 1 }]);
+    expect(persistence.loadByWorkspaceRoot("/work")).toEqual([]);
+    expect(reg.list()).toEqual([]);
+    persistence.close();
+  });
+
+  it("dispose during the async list-sessions probe is a no-op for detach fan-out", async () => {
+    // A user could tap X between the client exit and the probe resolving.
+    // dispose() removes the entry; the detach branch must not fire.
+    const opts = await tempDbPath();
+    const persistence = new TerminalPersistence(opts);
+    const { spawn, calls } = recordingSpawner();
+    let resolveProbe: ((v: { stdout: string; stderr: string }) => void) | null =
+      null;
+    const runner: ExecRunner = {
+      async run(command, args) {
+        if (args[0] === "list-sessions") {
+          return new Promise((resolve) => {
+            resolveProbe = resolve;
+          });
+        }
+        return { stdout: "", stderr: "" };
+      },
+    };
+    const detached: string[] = [];
+    const exits: Array<{ id: string; code: number }> = [];
+    const reg = new TerminalRegistry(
+      () => {},
+      (id, code) => exits.push({ id, code }),
+      {
+        multiplexer: { kind: "zellij" },
+        workspaceRoot: "/work",
+        persistence,
+        ptySpawner: spawn,
+        execRunner: runner,
+        onDetached: (id) => detached.push(id),
+      },
+    );
+    const snap = reg.adopt("ovsm-race-1", 80, 24, "/work");
+    const fakePty = calls[0].pty;
+    fakePty._fireExit(0);
+    // User races a dispose in before list-sessions resolves.
+    reg.dispose(snap.id);
+    resolveProbe?.({ stdout: "ovsm-race-1\n", stderr: "" });
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    expect(detached).toEqual([]);
+    expect(reg.list()).toEqual([]);
+    persistence.close();
+  });
+});
+
+describe("parseZellijListSessions", () => {
+  it("parses an active session with a created-ago annotation", async () => {
+    const { parseZellijListSessions } = await import("../src/multiplexer.js");
+    const parsed = parseZellijListSessions(
+      "ovsm-aaa [Created 5m 12s ago]\n",
+    );
+    expect(parsed).toEqual([{ name: "ovsm-aaa", status: "active" }]);
+  });
+
+  it("marks EXITED sessions as exited", async () => {
+    const { parseZellijListSessions } = await import("../src/multiplexer.js");
+    const parsed = parseZellijListSessions(
+      "ovsm-aaa [Created 5m ago]\n" +
+        "old-one [Created 1h ago] (EXITED - 'crashed')\n",
+    );
+    expect(parsed).toEqual([
+      { name: "ovsm-aaa", status: "active" },
+      { name: "old-one", status: "exited" },
+    ]);
+  });
+
+  it("strips ANSI escape sequences before extracting the name", async () => {
+    const { parseZellijListSessions } = await import("../src/multiplexer.js");
+    const parsed = parseZellijListSessions(
+      "\x1B[32mfoo\x1B[0m [Created 1m ago]\n",
+    );
+    expect(parsed).toEqual([{ name: "foo", status: "active" }]);
+  });
+
+  it("ignores the 'no sessions' friendly line", async () => {
+    const { parseZellijListSessions } = await import("../src/multiplexer.js");
+    expect(parseZellijListSessions("No active zellij sessions found.\n"))
+      .toEqual([]);
+  });
+});
+
+describe("ProcessState external-session helpers", () => {
+  it("listExternalSessions returns [] when multiplexer is none", async () => {
+    const { ProcessState } = await import("../src/state.js");
+    const state = new ProcessState();
+    const sessions = await state.listExternalSessions();
+    expect(sessions).toEqual([]);
+    state.shutdownAll();
+  });
+
+  it("listExternalSessions marks adopted sessions", async () => {
+    const { ProcessState } = await import("../src/state.js");
+    const tmp = await mkdtemp(join(tmpdir(), "ovsm-state-test-"));
+    tempDirs.push(tmp);
+    const runner: ExecRunner = {
+      async run(command, args) {
+        if (args[0] === "list-sessions") {
+          return {
+            stdout: "ovsm-adopted [Created 5m ago]\nother-one [Created 1m ago]\n",
+            stderr: "",
+          };
+        }
+        return { stdout: "", stderr: "" };
+      },
+    };
+    const state = new ProcessState({
+      multiplexer: { kind: "zellij" },
+      execRunner: runner,
+    });
+    // Open a workspace and adopt one of the sessions.
+    const ws = await state.workspaces.open(tmp);
+    ws.terminals.adopt("ovsm-adopted", 80, 24, tmp);
+    const sessions = await state.listExternalSessions();
+    expect(sessions).toEqual([
+      { name: "ovsm-adopted", status: "active", adopted: true },
+      { name: "other-one", status: "active", adopted: false },
+    ]);
+    state.shutdownAll();
+  });
+
+  it("adopt refuses a duplicate session name across workspaces", async () => {
+    const { ProcessState } = await import("../src/state.js");
+    const tmp = await mkdtemp(join(tmpdir(), "ovsm-state-test-"));
+    tempDirs.push(tmp);
+    const state = new ProcessState({
+      multiplexer: { kind: "zellij" },
+    });
+    const ws = await state.workspaces.open(tmp);
+    ws.terminals.adopt("ovsm-shared", 80, 24, tmp);
+    expect(state.isExternalSessionAdopted("ovsm-shared")).toBe(true);
+    expect(state.isExternalSessionAdopted("ovsm-other")).toBe(false);
+    state.shutdownAll();
+  });
+});
