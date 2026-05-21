@@ -131,6 +131,19 @@ jobs:
           # the wrong version.
           grep "kBackendVersion = '${tag}'" lib/version.dart
 
+      - name: Pin backend package.json version to tag
+        working-directory: next/backend
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          # Backend reports its version via package.json's "version" field
+          # (see src/version.ts) which lands in runtime.json. install.sh's
+          # post-start check refuses to proceed when the file version
+          # disagrees with the installer's expected version, so this
+          # MUST stay in lock-step with the kBackendVersion pin above.
+          sed -i "s/^  \"version\": \".*\",$/  \"version\": \"${tag}\",/" package.json
+          grep "\"version\": \"${tag}\"" package.json
+
       - name: Configure release signing (if secrets present)
         id: signing
         env:
