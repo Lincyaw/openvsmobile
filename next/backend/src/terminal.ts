@@ -168,7 +168,14 @@ class ScrollbackBuffer {
 interface Entry extends TerminalSnapshot {
   /// `live`     — PTY is attached, scrollback is collecting bytes.
   /// `hydrated` — DB row only; `pty` and `scrollback` are absent.
-  state: "live" | "hydrated";
+  /// `exiting`  — PTY just exited; the async `zellij list-sessions`
+  ///              probe is in flight to decide demote-to-hydrated vs.
+  ///              evict. Writes/resizes/history during this short
+  ///              window are rejected with a "session busy" error so
+  ///              `list()` never flips the chip to hydrated before we
+  ///              actually know the server-side state. See
+  ///              `handleZellijClientExit`.
+  state: "live" | "hydrated" | "exiting";
   pty: IPty | null;
   scrollback: ScrollbackBuffer | null;
   /// Zellij session name if this terminal was (or will be) spawned
@@ -519,6 +526,21 @@ export class TerminalRegistry {
   /// No-op for entries already `live`.
   private lazyAttachIfNeeded(entry: Entry): void {
     if (entry.state === "live") return;
+    // `exiting` is a transient window between PTY death and the
+    // list-sessions probe resolving. The PTY is dead and we don't yet
+    // know whether the zellij server side is salvageable, so the only
+    // honest answer to a write/resize/history is "session busy" —
+    // throwing an RpcError here surfaces that cleanly to the caller.
+    // The next push (`terminal.exit` or `terminal.detached`) tells the
+    // client what really happened, so a retry after one frame is
+    // either correct (entry now hydrated, lazy attach resurrects it)
+    // or no-op (entry evicted).
+    if (entry.state === "exiting") {
+      throw new RpcError(
+        RPC_ERR.internal,
+        `terminal ${entry.id} is exiting; retry after next push`,
+      );
+    }
     const externalSessionId = entry.externalSessionId;
     // Hydrated entries always carry a non-null externalSessionId — the
     // persistence layer filters out direct-shell rows before hydration —
@@ -628,17 +650,36 @@ export class TerminalRegistry {
   /// then either demotes the entry to hydrated or evicts it. If the entry
   /// has been removed in the meantime (user tapped X mid-check), both
   /// branches are no-ops — `dispose()` already did the right thing.
+  ///
+  /// The entry transitions to the transient `exiting` state for the probe
+  /// window. We deliberately do NOT pre-flip to `hydrated` here: a racing
+  /// `list()` between PTY exit and probe resolution would otherwise
+  /// produce a snapshot the very next push is about to evict — a flicker
+  /// inconsistent with first principle #2 ("pushes are semantic"). In
+  /// `exiting` the chip stays visible (snapshot shape is identical to
+  /// `live` / `hydrated` on the wire — see `snapshotOf`), and only flips
+  /// to `hydrated` (with `terminal.detached`) once we've confirmed the
+  /// zellij server side is still alive. Writes/resizes/history during the
+  /// window are rejected with a clean error rather than silently
+  /// targeting a dead handle.
+  ///
+  /// Race note: `dispose()` may run while this probe is in flight. We do
+  /// NOT cancel the probe — keeping the path simple is worth one wasted
+  /// `zellij list-sessions` call (it's bounded by `ZELLIJ_CLI_TIMEOUT_MS`
+  /// and produces no side effects). The `this.sessions.has(id)` guard at
+  /// the bottom is what makes the late resolution safe: a disposed entry
+  /// is no longer in the map, so neither branch fires.
   private handleZellijClientExit(entry: Entry, exitCode: number): void {
     const id = entry.id;
     const sessionName = entry.externalSessionId;
     if (sessionName === null) return;
-    // Synchronously drop the live PTY references so a racing `write` does
-    // not target a dead handle. The entry stays in the map; we'll either
-    // demote it to hydrated below or remove it once we know the server's
-    // state.
-    entry.state = "hydrated";
-    entry.pty = null;
-    entry.scrollback = null;
+    // Mark the entry as exiting. Keep `pty` / `scrollback` references for
+    // GC purposes — the PTY already fired onExit, so `pty.write` would
+    // throw — but we route through `requireLive` which rejects any
+    // operation against an `exiting` entry, so callers see a clean error
+    // instead of a node-pty exception. `list()` still returns the same
+    // snapshot shape; clients see no state change until the probe says so.
+    entry.state = "exiting";
     void (async () => {
       let stillAlive = false;
       try {
@@ -657,6 +698,11 @@ export class TerminalRegistry {
       if (!this.sessions.has(id)) return;
       if (this.shuttingDown) return;
       if (stillAlive) {
+        // NOW demote to hydrated and emit the detach push together — the
+        // chip's logical state and the wire event arrive in the same turn.
+        entry.state = "hydrated";
+        entry.pty = null;
+        entry.scrollback = null;
         if (this.onDetached !== null) this.onDetached(id);
         return;
       }
@@ -720,10 +766,14 @@ export class TerminalRegistry {
     if (!entry) return;
     // User tapping X on a chip is an explicit destroy intent for the
     // whole logical session — the chip *is* the user's mental model of
-    // the zellij session. Both live and hydrated paths must kill the
-    // server-side session, otherwise we leave a ghost only
+    // the zellij session. Live, hydrated, and exiting all funnel through
+    // here: kill the server-side session so we don't leave a ghost only
     // `zellij delete-session` from the terminal can reclaim. Live path
-    // also kills the local PTY to detach the client first.
+    // also kills the local PTY to detach the client first. For `exiting`
+    // the PTY is already dead (its onExit is what put us in that state)
+    // so we skip the kill but still tear down everything else; the
+    // outstanding list-sessions probe will no-op on resolution because
+    // the entry is no longer in the map.
     if (entry.state === "live" && entry.pty !== null) {
       try {
         entry.pty.kill();

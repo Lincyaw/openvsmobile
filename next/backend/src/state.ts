@@ -172,6 +172,18 @@ export class ProcessState {
     const terminalPersistence: TerminalPersistenceHook | null =
       opts.terminalPersistence ?? null;
     const onTerminalDetached = (sessionId: string): void => {
+      // `wsId` may be null when the workspace was closed mid-probe (PTY
+      // exit fires the probe; user/teardown removes the workspace before
+      // it resolves). The wire shape tolerates that — clients consume
+      // `workspaceId` as informational only and look the chip up by
+      // `sessionId`. Routing is per-session (see `terminalSubscriberMatches`
+      // below): the filter only checks the session id, NEVER the
+      // workspaceId, so a null workspaceId neither over-delivers to
+      // workspace-scoped subscribers (there are none in this codepath)
+      // nor under-delivers to per-session subscribers that explicitly
+      // asked for this session. Keep that invariant if you ever
+      // repurpose `terminalsSubscribed` — workspaceId in the push body
+      // is informational, not a routing key.
       const wsId = this.workspaceIdForTerminal(sessionId);
       this.broadcast(
         "terminal.detached",

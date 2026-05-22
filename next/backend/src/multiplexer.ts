@@ -161,7 +161,9 @@ function stripAnsi(s: string): string {
 /// `<name> [Created Xm ago] (EXITED - reason)` for exited ones; older
 /// versions may omit the bracketed timestamp. We anchor only on the
 /// leading session name (first whitespace-delimited token after ANSI
-/// strip) and on the substring "EXITED" to flag the status.
+/// strip) and on the `(EXITED` substring to flag the status — the open
+/// paren is what disambiguates the status annotation from a session
+/// literally named `EXITED` (which the name regex allows).
 export function parseZellijListSessions(stdout: string): ExternalSession[] {
   const out: ExternalSession[] = [];
   for (const rawLine of stdout.split(/\r?\n/)) {
@@ -174,8 +176,12 @@ export function parseZellijListSessions(stdout: string): ExternalSession[] {
     if (firstToken.length === 0) continue;
     // Be defensive: a token must look like a plausible session name.
     if (!/^[A-Za-z0-9._-]+$/.test(firstToken)) continue;
+    // Match on the bare `(EXITED` prefix (with the open paren) so a
+    // session literally named `EXITED` on an otherwise-active line is
+    // not misclassified. Zellij's actual annotation is always wrapped:
+    // `(EXITED - <reason>)`.
     const status: "active" | "exited" =
-      line.includes("EXITED") ? "exited" : "active";
+      line.includes("(EXITED") ? "exited" : "active";
     out.push({ name: firstToken, status });
   }
   return out;

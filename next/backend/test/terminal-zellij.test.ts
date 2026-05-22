@@ -930,6 +930,65 @@ describe("zellij detach handling", () => {
     persistence.close();
   });
 
+  it("write during the probe window rejects rather than flickering to hydrated", async () => {
+    // The bug guarded against: pre-flipping state to `hydrated` before the
+    // probe resolves means a racing `terminal.list` returns a snapshot for
+    // a session that's about to be evicted (probe says "gone"). The
+    // `exiting` state suppresses that flicker — list() keeps returning
+    // the entry until the probe resolves, and write/resize/history error
+    // out cleanly rather than targeting a dead handle.
+    const opts = await tempDbPath();
+    const persistence = new TerminalPersistence(opts);
+    const { spawn, calls } = recordingSpawner();
+    let resolveProbe: ((v: { stdout: string; stderr: string }) => void) | null =
+      null;
+    const runner: ExecRunner = {
+      async run(command, args) {
+        if (args[0] === "list-sessions") {
+          return new Promise((resolve) => {
+            resolveProbe = resolve;
+          });
+        }
+        return { stdout: "", stderr: "" };
+      },
+    };
+    const detached: string[] = [];
+    const exits: Array<{ id: string; code: number }> = [];
+    const reg = new TerminalRegistry(
+      () => {},
+      (id, code) => exits.push({ id, code }),
+      {
+        multiplexer: { kind: "zellij" },
+        workspaceRoot: "/work",
+        persistence,
+        ptySpawner: spawn,
+        execRunner: runner,
+        onDetached: (id) => detached.push(id),
+      },
+    );
+    const snap = reg.adopt("ovsm-window-1", 80, 24, "/work");
+    const fakePty = calls[0].pty;
+    fakePty._fireExit(0);
+    // Probe hasn't resolved yet — chip MUST still be visible (so the UI
+    // doesn't blank), and writes against it must error rather than
+    // silently dropping bytes into a dead PTY.
+    expect(reg.list().map((t) => t.id)).toEqual([snap.id]);
+    expect(() => reg.write(snap.id, Buffer.from("ls\n", "utf8"))).toThrow(
+      /exiting/,
+    );
+    expect(detached).toEqual([]);
+    expect(exits).toEqual([]);
+    // Now resolve the probe with "session is gone" — the entry should be
+    // evicted, never having shown up as `hydrated` in any list() snapshot.
+    resolveProbe?.({ stdout: "No active zellij sessions found.\n", stderr: "" });
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    expect(detached).toEqual([]);
+    expect(exits).toEqual([{ id: snap.id, code: 0 }]);
+    expect(reg.list()).toEqual([]);
+    persistence.close();
+  });
+
   it("dispose during the async list-sessions probe is a no-op for detach fan-out", async () => {
     // A user could tap X between the client exit and the probe resolving.
     // dispose() removes the entry; the detach branch must not fire.
@@ -1009,6 +1068,22 @@ describe("parseZellijListSessions", () => {
     const { parseZellijListSessions } = await import("../src/multiplexer.js");
     expect(parseZellijListSessions("No active zellij sessions found.\n"))
       .toEqual([]);
+  });
+
+  it("classifies a session literally named EXITED as active", async () => {
+    // The session-name regex permits the bare string `EXITED`. We must
+    // not misclassify it just because the substring appears in the line;
+    // zellij's actual EXITED annotation is always parenthesised
+    // (`(EXITED - reason)`) so the open paren is the disambiguator.
+    const { parseZellijListSessions } = await import("../src/multiplexer.js");
+    expect(parseZellijListSessions("EXITED [Created 1m ago]\n")).toEqual([
+      { name: "EXITED", status: "active" },
+    ]);
+    // And an EXITED-named session that really has exited still parses
+    // correctly — both the name and the parenthesised annotation present.
+    expect(
+      parseZellijListSessions("EXITED [Created 1h ago] (EXITED - 'crashed')\n"),
+    ).toEqual([{ name: "EXITED", status: "exited" }]);
   });
 });
 

@@ -368,7 +368,7 @@ Method surface (frontend → backend):
 | `auth`       | `handshake`, `rotateToken`                                           |
 | `workspace`  | `list` (→ `{ active: Workspace[], recents: string[] }`), `open({ root })`, `activate({ id })`, `close({ id })`, `current`, `findFiles({ workspaceId, ... })`, `subscribe({ workspaceId, sinceVersion?, paths? })`, `unsubscribe({ workspaceId })` |
 | `fs`         | `listDir({ workspaceId, path })` or `listDir({ path, picker: true })`; `readFile({ workspaceId, path, ifEtag? })` |
-| `terminal`   | `create({ workspaceId, cols, rows, cwd? })`, `write`, `resize`, `dispose`, `list({ workspaceId? })` |
+| `terminal`   | `create({ workspaceId, cols, rows, cwd? })`, `write`, `resize`, `dispose`, `list({ workspaceId? })`, `listExternalSessions()` (enumerate zellij sessions visible to the backend, annotated with `adopted`), `adoptExternalSession({ workspaceId, sessionName, cols, rows, cwd? })` (attach a workspace chip to an existing zellij session by name) |
 | `git`        | `diff({ workspaceId, path, baseSha?, workingHash? })`, `log({ workspaceId, path?, limit, beforeSha? })` |
 | `plugin`     | `list`, `enable`, `disable`, `install`, `uninstall`, `invokeCommand` |
 | `ui`         | `event` (user interacted with plugin UI; routed to owning plugin)    |
@@ -393,6 +393,7 @@ Notifications (backend → frontend, push-only). Every workspace-scoped event ca
 |---------------------------------|--------------------------------------------------------------------------------------------|
 | `terminal.data`                 | `{ sessionId, workspaceId, bytesBase64 }`                                                  |
 | `terminal.exit`                 | `{ sessionId, workspaceId, exitCode }`                                                     |
+| `terminal.detached`             | `{ sessionId, workspaceId }` — zellij client exited cleanly (typical `Ctrl-O d`) but the server session is still alive; chip is demoted to hydrated state and the next user write/resize/history will trigger a fresh `zellij attach`. `workspaceId` may be `null` if the workspace was closed mid-probe. |
 | `workspace.closed`              | `{ id }` (server-initiated, e.g. on backend shutdown)                                      |
 | `workspace.tree.delta`          | `{ workspaceId, added: path[], removed: path[], renamed: {from,to}[], version }` — **cache-invalidation signal only**; the client uses it to mark affected directories' `fs.listDir` caches stale and re-fetch on demand |
 | `workspace.decoration.delta`    | `{ workspaceId, entries: {path, status: "M"\|"A"\|"D"\|"?"\|"U"\|null}[], version }` (status `null` = cleared; **file-level only**) |

@@ -80,12 +80,12 @@ Single persistent WebSocket carrying JSON-RPC 2.0; first message is `auth.handsh
 - `auth.*` — handshake, rotateToken
 - `workspace.*` — list, open, activate, close, current, findFiles
 - `fs.*` — listDir, readFile (workspace-scoped; symlinks cannot escape root)
-- `terminal.*` — create, write, resize, dispose, list, history
+- `terminal.*` — create, write, resize, dispose, list, history, listExternalSessions, adoptExternalSession
 - `git.*` — status, diff, log (read-only in v0)  *(not yet implemented)*
 - `plugin.*` — list, enable, disable, install, uninstall, invokeCommand  *(not yet implemented)*
 - `ui.*` — event (user interacted with plugin UI; routed to owning plugin)  *(not yet implemented)*
 
-Notifications (push-only, no polling for streams): `terminal.data`, `terminal.exit`, `workspace.closed`, `ui.tree`, `notification.show`, `plugin.stateChanged`.
+Notifications (push-only, no polling for streams): `terminal.data`, `terminal.exit`, `terminal.detached`, `workspace.closed`, `ui.tree`, `notification.show`, `plugin.stateChanged`.
 
 The workspace/git push surface (tree deltas, decoration deltas, HEAD changes) is being designed per first principles #2–#5 — semantic events carrying a monotonic version, filtered by per-path subscription. Exact event names land when `git.*` and the resident workspace model are implemented; `workspace.fileChanged` / `git.changed` placeholders from earlier drafts are explicitly **not** the target shape.
 
