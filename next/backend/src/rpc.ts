@@ -20,6 +20,7 @@ import { PluginHostError } from "./plugins/host.js";
 import { safeSend } from "./wsSend.js";
 import { register as registerGitHandlers } from "./rpcHandlers/gitHandlers.js";
 import { register as registerNotificationHandlers } from "./rpcHandlers/notificationHandlers.js";
+import { register as registerPublishTokenHandlers } from "./rpcHandlers/publishTokenHandlers.js";
 
 // -------- 1. Wire types + error catalog --------
 
@@ -336,6 +337,7 @@ const methods = new Map<string, Handler>();
 // imports (`asBag`, `RpcError`, …) are leaves.
 registerGitHandlers(methods);
 registerNotificationHandlers(methods);
+registerPublishTokenHandlers(methods);
 
 methods.set("system.ping", () => ({ now: Date.now() }));
 

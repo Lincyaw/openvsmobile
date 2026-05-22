@@ -26,6 +26,14 @@ const EXIT_ARGS = 2;
 const EXIT_NETWORK = 3;
 const EXIT_AUTH = 4;
 const EXIT_SERVER = 5;
+/// 403 — token is valid but its source-prefix doesn't permit this `source`.
+/// Surface as a distinct code so callers (CI scripts, claude code hooks)
+/// can tell a token-scope problem apart from an outright auth failure.
+const EXIT_FORBIDDEN = 6;
+/// 429 — per-publish-token rate limit exhausted. Distinguished from
+/// EXIT_NETWORK so retry-with-backoff loops can recognize a server-side
+/// throttle without re-running connectivity checks.
+const EXIT_RATE_LIMITED = 7;
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const VALID_LEVELS = new Set(["info", "success", "warning", "error"]);
@@ -112,6 +120,68 @@ function readStdin() {
   });
 }
 
+function truncate(s, max) {
+  if (typeof s !== "string") return s;
+  return s.length > max ? s.slice(0, max - 1) + "…" : s;
+}
+
+/// Translate a Claude Code hook envelope to a Notification payload. The
+/// hook docs are at https://docs.claude.com/en/docs/claude-code/hooks —
+/// we pick sensible defaults for the fields we care about and pass
+/// everything through `field` arrays for the rest so a curious reader can
+/// see the full event on the phone if they tap the card open.
+function claudeHookToNotification(ev) {
+  const event = typeof ev === "object" && ev !== null ? ev : {};
+  const eventName =
+    typeof event.hook_event_name === "string"
+      ? event.hook_event_name
+      : "Hook";
+  const session =
+    typeof event.session_id === "string" ? event.session_id : undefined;
+  // groupKey: collapse repeated events from one session into one card.
+  // Without this a long session produces N "Stop" notifications.
+  const groupKey = session ? `claude-code:${session}` : undefined;
+  // Default title is the event name + a hint of context (tool name for
+  // PreToolUse / PostToolUse; message body for Notification).
+  let title = eventName;
+  let body;
+  let level = "info";
+  if (eventName === "Notification" && typeof event.message === "string") {
+    title = truncate(event.message.split(/\r?\n/)[0] ?? eventName, 80);
+    body = event.message;
+    level = "warning"; // Notification events usually mean Claude wants attention.
+  } else if (
+    (eventName === "PreToolUse" || eventName === "PostToolUse") &&
+    typeof event.tool_name === "string"
+  ) {
+    title = truncate(`${eventName}: ${event.tool_name}`, 80);
+    if (event.tool_input !== undefined) {
+      try {
+        body = JSON.stringify(event.tool_input, null, 2);
+      } catch {
+        body = String(event.tool_input);
+      }
+    }
+  } else if (eventName === "Stop" || eventName === "SubagentStop") {
+    title = eventName === "Stop" ? "Claude finished" : "Subagent finished";
+  } else if (eventName === "UserPromptSubmit" && typeof event.prompt === "string") {
+    title = truncate(`Prompt: ${event.prompt.split(/\r?\n/)[0] ?? ""}`, 80);
+    body = event.prompt;
+  }
+  const out = {
+    source: "claude-code",
+    level,
+    title,
+  };
+  if (body !== undefined) out.body = truncate(body, 16_000);
+  if (groupKey !== undefined) out.groupKey = groupKey;
+  const fields = [];
+  if (typeof event.cwd === "string") fields.push({ key: "cwd", value: event.cwd });
+  if (session) fields.push({ key: "session", value: session });
+  if (fields.length > 0) out.fields = fields;
+  return out;
+}
+
 async function main() {
   const opts = {
     server: { type: "string" },
@@ -128,6 +198,7 @@ async function main() {
     important: { type: "boolean" },
     ttl: { type: "string" },
     "from-json": { type: "string" },
+    "from-claude-hook": { type: "boolean" },
     quiet: { type: "boolean" },
     help: { type: "boolean", short: "h" },
   };
@@ -181,7 +252,36 @@ async function main() {
 
   // --- assemble payload ---
   let payload;
-  if (values["from-json"] !== undefined) {
+  if (values["from-claude-hook"] === true) {
+    // Claude Code fires hook scripts with a JSON envelope on stdin (see
+    // https://docs.claude.com/en/docs/claude-code/hooks). We translate
+    // that envelope into our Notification shape so a user's hook config
+    // is a one-liner like:
+    //
+    //     "Stop": [{ "hooks": [{ "type": "command",
+    //                            "command": "mobile-notify --from-claude-hook" }] }]
+    let rawText;
+    try {
+      rawText = await readStdin();
+    } catch (err) {
+      die(EXIT_INTERNAL, `failed to read stdin: ${err.message}`);
+    }
+    let hookEvent;
+    try {
+      hookEvent = JSON.parse(rawText);
+    } catch (err) {
+      die(EXIT_ARGS, `--from-claude-hook: invalid JSON on stdin: ${err.message}`);
+    }
+    payload = claudeHookToNotification(hookEvent);
+    // Optional flag overrides on top of the derived payload (same as
+    // --from-json).
+    if (values.source) payload.source = values.source;
+    if (values.level) payload.level = values.level;
+    if (values.title) payload.title = values.title;
+    if (values.body) payload.body = values.body;
+    if (values["group-key"] !== undefined) payload.groupKey = values["group-key"];
+    if (values.important === true) payload.important = true;
+  } else if (values["from-json"] !== undefined) {
     if (values["from-json"] !== "-") {
       die(EXIT_ARGS, "--from-json only accepts '-' (stdin) in v0");
     }
@@ -289,6 +389,21 @@ async function main() {
   if (response.status === 401) {
     die(EXIT_AUTH, `auth rejected by ${serverUrl} (HTTP 401)`);
   }
+  if (response.status === 403) {
+    const text = await response.text().catch(() => "");
+    die(
+      EXIT_FORBIDDEN,
+      `forbidden by token source-prefix (HTTP 403): ${text}`,
+    );
+  }
+  if (response.status === 429) {
+    const retry = response.headers.get("retry-after") || "?";
+    const text = await response.text().catch(() => "");
+    die(
+      EXIT_RATE_LIMITED,
+      `rate limited (HTTP 429, retry-after=${retry}s): ${text}`,
+    );
+  }
   if (response.status >= 500) {
     const text = await response.text().catch(() => "");
     die(EXIT_SERVER, `server error ${response.status}: ${text}`);
@@ -339,15 +454,25 @@ Payload:
   --important
   --ttl <seconds>
   --from-json -                read full payload from stdin (overrides above)
+  --from-claude-hook           read a Claude Code hook envelope from stdin
+                               and translate it; --source/--level/etc.
+                               still apply as overrides.
   --quiet                      suppress success output (id still returned via exit 0)
+
+Tokens:
+  Both the single auth bearer (config.json) and publish tokens minted via
+  auth.publishTokens.create are accepted. Publish tokens use the wire form
+  "<id>.<secret>" — paste the full string into --token or $OPENVSMOBILE_TOKEN.
 
 Exit codes:
   0  success
   1  internal CLI error (uncaught exception, stdin read failure)
   2  argument error / 4xx payload rejection
   3  network error / timeout
-  4  authentication rejected
+  4  authentication rejected (401)
   5  server error (5xx response)
+  6  forbidden by token source-prefix (403)
+  7  rate limited (429)
 `;
 }
 

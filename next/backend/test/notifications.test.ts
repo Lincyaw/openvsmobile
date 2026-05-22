@@ -49,6 +49,7 @@ async function startBackend(): Promise<Harness> {
       void handleNotifyHttp(req, res, {
         expectedToken: TOKEN,
         hub: state.notificationHub,
+        tokenStore: state.tokenStore,
       });
       return;
     }
@@ -968,6 +969,48 @@ describe("CLI smoke: mobile-notify --from-json -", () => {
     } finally {
       rmSync(emptyHome, { recursive: true, force: true });
     }
+  });
+
+  it("--from-claude-hook translates a Stop event into a notification", async () => {
+    const hookEvent = {
+      hook_event_name: "Stop",
+      session_id: "abc123",
+      cwd: "/home/u/proj",
+    };
+    const child = spawn(
+      process.execPath,
+      [
+        CLI_PATH,
+        "--server",
+        `127.0.0.1:${h.port}`,
+        "--token",
+        TOKEN,
+        "--from-claude-hook",
+      ],
+      { stdio: ["pipe", "pipe", "pipe"] },
+    );
+    child.stdin.write(JSON.stringify(hookEvent));
+    child.stdin.end();
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    child.stdout.on("data", (c) => stdoutChunks.push(c));
+    child.stderr.on("data", (c) => stderrChunks.push(c));
+    const exitCode: number = await new Promise((resolve) =>
+      child.on("close", (code) => resolve(code ?? -1)),
+    );
+    const stdout = Buffer.concat(stdoutChunks).toString("utf8").trim();
+    const stderr = Buffer.concat(stderrChunks).toString("utf8");
+    expect(exitCode, `stderr: ${stderr}`).toBe(0);
+    const stored = h.state.notificationHub
+      .list({ limit: 5 })
+      .items.find((n) => n.id === stdout);
+    expect(stored).toBeDefined();
+    expect(stored!.source).toBe("claude-code");
+    expect(stored!.title).toBe("Claude finished");
+    expect(stored!.groupKey).toBe("claude-code:abc123");
+    expect(stored!.fields?.find((f) => f.key === "cwd")?.value).toBe(
+      "/home/u/proj",
+    );
   });
 });
 

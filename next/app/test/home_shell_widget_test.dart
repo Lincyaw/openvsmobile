@@ -160,9 +160,11 @@ void main() {
       await tester.pumpAndSettle();
 
       // SettingsTab still visible — we're back on the Settings destination,
-      // not on Files.
+      // not on Files. We don't re-check Backends text because the Settings
+      // list may be scrolled past it (after scrolling down to About);
+      // SettingsTab presence + the negative Files-empty assertion + the
+      // bottom-nav index check below cover the actual invariant.
       expect(find.byType(SettingsTab), findsOneWidget);
-      expect(find.text('Backends'), findsOneWidget);
       expect(
         find.text('No workspace open.\nTap the title bar to choose one.'),
         findsNothing,

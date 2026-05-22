@@ -11,6 +11,7 @@ import { resolveToken } from "./config.js";
 import { Connection } from "./connection.js";
 import { ProcessState } from "./state.js";
 import { handleNotifyHttp } from "./notifyHttp.js";
+import { HookHandler } from "./hookHttp.js";
 import { PluginHost } from "./plugins/host.js";
 import { probeMultiplexer } from "./multiplexer.js";
 import { TerminalPersistence } from "./terminalPersistence.js";
@@ -117,6 +118,12 @@ async function main(): Promise<void> {
   state.pluginHost = pluginHost;
   await pluginHost.start();
 
+  const hookHandler = new HookHandler({
+    expectedToken: token,
+    hub: state.notificationHub,
+    tokenStore: state.tokenStore,
+  });
+
   const httpServer = createServer((req, res) => {
     if (req.url === "/healthz") {
       res.statusCode = 200;
@@ -131,8 +138,23 @@ async function main(): Promise<void> {
       handleNotifyHttp(req, res, {
         expectedToken: token,
         hub: state.notificationHub,
+        tokenStore: state.tokenStore,
       }).catch((err) => {
         console.error("[notify] handler error:", err);
+        if (!res.headersSent) {
+          res.statusCode = 500;
+          res.end();
+        }
+      });
+      return;
+    }
+    // Permissive sender endpoint — see hookHttp.ts. Same security
+    // perimeter as /notify (auth or publish token), but accepts
+    // path-segment auth + JSON/form/plain bodies for paste-friendly
+    // third-party webhook URLs.
+    if (req.url !== undefined && req.url.startsWith("/hook/")) {
+      hookHandler.handle(req, res).catch((err) => {
+        console.error("[hook] handler error:", err);
         if (!res.headersSent) {
           res.statusCode = 500;
           res.end();

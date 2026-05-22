@@ -4,20 +4,29 @@
 //
 // Wire shape:
 //   POST /notify
-//   Authorization: Bearer <token>
+//   Authorization: Bearer <token>            # auth token OR publish token
 //   Content-Type: application/json
 //   Body: Notification minus server-assigned fields
 //   → 200 { id }
 //   → 400 { error } on schema violation
 //   → 401 (no body) on auth fail
+//   → 403 { error } when a publish token's source-prefix forbids the source
 //   → 413 on oversized body
+//   → 429 { error } on rate-limit exhaustion (with Retry-After)
 //   → 500 { error } on unexpected server error
 //
-// See docs/design/mobile-code-platform.md §4.5 ("Sender API (HTTP)").
+// See docs/design/mobile-code-platform.md §4.5.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { RpcError } from "./rpc.js";
 import type { NotificationHub } from "./notifications.js";
+import type { TokenStore } from "./tokenStore.js";
+import {
+  AuthError,
+  authenticateSender,
+  enforcePublishLimits,
+  writeAuthError,
+} from "./senderAuth.js";
 
 /// Hard cap on POST /notify body size — 1 MiB. Body validation already caps
 /// the markdown body at 16 KB, but the full payload (including widget JSON)
@@ -25,8 +34,10 @@ import type { NotificationHub } from "./notifications.js";
 const MAX_BODY_BYTES = 1 * 1024 * 1024;
 
 export interface NotifyHttpDeps {
+  /// The single auth-class bearer token from config.json.
   expectedToken: string;
   hub: NotificationHub;
+  tokenStore: TokenStore;
 }
 
 /// Returns true if the request was handled (response sent). The caller wires
@@ -44,11 +55,15 @@ export async function handleNotifyHttp(
     res.end(JSON.stringify({ error: "method not allowed" }));
     return true;
   }
-  if (!checkBearer(req, deps.expectedToken)) {
-    // Per spec: 401 on auth fail. Empty body — never echo what we got.
-    res.statusCode = 401;
-    res.end();
-    return true;
+  let outcome;
+  try {
+    outcome = authenticateSender(req, {
+      authToken: deps.expectedToken,
+      tokenStore: deps.tokenStore,
+    });
+  } catch (err) {
+    if (err instanceof AuthError) return writeAuthError(res, err);
+    throw err;
   }
   let raw: string;
   try {
@@ -74,6 +89,26 @@ export async function handleNotifyHttp(
     res.end(JSON.stringify({ error: "invalid json" }));
     return true;
   }
+  // Pull `source` for the post-auth source-prefix check. We do this before
+  // hub.publish (which also validates) so a token-scope violation surfaces
+  // as 403, not as 400-after-validation. Cheap path: only the source field
+  // matters here; full schema validation still runs in publish.
+  const source =
+    typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>).source
+      : undefined;
+  if (typeof source !== "string") {
+    res.statusCode = 400;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ error: "source required" }));
+    return true;
+  }
+  try {
+    enforcePublishLimits(outcome, source, deps.tokenStore);
+  } catch (err) {
+    if (err instanceof AuthError) return writeAuthError(res, err);
+    throw err;
+  }
   try {
     const { id } = deps.hub.publish(parsed);
     res.statusCode = 200;
@@ -95,15 +130,6 @@ export async function handleNotifyHttp(
     res.end(JSON.stringify({ error: "internal error" }));
   }
   return true;
-}
-
-function checkBearer(req: IncomingMessage, expected: string): boolean {
-  const header = req.headers["authorization"];
-  if (typeof header !== "string") return false;
-  const prefix = "Bearer ";
-  if (!header.startsWith(prefix)) return false;
-  const token = header.slice(prefix.length).trim();
-  return token === expected;
 }
 
 class BodyTooLargeError extends Error {}

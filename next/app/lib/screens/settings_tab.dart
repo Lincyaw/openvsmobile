@@ -24,6 +24,7 @@ import 'about_screen.dart';
 import 'notification_settings_screen.dart';
 import 'ssh_bootstrap_screen.dart';
 import 'system_tray_debug_screen.dart';
+import 'webhook_tokens_screen.dart';
 
 class SettingsTab extends StatelessWidget {
   final AppState appState;
@@ -87,6 +88,14 @@ class SettingsTab extends StatelessWidget {
           settingsStore: settingsStore,
           onChanged: onNotificationPrefsChanged,
         ),
+      ),
+    );
+  }
+
+  void _openWebhookTokens(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => WebhookTokensScreen(appState: appState),
       ),
     );
   }
@@ -213,6 +222,16 @@ class SettingsTab extends StatelessWidget {
               ),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => _openNotifications(context),
+            ),
+            ListTile(
+              key: const ValueKey<String>('settings-tile-webhook-tokens'),
+              leading: const Icon(Icons.key_outlined),
+              title: const Text('Webhook tokens'),
+              subtitle: const Text(
+                'Publish-only tokens for CI, monitoring, webhooks',
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _openWebhookTokens(context),
             ),
             ListTile(
               key: const ValueKey<String>('settings-tile-diagnostics'),

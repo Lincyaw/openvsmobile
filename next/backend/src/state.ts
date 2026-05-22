@@ -32,6 +32,7 @@ import {
   NotificationHub,
   NotificationStore,
 } from "./notifications.js";
+import { TokenStore } from "./tokenStore.js";
 import type {
   PluginHost,
   PluginStateChange,
@@ -76,6 +77,11 @@ export interface ProcessStateOptions {
   /// callers leave this undefined and let `notifications.ts` resolve from
   /// $OPENVSMOBILE_NOTIFICATIONS_DB or the default location.
   notificationDbPath?: string;
+  /// Override the publish-tokens DB path. Same shape as
+  /// `notificationDbPath` — tests pass a temp dir; production leaves it
+  /// undefined and `tokenStore.ts` resolves from $OPENVSMOBILE_TOKENS_DB
+  /// or the default `~/.config/openvsmobile-next/tokens.db`.
+  tokensDbPath?: string;
   /// Plugin host. Optional so unit tests that exercise non-plugin RPCs
   /// can construct a bare ProcessState without spinning up a host. The
   /// production wiring in index.ts always supplies one; UI-related
@@ -121,6 +127,12 @@ export class ProcessState {
   /// (like everything else owned by ProcessState).
   public readonly notificationHub: NotificationHub;
 
+  /// Publish-token store. Backs the `auth.publishTokens.*` admin RPCs and
+  /// the publish-token auth branch of `/notify` + `/hook`. Separate DB
+  /// from notifications: revoking a token must not touch notification
+  /// history, and notification GC must not touch tokens.
+  public readonly tokenStore: TokenStore;
+
   /// Plugin host reference. Optionally seeded via the constructor
   /// (`new ProcessState({ pluginHost })`) for unit tests; production
   /// wires it via late assignment in `index.ts` because the host needs
@@ -146,6 +158,9 @@ export class ProcessState {
       : {};
     const store = new NotificationStore(storeOpts);
     this.notificationHub = new NotificationHub(store);
+    this.tokenStore = new TokenStore(
+      opts.tokensDbPath ? { dbPath: opts.tokensDbPath } : {},
+    );
     const notifPred = (sub: Subscriber): boolean =>
       sub.notificationsSubscribed === true;
     this.notificationHub.attachFanOut({
@@ -317,6 +332,7 @@ export class ProcessState {
       this.broadcastWorkspaceClosed(id);
     }
     this.notificationHub.close();
+    this.tokenStore.close();
   }
 
   /// Drop every cached diff that mentions the given workspace. Called from
