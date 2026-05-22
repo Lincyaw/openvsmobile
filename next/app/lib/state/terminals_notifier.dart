@@ -364,6 +364,27 @@ class TerminalsNotifier extends ChangeNotifier {
     }
   }
 
+  /// Tell the backend to drop the local zellij client for [sessionId]
+  /// without killing the zellij server session. Local cleanup is driven
+  /// by the resulting `terminal.detached` notification.
+  Future<void> detachTerminal(
+    String sessionId, {
+    required BackendConnectionState connectionState,
+  }) async {
+    try {
+      await _client.call('terminal.detach', {'sessionId': sessionId});
+    } catch (e) {
+      if (connectionState != BackendConnectionState.connected) {
+        debugPrint(
+          'TerminalsNotifier.detachTerminal($sessionId) dropped: '
+          'disconnected mid-call ($e)',
+        );
+        return;
+      }
+      _reportError('Could not detach terminal: $e');
+    }
+  }
+
   /// Tell the backend to kill [sessionId]'s PTY. Local cleanup is driven by
   /// the resulting `terminal.exit` notification, not by this call.
   Future<void> disposeTerminal(

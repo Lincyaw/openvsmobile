@@ -580,6 +580,12 @@ class AppState extends ChangeNotifier {
         connectionState: _connectionState,
       );
 
+  Future<void> detachTerminal(String sessionId) =>
+      _terminals.detachTerminal(
+        sessionId,
+        connectionState: _connectionState,
+      );
+
   void focusTerminal(String sessionId) => _terminals.focusTerminal(sessionId);
 
   /// Wrapper for the discovery sheet.

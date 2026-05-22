@@ -513,6 +513,14 @@ methods.set("terminal.resize", (ctx, params) => {
   return {};
 });
 
+methods.set("terminal.detach", (ctx, params) => {
+  const p = asBag(params);
+  const sessionId = requireString(p, "sessionId");
+  const ws = findWorkspaceOwning(ctx, sessionId);
+  ws.terminals.detach(sessionId);
+  return {};
+});
+
 methods.set("terminal.dispose", (ctx, params) => {
   const p = asBag(params);
   const sessionId = requireString(p, "sessionId");

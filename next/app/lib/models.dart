@@ -153,6 +153,10 @@ class TerminalSession {
   final int rows;
   final String cwd;
   final int createdAt;
+  /// Zellij session name when this session is multiplexer-backed; null for
+  /// direct-shell sessions. Used to show the user the exact
+  /// `zellij attach <name>` invocation after a detach.
+  final String? externalSessionId;
   /// True when the backend pushed `terminal.detached` for this session
   /// (zellij client exited but the server session is still alive). The
   /// flag clears on the next `terminal.data` for this id — the lazy-
@@ -167,6 +171,7 @@ class TerminalSession {
     required this.rows,
     required this.cwd,
     required this.createdAt,
+    this.externalSessionId,
     this.detached = false,
   });
 
@@ -177,6 +182,7 @@ class TerminalSession {
         rows: rows,
         cwd: cwd,
         createdAt: createdAt,
+        externalSessionId: externalSessionId,
         detached: detached ?? this.detached,
       );
 
@@ -188,6 +194,7 @@ class TerminalSession {
         rows: (json['rows'] as num).toInt(),
         cwd: json['cwd'] as String,
         createdAt: (json['createdAt'] as num).toInt(),
+        externalSessionId: json['externalSessionId'] as String?,
       );
 }
 

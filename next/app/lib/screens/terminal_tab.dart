@@ -56,27 +56,57 @@ class _TerminalTabState extends State<TerminalTab> {
     setState(() {});
   }
 
-  Future<void> _confirmDispose(TerminalSession s) async {
-    final ok = await showDialog<bool>(
+  Future<void> _showSessionActions(TerminalSession s) async {
+    final canDetach = s.externalSessionId != null;
+    final action = await showModalBottomSheet<String>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Close terminal?'),
-        content: Text(
-          'Session ${s.id.substring(0, 8)}… will be killed.',
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (canDetach)
+              ListTile(
+                leading: const Icon(Icons.logout),
+                title: const Text('Detach'),
+                subtitle: Text(
+                  'Leave the zellij session running on the backend '
+                  '(${s.externalSessionId}). Reattach from desktop with '
+                  '"zellij attach ${s.externalSessionId}".',
+                ),
+                onTap: () => Navigator.of(ctx).pop('detach'),
+              ),
+            ListTile(
+              leading: const Icon(Icons.close),
+              title: const Text('Close'),
+              subtitle: Text(
+                'Kill the session entirely. '
+                'Session ${s.id.substring(0, 8)}… will be destroyed.',
+              ),
+              onTap: () => Navigator.of(ctx).pop('close'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.arrow_back),
+              title: const Text('Cancel'),
+              onTap: () => Navigator.of(ctx).pop(null),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton.tonal(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('Close'),
-          ),
-        ],
       ),
     );
-    if (ok == true) {
+    if (!mounted) return;
+    if (action == 'detach') {
+      await widget.appState.detachTerminal(s.id);
+      if (!mounted) return;
+      final name = s.externalSessionId;
+      if (name != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Detached. Reattach with: zellij attach $name'),
+            duration: const Duration(seconds: 6),
+          ),
+        );
+      }
+    } else if (action == 'close') {
       await widget.appState.disposeTerminal(s.id);
     }
   }
@@ -202,7 +232,7 @@ class _TerminalTabState extends State<TerminalTab> {
               ),
               detached: s.detached,
               onTap: () => _openDetail(s, index),
-              onLongPress: () => _confirmDispose(s),
+              onLongPress: () => _showSessionActions(s),
             );
           },
         );

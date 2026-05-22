@@ -63,6 +63,10 @@ export interface TerminalSnapshot {
   rows: number;
   cwd: string;
   createdAt: number;
+  /// Zellij session name when this entry is multiplexer-backed, null for
+  /// direct-shell sessions. Exposed so the client can show the user the
+  /// exact `zellij attach <name>` invocation after a detach.
+  externalSessionId: string | null;
 }
 
 export type TerminalDataSink = (
@@ -761,6 +765,37 @@ export class TerminalRegistry {
     entry.rows = rows;
   }
 
+  /// Kill the local zellij client (PTY) without tearing down the zellij
+  /// server session. Same effect as the user pressing `Ctrl-O d` inside
+  /// zellij: the chip demotes to `hydrated`, `terminal.detached` fires,
+  /// and the next write/resize/history lazy-reattaches. The intended use
+  /// is freeing the session from the mobile client's geometry so a
+  /// desktop `zellij attach <name>` lays out for its own terminal size.
+  ///
+  /// `live` is the only meaningful starting state — the PTY exit callback
+  /// drives the demotion via `handleZellijClientExit`. For `hydrated` /
+  /// `exiting` the session is already detached (or about to be), so we
+  /// treat the call as a no-op. For direct-shell sessions (no zellij
+  /// server behind them) detach has no meaning — killing the PTY there
+  /// would lose the only process, which is `dispose()`'s job; we reject
+  /// loudly so the UI doesn't accidentally hide a destructive action
+  /// behind a benign label.
+  public detach(id: string): void {
+    const entry = this.requireSession(id);
+    if (entry.externalSessionId === null) {
+      throw new RpcError(
+        RPC_ERR.invalidParams,
+        "detach is only supported for zellij-backed sessions",
+      );
+    }
+    if (entry.state !== "live" || entry.pty === null) return;
+    try {
+      entry.pty.kill();
+    } catch {
+      // Already gone; the onExit hook will still run handleZellijClientExit.
+    }
+  }
+
   public dispose(id: string): void {
     const entry = this.sessions.get(id);
     if (!entry) return;
@@ -883,6 +918,7 @@ function snapshotOf(entry: Entry): TerminalSnapshot {
     rows: entry.rows,
     cwd: entry.cwd,
     createdAt: entry.createdAt,
+    externalSessionId: entry.externalSessionId,
   };
 }
 

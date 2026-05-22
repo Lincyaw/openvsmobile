@@ -12,6 +12,7 @@ import 'package:flutter/material.dart';
 import 'package:xterm/xterm.dart';
 
 import '../app_state.dart';
+import '../models.dart';
 import '../services/terminal_gesture_host.dart';
 import '../ui/app_tokens.dart';
 
@@ -34,11 +35,36 @@ class TerminalDetailScreen extends StatelessWidget {
       builder: (context, _) {
         final terminal = appState.terminalFor(sessionId);
         final generation = appState.terminalGenerationFor(sessionId);
+        TerminalSession? session;
+        for (final t in appState.currentTerminals) {
+          if (t.id == sessionId) {
+            session = t;
+            break;
+          }
+        }
+        final externalName = session?.externalSessionId;
         return Scaffold(
           appBar: AppBar(
-            title: Text(
-              title,
-              style: Theme.of(context).textTheme.titleMedium,
+            title: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  title,
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                if (externalName != null)
+                  Text(
+                    'zellij attach $externalName',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurfaceVariant,
+                          fontFamily: 'monospace',
+                        ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+              ],
             ),
             titleSpacing: 0,
           ),

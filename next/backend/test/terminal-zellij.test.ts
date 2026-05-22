@@ -490,7 +490,7 @@ describe("TerminalRegistry hydrate + lazy attach", () => {
     // where a stray `state` slips into snapshotOf and changes
     // terminal.list's response.
     expect(Object.keys(listed[0]).sort()).toEqual(
-      ["cols", "createdAt", "cwd", "id", "rows"].sort(),
+      ["cols", "createdAt", "cwd", "externalSessionId", "id", "rows"].sort(),
     );
   });
 
