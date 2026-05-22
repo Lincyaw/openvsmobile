@@ -163,9 +163,19 @@ fi
 log "installing production deps for linux-${ARCH} (pnpm, frozen lockfile, hoisted)"
 (
   cd "$BUILD_DIR"
+  # Front-load the bundled Node so pnpm and every lifecycle script run
+  # under the same ABI the tarball ships. Without this, the host's Node
+  # (e.g. v24 / NMV 137) drives prebuild-install and downloads native
+  # binaries built for the wrong NODE_MODULE_VERSION; the tarball
+  # extracts cleanly but blows up on `require('better_sqlite3.node')` at
+  # runtime under the bundled v25 / NMV 141.
+  export PATH="$NODE_HOME/bin:$PATH"
   # Cross-target env: node-pty and friends consult npm_config_target_arch
   # / npm_config_target_platform when downloading prebuilt natives. pnpm
   # propagates these to lifecycle scripts the same way npm does.
+  # npm_config_target pins the ABI version so prebuild-install grabs the
+  # binary that matches the bundled Node even if host Node differs.
+  npm_config_target="${NODE_VERSION#v}" \
   npm_config_target_arch="$ARCH" \
   npm_config_target_platform="linux" \
     pnpm install \
