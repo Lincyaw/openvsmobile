@@ -9,35 +9,22 @@ const double kFastFlingVelocity = 800;
 const double kMediumDragVelocityMin = 300;
 const int kMediumDragBurstSize = 4;
 
-/// Routes vertical touch drags on the terminal viewport to one of three
-/// destinations based on the terminal's *own* state:
+/// Pure-policy helper for routing per-cell scroll units and fling events
+/// to the right side-effect channel based on the terminal's *own* state.
+/// Stateful drag tracking now lives in `TerminalGestureHost`; this class
+/// keeps two roles:
 ///
-///   normal buffer        → host scrollback (no inertia synthesised by us
-///                          because scrollback drag is "direct manipulation"
-///                          — the user already lifted their finger; piling
-///                          on phantom ticks would surprise them)
-///   alt + no mouse       → arrow ↑ / ↓ per cell-height, PgUp / PgDn on fling
-///                          (apps without mouse reporting expect keystrokes)
-///   alt + reportScroll   → SGR wheel reports `\e[<64..65;col;rowM` at the
-///                          *drag-start* cell (matches desktop wheel
-///                          semantics: the wheel reports where you started,
-///                          not where the cursor currently is)
+///   1. Stateless static methods (`dispatchUnits`, `dispatchFling`) that
+///      the host calls from inside its arena-winning recognizer.
+///   2. The original stateful drag adapter, retained so existing unit
+///      tests around quantization / residual handling keep covering the
+///      policy matrix without rewiring. New callers should prefer the
+///      static helpers.
 ///
-/// **Directionality matches mobile direct-manipulation** (the same model
-/// as macOS natural-scroll, default since ~2011): a downward finger drag
-/// pulls earlier content into view — i.e. the visible window moves *up*
-/// over the buffer. So a downward drag emits `arrowUp` / SGR wheel-up
-/// (button 64) / PageUp, and an upward drag emits the opposite. The
-/// adapter flips raw pointer dy at its input boundary so its internal
-/// `down` vocabulary means "natural-scroll-down direction" — i.e. the
-/// keystroke we want to synthesise, not the direction the finger went.
-///
-/// The asymmetry around inertia is deliberate: in normal-buffer scrollback
-/// the xterm.dart view owns a real scroll position, and our callers are
-/// expected to drive it directly. In alt-buffer paths the side-effect is
-/// the *application's* responsibility to interpret, and silently emitting
-/// "ghost" wheel/arrow events after the finger lifts would lie to the
-/// running TUI about user intent.
+/// Direction vocabulary: `down` follows natural-scroll semantics — a
+/// downward finger drag is a `down: false` event (reveal earlier
+/// content → arrow ↑ / SGR wheel-up / PageUp). The host flips raw pointer
+/// dy at its input boundary so callers can speak in user-intent terms.
 class TerminalScrollAdapter {
   TerminalScrollAdapter({
     required this.terminal,
@@ -45,94 +32,72 @@ class TerminalScrollAdapter {
     required this.onScrollback,
   });
 
-  /// State source. We never mirror buffer / mouseMode locally — the
-  /// terminal *is* the source of truth and reading it on each gesture
-  /// avoids a stale-flag class of bug.
   final Terminal terminal;
-
-  /// Pixel → 1-based `(col, row)` mapper. Production wires this to the
-  /// xterm.dart render-object's `getCellOffset`; tests stub it.
   final ({int col, int row}) Function(Offset) cellAt;
-
-  /// Normal-buffer scroll sink. Signed integer; positive matches the
-  /// natural-scroll-down direction (i.e. the user dragged *up* and wants
-  /// to see later content). Callers translate sign into whatever
-  /// scrollback API the view exposes.
   final void Function(int lines) onScrollback;
 
   Offset _dragAnchor = Offset.zero;
   double _residualDy = 0;
   bool _dragActive = false;
 
-  /// Begins a drag. We record the *start* anchor (not the current pointer
-  /// position) because SGR wheel events semantically attach to where the
-  /// user started scrolling — matches how desktop emulators format them.
   void onDragStart(Offset localPosition) {
     _dragAnchor = localPosition;
     _residualDy = 0;
     _dragActive = true;
   }
 
-  /// Accumulates raw drag-delta pixels and emits one unit per
-  /// `cellHeight` of accumulated travel. Sub-cell remainder is held in
-  /// `_residualDy` until the next update.
-  ///
-  /// The raw `deltaDy` is negated on the way in so the adapter's
-  /// internal `down` vocabulary aligns with the natural-scroll
-  /// direction (see class doc): a downward finger drag — `deltaDy > 0`
-  /// — produces `units < 0` and therefore `down: false`, which
-  /// downstream emits as `arrowUp` / SGR wheel-up / PageUp.
   void onDragUpdate({required double deltaDy, required double cellHeight}) {
     if (!_dragActive || cellHeight <= 0) return;
     _residualDy -= deltaDy;
     final int units = (_residualDy / cellHeight).truncate();
     if (units == 0) return;
     _residualDy -= units * cellHeight;
-    _emitUnits(magnitude: units.abs(), down: units > 0);
+    dispatchUnits(
+      terminal: terminal,
+      magnitude: units.abs(),
+      down: units > 0,
+      cellAt: cellAt,
+      anchor: _dragAnchor,
+      onScrollback: onScrollback,
+    );
   }
 
-  /// Ends a drag. Fast fling (> [kFastFlingVelocity] in either direction)
-  /// triggers a coarse paging event scaled to the viewport. Slow
-  /// release discards any sub-cell residual — we do not carry residuals
-  /// across gestures because the user's mental model is "this swipe is
-  /// done".
   void onDragEnd({required double velocityDy, required int rows}) {
     if (!_dragActive) return;
     _dragActive = false;
     _residualDy = 0;
-
     if (velocityDy.abs() < kFastFlingVelocity) return;
-    // Same input-boundary flip as onDragUpdate: a downward fling
-    // (`velocityDy > 0`) is a natural-scroll-up request, so `down` is
-    // false → PageUp / wheel-up. See class doc.
     final bool down = velocityDy < 0;
-
-    if (!terminal.isUsingAltBuffer) {
-      // Normal-buffer fling intentionally not synthesised — the host
-      // ScrollController already received per-cell increments during the
-      // drag, and inertia would surprise the user (see class doc).
-      return;
-    }
-
-    if (terminal.mouseMode.reportScroll) {
-      final cell = cellAt(_dragAnchor);
-      final ticks = (rows / 2).floor().clamp(1, rows);
-      for (int i = 0; i < ticks; i++) {
-        terminal.onOutput?.call(_sgrWheel(cell, down: down));
-      }
-    } else {
-      terminal.keyInput(down ? TerminalKey.pageDown : TerminalKey.pageUp);
-    }
+    if (!terminal.isUsingAltBuffer) return;
+    dispatchFling(
+      terminal: terminal,
+      down: down,
+      rows: rows,
+      cellAt: cellAt,
+      anchor: _dragAnchor,
+    );
   }
 
-  void _emitUnits({required int magnitude, required bool down}) {
+  // ---------------- stateless policy ----------------
+
+  /// Emit `magnitude` per-cell scroll events in the direction `down`,
+  /// targeted at whichever channel matches the terminal's current
+  /// buffer / mouse-mode state.
+  static void dispatchUnits({
+    required Terminal terminal,
+    required int magnitude,
+    required bool down,
+    required ({int col, int row}) Function(Offset) cellAt,
+    required Offset anchor,
+    required void Function(int lines) onScrollback,
+  }) {
+    if (magnitude <= 0) return;
     if (!terminal.isUsingAltBuffer) {
       onScrollback(down ? magnitude : -magnitude);
       return;
     }
-
     if (terminal.mouseMode.reportScroll) {
-      final cell = cellAt(_dragAnchor);
+      final cell = cellAt(anchor);
       for (int i = 0; i < magnitude; i++) {
         terminal.onOutput?.call(_sgrWheel(cell, down: down));
       }
@@ -143,10 +108,32 @@ class TerminalScrollAdapter {
     }
   }
 
-  /// SGR-encoded mouse wheel report. Button 64 = wheel up, 65 = wheel
-  /// down. Press-only (`M`); xterm convention does not emit a release
-  /// for wheel buttons in practice.
-  String _sgrWheel(({int col, int row}) cell, {required bool down}) {
+  /// Emit a fling-sized burst. Normal buffer: no-op (per-cell increments
+  /// during the drag already covered it; inertia would lie to the user).
+  /// Alt + reportScroll: rows/2 wheel events at the drag-start cell.
+  /// Alt + no mouse: a single PgUp / PgDn keystroke.
+  static void dispatchFling({
+    required Terminal terminal,
+    required bool down,
+    required int rows,
+    required ({int col, int row}) Function(Offset) cellAt,
+    required Offset anchor,
+  }) {
+    if (!terminal.isUsingAltBuffer) return;
+    if (terminal.mouseMode.reportScroll) {
+      final cell = cellAt(anchor);
+      final ticks = (rows / 2).floor().clamp(1, rows);
+      for (int i = 0; i < ticks; i++) {
+        terminal.onOutput?.call(_sgrWheel(cell, down: down));
+      }
+    } else {
+      terminal.keyInput(down ? TerminalKey.pageDown : TerminalKey.pageUp);
+    }
+  }
+
+  static String _sgrWheel(({int col, int row}) cell, {required bool down}) {
+    // Button 64 = wheel up, 65 = wheel down. Press-only `M`; xterm
+    // convention does not emit a release for wheel buttons.
     final int button = down ? 65 : 64;
     return '\x1b[<$button;${cell.col};${cell.row}M';
   }
