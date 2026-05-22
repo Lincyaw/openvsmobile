@@ -1,27 +1,11 @@
 // Single owner of gesture interpretation over xterm.dart's TerminalView.
 //
-// Why this exists: xterm.dart's TerminalView builds its own recognizer
-// chain (TerminalGestureHandler → tap / longPress / drag-to-select, plus
-// TerminalScrollGestureHandler → an inner Scrollable in alt-buffer, plus
-// the outer Scrollable that drives normal-buffer rendering). On Android
-// touch input, multiple of those compete in the same gesture arena with
-// our scroll dispatcher, producing the symptom this file was written to
-// fix: vertical swipes sometimes trigger text selection, sometimes do
-// nothing, sometimes scroll.
-//
-// The fix is to put one RawGestureDetector *above* TerminalView whose
-// recognizers claim the arena early (vertical-drag via touch-slop, tap
-// via the standard tap recognizer, long-press via the standard timer).
-// xterm's inner recognizers still exist in the tree but they always
-// lose the arena to ours — so they are starved of pointer streams.
-//
-// We deliberately leave TerminalView's outer Scrollable in place. We
-// pass a ScrollController in and drive it from a ScrollbackModel —
-// xterm's render path consumes ViewportOffset deltas to repaint, and
-// short-circuiting that would mean reaching into private API. Treating
-// the ScrollController as a render sink driven by our own model keeps
-// the rendering pipeline intact while making the host the only source
-// of pointer-driven scroll changes.
+// Why this exists: xterm.dart ships two competing recognizer chains
+// (TerminalGestureHandler tap/long-press/drag-to-select and an alt-buffer
+// InfiniteScrollView Scrollable). Both fought our scroll dispatcher in
+// the gesture arena, so swipes flickered between select / scroll / no-op.
+// This host is the single authority — its recognizers win the arena and
+// AbsorbPointer below starves xterm's recognizers of pointer input.
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -50,12 +34,26 @@ class TerminalScrollbackModel extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Called by the host after the render sink has resolved its clamped
+  /// position, so phantom out-of-range delta does not have to be "burned"
+  /// by a reverse drag before the model becomes responsive again.
+  void clampTo(int clampedLines) {
+    if (_offsetLines == clampedLines) return;
+    _offsetLines = clampedLines;
+    notifyListeners();
+  }
+
   void reset() {
     if (_offsetLines == 0) return;
     _offsetLines = 0;
     notifyListeners();
   }
 }
+
+/// Callback receiving the [TerminalGestureHostState] so callers can drive
+/// force-select without holding a `GlobalKey<TerminalGestureHostState>`
+/// (which would treat State as a public API).
+typedef ForceSelectRegistrar = void Function(VoidCallback forceSelect);
 
 /// Wraps a [TerminalView] (passed as `child`) with the single gesture
 /// dispatcher described in the file header. The caller still constructs
@@ -65,16 +63,23 @@ class TerminalGestureHost extends StatefulWidget {
   const TerminalGestureHost({
     super.key,
     required this.terminal,
+    required this.terminalController,
     required this.terminalViewKey,
     required this.scrollback,
     required this.scrollbackController,
     required this.child,
+    this.registerForceSelect,
   });
 
   final Terminal terminal;
 
+  /// The same [TerminalController] passed to the wrapped [TerminalView].
+  /// We need it for clean clearSelection / setSelection / reading the
+  /// current selection range for copy.
+  final TerminalController terminalController;
+
   /// Key on the wrapped [TerminalView]. We reach through this for the
-  /// `RenderTerminal` (cell math, selection) and `requestKeyboard`.
+  /// `RenderTerminal` (cell math) and `requestKeyboard`.
   final GlobalKey<TerminalViewState> terminalViewKey;
 
   /// Source of truth for normal-buffer scrollback position. Updated by
@@ -87,6 +92,11 @@ class TerminalGestureHost extends StatefulWidget {
   final ScrollController scrollbackController;
 
   final Widget child;
+
+  /// Called once when the host's State is available; the callback hands
+  /// the parent a closure that triggers force-select-at-cursor. Lets the
+  /// soft-keyboard toolbar drive selection without reaching into State.
+  final ForceSelectRegistrar? registerForceSelect;
 
   @override
   State<TerminalGestureHost> createState() => TerminalGestureHostState();
@@ -107,6 +117,7 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
   void initState() {
     super.initState();
     widget.scrollback.addListener(_syncScrollSink);
+    widget.registerForceSelect?.call(forceSelectAtCursor);
   }
 
   @override
@@ -115,6 +126,9 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
     if (oldWidget.scrollback != widget.scrollback) {
       oldWidget.scrollback.removeListener(_syncScrollSink);
       widget.scrollback.addListener(_syncScrollSink);
+    }
+    if (oldWidget.registerForceSelect != widget.registerForceSelect) {
+      widget.registerForceSelect?.call(forceSelectAtCursor);
     }
   }
 
@@ -131,13 +145,20 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
     if (state == null) return;
     final lineHeight = state.renderTerminal.lineHeight;
     if (lineHeight <= 0) return;
-    final target = widget.scrollback.offsetLines * lineHeight;
     if (!widget.scrollbackController.hasClients) return;
+    final target = widget.scrollback.offsetLines * lineHeight;
+    final position = widget.scrollbackController.position;
     final clamped = target.clamp(
-      widget.scrollbackController.position.minScrollExtent,
-      widget.scrollbackController.position.maxScrollExtent,
+      position.minScrollExtent,
+      position.maxScrollExtent,
     );
     widget.scrollbackController.jumpTo(clamped);
+    // Mirror the clamp back into the model so out-of-range delta does
+    // not accumulate as phantom offset that a reverse drag must "burn".
+    final clampedLines = (clamped / lineHeight).round();
+    if (clampedLines != widget.scrollback.offsetLines) {
+      widget.scrollback.clampTo(clampedLines);
+    }
   }
 
   // ---------- cell-math helpers ----------
@@ -167,16 +188,7 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
 
   void _exitSelect({bool clear = true}) {
     if (clear) {
-      // Reach the controller through the renderTerminal? The
-      // TerminalController is owned by the caller — clearing selection
-      // through RenderTerminal isn't exposed, so we issue a zero-length
-      // selectCharacters which xterm interprets as collapsing.
-      final state = widget.terminalViewKey.currentState;
-      if (state != null) {
-        // selectCharacters with from==to collapses the selection range;
-        // xterm.dart paints nothing for a zero-length range.
-        state.renderTerminal.selectCharacters(Offset.zero, Offset.zero);
-      }
+      widget.terminalController.clearSelection();
     }
     _selectAnchor = null;
     if (_mode != _Mode.view) {
@@ -185,16 +197,7 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
   }
 
   Future<void> _copySelection() async {
-    final state = widget.terminalViewKey.currentState;
-    if (state == null) return;
-    // We don't have the TerminalController here, but the caller does.
-    // The selected range lives on RenderTerminal's controller — we
-    // instead read it via the terminal's buffer using a coarse
-    // approximation: re-derive the selection from our anchor. Simpler:
-    // use the terminal's buffer.getText on the controller's selection.
-    // The controller is reachable through the TerminalView widget.
-    final controller = state.widget.controller;
-    final selection = controller?.selection;
+    final selection = widget.terminalController.selection;
     if (selection == null) return;
     final text = widget.terminal.buffer.getText(selection);
     if (text.isEmpty) return;
@@ -202,43 +205,46 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
   }
 
   void _selectAll() {
-    final state = widget.terminalViewKey.currentState;
-    if (state == null) return;
-    // Select from top-left to bottom-right of the current viewport.
-    final size = state.renderTerminal.size;
-    state.renderTerminal.selectCharacters(
-      Offset.zero,
-      Offset(size.width, size.height),
+    // Select the entire buffer (all scrollback lines), not just the
+    // currently rendered viewport.
+    final buffer = widget.terminal.buffer;
+    final lastLine = buffer.height - 1;
+    if (lastLine < 0) return;
+    widget.terminalController.setSelection(
+      buffer.createAnchor(0, 0),
+      buffer.createAnchor(widget.terminal.viewWidth, lastLine),
+      mode: SelectionMode.line,
     );
   }
 
   // ---------- recognizer callbacks ----------
 
-  void _onTapUp(TapUpDetails details) {
+  void _onTapDown(TapDownDetails details) {
     final state = widget.terminalViewKey.currentState;
     if (state == null) return;
-    if (_mode == _Mode.select) {
-      // Tap outside selection toolbar dismisses select mode and falls
-      // through as a normal focus-tap. We don't try to detect "inside
-      // the highlight rect" — the toolbar's Dismiss button covers the
-      // user-initiated exit path; a stray tap exits too, which is what
-      // most mobile editors do.
-      _exitSelect();
-      return;
-    }
-    // Replicate TerminalGestureHandler's _tapDown contract: focus the
-    // text-edit shim (drives the soft keyboard) and, if the running
-    // application requested mouse reporting, deliver a mouse-down at
-    // the tapped cell. RenderTerminal.mouseEvent handles the protocol-
-    // encoding side.
+    // Focus first so the soft keyboard is brought up before any TUI
+    // mouse-down round-trips.
     state.requestKeyboard();
-    final mouseMode = widget.terminal.mouseMode;
-    if (mouseMode != MouseMode.none) {
+    if (_mode == _Mode.select) return;
+    if (widget.terminal.mouseMode != MouseMode.none) {
       state.renderTerminal.mouseEvent(
         TerminalMouseButton.left,
         TerminalMouseButtonState.down,
         details.localPosition,
       );
+    }
+  }
+
+  void _onTapUp(TapUpDetails details) {
+    final state = widget.terminalViewKey.currentState;
+    if (state == null) return;
+    if (_mode == _Mode.select) {
+      // A stray tap outside the toolbar exits select mode, matching most
+      // mobile editors. The Dismiss button covers the explicit path.
+      _exitSelect();
+      return;
+    }
+    if (widget.terminal.mouseMode != MouseMode.none) {
       state.renderTerminal.mouseEvent(
         TerminalMouseButton.left,
         TerminalMouseButtonState.up,
@@ -251,8 +257,6 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
     // If the app is in a mouse-reporting mode, long-press is reserved
     // for the running TUI (some use it as a right-click proxy). Force-
     // select is then only reachable via the soft-keyboard toolbar.
-    // TODO(two-finger): selection in mouseReport mode requires a
-    // force-select gesture; for v0 use the toolbar button.
     if (widget.terminal.mouseMode != MouseMode.none) return;
     _enterSelect(details.localPosition);
   }
@@ -262,7 +266,10 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
     _residualDy = 0;
     _velocity = VelocityTracker.withKind(d.kind ?? PointerDeviceKind.touch);
     _velocity!.addPosition(Duration.zero, d.globalPosition);
-    if (_mode == _Mode.select) {
+    // In select mode, long-press has already seeded _selectAnchor to the
+    // word boundary. Overwriting it here would break "long-press to
+    // select a word, then drag to extend from the word boundary".
+    if (_mode == _Mode.select && _selectAnchor == null) {
       _selectAnchor = d.localPosition;
     }
   }
@@ -271,8 +278,6 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
     _velocity?.addPosition(d.sourceTimeStamp ?? Duration.zero, d.globalPosition);
 
     if (_mode == _Mode.select) {
-      // Extend selection from anchor to current pointer. Vertical drag
-      // is enough — horizontal contribution is implicit in localPosition.
       final state = widget.terminalViewKey.currentState;
       if (state != null && _selectAnchor != null) {
         state.renderTerminal.selectCharacters(_selectAnchor!, d.localPosition);
@@ -321,6 +326,29 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
     _residualDy = 0;
   }
 
+  // ---------- hardware mouse wheel ----------
+
+  void _onPointerSignal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent) return;
+    if (_mode == _Mode.select) return;
+    final cellH = _cellHeight();
+    if (cellH <= 0) return;
+    // Same sign convention as vertical-drag: positive dy reveals later
+    // content. PointerScrollEvent.scrollDelta.dy is positive when the
+    // wheel is rolled down (away from the user) = reveal later content,
+    // matching dispatchUnits' `down: true`.
+    final units = (event.scrollDelta.dy / cellH).truncate();
+    if (units == 0) return;
+    TerminalScrollAdapter.dispatchUnits(
+      terminal: widget.terminal,
+      magnitude: units.abs(),
+      down: units > 0,
+      cellAt: _cellAt,
+      anchor: event.localPosition,
+      onScrollback: widget.scrollback.scrollBy,
+    );
+  }
+
   // ---------- build ----------
 
   @override
@@ -328,39 +356,40 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
     return Stack(
       fit: StackFit.expand,
       children: [
-        RawGestureDetector(
+        Listener(
           behavior: HitTestBehavior.translucent,
-          gestures: <Type, GestureRecognizerFactory>{
-            TapGestureRecognizer:
-                GestureRecognizerFactoryWithHandlers<TapGestureRecognizer>(
-              () => TapGestureRecognizer(debugOwner: this),
-              (r) => r.onTapUp = _onTapUp,
-            ),
-            LongPressGestureRecognizer: GestureRecognizerFactoryWithHandlers<
-                LongPressGestureRecognizer>(
-              () => LongPressGestureRecognizer(debugOwner: this),
-              (r) => r.onLongPressStart = _onLongPressStart,
-            ),
-            VerticalDragGestureRecognizer: GestureRecognizerFactoryWithHandlers<
-                VerticalDragGestureRecognizer>(
-              () => VerticalDragGestureRecognizer(debugOwner: this),
-              (r) {
-                r.onStart = _onVerticalDragStart;
-                r.onUpdate = _onVerticalDragUpdate;
-                r.onEnd = _onVerticalDragEnd;
-                r.onCancel = _onVerticalDragCancel;
-              },
-            ),
-          },
-          // AbsorbPointer below us starves xterm.dart's internal
-          // recognizers (TerminalGestureHandler tap/long-press/drag-to-
-          // select + TerminalScrollGestureHandler's alt-buffer
-          // InfiniteScrollView) of pointer input. They are still in the
-          // widget tree — rendering, focus, and keyboard plumbing rely
-          // on it — but the gesture arena contention that produced the
-          // original bug is gone because there is only one recognizer
-          // family left: ours, above the absorber.
-          child: AbsorbPointer(child: widget.child),
+          onPointerSignal: _onPointerSignal,
+          child: RawGestureDetector(
+            behavior: HitTestBehavior.translucent,
+            gestures: <Type, GestureRecognizerFactory>{
+              TapGestureRecognizer:
+                  GestureRecognizerFactoryWithHandlers<TapGestureRecognizer>(
+                () => TapGestureRecognizer(debugOwner: this),
+                (r) {
+                  r.onTapDown = _onTapDown;
+                  r.onTapUp = _onTapUp;
+                },
+              ),
+              LongPressGestureRecognizer: GestureRecognizerFactoryWithHandlers<
+                  LongPressGestureRecognizer>(
+                () => LongPressGestureRecognizer(debugOwner: this),
+                (r) => r.onLongPressStart = _onLongPressStart,
+              ),
+              VerticalDragGestureRecognizer: GestureRecognizerFactoryWithHandlers<
+                  VerticalDragGestureRecognizer>(
+                () => VerticalDragGestureRecognizer(debugOwner: this),
+                (r) {
+                  r.onStart = _onVerticalDragStart;
+                  r.onUpdate = _onVerticalDragUpdate;
+                  r.onEnd = _onVerticalDragEnd;
+                  r.onCancel = _onVerticalDragCancel;
+                },
+              ),
+            },
+            // AbsorbPointer starves xterm's internal recognizers so only
+            // ours remain in the gesture arena.
+            child: AbsorbPointer(child: widget.child),
+          ),
         ),
         if (_mode == _Mode.select)
           Positioned(

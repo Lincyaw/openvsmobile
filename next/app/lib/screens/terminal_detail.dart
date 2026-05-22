@@ -69,18 +69,15 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
   final TerminalController _ctrl = TerminalController();
   final GlobalKey<TerminalViewState> _terminalViewKey =
       GlobalKey<TerminalViewState>();
-  final GlobalKey<TerminalGestureHostState> _gestureHostKey =
-      GlobalKey<TerminalGestureHostState>();
   final ScrollController _scrollback = ScrollController();
   final TerminalScrollbackModel _scrollbackModel = TerminalScrollbackModel();
+  VoidCallback? _forceSelectAtCursor;
 
   /// Sticky-modifier state. When armed, the next keystroke routed through
   /// the Terminal's onOutput (soft keyboard or toolbar) has Ctrl applied,
   /// then auto-disarms. Termux-style.
   bool _ctrlArmed = false;
   void Function(String)? _origOnOutput;
-  TerminalMouseHandler? _origMouseHandler;
-  _WheelSuppressingMouseHandler? _mouseHandlerProxy;
 
   AnimationStatusListener? _routeAnimListener;
   Animation<double>? _watchedRouteAnim;
@@ -90,13 +87,6 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
     super.initState();
     _origOnOutput = widget.terminal.onOutput;
     widget.terminal.onOutput = _onOutputProxy;
-    // Keep the wheel suppressor even though the gesture host now owns
-    // pointer dispatch: a hardware mouse wheel still travels through
-    // xterm's internal Listener (`onPointerSignal`) and would otherwise
-    // double-fire alongside any future wheel handling we add.
-    _origMouseHandler = widget.terminal.mouseHandler;
-    _mouseHandlerProxy = _WheelSuppressingMouseHandler(_origMouseHandler);
-    widget.terminal.mouseHandler = _mouseHandlerProxy;
   }
 
   @override
@@ -147,9 +137,6 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
     if (widget.terminal.onOutput == _onOutputProxy) {
       widget.terminal.onOutput = _origOnOutput;
     }
-    if (widget.terminal.mouseHandler == _mouseHandlerProxy) {
-      widget.terminal.mouseHandler = _origMouseHandler;
-    }
     _scrollback.dispose();
     _scrollbackModel.dispose();
     _ctrl.dispose();
@@ -190,7 +177,7 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
   }
 
   void _forceSelect() {
-    _gestureHostKey.currentState?.forceSelectAtCursor();
+    _forceSelectAtCursor?.call();
   }
 
   @override
@@ -199,11 +186,12 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
       children: [
         Expanded(
           child: TerminalGestureHost(
-            key: _gestureHostKey,
             terminal: widget.terminal,
+            terminalController: _ctrl,
             terminalViewKey: _terminalViewKey,
             scrollback: _scrollbackModel,
             scrollbackController: _scrollback,
+            registerForceSelect: (cb) => _forceSelectAtCursor = cb,
             child: TerminalView(
               widget.terminal,
               key: _terminalViewKey,
@@ -231,23 +219,6 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
         ),
       ],
     );
-  }
-}
-
-/// Wraps the terminal's default mouse handler to discard wheel-up /
-/// wheel-down events. Real mouse clicks (left/right/middle/release)
-/// still pass through.
-class _WheelSuppressingMouseHandler implements TerminalMouseHandler {
-  _WheelSuppressingMouseHandler(this._inner);
-  final TerminalMouseHandler? _inner;
-
-  @override
-  String? call(TerminalMouseEvent event) {
-    if (event.button == TerminalMouseButton.wheelUp ||
-        event.button == TerminalMouseButton.wheelDown) {
-      return null;
-    }
-    return _inner?.call(event);
   }
 }
 

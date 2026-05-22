@@ -11,21 +11,21 @@ const int kMediumDragBurstSize = 4;
 
 /// Pure-policy helper for routing per-cell scroll units and fling events
 /// to the right side-effect channel based on the terminal's *own* state.
-/// Stateful drag tracking now lives in `TerminalGestureHost`; this class
-/// keeps two roles:
-///
-///   1. Stateless static methods (`dispatchUnits`, `dispatchFling`) that
-///      the host calls from inside its arena-winning recognizer.
-///   2. The original stateful drag adapter, retained so existing unit
-///      tests around quantization / residual handling keep covering the
-///      policy matrix without rewiring. New callers should prefer the
-///      static helpers.
+/// New callers should use the static helpers (`dispatchUnits`,
+/// `dispatchFling`). The stateful instance API is retained only so the
+/// pre-existing unit tests covering quantization / residual handling
+/// keep running; it is `@Deprecated` to discourage two-ways-to-do-the-
+/// same-thing drift.
 ///
 /// Direction vocabulary: `down` follows natural-scroll semantics — a
 /// downward finger drag is a `down: false` event (reveal earlier
 /// content → arrow ↑ / SGR wheel-up / PageUp). The host flips raw pointer
 /// dy at its input boundary so callers can speak in user-intent terms.
 class TerminalScrollAdapter {
+  @Deprecated(
+    'use TerminalScrollAdapter.dispatchUnits / dispatchFling. The stateful '
+    'API is retained only for the existing unit-test surface.',
+  )
   TerminalScrollAdapter({
     required this.terminal,
     required this.cellAt,
@@ -40,12 +40,14 @@ class TerminalScrollAdapter {
   double _residualDy = 0;
   bool _dragActive = false;
 
+  @Deprecated('use TerminalScrollAdapter.dispatchUnits / dispatchFling')
   void onDragStart(Offset localPosition) {
     _dragAnchor = localPosition;
     _residualDy = 0;
     _dragActive = true;
   }
 
+  @Deprecated('use TerminalScrollAdapter.dispatchUnits / dispatchFling')
   void onDragUpdate({required double deltaDy, required double cellHeight}) {
     if (!_dragActive || cellHeight <= 0) return;
     _residualDy -= deltaDy;
@@ -62,6 +64,7 @@ class TerminalScrollAdapter {
     );
   }
 
+  @Deprecated('use TerminalScrollAdapter.dispatchUnits / dispatchFling')
   void onDragEnd({required double velocityDy, required int rows}) {
     if (!_dragActive) return;
     _dragActive = false;
