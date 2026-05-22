@@ -1059,7 +1059,158 @@ The persistent foreground notification ("openvsmobile-next active") is low-impor
 
 **Settings.** Per-source rules (mute, priority override, sound override), quiet hours, default TTL, foreground-service toggle.
 
-**Auth.** v0 uses the same single bearer token for both WS and HTTP `/notify`. Per-source scoped publish tokens are deferred to v1.
+**Auth and publish tokens.**
+
+The backend has exactly two token *classes*:
+
+| Class     | Scope                                                              | How issued                            |
+|-----------|--------------------------------------------------------------------|---------------------------------------|
+| `auth`    | Everything: `/rpc`, `/notify`, `/hook`, future endpoints           | One per backend; in `config.json`     |
+| `publish` | `/notify` and `/hook` only — never `/rpc`, never any read RPC      | Many; minted from Settings UI         |
+
+The single bearer in `config.json` is the `auth` token (existing behavior — unchanged). `publish` tokens are layered on top: they exist so URLs can be pasted into third-party systems (GitHub Actions, Grafana, Uptime Kuma, shortcuts) without handing those systems the keys to the whole backend.
+
+**Why two classes, not N capabilities.** A single-user system doesn't need a permission lattice. The split that matters is "can send" vs "can read/control" — anything finer is overhead with no payoff. Sender tokens can't list, mark-read, or delete other people's notifications; they can only create.
+
+**Publish token record (SQLite).** Stored in a new file `~/.config/openvsmobile-next/tokens.db` — separate from `notifications.db` because the lifetimes are unrelated (revoking a token must not touch notification history; sweeping notifications must not touch tokens).
+
+```sql
+CREATE TABLE publish_tokens (
+  id             TEXT PRIMARY KEY,    -- short opaque id, surfaced in UI/logs
+  secret_hash    TEXT NOT NULL,       -- sha256 of the secret; the secret itself is shown once at mint
+  label          TEXT NOT NULL,       -- user-supplied human name, e.g. "github-actions-nightly"
+  source_prefix  TEXT,                -- nullable; if set, publishes must have source = "<prefix>" or source starts with "<prefix>:"
+  created_at     INTEGER NOT NULL,
+  last_used_at   INTEGER,             -- updated opportunistically; not on every request
+  revoked_at     INTEGER              -- non-null = revoked; rows kept for audit
+);
+CREATE INDEX idx_pub_tok_revoked ON publish_tokens(revoked_at);
+```
+
+The secret itself is never stored — `sha256(secret)` is. On mint the UI shows the secret once with a copy button and warns it cannot be retrieved later. Lost token → revoke and mint a new one. This is the same shape as GitHub PATs, npm tokens, Cloudflare API tokens.
+
+**Wire forms.** A request authenticates via *either*:
+
+- `Authorization: Bearer <secret>` — same shape as today's `/notify`. Used by CLI and direct integrations.
+- Path segment `/hook/<token-id>.<secret>/...` — used by the permissive `/hook` endpoint (separate patch) so URLs are paste-friendly. The combined `<id>.<secret>` form keeps the wire single-segment while letting the backend look up by id without scanning every row.
+
+Both forms accept either token class. Endpoints decide what they require:
+
+| Endpoint     | Accepts                        | Notes                                                       |
+|--------------|--------------------------------|-------------------------------------------------------------|
+| `/rpc`       | `auth` only                    | Per first principle: no read access via publish tokens.     |
+| `/notify`    | `auth` or `publish`            | Strict schema; backwards-compatible with today's senders.   |
+| `/hook/...`  | `auth` or `publish`            | Permissive schema (separate patch). URL form available.     |
+
+**Source-prefix enforcement.** When a `publish` token has a non-null `source_prefix`:
+
+- The incoming notification's `source` must equal the prefix, or begin with `<prefix>:`.
+- `claude-code` matches `claude-code` and `claude-code:openvsmobile`, but **not** `claude-code-rogue`. The `:` boundary prevents prefix-confusion attacks.
+- Violation returns `403 { error: "source not permitted by token" }` and is logged with the token id.
+
+`auth` tokens are not source-restricted.
+
+**Revocation.** `revoked_at` is checked on every authenticated request via a small in-memory cache (1s TTL) over the active tokens. Revoke takes effect within 1s without restart. Revoked rows are kept for audit; a separate retention job (out of scope here) may prune them after N months.
+
+**Rate limiting.** Per-token leaky bucket, defaults 60/min and 600/hour. Configurable per-token via Settings. Bucket state is in-memory only — survives single-process restarts as "burst reset", which is acceptable for this use. Excess requests return `429 { error: "rate limit" }` with `Retry-After`. `auth` tokens are unlimited.
+
+**Last-used update.** Updated at most once per minute per token (debounced write) — avoids a write on every publish in the hot path. Surfaced in the Settings token list as a human-readable relative time ("3 minutes ago", "never used"), so users can identify tokens safe to revoke.
+
+**RPC surface (admin, `auth` only).**
+
+| Method                              | Purpose                                                                   |
+|-------------------------------------|---------------------------------------------------------------------------|
+| `auth.publishTokens.list`           | `{}` → `[{ id, label, sourcePrefix, createdAt, lastUsedAt, revokedAt }]`. Never returns secrets. |
+| `auth.publishTokens.create`         | `{ label, sourcePrefix?, rateLimit? }` → `{ id, secret }`. Secret shown once. |
+| `auth.publishTokens.revoke`         | `{ id }` → `{ ok }`. Idempotent.                                          |
+| `auth.publishTokens.relabel`        | `{ id, label }` → `{ ok }`. For maintenance; does not invalidate the token. |
+
+No "rotate" — that's just `create` + use new + `revoke` old, and conflating the steps invites partial-failure bugs.
+
+**Settings UI.** A new "Webhook tokens" page under Settings:
+
+- List of active tokens: label, source-prefix chip (or "any source"), rate-limit chip, last-used relative time, revoke button.
+- "New token" button → modal: label (required), source prefix (optional, with a one-line explainer), rate limit (defaults shown). On submit, shows the secret + a "copy URL" helper that pre-builds a `Bearer` header snippet and a `/hook` URL template (the latter goes live when `/hook` lands).
+- Revoked tokens collapsed under a "Revoked" expander, read-only.
+
+**Out of scope for this patch (tracked separately):**
+
+- The permissive `/hook/<source>` endpoint and its schema-coercion rules.
+- The `ovs-notify` CLI's flags for selecting a publish token rather than the auth token.
+- A "scope token to a single workspace" axis — likely unneeded; source-prefix already covers the practical cases.
+
+**Permissive `/hook` endpoint.**
+
+`/notify` is strict on purpose: schema validation prevents accidental garbage from reaching the inbox. But "strict JSON in a typed body" is hostile to the systems we most want to integrate with — Grafana, Uptime Kuma, GitHub Actions, iOS Shortcuts, IFTTT, monitoring scripts that just want to fire a curl. `/hook` is the paste-friendly entry point. It accepts looser bodies, then coerces into the same `Notification` shape and hands off to the same `hub.publish`.
+
+**URL shape.**
+
+```
+POST /hook/<token-id>.<secret>/<source>           # path-segment auth, paste-friendly
+POST /hook/<source>            Authorization: Bearer <secret>
+GET  /hook/<token-id>.<secret>/<source>?title=...&body=...&level=...
+```
+
+- `<source>` in the URL is **authoritative**. If the body also contains `source`, return `400 { error: "source in body conflicts with URL" }`. Otherwise tokens with prefix `grafana-` could mint `claude-code` notifications via body shenanigans.
+- `<source>` is URL-segment encoded; max 64 chars; restricted to `[A-Za-z0-9._:-]`. Reject otherwise with 400.
+- `GET` is supported only via path-segment auth — the URL is the whole credential, that's the point. `GET` with `Authorization` header is allowed but pointless; not forbidden.
+- `GET` requires `?title=` (since there's no body to derive from). `POST` requires either a `title` field or a non-empty body (first line, up to 80 chars, used as title).
+
+**Body coercion by Content-Type.**
+
+| Content-Type                          | Behavior                                                                                       |
+|---------------------------------------|------------------------------------------------------------------------------------------------|
+| `application/json`                    | Parse as partial `Notification`. Same fields as `/notify`. `source` must be absent (see above). |
+| `application/x-www-form-urlencoded`   | Flat key=value → notification fields. Aliases applied (see below).                              |
+| `text/plain` (or missing C-T)         | Whole body → `body` field. Title derived from first non-empty line (≤80 chars) unless query string supplies `title=`. Level defaults to `info`. |
+| anything else                         | `415 { error: "unsupported content type" }`.                                                    |
+
+**Field aliases** (applied to form and query-string inputs only; JSON path uses the canonical names from `/notify`):
+
+| Canonical field    | Accepted aliases                                              |
+|--------------------|---------------------------------------------------------------|
+| `title`            | `title`, `subject`, `summary`                                 |
+| `body`             | `body`, `message`, `text`, `description`                      |
+| `level`            | `level`, `severity`, `priority` — values: `info`/`success`/`warning`/`error`, plus `low`→`info`, `high`→`warning`, `critical`→`error` |
+| `groupKey`         | `groupKey`, `group_key`, `group`, `dedup`                     |
+| `important`        | `important`, `pinned` — truthy values: `1`, `true`, `yes`     |
+| `ttl`              | `ttl`, `ttl_seconds`                                          |
+| `action`           | A bare `url=` alone is sugar for `action={kind:open-url,url:...}` |
+
+Unknown keys are **silently dropped** (not 400). Webhook sources frequently splatter extra metadata we don't care about; rejecting noise would make integrations brittle.
+
+**Idempotency.** Optional `Idempotency-Key` header (≤128 chars). The backend keeps a small map `key → notification.id` for 24h. A second request with the same key returns `200 { id }` with the original id and does **not** publish a second time. This is what makes retrying webhooks safe — Grafana, GitHub, and most monitoring tools retry on network errors.
+
+Distinct from `groupKey` (which collapses display) and `supersedes` (which chains a progress thread). Idempotency = "I already sent this; do nothing." Implementations:
+
+- v0: in-memory `Map<key, {id, expiresAt}>`. Resets on restart, which is acceptable — duplicates after a backend restart are rare and a single duplicate is far better than getting nothing.
+- v1: persist in `tokens.db` if the burst-after-restart case proves real.
+
+**Size and rate caps.**
+
+- Body: 1 MiB hard cap (same as `/notify`).
+- Query string: 8 KiB.
+- Per-token rate limit: defined in the token model above; applies to both `/notify` and `/hook` summed.
+
+**Response shape** — identical to `/notify`: `200 { id }`, `400 { error }`, `401`, `403 { error }`, `413 { error }`, `415 { error }`, `429 { error }` with `Retry-After`, `500 { error }`.
+
+**Audit logging.** Every accepted hook request logs `{ token_id, source, content_type, bytes, level, idempotent_hit }` at info level — enough to debug a misbehaving sender without dumping bodies (which may contain user data).
+
+**CORS.** Off. `/hook` is a server-to-server / agent-to-server endpoint; browser-originated POSTs are not a target. Browser-based senders (bookmarklets, web extensions) are deferred until there's demand and a clear story for token storage in that context.
+
+**Named transformers (reserved, not implemented).** Many third-party systems can only emit their native shape (Grafana alertmanager JSON, Prometheus alerts, etc.). Rather than auto-detecting them — which couples us to other projects' schema churn — the URL convention `?transform=<name>` is reserved for opt-in adapters:
+
+```
+POST /hook/<token>/<source>?transform=grafana
+```
+
+A transformer is a backend-side pure function `(headers, rawBody) → Partial<Notification>`. None are implemented in this patch; the first one (likely `grafana`) lands in a separate patch on demand. Until then, users wire their own one-line shim in the source system's webhook template — most monitoring systems support templating.
+
+**Out of scope for this patch:**
+
+- Named transformers (`grafana`, `github`, `alertmanager`, …) — reserved, separately patched.
+- CORS preflight handling — browsers aren't a target.
+- HMAC body signing as an alternative to bearer tokens — useful if GitHub-style signature verification matters; not a v0 requirement.
 
 ## 5. Backend stack and deployment
 
