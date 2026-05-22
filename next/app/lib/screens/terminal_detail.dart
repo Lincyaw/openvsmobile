@@ -8,12 +8,11 @@
 // `AppState.terminalFor`, which keeps it across rebuilds so scrollback
 // survives.
 
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:xterm/xterm.dart';
 
 import '../app_state.dart';
-import '../services/terminal_scroll_adapter.dart';
+import '../services/terminal_gesture_host.dart';
 import '../ui/app_tokens.dart';
 
 class TerminalDetailScreen extends StatelessWidget {
@@ -30,10 +29,6 @@ class TerminalDetailScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Listenable.merge so the screen rebuilds both when AppState fires
-    // (focus or session list change) and when the session's underlying
-    // Terminal generation bumps (reconnect history replay). The TerminalView
-    // itself listens to the Terminal directly.
     return AnimatedBuilder(
       animation: appState,
       builder: (context, _) {
@@ -41,8 +36,6 @@ class TerminalDetailScreen extends StatelessWidget {
         final generation = appState.terminalGenerationFor(sessionId);
         return Scaffold(
           appBar: AppBar(
-            // Default leading is the system back button — that's the
-            // "slim back affordance" the brief calls for.
             title: Text(
               title,
               style: Theme.of(context).textTheme.titleMedium,
@@ -50,8 +43,6 @@ class TerminalDetailScreen extends StatelessWidget {
             titleSpacing: 0,
           ),
           body: TerminalSessionView(
-            // ValueKey forces a fresh state when the underlying Terminal is
-            // swapped (e.g. after a reconnect-replay).
             key: ValueKey('$sessionId#$generation'),
             terminal: terminal,
           ),
@@ -61,10 +52,11 @@ class TerminalDetailScreen extends StatelessWidget {
   }
 }
 
-/// xterm.dart TerminalView + the soft-keyboard companion key strip. Kept
-/// outside TerminalDetailScreen so the underlying state (sticky Ctrl flag,
-/// output interceptor wiring) survives focus changes that only rebuild the
-/// outer Scaffold.
+/// xterm.dart TerminalView + the soft-keyboard companion key strip + the
+/// gesture host that owns pointer interpretation. Kept outside
+/// TerminalDetailScreen so the underlying state (sticky Ctrl flag,
+/// output interceptor wiring) survives focus changes that only rebuild
+/// the outer Scaffold.
 class TerminalSessionView extends StatefulWidget {
   final Terminal terminal;
   const TerminalSessionView({super.key, required this.terminal});
@@ -78,18 +70,14 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
   final GlobalKey<TerminalViewState> _terminalViewKey =
       GlobalKey<TerminalViewState>();
   final ScrollController _scrollback = ScrollController();
-  late final TerminalScrollAdapter _scrollAdapter;
+  final TerminalScrollbackModel _scrollbackModel = TerminalScrollbackModel();
+  VoidCallback? _forceSelectAtCursor;
 
   /// Sticky-modifier state. When armed, the next keystroke routed through
   /// the Terminal's onOutput (soft keyboard or toolbar) has Ctrl applied,
   /// then auto-disarms. Termux-style.
   bool _ctrlArmed = false;
   void Function(String)? _origOnOutput;
-  TerminalMouseHandler? _origMouseHandler;
-  _WheelSuppressingMouseHandler? _mouseHandlerProxy;
-
-  int? _activePointer;
-  VelocityTracker? _dragTracker;
 
   AnimationStatusListener? _routeAnimListener;
   Animation<double>? _watchedRouteAnim;
@@ -99,34 +87,16 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
     super.initState();
     _origOnOutput = widget.terminal.onOutput;
     widget.terminal.onOutput = _onOutputProxy;
-    // Suppress xterm.dart's built-in wheel emission so it doesn't
-    // double-fire alongside our adapter. The adapter emits SGR wheel
-    // reports regardless of which mouse mode the app requested (see
-    // adapter doc), and xterm's internal TerminalScrollGestureHandler
-    // would otherwise *also* emit a wheel report (in whatever encoding
-    // the app last requested) for the same touch drag.
-    _origMouseHandler = widget.terminal.mouseHandler;
-    _mouseHandlerProxy = _WheelSuppressingMouseHandler(_origMouseHandler);
-    widget.terminal.mouseHandler = _mouseHandlerProxy;
-    _scrollAdapter = TerminalScrollAdapter(
-      terminal: widget.terminal,
-      cellAt: _cellAt,
-      onScrollback: _noopScrollback,
-    );
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // Defer the initial keyboard request until the page transition has
-    // finished. Triggering it via TerminalView's `autofocus: true` during
-    // the ~300ms MaterialPageRoute push fights with the
-    // soft-keyboard-driven viewport resize: xterm's outer Scrollable
-    // gestures don't settle in the arena until layout is stable, so the
-    // first vertical drag is silently dropped. Tapping later forces
-    // `requestKeyboard` through `_onTapDown`, which is what unsticks it.
-    // By waiting for AnimationStatus.completed we get the same focus +
-    // keyboard outcome without the race.
+    // Still needed: even though our RawGestureDetector now wins the arena
+    // cleanly, the *first* touch after the route animation also drives
+    // soft-keyboard show, and we want the focus already attached when
+    // the user starts typing. Without this the first tap-to-focus is
+    // observed to drop occasionally on slow devices. Cheap to keep.
     final route = ModalRoute.of(context);
     final anim = route?.animation;
     if (anim == _watchedRouteAnim) return;
@@ -153,9 +123,6 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
   }
 
   void _requestKeyboardAfterTransition() {
-    // One frame after transition end gives xterm's Scrollable a clean
-    // post-layout state before the keyboard opens. Without this delay
-    // we'd just move the race window earlier by a few ms.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _terminalViewKey.currentState?.requestKeyboard();
@@ -167,48 +134,17 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
     if (_watchedRouteAnim != null && _routeAnimListener != null) {
       _watchedRouteAnim!.removeStatusListener(_routeAnimListener!);
     }
-    // Be defensive: only restore if we're still the installed proxy. If
-    // some other layer rewired onOutput / mouseHandler between init and
-    // now, leave it alone — touching it would clobber their handler.
     if (widget.terminal.onOutput == _onOutputProxy) {
       widget.terminal.onOutput = _origOnOutput;
     }
-    if (widget.terminal.mouseHandler == _mouseHandlerProxy) {
-      widget.terminal.mouseHandler = _origMouseHandler;
-    }
     _scrollback.dispose();
+    _scrollbackModel.dispose();
     _ctrl.dispose();
     super.dispose();
   }
 
-  /// Pixel → 1-based cell coordinate via xterm.dart's render object.
-  /// Returns (1, 1) before the first frame paints (rare — gestures
-  /// require the view to already be hit-testable).
-  ({int col, int row}) _cellAt(Offset localPos) {
-    final state = _terminalViewKey.currentState;
-    if (state == null) return (col: 1, row: 1);
-    final cell = state.renderTerminal.getCellOffset(localPos);
-    return (col: cell.x + 1, row: cell.y + 1);
-  }
-
-  double _currentCellHeight() {
-    final state = _terminalViewKey.currentState;
-    if (state == null) return 16;
-    return state.renderTerminal.lineHeight;
-  }
-
-  /// Normal-buffer scrollback in production is driven by xterm.dart's own
-  /// outer Scrollable (which our Listener does not steal pointer events
-  /// from), so the adapter's scrollback sink is a no-op here. The
-  /// adapter still emits per-cell increments — they're verified by the
-  /// unit tests — but we don't double-scroll the controller alongside
-  /// xterm.
-  void _noopScrollback(int lines) {}
-
   /// Intercepts every byte heading to the PTY. When Ctrl is armed, swap
   /// a single ASCII letter / [\]^_ / ? for its control byte and disarm.
-  /// Multi-byte sequences (escape codes from arrow toolbar buttons, etc.)
-  /// pass through — the toolbar path already applied ctrl via keyInput.
   void _onOutputProxy(String data) {
     if (_ctrlArmed) {
       final transformed = _ctrlMaybeTransform(data);
@@ -222,12 +158,9 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
   String _ctrlMaybeTransform(String data) {
     if (data.length != 1) return data;
     final c = data.codeUnitAt(0);
-    // A-Z / a-z → 0x01-0x1a
     if (c >= 0x41 && c <= 0x5a) return String.fromCharCode(c - 0x40);
     if (c >= 0x61 && c <= 0x7a) return String.fromCharCode(c - 0x60);
-    // [ \ ] ^ _ → 0x1b-0x1f
     if (c >= 0x5b && c <= 0x5f) return String.fromCharCode(c - 0x40);
-    // ? → 0x7f (DEL), matches Termux / typical xterm behavior.
     if (c == 0x3f) return String.fromCharCode(0x7f);
     return data;
   }
@@ -243,48 +176,34 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
     }
   }
 
+  void _forceSelect() {
+    _forceSelectAtCursor?.call();
+  }
+
   @override
   Widget build(BuildContext context) {
-    // Listener observes raw pointer events without entering the gesture
-    // arena, so xterm.dart's own tap / long-press / vertical-drag
-    // recognizers keep firing too. Concretely:
-    //   * tap-to-cursor (htop & friends) — xterm.dart's tap handler
-    //     fires from the same pointer events; we don't claim them.
-    //   * back-swipe horizontal pan (#63's IM-style nav) — we ignore
-    //     horizontal motion entirely.
-    //   * normal-buffer scrollback — xterm.dart's outer Scrollable
-    //     drives `_scrollback` natively; our adapter's `onScrollback`
-    //     sink is wired to a no-op in production so we don't double-
-    //     scroll.
-    //   * alt-buffer wheel reports — xterm.dart's internal wheel path
-    //     is silenced via `_WheelSuppressingMouseHandler` and
-    //     `simulateScroll: false`, leaving the adapter as the sole
-    //     source of escape sequences in alt buffer.
     return Column(
       children: [
         Expanded(
-          child: Listener(
-            behavior: HitTestBehavior.translucent,
-            onPointerDown: _onPointerDown,
-            onPointerMove: _onPointerMove,
-            onPointerUp: _onPointerUp,
-            onPointerCancel: _onPointerCancel,
+          child: TerminalGestureHost(
+            terminal: widget.terminal,
+            terminalController: _ctrl,
+            terminalViewKey: _terminalViewKey,
+            scrollback: _scrollbackModel,
+            scrollbackController: _scrollback,
+            registerForceSelect: (cb) => _forceSelectAtCursor = cb,
             child: TerminalView(
               widget.terminal,
               key: _terminalViewKey,
               controller: _ctrl,
               scrollController: _scrollback,
-              // autofocus is deliberately off — `didChangeDependencies`
-              // requests the keyboard after the MaterialPageRoute push
-              // transition completes. Doing it via xterm's autofocus
-              // races with the route animation and breaks the first
-              // vertical drag (see didChangeDependencies comment).
               autofocus: false,
               backgroundOpacity: 1.0,
+              // simulateScroll stays off — our host emits the right key
+              // / wheel events itself; leaving xterm's simulation
+              // enabled would only matter if its inner Scrollable saw
+              // pointer input, which it no longer does (host wins arena).
               simulateScroll: false,
-              // Bundled in pubspec.yaml. Carries Powerline + Nerd Font
-              // glyph ranges that Zellij / lazygit / oh-my-zsh prompts
-              // need; system 'monospace' covers anything outside that.
               textStyle: const TerminalStyle(
                 fontFamily: 'JetBrainsMonoNF',
                 fontFamilyFallback: ['monospace'],
@@ -296,83 +215,23 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
           ctrlArmed: _ctrlArmed,
           onCtrl: _toggleCtrl,
           onKey: _sendKey,
+          onForceSelect: _forceSelect,
         ),
       ],
     );
   }
-
-  void _onPointerDown(PointerDownEvent event) {
-    // Track only the first finger; subsequent touches (pinch, multitouch
-    // selection) are intentionally ignored by the scroll layer.
-    if (_activePointer != null) return;
-    _activePointer = event.pointer;
-    _dragTracker = VelocityTracker.withKind(event.kind);
-    _dragTracker!.addPosition(event.timeStamp, event.position);
-    _scrollAdapter.onDragStart(event.localPosition);
-  }
-
-  void _onPointerMove(PointerMoveEvent event) {
-    if (event.pointer != _activePointer) return;
-    _dragTracker?.addPosition(event.timeStamp, event.position);
-    _scrollAdapter.onDragUpdate(
-      deltaDy: event.delta.dy,
-      cellHeight: _currentCellHeight(),
-    );
-  }
-
-  void _onPointerUp(PointerUpEvent event) {
-    if (event.pointer != _activePointer) return;
-    final dy = _dragTracker?.getVelocity().pixelsPerSecond.dy ?? 0;
-    _scrollAdapter.onDragEnd(
-      velocityDy: dy,
-      rows: widget.terminal.viewHeight,
-    );
-    _activePointer = null;
-    _dragTracker = null;
-  }
-
-  void _onPointerCancel(PointerCancelEvent event) {
-    if (event.pointer != _activePointer) return;
-    _scrollAdapter.onDragEnd(
-      velocityDy: 0,
-      rows: widget.terminal.viewHeight,
-    );
-    _activePointer = null;
-    _dragTracker = null;
-  }
 }
 
-/// Wraps the terminal's default mouse handler to discard wheel-up /
-/// wheel-down events that xterm.dart's internal scroll handler would
-/// otherwise translate into the (potentially non-SGR) mouse-report
-/// encoding the app last requested. Real mouse clicks (left/right/
-/// middle/release) still pass through.
-class _WheelSuppressingMouseHandler implements TerminalMouseHandler {
-  _WheelSuppressingMouseHandler(this._inner);
-  final TerminalMouseHandler? _inner;
-
-  @override
-  String? call(TerminalMouseEvent event) {
-    if (event.button == TerminalMouseButton.wheelUp ||
-        event.button == TerminalMouseButton.wheelDown) {
-      return null;
-    }
-    return _inner?.call(event);
-  }
-}
-
-/// Soft-keyboard companion: a horizontally scrollable strip of keys the
-/// Android soft keyboard doesn't surface easily — Esc, Tab, arrows, Home,
-/// End. Ctrl is a sticky modifier; tap once to arm, the next key
-/// (toolbar or soft keyboard) applies Ctrl and auto-disarms.
 class _KeyToolbar extends StatelessWidget {
   final bool ctrlArmed;
   final VoidCallback onCtrl;
   final void Function(TerminalKey) onKey;
+  final VoidCallback onForceSelect;
   const _KeyToolbar({
     required this.ctrlArmed,
     required this.onCtrl,
     required this.onKey,
+    required this.onForceSelect,
   });
 
   @override
@@ -406,6 +265,9 @@ class _KeyToolbar extends StatelessWidget {
               _KeyBtn(label: 'PgUp', onTap: () => onKey(TerminalKey.pageUp)),
               _KeyBtn(label: 'PgDn', onTap: () => onKey(TerminalKey.pageDown)),
               _KeyBtn(label: 'Del', onTap: () => onKey(TerminalKey.delete)),
+              // Force-select entry point for mouseReport modes where
+              // long-press is reserved for the running TUI.
+              _KeyBtn(label: 'Sel', onTap: onForceSelect),
             ],
           ),
         ),

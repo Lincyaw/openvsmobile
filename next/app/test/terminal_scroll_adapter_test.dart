@@ -1,3 +1,4 @@
+// ignore_for_file: deprecated_member_use_from_same_package
 // Unit tests for TerminalScrollAdapter. The adapter is pure-Dart; we use
 // a real xterm.dart Terminal as the state source (cheaper than a mock; the
 // alt-buffer / mouseMode flags are easy to set via escape sequences) and
