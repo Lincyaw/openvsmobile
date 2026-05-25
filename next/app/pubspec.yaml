@@ -39,6 +39,7 @@ dependencies:
   shared_preferences: ^2.3.2
   xterm: ^4.0.0
   connectivity_plus: ^6.0.5
+  multicast_dns: ^0.3.2
   dartssh2: ^2.17.1
   flutter_foreground_task: ^9.2.2
   # Per-event Android system-tray notifications. `flutter_foreground_task`
@@ -91,7 +92,6 @@ dependencies:
   # the font has not been cached yet, the package silently falls back to the
   # platform's default font — acceptable for v0.
   google_fonts: ^6.2.1
-  flutter_feather_icons: ^2.0.0+1
 
 dev_dependencies:
   flutter_test:
@@ -130,6 +130,9 @@ flutter:
   # Regular is bundled to keep APK size sane; bold cells use Skia
   # synthetic bold, which is acceptable in a terminal context.
   fonts:
+    - family: FeatherIcons
+      fonts:
+        - asset: assets/fonts/feather.ttf
     - family: JetBrainsMonoNF
       fonts:
         - asset: assets/fonts/JetBrainsMonoNerdFontMono-Regular.ttf

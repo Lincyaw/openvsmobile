@@ -12,6 +12,7 @@ import '../app_state.dart';
 import '../settings_store.dart';
 import '../version.dart';
 import 'backend_editor_screen.dart';
+import 'lan_discovery_sheet.dart';
 import 'ssh_bootstrap_screen.dart';
 
 class BackendsScreen extends StatelessWidget {
@@ -72,11 +73,16 @@ class BackendsScreen extends StatelessWidget {
                 _startManualEntry(context);
               },
             ),
-            const ListTile(
-              leading: Icon(Icons.dns_outlined),
-              title: Text('From discovery source'),
-              subtitle: Text('Coming soon (k8s clusters).'),
-              enabled: false,
+            ListTile(
+              leading: const Icon(Icons.wifi_find),
+              title: const Text('Scan LAN'),
+              subtitle: const Text(
+                'Discover backends on your local network.',
+              ),
+              onTap: () {
+                Navigator.of(ctx).pop();
+                _startLanDiscovery(context);
+              },
             ),
           ],
         ),
@@ -95,6 +101,13 @@ class BackendsScreen extends StatelessWidget {
           },
         ),
       ),
+    );
+  }
+
+  Future<void> _startLanDiscovery(BuildContext context) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      builder: (_) => LanDiscoverySheet(onAdd: onAdd),
     );
   }
 

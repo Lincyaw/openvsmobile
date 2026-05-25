@@ -22,6 +22,7 @@ import {
 } from "./runtimeInfo.js";
 import { readPackageVersion } from "./version.js";
 import { initNtfySender } from "./ntfy.js";
+import { MdnsAdvertiser } from "./mdnsAdvertiser.js";
 
 const DEFAULT_PORT = 7860;
 const SHUTDOWN_HARD_EXIT_MS = 3000;
@@ -176,6 +177,7 @@ async function main(): Promise<void> {
   });
 
   let runtimeFile: string | null = null;
+  let mdnsAdvertiser: MdnsAdvertiser | null = null;
   httpServer.listen(port, () => {
     const addr = httpServer.address();
     const boundPort =
@@ -204,6 +206,11 @@ async function main(): Promise<void> {
         err,
       );
     }
+    // Start mDNS advertisement so LAN clients can discover us.
+    mdnsAdvertiser = new MdnsAdvertiser({ port: boundPort, version });
+    mdnsAdvertiser.start().catch((err) => {
+      console.error("[openvsmobile-next] mDNS advertise failed:", err);
+    });
   });
 
   let shuttingDown = false;
@@ -231,6 +238,9 @@ async function main(): Promise<void> {
       terminalPersistence.close();
     } catch (err) {
       console.error("[openvsmobile-next] terminal DB close error:", err);
+    }
+    if (mdnsAdvertiser) {
+      await mdnsAdvertiser.stop().catch(() => {});
     }
     unlinkRuntimeInfo();
     wss.close();

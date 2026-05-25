@@ -17,6 +17,11 @@
          vendor's own "autostart" / "no restrictions" toggles must still be
          set by hand — there is no public API for those. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
+    <!-- Allows receiving multicast packets on restrictive OEMs (Xiaomi,
+         Huawei, Oppo). The mDNS discovery path needs this to hear LAN
+         advertisements from the backend. Stock Android works without it,
+         but the permission is harmless when unused. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"/>
     <application
         android:label="MobileCode"
         android:name="${applicationName}"

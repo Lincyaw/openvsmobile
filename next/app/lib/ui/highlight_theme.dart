@@ -2,9 +2,8 @@
 //
 // Shape mirrors highlight.js theme maps (keys are token classes; values are
 // `TextStyle` fragments merged onto the base `textStyle` passed to
-// `HighlightView`). The `root` entry intentionally has no `backgroundColor`
-// so the surface beneath shows through and the viewer stays consistent
-// with the rest of the app chrome.
+// `HighlightView`). The `root` entry includes a background color because
+// `flutter_highlight` falls back to white when it is absent.
 //
 // Two variants ship: [appHighlightThemeDark] is the dark default tuned for
 // `AppColors.surface`; [appHighlightThemeLight] mirrors the same token
@@ -31,7 +30,10 @@ const Color _attrLilac = Color(0xFFC9A8E8);
 const Color _punctuationDim = Color(0xFFBFC4CB);
 
 final Map<String, TextStyle> appHighlightThemeDark = {
-  'root': const TextStyle(color: AppColors.onSurface),
+  'root': const TextStyle(
+    color: AppColors.onSurface,
+    backgroundColor: AppColors.surface,
+  ),
 
   'keyword': const TextStyle(color: _keywordGreen),
   'selector-tag': const TextStyle(color: _keywordGreen),
@@ -108,7 +110,10 @@ const Color _lightCommentGreen = Color(0xFF008000);
 const Color _lightPunctuation = Color(0xFF3C4148);
 
 final Map<String, TextStyle> appHighlightThemeLight = {
-  'root': const TextStyle(color: AppColorsLight.onSurface),
+  'root': const TextStyle(
+    color: AppColorsLight.onSurface,
+    backgroundColor: AppColorsLight.surface,
+  ),
 
   'keyword': const TextStyle(color: _lightKeywordPurple),
   'selector-tag': const TextStyle(color: _lightKeywordPurple),

@@ -10,6 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:mobilecode/models.dart';
 import 'package:mobilecode/screens/file_viewer.dart';
+import 'package:mobilecode/ui/app_tokens.dart';
 import 'package:mobilecode/ui/highlight_theme.dart';
 
 FileContent _text(String source) =>
@@ -19,9 +20,11 @@ Future<void> _pumpViewer(
   WidgetTester tester, {
   required String path,
   required FileContent content,
+  ThemeData? theme,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
+      theme: theme,
       home: FileViewerScreen(path: path, content: content),
     ),
   );
@@ -47,6 +50,22 @@ void main() {
     // matching map.
     expect(highlight.theme, same(appHighlightThemeLight));
     expect(highlight.language, 'dart');
+  });
+
+  testWidgets('highlighted files use the dark theme background in dark mode', (
+    tester,
+  ) async {
+    await _pumpViewer(
+      tester,
+      path: 'lib/sample.dart',
+      content: _text("void main() {\n  print('hello');\n}\n"),
+      theme: ThemeData(brightness: Brightness.dark),
+    );
+    expect(tester.takeException(), isNull);
+
+    final highlight = tester.widget<HighlightView>(find.byType(HighlightView));
+    expect(highlight.theme, same(appHighlightThemeDark));
+    expect(highlight.theme['root']?.backgroundColor, AppColors.surface);
   });
 
   testWidgets('unknown extension falls back to plain SelectableText', (
