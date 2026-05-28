@@ -262,38 +262,63 @@ class _KeyToolbar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Two rows so the strip stays shallow per-row while exposing every
-    // key. Row 1 leads with the modifier/escape cluster (Ctrl first, then
-    // Tab, Esc) followed by the arrows; row 2 holds the paging/edit keys.
+    // Two rows of non-arrow keys on the left (Ctrl leads), with the four
+    // arrows pulled out into a keyboard-style inverted-T d-pad pinned to
+    // the right so the cluster reads like a physical arrow key block.
     return Material(
       elevation: 2,
       child: SafeArea(
         top: false,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+        child: Row(
           children: [
-            _KeyRow(
-              children: [
-                _KeyBtn(label: 'Ctrl', onTap: onCtrl, highlighted: ctrlArmed),
-                _KeyBtn(label: 'Tab', onTap: () => onKey(TerminalKey.tab)),
-                _KeyBtn(label: 'Esc', onTap: () => onKey(TerminalKey.escape)),
-                _KeyBtn(label: '←', onTap: () => onKey(TerminalKey.arrowLeft)),
-                _KeyBtn(label: '→', onTap: () => onKey(TerminalKey.arrowRight)),
-                _KeyBtn(label: '↑', onTap: () => onKey(TerminalKey.arrowUp)),
-                _KeyBtn(label: '↓', onTap: () => onKey(TerminalKey.arrowDown)),
-              ],
+            Expanded(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _KeyRow(
+                    children: [
+                      _KeyBtn(
+                        label: 'Ctrl',
+                        onTap: onCtrl,
+                        highlighted: ctrlArmed,
+                      ),
+                      _KeyBtn(label: 'Tab', onTap: () => onKey(TerminalKey.tab)),
+                      _KeyBtn(
+                        label: 'Esc',
+                        onTap: () => onKey(TerminalKey.escape),
+                      ),
+                      _KeyBtn(
+                        label: 'Home',
+                        onTap: () => onKey(TerminalKey.home),
+                      ),
+                      _KeyBtn(label: 'End', onTap: () => onKey(TerminalKey.end)),
+                    ],
+                  ),
+                  _KeyRow(
+                    children: [
+                      _KeyBtn(
+                        label: 'PgUp',
+                        onTap: () => onKey(TerminalKey.pageUp),
+                      ),
+                      _KeyBtn(
+                        label: 'PgDn',
+                        onTap: () => onKey(TerminalKey.pageDown),
+                      ),
+                      _KeyBtn(
+                        label: 'Del',
+                        onTap: () => onKey(TerminalKey.delete),
+                      ),
+                      // Force-select entry point for mouseReport modes where
+                      // long-press is reserved for the running TUI.
+                      _KeyBtn(label: 'Sel', onTap: onForceSelect),
+                    ],
+                  ),
+                ],
+              ),
             ),
-            _KeyRow(
-              children: [
-                _KeyBtn(label: 'Home', onTap: () => onKey(TerminalKey.home)),
-                _KeyBtn(label: 'End', onTap: () => onKey(TerminalKey.end)),
-                _KeyBtn(label: 'PgUp', onTap: () => onKey(TerminalKey.pageUp)),
-                _KeyBtn(label: 'PgDn', onTap: () => onKey(TerminalKey.pageDown)),
-                _KeyBtn(label: 'Del', onTap: () => onKey(TerminalKey.delete)),
-                // Force-select entry point for mouseReport modes where
-                // long-press is reserved for the running TUI.
-                _KeyBtn(label: 'Sel', onTap: onForceSelect),
-              ],
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xs),
+              child: _DPad(onKey: onKey),
             ),
           ],
         ),
@@ -318,6 +343,54 @@ class _KeyRow extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xs, vertical: 2),
         children: children,
       ),
+    );
+  }
+}
+
+/// Keyboard-style arrow cluster: `↑` on top, `← ↓ →` below. Every slot is a
+/// fixed-width cell (empty slots flank the top arrow) so `↑` sits exactly
+/// above `↓`. Two rows of [_kDpadRowHeight] match the two left-hand
+/// [_KeyRow]s, keeping the toolbar a uniform height.
+class _DPad extends StatelessWidget {
+  final void Function(TerminalKey) onKey;
+  const _DPad({required this.onKey});
+
+  static const double _cell = 40;
+  static const double _kDpadRowHeight = 34;
+
+  Widget _btn(String label, TerminalKey key) => SizedBox(
+    width: _cell,
+    child: _KeyBtn(label: label, onTap: () => onKey(key)),
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(
+          height: _kDpadRowHeight,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(width: _cell),
+              _btn('↑', TerminalKey.arrowUp),
+              const SizedBox(width: _cell),
+            ],
+          ),
+        ),
+        SizedBox(
+          height: _kDpadRowHeight,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _btn('←', TerminalKey.arrowLeft),
+              _btn('↓', TerminalKey.arrowDown),
+              _btn('→', TerminalKey.arrowRight),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
