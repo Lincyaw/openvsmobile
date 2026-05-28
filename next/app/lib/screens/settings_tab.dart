@@ -16,6 +16,7 @@
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
+import '../services/diag_log.dart';
 import '../services/system_tray.dart';
 import '../settings_store.dart';
 import '../ui/app_tokens.dart';
@@ -241,6 +242,7 @@ class SettingsTab extends StatelessWidget {
               trailing: const Icon(Icons.chevron_right),
               onTap: () => _openDiagnostics(context),
             ),
+            const _DebugOverlayToggle(),
             ListTile(
               key: const ValueKey<String>('settings-tile-about'),
               leading: const Icon(Icons.info_outline),
@@ -252,6 +254,41 @@ class SettingsTab extends StatelessWidget {
           ],
         ),
       ],
+    );
+  }
+}
+
+/// Self-contained switch that toggles the app-wide floating debug overlay.
+/// Persists to SharedPreferences and mirrors the flag into the [DiagLog]
+/// singleton so the change is live without an app restart. Kept local
+/// (rather than threaded through `MobileCodeApp`) because it is a developer
+/// instrument, not app-wide product state.
+class _DebugOverlayToggle extends StatefulWidget {
+  const _DebugOverlayToggle();
+
+  @override
+  State<_DebugOverlayToggle> createState() => _DebugOverlayToggleState();
+}
+
+class _DebugOverlayToggleState extends State<_DebugOverlayToggle> {
+  final SettingsStore _store = SettingsStore();
+
+  Future<void> _set(bool value) async {
+    setState(() => DiagLog.instance.enabled = value);
+    await _store.setBool(kDiagLogPrefKey, value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SwitchListTile(
+      key: const ValueKey<String>('settings-tile-debug-overlay'),
+      secondary: const Icon(Icons.bug_report_outlined),
+      title: const Text('Debug overlay'),
+      subtitle: const Text(
+        'Floating event log to record, mark & export app behaviour',
+      ),
+      value: DiagLog.instance.enabled,
+      onChanged: _set,
     );
   }
 }

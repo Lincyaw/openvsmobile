@@ -93,18 +93,23 @@ class TerminalScrollAdapter {
     required ({int col, int row}) Function(Offset) cellAt,
     required Offset anchor,
     required void Function(int lines) onScrollback,
+    void Function(String branch, String detail)? onDiag,
   }) {
     if (magnitude <= 0) return;
     if (!terminal.isUsingAltBuffer) {
+      onDiag?.call('scrollback', 'lines=${down ? magnitude : -magnitude}');
       onScrollback(down ? magnitude : -magnitude);
       return;
     }
     if (terminal.mouseMode.reportScroll) {
       final cell = cellAt(anchor);
+      final seq = _sgrWheel(cell, down: down);
+      onDiag?.call('wheel', 'x$magnitude cell=(${cell.col},${cell.row}) $seq');
       for (int i = 0; i < magnitude; i++) {
-        terminal.onOutput?.call(_sgrWheel(cell, down: down));
+        terminal.onOutput?.call(seq);
       }
     } else {
+      onDiag?.call('arrows', 'x$magnitude ${down ? 'Down' : 'Up'}');
       for (int i = 0; i < magnitude; i++) {
         terminal.keyInput(down ? TerminalKey.arrowDown : TerminalKey.arrowUp);
       }
@@ -121,15 +126,22 @@ class TerminalScrollAdapter {
     required int rows,
     required ({int col, int row}) Function(Offset) cellAt,
     required Offset anchor,
+    void Function(String branch, String detail)? onDiag,
   }) {
-    if (!terminal.isUsingAltBuffer) return;
+    if (!terminal.isUsingAltBuffer) {
+      onDiag?.call('fling', 'skipped (main buffer)');
+      return;
+    }
     if (terminal.mouseMode.reportScroll) {
       final cell = cellAt(anchor);
       final ticks = (rows / 2).floor().clamp(1, rows);
+      final seq = _sgrWheel(cell, down: down);
+      onDiag?.call('fling-wheel', 'x$ticks cell=(${cell.col},${cell.row}) $seq');
       for (int i = 0; i < ticks; i++) {
-        terminal.onOutput?.call(_sgrWheel(cell, down: down));
+        terminal.onOutput?.call(seq);
       }
     } else {
+      onDiag?.call('fling-page', down ? 'PgDn' : 'PgUp');
       terminal.keyInput(down ? TerminalKey.pageDown : TerminalKey.pageUp);
     }
   }

@@ -13,10 +13,12 @@ import 'app_state.dart';
 import 'backend_client.dart';
 import 'notification.dart';
 import 'screens/backends_screen.dart';
+import 'screens/diag_overlay.dart';
 import 'screens/home_shell.dart';
 import 'screens/notification_center.dart';
 import 'services/connectivity_probe.dart';
 import 'services/deep_link_service.dart';
+import 'services/diag_log.dart';
 import 'services/notification_foreground_service.dart';
 import 'services/system_tray.dart';
 import 'settings_store.dart';
@@ -68,7 +70,14 @@ class _MobileCodeAppState extends State<MobileCodeApp>
     _fgService.init();
     unawaited(_tray.init());
     _trayNotifSub = _client.notifications.listen(_onBackendNotificationForTray);
+    _client.state.addListener(_logConnectionState);
     _bootstrap();
+  }
+
+  /// Feed backend connection transitions into the debug overlay so a trace
+  /// shows reconnect windows alongside any dropped writes.
+  void _logConnectionState() {
+    DiagLog.instance.log(DiagCat.net, 'connection → ${_client.state.value.name}');
   }
 
   /// Fan `notification.show` / `.deleted` / `.superseded` pushes to
@@ -115,6 +124,10 @@ class _MobileCodeAppState extends State<MobileCodeApp>
     final did = await _settingsStore.loadOrCreateDeviceId();
     final prefs = await _settingsStore.loadNotificationPrefs();
     final themeMode = await _settingsStore.loadThemeMode();
+    // Developer instrument: restore the debug-overlay flag so the floating
+    // event log reappears across restarts while debugging.
+    DiagLog.instance.enabled =
+        await _settingsStore.getBool(kDiagLogPrefKey) ?? false;
     if (!mounted) return;
     final appState = AppState(client: _client, deviceId: did);
     appState.addListener(_onAppStateForWorkspaceTracking);
@@ -412,6 +425,7 @@ class _MobileCodeAppState extends State<MobileCodeApp>
     _trayNotifSub = null;
     _appState?.removeListener(_onAppStateForWorkspaceTracking);
     _appState?.dispose();
+    _client.state.removeListener(_logConnectionState);
     _client.dispose();
     super.dispose();
   }
@@ -435,6 +449,15 @@ class _MobileCodeAppState extends State<MobileCodeApp>
       theme: AppTheme.light(),
       darkTheme: AppTheme.dark(),
       themeMode: _themeMode,
+      // App-wide debug overlay floats above every route (incl. pushed ones
+      // like the terminal detail view). Self-hides unless enabled in
+      // Settings; empty areas fall through to the app below.
+      builder: (context, child) => Stack(
+        children: [
+          ?child,
+          const Positioned.fill(child: DiagOverlay()),
+        ],
+      ),
       home: _loadingSettings || _appState == null
           ? const _BootSplash()
           : (_state.activeBackend == null)

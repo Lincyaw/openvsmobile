@@ -13,6 +13,7 @@ import 'package:flutter/services.dart';
 import 'package:xterm/xterm.dart';
 
 import '../ui/app_tokens.dart';
+import 'diag_log.dart';
 import 'terminal_scroll_adapter.dart';
 
 enum _Mode { view, select }
@@ -176,6 +177,25 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
     return state.renderTerminal.lineHeight;
   }
 
+  // ---------- diagnostics ----------
+
+  bool get _diagOn => DiagLog.instance.enabled;
+
+  /// Snapshot of the terminal state that decides scroll routing. Logged at
+  /// drag-start so a recorded trace shows *why* a given swipe took the
+  /// wheel / arrows / scrollback branch.
+  String _modeSnapshot() {
+    final t = widget.terminal;
+    return 'alt=${t.isUsingAltBuffer} mouse=${t.mouseMode.name} '
+        'report=${t.mouseReportMode.name} '
+        'altScroll=${t.altBufferMouseScrollMode} '
+        'appCursor=${t.cursorKeysMode}';
+  }
+
+  void _logDispatch(String branch, String detail) {
+    DiagLog.instance.log(DiagCat.terminal, visEscapes('  → $branch $detail'));
+  }
+
   // ---------- mode transitions ----------
 
   void _enterSelect(Offset localPos) {
@@ -266,6 +286,14 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
     _residualDy = 0;
     _velocity = VelocityTracker.withKind(d.kind ?? PointerDeviceKind.touch);
     _velocity!.addPosition(Duration.zero, d.globalPosition);
+    if (_diagOn) {
+      final c = _cellAt(d.localPosition);
+      DiagLog.instance.log(
+        DiagCat.terminal,
+        'drag start mode=${_mode.name} anchorCell=(${c.col},${c.row}) '
+        'cellH=${_cellHeight().toStringAsFixed(1)} ${_modeSnapshot()}',
+      );
+    }
     // In select mode, long-press has already seeded _selectAnchor to the
     // word boundary. Overwriting it here would break "long-press to
     // select a word, then drag to extend from the word boundary".
@@ -287,7 +315,13 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
 
     // ViewMode: quantize to cells and dispatch via the adapter helper.
     final cellH = _cellHeight();
-    if (cellH <= 0) return;
+    if (cellH <= 0) {
+      if (_diagOn) {
+        DiagLog.instance
+            .log(DiagCat.terminal, '  ! drag-update dropped: cellHeight<=0');
+      }
+      return;
+    }
     _residualDy -= d.delta.dy;
     final units = (_residualDy / cellH).truncate();
     if (units == 0) return;
@@ -299,6 +333,7 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
       cellAt: _cellAt,
       anchor: _dragAnchor,
       onScrollback: widget.scrollback.scrollBy,
+      onDiag: _diagOn ? _logDispatch : null,
     );
   }
 
@@ -307,16 +342,28 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
     final velocity = _velocity?.getVelocity().pixelsPerSecond.dy ?? 0;
     _velocity = null;
     if (velocity.abs() < kFastFlingVelocity) {
+      if (_diagOn) {
+        DiagLog.instance.log(
+          DiagCat.terminal,
+          '  drag end v=${velocity.toStringAsFixed(0)} (<$kFastFlingVelocity, '
+          'no fling)',
+        );
+      }
       _residualDy = 0;
       return;
     }
     final down = velocity < 0;
+    if (_diagOn) {
+      DiagLog.instance.log(DiagCat.terminal,
+          '  drag end v=${velocity.toStringAsFixed(0)} → fling');
+    }
     TerminalScrollAdapter.dispatchFling(
       terminal: widget.terminal,
       down: down,
       rows: widget.terminal.viewHeight,
       cellAt: _cellAt,
       anchor: _dragAnchor,
+      onDiag: _diagOn ? _logDispatch : null,
     );
     _residualDy = 0;
   }
@@ -339,6 +386,13 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
     // matching dispatchUnits' `down: true`.
     final units = (event.scrollDelta.dy / cellH).truncate();
     if (units == 0) return;
+    if (_diagOn) {
+      final c = _cellAt(event.localPosition);
+      DiagLog.instance.log(
+        DiagCat.terminal,
+        'wheel signal cell=(${c.col},${c.row}) ${_modeSnapshot()}',
+      );
+    }
     TerminalScrollAdapter.dispatchUnits(
       terminal: widget.terminal,
       magnitude: units.abs(),
@@ -346,6 +400,7 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
       cellAt: _cellAt,
       anchor: event.localPosition,
       onScrollback: widget.scrollback.scrollBy,
+      onDiag: _diagOn ? _logDispatch : null,
     );
   }
 

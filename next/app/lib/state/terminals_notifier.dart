@@ -28,6 +28,8 @@ import 'package:xterm/xterm.dart';
 
 import '../backend_client.dart';
 import '../models.dart';
+import '../services/diag_log.dart';
+import '../services/terminal_diag.dart';
 
 /// Reports a user-facing operation error upward. AppState surfaces it via
 /// SnackBar in the standard way.
@@ -455,7 +457,11 @@ class TerminalsNotifier extends ChangeNotifier {
         toWrite = bytes.sublist(skip);
       }
       if (toWrite.isNotEmpty) {
-        term.write(utf8.decode(toWrite, allowMalformed: true));
+        final decoded = utf8.decode(toWrite, allowMalformed: true);
+        // Surface mouse / alt-buffer DEC private-mode toggles before they
+        // mutate the Terminal, so a trace shows mouseMode drift in order.
+        sniffDecModes(decoded);
+        term.write(decoded);
       }
       _lastWrittenSeq[sessionId] = seqEnd;
       return;
@@ -575,10 +581,17 @@ class TerminalsNotifier extends ChangeNotifier {
             'dataBase64': base64Encode(utf8.encode(data)),
           })
           .catchError((Object e) {
+            // A dropped scroll/keystroke: the user sees "nothing happened".
+            DiagLog.instance.log(
+              DiagCat.error,
+              'write dropped (${data.length}B): $e',
+            );
             debugPrint('terminal.write($sessionId) failed: $e');
           });
     };
     t.onResize = (w, h, _, _) {
+      DiagLog.instance
+          .log(DiagCat.resize, 'resize → ${w}x$h (cols x rows)');
       _client
           .call('terminal.resize', {
             'sessionId': sessionId,
