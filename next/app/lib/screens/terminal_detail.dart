@@ -262,41 +262,61 @@ class _KeyToolbar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Two rows so the strip stays shallow per-row while exposing every
+    // key. Row 1 leads with the modifier/escape cluster (Ctrl first, then
+    // Tab, Esc) followed by the arrows; row 2 holds the paging/edit keys.
     return Material(
       elevation: 2,
       child: SafeArea(
         top: false,
-        child: SizedBox(
-          height: 44,
-          child: ListView(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(
-              horizontal: AppSpacing.xs,
-              vertical: AppSpacing.xs,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _KeyRow(
+              children: [
+                _KeyBtn(label: 'Ctrl', onTap: onCtrl, highlighted: ctrlArmed),
+                _KeyBtn(label: 'Tab', onTap: () => onKey(TerminalKey.tab)),
+                _KeyBtn(label: 'Esc', onTap: () => onKey(TerminalKey.escape)),
+                _KeyBtn(label: '←', onTap: () => onKey(TerminalKey.arrowLeft)),
+                _KeyBtn(label: '→', onTap: () => onKey(TerminalKey.arrowRight)),
+                _KeyBtn(label: '↑', onTap: () => onKey(TerminalKey.arrowUp)),
+                _KeyBtn(label: '↓', onTap: () => onKey(TerminalKey.arrowDown)),
+              ],
             ),
-            children: [
-              _KeyBtn(label: 'Esc', onTap: () => onKey(TerminalKey.escape)),
-              _KeyBtn(label: 'Tab', onTap: () => onKey(TerminalKey.tab)),
-              _KeyBtn(
-                label: 'Ctrl',
-                onTap: onCtrl,
-                highlighted: ctrlArmed,
-              ),
-              _KeyBtn(label: '←', onTap: () => onKey(TerminalKey.arrowLeft)),
-              _KeyBtn(label: '→', onTap: () => onKey(TerminalKey.arrowRight)),
-              _KeyBtn(label: '↑', onTap: () => onKey(TerminalKey.arrowUp)),
-              _KeyBtn(label: '↓', onTap: () => onKey(TerminalKey.arrowDown)),
-              _KeyBtn(label: 'Home', onTap: () => onKey(TerminalKey.home)),
-              _KeyBtn(label: 'End', onTap: () => onKey(TerminalKey.end)),
-              _KeyBtn(label: 'PgUp', onTap: () => onKey(TerminalKey.pageUp)),
-              _KeyBtn(label: 'PgDn', onTap: () => onKey(TerminalKey.pageDown)),
-              _KeyBtn(label: 'Del', onTap: () => onKey(TerminalKey.delete)),
-              // Force-select entry point for mouseReport modes where
-              // long-press is reserved for the running TUI.
-              _KeyBtn(label: 'Sel', onTap: onForceSelect),
-            ],
-          ),
+            _KeyRow(
+              children: [
+                _KeyBtn(label: 'Home', onTap: () => onKey(TerminalKey.home)),
+                _KeyBtn(label: 'End', onTap: () => onKey(TerminalKey.end)),
+                _KeyBtn(label: 'PgUp', onTap: () => onKey(TerminalKey.pageUp)),
+                _KeyBtn(label: 'PgDn', onTap: () => onKey(TerminalKey.pageDown)),
+                _KeyBtn(label: 'Del', onTap: () => onKey(TerminalKey.delete)),
+                // Force-select entry point for mouseReport modes where
+                // long-press is reserved for the running TUI.
+                _KeyBtn(label: 'Sel', onTap: onForceSelect),
+              ],
+            ),
+          ],
         ),
+      ),
+    );
+  }
+}
+
+/// One horizontally-scrollable row of companion keys. Two of these stack in
+/// [_KeyToolbar]; per-row scrolling keeps the strip from overflowing on
+/// narrow screens while normally showing every key without a scroll.
+class _KeyRow extends StatelessWidget {
+  final List<Widget> children;
+  const _KeyRow({required this.children});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 34,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xs, vertical: 2),
+        children: children,
       ),
     );
   }
@@ -314,12 +334,12 @@ class _KeyBtn extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const padding = EdgeInsets.symmetric(horizontal: AppSpacing.md);
-    const minSize = Size(40, 36);
+    const padding = EdgeInsets.symmetric(horizontal: AppSpacing.sm);
+    const minSize = Size(32, 28);
     const density = VisualDensity.compact;
     final text = Text(label, style: Theme.of(context).textTheme.labelMedium);
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 3),
+      padding: const EdgeInsets.symmetric(horizontal: 2),
       child: highlighted
           ? FilledButton(
               onPressed: onTap,
