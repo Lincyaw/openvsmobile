@@ -120,9 +120,13 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
   // Select-mode anchor for character extension.
   Offset? _selectAnchor;
 
+  bool _lastAltBuffer = false;
+
   @override
   void initState() {
     super.initState();
+    _lastAltBuffer = widget.terminal.isUsingAltBuffer;
+    widget.terminal.addListener(_onTerminalChanged);
     widget.scrollback.addListener(_syncScrollSink);
     widget.registerForceSelect?.call(forceSelectAtCursor);
   }
@@ -130,6 +134,11 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
   @override
   void didUpdateWidget(covariant TerminalGestureHost oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.terminal != widget.terminal) {
+      oldWidget.terminal.removeListener(_onTerminalChanged);
+      widget.terminal.addListener(_onTerminalChanged);
+      _lastAltBuffer = widget.terminal.isUsingAltBuffer;
+    }
     if (oldWidget.scrollback != widget.scrollback) {
       oldWidget.scrollback.removeListener(_syncScrollSink);
       widget.scrollback.addListener(_syncScrollSink);
@@ -141,8 +150,22 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
 
   @override
   void dispose() {
+    widget.terminal.removeListener(_onTerminalChanged);
     widget.scrollback.removeListener(_syncScrollSink);
     super.dispose();
+  }
+
+  void _onTerminalChanged() {
+    final nowAlt = widget.terminal.isUsingAltBuffer;
+    if (nowAlt != _lastAltBuffer) {
+      _lastAltBuffer = nowAlt;
+      if (nowAlt) {
+        widget.scrollback.reset();
+        if (widget.scrollbackController.hasClients) {
+          widget.scrollbackController.jumpTo(0);
+        }
+      }
+    }
   }
 
   // ---------- render-sink bridge ----------
