@@ -139,6 +139,7 @@ class TerminalsNotifier extends ChangeNotifier {
     final t = _buildTerminal(sessionId);
     _xterms[sessionId] = t;
     _flushBacklog(sessionId, t);
+    _restoreAltBufferIfNeeded(sessionId, t);
     DiagLog.instance.log(
       DiagCat.info,
       'terminalFor($sessionId) created → alt=${t.isUsingAltBuffer}',
@@ -231,9 +232,8 @@ class TerminalsNotifier extends ChangeNotifier {
     _xterms[sessionId] = term;
     _xtermGen[sessionId] = (_xtermGen[sessionId] ?? 0) + 1;
     _lastWrittenSeq[sessionId] = offsetEnd;
-    // Drain anything that arrived during the in-flight call. Same dedupe
-    // logic as live notifications.
     _flushBacklog(sessionId, term);
+    _restoreAltBufferIfNeeded(sessionId, term);
     notifyListeners();
   }
 
@@ -620,6 +620,23 @@ class TerminalsNotifier extends ChangeNotifier {
           });
     };
     return t;
+  }
+
+  /// Zellij-backed sessions run in the alt buffer, but a reconnect
+  /// history-replay may lose the initial `\x1b[?1049h` when the 1 MiB
+  /// circular scrollback evicts it. Inject the sequence so the Terminal
+  /// enters the correct buffer mode. Harmless if already in alt buffer.
+  void _restoreAltBufferIfNeeded(String sessionId, Terminal term) {
+    if (term.isUsingAltBuffer) return;
+    final isZellij = _termsByWorkspace.values
+        .expand((list) => list)
+        .any((s) => s.id == sessionId && s.externalSessionId != null);
+    if (!isZellij) return;
+    term.write('\x1b[?1049h');
+    DiagLog.instance.log(
+      DiagCat.mode,
+      'injected ?1049h for zellij session $sessionId',
+    );
   }
 
   /// Drain `_backlog[sessionId]` into the supplied Terminal, respecting the
