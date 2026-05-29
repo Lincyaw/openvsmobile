@@ -36,6 +36,7 @@ void main() {
 
     void enterAltBuffer() => terminal.write('\x1b[?1049h');
     void enableMouseScrollReporting() => terminal.write('\x1b[?1000h');
+    void enableAltScrollMode() => terminal.write('\x1b[?1007h');
 
     test('normal buffer: drag down 3 × cellHeight → 3 negative scrollback ticks (natural scroll)', () {
       final adapter = buildAdapter();
@@ -53,10 +54,12 @@ void main() {
       expect(emitted, isEmpty);
     });
 
-    test('alt + no mouse: drag down 3 × cellHeight → 3 × \\e[A (arrow up, natural scroll)', () {
+    test('alt + no mouse + mode 1007: drag down 3 × cellHeight → 3 × \\e[A (arrow up, natural scroll)', () {
       enterAltBuffer();
+      enableAltScrollMode();
       expect(terminal.isUsingAltBuffer, isTrue);
       expect(terminal.mouseMode, MouseMode.none);
+      expect(terminal.altBufferMouseScrollMode, isTrue);
 
       final adapter = buildAdapter();
       adapter.onDragStart(const Offset(50, 50));
@@ -89,8 +92,9 @@ void main() {
       expect(scrollback, isEmpty);
     });
 
-    test('alt + no mouse: fast fling up (dy negative > 800 px/s) → one PgDn (natural scroll)', () {
+    test('alt + no mouse + mode 1007: fast fling up → one PgDn (natural scroll)', () {
       enterAltBuffer();
+      enableAltScrollMode();
 
       final adapter = buildAdapter();
       adapter.onDragStart(const Offset(50, 50));
@@ -99,6 +103,19 @@ void main() {
       adapter.onDragEnd(velocityDy: -1200, rows: 24);
 
       expect(emitted, ['\x1b[6~']);
+      expect(scrollback, isEmpty);
+    });
+
+    test('alt + no mouse + no 1007: drag and fling are suppressed', () {
+      enterAltBuffer();
+      expect(terminal.altBufferMouseScrollMode, isFalse);
+
+      final adapter = buildAdapter();
+      adapter.onDragStart(const Offset(50, 50));
+      adapter.onDragUpdate(deltaDy: 48, cellHeight: 16);
+      adapter.onDragEnd(velocityDy: -1200, rows: 24);
+
+      expect(emitted, isEmpty);
       expect(scrollback, isEmpty);
     });
 

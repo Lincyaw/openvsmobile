@@ -284,13 +284,15 @@ void main() {
   );
 
   testWidgets(
-    'alt buffer + no mouse mode → arrow up keystrokes',
+    'alt buffer + no mouse + mode 1007 → arrow up keystrokes',
     (tester) async {
       final terminal = Terminal(maxLines: 1000);
       terminal.resize(80, 24);
       terminal.write('\x1b[?1049h');
+      terminal.write('\x1b[?1007h');
       expect(terminal.isUsingAltBuffer, isTrue);
       expect(terminal.mouseMode, MouseMode.none);
+      expect(terminal.altBufferMouseScrollMode, isTrue);
 
       final captured = <String>[];
       terminal.onOutput = captured.add;

@@ -16,7 +16,8 @@ const int kMediumDragBurstSize = 4;
 class ScrollRouting {
   ScrollRouting.capture(Terminal terminal)
       : isAltBuffer = terminal.isUsingAltBuffer,
-        reportScroll = terminal.mouseMode.reportScroll;
+        reportScroll = terminal.mouseMode.reportScroll,
+        altScrollMode = terminal.altBufferMouseScrollMode;
 
   /// Use pre-captured [routing] if available, otherwise snapshot [terminal].
   factory ScrollRouting.resolve(ScrollRouting? routing, Terminal terminal) =>
@@ -24,6 +25,10 @@ class ScrollRouting {
 
   final bool isAltBuffer;
   final bool reportScroll;
+
+  /// DEC mode 1007. When true the program has opted in to having wheel
+  /// events translated to arrow keys while in the alt buffer.
+  final bool altScrollMode;
 }
 
 /// Pure-policy helper for routing per-cell scroll units and fling events
@@ -107,6 +112,12 @@ class TerminalScrollAdapter {
   /// When [routing] is provided, the pre-captured flags override the
   /// live terminal state. This prevents transient buffer-switches from
   /// flipping the dispatch mid-gesture.
+  ///
+  /// Routing priority (exactly one fires):
+  ///   1. Normal buffer → scrollback model
+  ///   2. Alt buffer + mouse reportScroll → SGR wheel events
+  ///   3. Alt buffer + DEC 1007 altScrollMode → arrow keys (program opt-in)
+  ///   4. Alt buffer + neither → no-op (avoid sending arrows to vim/claude)
   static void dispatchUnits({
     required Terminal terminal,
     required int magnitude,
@@ -131,18 +142,21 @@ class TerminalScrollAdapter {
       for (int i = 0; i < magnitude; i++) {
         terminal.onOutput?.call(seq);
       }
-    } else {
+    } else if (r.altScrollMode) {
       onDiag?.call('arrows', 'x$magnitude ${down ? 'Down' : 'Up'}');
       for (int i = 0; i < magnitude; i++) {
         terminal.keyInput(down ? TerminalKey.arrowDown : TerminalKey.arrowUp);
       }
+    } else {
+      onDiag?.call('suppressed', 'alt+noMouse+no1007 x$magnitude');
     }
   }
 
   /// Emit a fling-sized burst.
   /// Normal buffer: a half-page scrollback burst so momentum feels natural.
   /// Alt + reportScroll: rows/2 wheel events at the drag-start cell.
-  /// Alt + no mouse: a single PgUp / PgDn keystroke.
+  /// Alt + altScrollMode (1007): a single PgUp / PgDn keystroke.
+  /// Alt + neither: no-op.
   static void dispatchFling({
     required Terminal terminal,
     required bool down,
@@ -168,9 +182,11 @@ class TerminalScrollAdapter {
       for (int i = 0; i < ticks; i++) {
         terminal.onOutput?.call(seq);
       }
-    } else {
+    } else if (r.altScrollMode) {
       onDiag?.call('fling-page', down ? 'PgDn' : 'PgUp');
       terminal.keyInput(down ? TerminalKey.pageDown : TerminalKey.pageUp);
+    } else {
+      onDiag?.call('fling-suppressed', 'alt+noMouse+no1007');
     }
   }
 
