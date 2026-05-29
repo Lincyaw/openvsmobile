@@ -9,6 +9,23 @@ const double kFastFlingVelocity = 800;
 const double kMediumDragVelocityMin = 300;
 const int kMediumDragBurstSize = 4;
 
+/// Snapshot of the terminal flags that determine scroll routing.
+/// Captured once at drag-start and reused for the entire gesture so that
+/// transient buffer-switches (e.g. zellij redraws that briefly exit alt
+/// buffer) cannot flip the routing mid-swipe.
+class ScrollRouting {
+  ScrollRouting.capture(Terminal terminal)
+      : isAltBuffer = terminal.isUsingAltBuffer,
+        reportScroll = terminal.mouseMode.reportScroll;
+
+  /// Use pre-captured [routing] if available, otherwise snapshot [terminal].
+  factory ScrollRouting.resolve(ScrollRouting? routing, Terminal terminal) =>
+      routing ?? ScrollRouting.capture(terminal);
+
+  final bool isAltBuffer;
+  final bool reportScroll;
+}
+
 /// Pure-policy helper for routing per-cell scroll units and fling events
 /// to the right side-effect channel based on the terminal's *own* state.
 /// New callers should use the static helpers (`dispatchUnits`,
@@ -71,13 +88,13 @@ class TerminalScrollAdapter {
     _residualDy = 0;
     if (velocityDy.abs() < kFastFlingVelocity) return;
     final bool down = velocityDy < 0;
-    if (!terminal.isUsingAltBuffer) return;
     dispatchFling(
       terminal: terminal,
       down: down,
       rows: rows,
       cellAt: cellAt,
       anchor: _dragAnchor,
+      onScrollback: onScrollback,
     );
   }
 
@@ -86,6 +103,10 @@ class TerminalScrollAdapter {
   /// Emit `magnitude` per-cell scroll events in the direction `down`,
   /// targeted at whichever channel matches the terminal's current
   /// buffer / mouse-mode state.
+  ///
+  /// When [routing] is provided, the pre-captured flags override the
+  /// live terminal state. This prevents transient buffer-switches from
+  /// flipping the dispatch mid-gesture.
   static void dispatchUnits({
     required Terminal terminal,
     required int magnitude,
@@ -93,15 +114,17 @@ class TerminalScrollAdapter {
     required ({int col, int row}) Function(Offset) cellAt,
     required Offset anchor,
     required void Function(int lines) onScrollback,
+    ScrollRouting? routing,
     void Function(String branch, String detail)? onDiag,
   }) {
     if (magnitude <= 0) return;
-    if (!terminal.isUsingAltBuffer) {
+    final r = ScrollRouting.resolve(routing, terminal);
+    if (!r.isAltBuffer) {
       onDiag?.call('scrollback', 'lines=${down ? magnitude : -magnitude}');
       onScrollback(down ? magnitude : -magnitude);
       return;
     }
-    if (terminal.mouseMode.reportScroll) {
+    if (r.reportScroll) {
       final cell = cellAt(anchor);
       final seq = _sgrWheel(cell, down: down);
       onDiag?.call('wheel', 'x$magnitude cell=(${cell.col},${cell.row}) $seq');
@@ -116,8 +139,8 @@ class TerminalScrollAdapter {
     }
   }
 
-  /// Emit a fling-sized burst. Normal buffer: no-op (per-cell increments
-  /// during the drag already covered it; inertia would lie to the user).
+  /// Emit a fling-sized burst.
+  /// Normal buffer: a half-page scrollback burst so momentum feels natural.
   /// Alt + reportScroll: rows/2 wheel events at the drag-start cell.
   /// Alt + no mouse: a single PgUp / PgDn keystroke.
   static void dispatchFling({
@@ -126,13 +149,18 @@ class TerminalScrollAdapter {
     required int rows,
     required ({int col, int row}) Function(Offset) cellAt,
     required Offset anchor,
+    void Function(int lines)? onScrollback,
+    ScrollRouting? routing,
     void Function(String branch, String detail)? onDiag,
   }) {
-    if (!terminal.isUsingAltBuffer) {
-      onDiag?.call('fling', 'skipped (main buffer)');
+    final r = ScrollRouting.resolve(routing, terminal);
+    if (!r.isAltBuffer) {
+      final burst = (rows / 2).floor().clamp(1, rows);
+      onDiag?.call('fling-scrollback', 'lines=${down ? burst : -burst}');
+      onScrollback?.call(down ? burst : -burst);
       return;
     }
-    if (terminal.mouseMode.reportScroll) {
+    if (r.reportScroll) {
       final cell = cellAt(anchor);
       final ticks = (rows / 2).floor().clamp(1, rows);
       final seq = _sgrWheel(cell, down: down);

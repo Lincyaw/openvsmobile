@@ -110,6 +110,12 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
   Offset _dragAnchor = Offset.zero;
   double _residualDy = 0;
   VelocityTracker? _velocity;
+  ScrollRouting? _dragRouting;
+
+  void _resetDragState() {
+    _residualDy = 0;
+    _dragRouting = null;
+  }
 
   // Select-mode anchor for character extension.
   Offset? _selectAnchor;
@@ -286,6 +292,7 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
     _residualDy = 0;
     _velocity = VelocityTracker.withKind(d.kind ?? PointerDeviceKind.touch);
     _velocity!.addPosition(Duration.zero, d.globalPosition);
+    _dragRouting = ScrollRouting.capture(widget.terminal);
     if (_diagOn) {
       final c = _cellAt(d.localPosition);
       DiagLog.instance.log(
@@ -333,6 +340,7 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
       cellAt: _cellAt,
       anchor: _dragAnchor,
       onScrollback: widget.scrollback.scrollBy,
+      routing: _dragRouting,
       onDiag: _diagOn ? _logDispatch : null,
     );
   }
@@ -349,7 +357,7 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
           'no fling)',
         );
       }
-      _residualDy = 0;
+      _resetDragState();
       return;
     }
     final down = velocity < 0;
@@ -363,14 +371,16 @@ class TerminalGestureHostState extends State<TerminalGestureHost> {
       rows: widget.terminal.viewHeight,
       cellAt: _cellAt,
       anchor: _dragAnchor,
+      onScrollback: widget.scrollback.scrollBy,
+      routing: _dragRouting,
       onDiag: _diagOn ? _logDispatch : null,
     );
-    _residualDy = 0;
+    _resetDragState();
   }
 
   void _onVerticalDragCancel() {
     _velocity = null;
-    _residualDy = 0;
+    _resetDragState();
   }
 
   // ---------- hardware mouse wheel ----------
