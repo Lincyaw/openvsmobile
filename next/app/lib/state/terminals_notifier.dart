@@ -138,8 +138,11 @@ class TerminalsNotifier extends ChangeNotifier {
     if (existing != null) return existing;
     final t = _buildTerminal(sessionId);
     _xterms[sessionId] = t;
-    // Flush any backlog that accumulated before the Terminal existed.
     _flushBacklog(sessionId, t);
+    DiagLog.instance.log(
+      DiagCat.info,
+      'terminalFor($sessionId) created → alt=${t.isUsingAltBuffer}',
+    );
     return t;
   }
 
@@ -214,14 +217,17 @@ class TerminalsNotifier extends ChangeNotifier {
 
     final term = _buildTerminal(sessionId);
     if (bytes.isNotEmpty) {
+      DiagLog.instance.log(
+        DiagCat.info,
+        'replayHistory($sessionId) ${bytes.length}B, offsetEnd=$offsetEnd',
+      );
       term.write(utf8.decode(bytes, allowMalformed: true));
-      // Seed the preview from history so the list-view row shows the
-      // session's last output immediately after a reconnect-replay,
-      // without waiting for a fresh live chunk.
+      DiagLog.instance.log(
+        DiagCat.info,
+        'replayHistory($sessionId) done → alt=${term.isUsingAltBuffer}',
+      );
       _appendPreview(sessionId, Uint8List.fromList(bytes));
     }
-    // Replace any previous Terminal for this session and bump the generation
-    // so the UI rebuilds the TerminalView (it keys on sessionId + gen).
     _xterms[sessionId] = term;
     _xtermGen[sessionId] = (_xtermGen[sessionId] ?? 0) + 1;
     _lastWrittenSeq[sessionId] = offsetEnd;
@@ -570,6 +576,17 @@ class TerminalsNotifier extends ChangeNotifier {
 
   Terminal _buildTerminal(String sessionId) {
     final t = Terminal(maxLines: 5000);
+    bool lastAlt = false;
+    t.addListener(() {
+      final nowAlt = t.isUsingAltBuffer;
+      if (nowAlt != lastAlt) {
+        lastAlt = nowAlt;
+        DiagLog.instance.log(
+          DiagCat.mode,
+          'alt-buffer ${nowAlt ? '↑on' : '↓off'} ($sessionId)',
+        );
+      }
+    });
     t.onOutput = (data) {
       // Fire-and-forget. If the socket dropped between callback and send,
       // the call future rejects with "not connected"; we swallow it here
