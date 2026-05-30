@@ -112,6 +112,12 @@ class TerminalsNotifier extends ChangeNotifier {
   final Map<String, Uint8List> _previewBuffer = {};
   final Map<String, int> _previewLastDataAt = {};
 
+  // Per-session resize debounce timers. Keyboard show/hide on mobile fires
+  // rapid consecutive resize events; coalescing into one RPC after 200ms
+  // prevents a SIGWINCH storm in multiplexer-backed sessions (zellij relays
+  // every resize to the running program, causing full TUI redraws).
+  final Map<String, Timer> _resizeTimers = {};
+
   // ---- Getters ----
 
   /// Terminal sessions belonging to the currently-focused workspace.
@@ -527,6 +533,7 @@ class TerminalsNotifier extends ChangeNotifier {
   void onTerminalExit(Map<String, dynamic> p) {
     final sessionId = p['sessionId'] as String;
     final wsId = p['workspaceId'] as String?;
+    _resizeTimers.remove(sessionId)?.cancel();
     _xterms.remove(sessionId);
     _xtermGen.remove(sessionId);
     _lastWrittenSeq.remove(sessionId);
@@ -561,6 +568,7 @@ class TerminalsNotifier extends ChangeNotifier {
     final sessions = _termsByWorkspace.remove(workspaceId) ?? const [];
     _focusedTermBySpace.remove(workspaceId);
     for (final s in sessions) {
+      _resizeTimers.remove(s.id)?.cancel();
       _xterms.remove(s.id);
       _xtermGen.remove(s.id);
       _lastWrittenSeq.remove(s.id);
@@ -609,15 +617,19 @@ class TerminalsNotifier extends ChangeNotifier {
     t.onResize = (w, h, _, _) {
       DiagLog.instance
           .log(DiagCat.resize, 'resize → ${w}x$h (cols x rows)');
-      _client
-          .call('terminal.resize', {
-            'sessionId': sessionId,
-            'cols': w,
-            'rows': h,
-          })
-          .catchError((Object e) {
-            debugPrint('terminal.resize($sessionId) failed: $e');
-          });
+      _resizeTimers[sessionId]?.cancel();
+      _resizeTimers[sessionId] = Timer(const Duration(milliseconds: 200), () {
+        _resizeTimers.remove(sessionId);
+        _client
+            .call('terminal.resize', {
+              'sessionId': sessionId,
+              'cols': w,
+              'rows': h,
+            })
+            .catchError((Object e) {
+              debugPrint('terminal.resize($sessionId) failed: $e');
+            });
+      });
     };
     return t;
   }
@@ -702,6 +714,10 @@ class TerminalsNotifier extends ChangeNotifier {
 
   @override
   void dispose() {
+    for (final t in _resizeTimers.values) {
+      t.cancel();
+    }
+    _resizeTimers.clear();
     previewVersion.dispose();
     super.dispose();
   }

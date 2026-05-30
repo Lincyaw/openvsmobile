@@ -251,6 +251,7 @@ export interface TerminalRegistryOptions {
 
 export class TerminalRegistry {
   private readonly sessions = new Map<string, Entry>();
+  private readonly resizeTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private shuttingDown = false;
   private readonly multiplexer: MultiplexerInfo;
   private readonly workspaceRoot: string;
@@ -753,16 +754,33 @@ export class TerminalRegistry {
     // the user can type. Attaching here means the zellij server
     // re-lays-out for the actual screen on the very first frame.
     this.lazyAttachIfNeeded(entry);
-    try {
-      (entry.pty as IPty).resize(cols, rows);
-    } catch (err) {
-      throw new RpcError(
-        RPC_ERR.internal,
-        `resize failed: ${(err as Error).message}`,
-      );
-    }
-    entry.cols = cols;
-    entry.rows = rows;
+
+    // Debounce the actual pty.resize to coalesce rapid consecutive resizes.
+    // Keyboard show/hide on mobile fires many resize events in quick
+    // succession; each one triggers a SIGWINCH in zellij, causing full TUI
+    // redraws on both mobile and desktop. A 100ms window absorbs the burst
+    // and sends only the final geometry.
+    const existing = this.resizeTimers.get(id);
+    if (existing !== undefined) clearTimeout(existing);
+    this.resizeTimers.set(
+      id,
+      setTimeout(() => {
+        this.resizeTimers.delete(id);
+        if (!this.sessions.has(id)) return;
+        try {
+          (entry.pty as IPty).resize(cols, rows);
+        } catch (err) {
+          // Session may have exited during the debounce window.
+          console.error(
+            `[openvsmobile-next] debounced resize failed for ${id}: ` +
+              `${(err as Error).message}`,
+          );
+          return;
+        }
+        entry.cols = cols;
+        entry.rows = rows;
+      }, 100),
+    );
   }
 
   /// Kill the local zellij client (PTY) without tearing down the zellij
@@ -799,6 +817,11 @@ export class TerminalRegistry {
   public dispose(id: string): void {
     const entry = this.sessions.get(id);
     if (!entry) return;
+    const pendingResize = this.resizeTimers.get(id);
+    if (pendingResize !== undefined) {
+      clearTimeout(pendingResize);
+      this.resizeTimers.delete(id);
+    }
     // User tapping X on a chip is an explicit destroy intent for the
     // whole logical session — the chip *is* the user's mental model of
     // the zellij session. Live, hydrated, and exiting all funnel through
@@ -832,6 +855,10 @@ export class TerminalRegistry {
   }
 
   public disposeAll(): void {
+    for (const timer of this.resizeTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.resizeTimers.clear();
     for (const id of [...this.sessions.keys()]) {
       this.dispose(id);
     }
@@ -853,6 +880,10 @@ export class TerminalRegistry {
   /// it out at hydrate time.
   public detachAll(): void {
     this.shuttingDown = true;
+    for (const timer of this.resizeTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.resizeTimers.clear();
     for (const entry of this.sessions.values()) {
       if (entry.state === "live" && entry.pty !== null) {
         try {

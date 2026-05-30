@@ -15,7 +15,7 @@
 // points (`ptySpawner`, `execRunner`) the production wiring doesn't
 // use; this test file is the only consumer.
 
-import { describe, expect, it, afterEach, beforeEach } from "vitest";
+import { describe, expect, it, afterEach, beforeEach, vi } from "vitest";
 import type { IPty, IPtyForkOptions } from "node-pty";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -606,33 +606,40 @@ describe("TerminalRegistry hydrate + lazy attach", () => {
   });
 
   it("resize against a hydrated entry triggers `zellij attach --create`", () => {
-    const { spawn, calls } = recordingSpawner();
-    const reg = new TerminalRegistry(
-      () => {},
-      () => {},
-      {
-        multiplexer: { kind: "zellij" },
-        workspaceRoot: "/work",
-        ptySpawner: spawn,
-      },
-    );
-    const id = "11111111-1111-1111-1111-111111111111";
-    reg.hydrate({
-      id,
-      cwd: "/work",
-      cols: 80,
-      rows: 24,
-      externalSessionId: `ovsm-${id}`,
-      createdAt: 1,
-    });
-    reg.resize(id, 120, 40);
-    expect(calls).toHaveLength(1);
-    expect(calls[0].command).toBe("zellij");
-    // After lazy attach the geometry on the entry reflects the new
-    // size — the resize fired against the now-live PTY.
-    const listed = reg.list();
-    expect(listed[0].cols).toBe(120);
-    expect(listed[0].rows).toBe(40);
+    vi.useFakeTimers();
+    try {
+      const { spawn, calls } = recordingSpawner();
+      const reg = new TerminalRegistry(
+        () => {},
+        () => {},
+        {
+          multiplexer: { kind: "zellij" },
+          workspaceRoot: "/work",
+          ptySpawner: spawn,
+        },
+      );
+      const id = "11111111-1111-1111-1111-111111111111";
+      reg.hydrate({
+        id,
+        cwd: "/work",
+        cols: 80,
+        rows: 24,
+        externalSessionId: `ovsm-${id}`,
+        createdAt: 1,
+      });
+      reg.resize(id, 120, 40);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].command).toBe("zellij");
+      // resize is debounced (100ms); advance the clock so it fires.
+      vi.advanceTimersByTime(100);
+      // After lazy attach the geometry on the entry reflects the new
+      // size — the resize fired against the now-live PTY.
+      const listed = reg.list();
+      expect(listed[0].cols).toBe(120);
+      expect(listed[0].rows).toBe(40);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("history against a hydrated entry triggers `zellij attach --create`", () => {
