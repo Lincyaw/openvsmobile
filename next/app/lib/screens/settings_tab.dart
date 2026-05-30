@@ -21,7 +21,9 @@ import '../services/system_tray.dart';
 import '../settings_store.dart';
 import '../ui/app_tokens.dart';
 import '../ui/inset_section.dart';
+import '../version.dart';
 import 'about_screen.dart';
+import 'app_update_screen.dart';
 import 'notification_settings_screen.dart';
 import 'ssh_bootstrap_screen.dart';
 import 'system_tray_debug_screen.dart';
@@ -105,6 +107,14 @@ class SettingsTab extends StatelessWidget {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => SystemTrayDebugScreen(controller: systemTrayController),
+      ),
+    );
+  }
+
+  void _openAppUpdate(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const AppUpdateScreen(),
       ),
     );
   }
@@ -214,6 +224,14 @@ class SettingsTab extends StatelessWidget {
           title: 'System',
           surfaceKey: const ValueKey<String>('settings-section:system'),
           children: [
+            ListTile(
+              key: const ValueKey<String>('settings-tile-app-update'),
+              leading: const Icon(Icons.system_update_outlined),
+              title: const Text('App update'),
+              subtitle: const Text('v$kBackendVersion'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _openAppUpdate(context),
+            ),
             ListTile(
               key: const ValueKey<String>('settings-tile-notifications'),
               leading: const Icon(Icons.notifications_outlined),
