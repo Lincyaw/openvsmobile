@@ -25,6 +25,9 @@ class MainActivity : FlutterActivity() {
                         val abi = Build.SUPPORTED_ABIS.firstOrNull() ?: "universal"
                         result.success(abi)
                     }
+                    "getCacheDir" -> {
+                        result.success(cacheDir.absolutePath)
+                    }
                     "installApk" -> {
                         val path = call.argument<String>("path")
                         if (path == null) {

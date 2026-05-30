@@ -26,6 +26,22 @@ void main() {
     test('lower major is not newer despite higher minor', () {
       expect(isNewerVersion('0.99.0', '1.0.0'), isFalse);
     });
+
+    test('strips pre-release suffix before comparing', () {
+      expect(isNewerVersion('0.4.0-rc.1', '0.3.1'), isTrue);
+    });
+
+    test('pre-release of same version is not newer', () {
+      expect(isNewerVersion('0.3.1-beta', '0.3.1'), isFalse);
+    });
+
+    test('handles two-segment version gracefully', () {
+      expect(isNewerVersion('1.0', '0.3.1'), isTrue);
+    });
+
+    test('handles non-numeric segments without crashing', () {
+      expect(isNewerVersion('abc.def', '0.3.1'), isFalse);
+    });
   });
 
   group('AppUpdateService.pickAsset', () {

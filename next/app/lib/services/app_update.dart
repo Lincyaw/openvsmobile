@@ -90,14 +90,22 @@ class ReleaseInfo {
 // Version comparison
 // ---------------------------------------------------------------------------
 
+/// Strip any pre-release suffix (e.g. "0.4.0-rc.1" → "0.4.0").
+String _stripPreRelease(String version) {
+  final idx = version.indexOf('-');
+  return idx < 0 ? version : version.substring(0, idx);
+}
+
 /// Returns true when [remote] is strictly newer than [local].
-/// Both must be pure semver (no pre-release suffix).
+/// Pre-release suffixes are stripped before comparison.
 bool isNewerVersion(String remote, String local) {
-  final rParts = remote.split('.').map(int.parse).toList();
-  final lParts = local.split('.').map(int.parse).toList();
+  final rParts =
+      _stripPreRelease(remote).split('.').map(int.tryParse).toList();
+  final lParts =
+      _stripPreRelease(local).split('.').map(int.tryParse).toList();
   for (var i = 0; i < 3; i++) {
-    final r = i < rParts.length ? rParts[i] : 0;
-    final l = i < lParts.length ? lParts[i] : 0;
+    final r = (i < rParts.length ? rParts[i] : null) ?? 0;
+    final l = (i < lParts.length ? lParts[i] : null) ?? 0;
     if (r > l) return true;
     if (r < l) return false;
   }
@@ -122,6 +130,12 @@ class AppUpdateService {
   /// Trigger the system package installer for the APK at [path].
   Future<void> installApk(String path) async {
     await _channel.invokeMethod<void>('installApk', {'path': path});
+  }
+
+  /// Get the app's private cache directory (matches FileProvider's cache-path).
+  Future<String> _getCacheDir() async {
+    final dir = await _channel.invokeMethod<String>('getCacheDir');
+    return dir ?? Directory.systemTemp.path;
   }
 
   /// Fetch the latest release metadata from GitHub.
@@ -217,24 +231,41 @@ class AppUpdateService {
     );
   }
 
-  /// Download the APK from [url] to a temp file, yielding progress events.
-  /// Returns the file path on success (via [UpdateDownloadComplete]).
+  /// Delete stale `mobilecode-update-*.apk` files from [dir].
+  Future<void> _cleanOldApks(String dirPath) async {
+    final dir = Directory(dirPath);
+    if (!dir.existsSync()) return;
+    await for (final entity in dir.list()) {
+      if (entity is File &&
+          entity.path.contains('mobilecode-update-') &&
+          entity.path.endsWith('.apk')) {
+        try {
+          await entity.delete();
+        } catch (_) {}
+      }
+    }
+  }
+
+  /// Download the APK from [url] to the app's cache dir, yielding progress
+  /// events. Returns the file path on success (via [UpdateDownloadComplete]).
   Stream<UpdateEvent> download(String url, int totalSize) async* {
     final client = HttpClient();
     try {
+      final cachePath = await _getCacheDir();
+      await _cleanOldApks(cachePath);
+
       final request = await client.getUrl(Uri.parse(url));
       final response = await request.close();
-      if (response.statusCode != 200 && response.statusCode != 302) {
+      if (response.statusCode != 200) {
         yield UpdateError(
           'Download failed with status ${response.statusCode}.',
         );
         return;
       }
 
-      final tempDir = Directory.systemTemp;
       final fileName =
           'mobilecode-update-${DateTime.now().millisecondsSinceEpoch}.apk';
-      final file = File('${tempDir.path}/$fileName');
+      final file = File('$cachePath/$fileName');
       final sink = file.openWrite();
 
       var received = 0;
