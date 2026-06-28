@@ -66,6 +66,28 @@ void main() {
     });
   });
 
+  group('SettingsStore terminal preference persistence', () {
+    test('default load uses the terminal font default', () async {
+      SharedPreferences.setMockInitialValues(const <String, Object>{});
+      final store = SettingsStore();
+      final prefs = await store.loadTerminalPrefs();
+      expect(prefs.fontSize, kTerminalFontSizeDefault);
+    });
+
+    test('round-trip clamps and stores terminal font size', () async {
+      SharedPreferences.setMockInitialValues(const <String, Object>{});
+      final store = SettingsStore();
+      await store.saveTerminalPrefs(const TerminalPrefs(fontSize: 18));
+      expect((await store.loadTerminalPrefs()).fontSize, 18);
+
+      await store.saveTerminalPrefs(const TerminalPrefs(fontSize: 99));
+      expect((await store.loadTerminalPrefs()).fontSize, kTerminalFontSizeMax);
+
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getDouble('terminal-font-size'), kTerminalFontSizeMax);
+    });
+  });
+
   group('SettingsTab Theme tile', () {
     Future<void> pumpTab(
       WidgetTester tester, {
@@ -122,34 +144,35 @@ void main() {
     });
 
     testWidgets(
-        'Settings tab renders Connection/Appearance/System inset sections',
-        (tester) async {
-      // Batch 2 visual rework: each grouped section renders through the
-      // same InsetSection primitive the plugin UI renderer uses for
-      // UiSection { variant: 'inset' }. Locking the widget type prevents
-      // a silent regression to a flat ListView of tiles.
-      await pumpTab(tester, mode: ThemeMode.system, onChanged: (_) async {});
-      // Three InsetSection groups, identified by their surface keys, must
-      // be present so the visual primitive doesn't silently regress.
-      expect(find.byType(InsetSection), findsNWidgets(3));
-      expect(
-        find.byKey(const ValueKey<String>('settings-section:connection')),
-        findsOneWidget,
-      );
-      expect(
-        find.byKey(const ValueKey<String>('settings-section:appearance')),
-        findsOneWidget,
-      );
-      expect(
-        find.byKey(const ValueKey<String>('settings-section:system')),
-        findsOneWidget,
-      );
-      // Section group titles are rendered uppercase per the iOS-Settings
-      // inset convention.
-      expect(find.text('CONNECTION'), findsOneWidget);
-      expect(find.text('APPEARANCE'), findsOneWidget);
-      expect(find.text('SYSTEM'), findsOneWidget);
-    });
+      'Settings tab renders Connection/Appearance/System inset sections',
+      (tester) async {
+        // Batch 2 visual rework: each grouped section renders through the
+        // same InsetSection primitive the plugin UI renderer uses for
+        // UiSection { variant: 'inset' }. Locking the widget type prevents
+        // a silent regression to a flat ListView of tiles.
+        await pumpTab(tester, mode: ThemeMode.system, onChanged: (_) async {});
+        // Three InsetSection groups, identified by their surface keys, must
+        // be present so the visual primitive doesn't silently regress.
+        expect(find.byType(InsetSection), findsNWidgets(3));
+        expect(
+          find.byKey(const ValueKey<String>('settings-section:connection')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const ValueKey<String>('settings-section:appearance')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const ValueKey<String>('settings-section:system')),
+          findsOneWidget,
+        );
+        // Section group titles are rendered uppercase per the iOS-Settings
+        // inset convention.
+        expect(find.text('CONNECTION'), findsOneWidget);
+        expect(find.text('APPEARANCE'), findsOneWidget);
+        expect(find.text('SYSTEM'), findsOneWidget);
+      },
+    );
 
     testWidgets('Cancel does not invoke onChanged', (tester) async {
       var calls = 0;

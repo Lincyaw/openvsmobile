@@ -7,10 +7,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:mobilecode/main.dart';
 
 void main() {
-  testWidgets('first run shows backends empty state',
-      (WidgetTester tester) async {
+  testWidgets('first run shows backends empty state', (
+    WidgetTester tester,
+  ) async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
-    await tester.pumpWidget(const MobileCodeApp());
+    await tester.pumpWidget(const MobileCodeApp(enableSystemTray: false));
     await tester.pump(const Duration(milliseconds: 50));
     await tester.pumpAndSettle();
     expect(find.text('Backends'), findsOneWidget);

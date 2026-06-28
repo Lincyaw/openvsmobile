@@ -71,6 +71,20 @@ need() {
   command -v "$1" >/dev/null 2>&1 || fatal "missing dependency: $1 (install it and retry)" 7
 }
 
+install_agent_hooks() {
+  local node_bin="$BUNDLE_DIR/node/bin/node"
+  local installer="$BUNDLE_DIR/bin/install-agent-hooks.mjs"
+  if [[ ! -x "$node_bin" || ! -x "$installer" ]]; then
+    log "warn: agent hook installer missing from bundle; skipping"
+    return 0
+  fi
+  if "$node_bin" "$installer" >&2; then
+    log "agent Stop hook scan complete"
+  else
+    log "warn: agent Stop hook scan failed; backend install will continue"
+  fi
+}
+
 # Download a URL to <dest>.part and atomically rename on success.
 #
 # Flags rationale:
@@ -440,6 +454,14 @@ while [[ ! -f "$POLL_TARGET" ]]; do
   fi
   sleep 0.2
 done
+
+# ----- install optional Claude Code / Codex Stop hooks -----
+# This mutates real user agent configs, so keep dry-run hermetic.
+if [[ "$DRY_RUN_SYSTEMD" -eq 0 ]]; then
+  install_agent_hooks
+else
+  log "dry-run: skipping agent Stop hook scan"
+fi
 
 # ----- parse + emit single JSON line on stdout -----
 # Prefer python3 — it can both parse the input and emit canonical JSON in

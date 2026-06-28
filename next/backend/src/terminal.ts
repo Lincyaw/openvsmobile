@@ -20,6 +20,7 @@ import {
   isSessionIdSafe,
   killZellijSession,
   listZellijSessions,
+  zellijEnvironment,
   zellijSessionName,
   type ExecRunner,
   type MultiplexerInfo,
@@ -329,7 +330,7 @@ export class TerminalRegistry {
           cols,
           rows,
           cwd,
-          env: process.env as { [key: string]: string },
+          env: zellijEnvironment(),
           encoding: null,
         },
       );
@@ -404,7 +405,9 @@ export class TerminalRegistry {
         cols,
         rows,
         cwd,
-        env: process.env as { [key: string]: string },
+        env: useZellij
+          ? zellijEnvironment()
+          : (process.env as { [key: string]: string }),
         // `encoding: null` tells node-pty to deliver raw bytes to onData
         // instead of decoding UTF-8 with replacement chars at chunk
         // boundaries. Scrollback must be byte-faithful so a multibyte
@@ -566,7 +569,7 @@ export class TerminalRegistry {
           cols: entry.cols,
           rows: entry.rows,
           cwd: entry.cwd,
-          env: process.env as { [key: string]: string },
+          env: zellijEnvironment(),
           // See `create()` — byte-faithful scrollback requires raw Buffers.
           encoding: null,
         },

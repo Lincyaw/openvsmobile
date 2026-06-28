@@ -1,6 +1,6 @@
 {
   "name": "openvsmobile-next-backend",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "private": true,
   "description": "openvsmobile backend — workspaces, terminal, fs, git, notifications, plugin host (forthcoming).",
   "type": "module",
@@ -8,6 +8,7 @@
     "node": ">=25"
   },
   "scripts": {
+    "postinstall": "node scripts/fix-node-pty-spawn-helper.mjs",
     "typecheck": "pnpm --filter \"./packages/*\" run typecheck && tsc --noEmit",
     "build": "pnpm --filter \"./packages/*\" run build && tsc",
     "dev": "tsx src/index.ts",

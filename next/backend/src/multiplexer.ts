@@ -18,6 +18,7 @@
 // hard timeout so a stuck zellij CLI cannot wedge the backend.
 
 import { execFile, type ExecFileException } from "node:child_process";
+import { mkdirSync } from "node:fs";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -27,6 +28,7 @@ const execFileAsync = promisify(execFile);
 /// healthy invocations complete in tens of milliseconds — and an upper
 /// bound on how long a stuck CLI can stall the surrounding flow.
 export const ZELLIJ_CLI_TIMEOUT_MS = 2000;
+const DEFAULT_ZELLIJ_SOCKET_DIR = "/tmp/openvsmobile-zellij";
 
 /// Prefix applied to zellij session names spawned by the backend. Keeps
 /// our sessions visually distinct from any the user spawned manually so
@@ -73,10 +75,34 @@ export interface ExecRunner {
   ): Promise<{ stdout: string; stderr: string }>;
 }
 
+export function zellijEnvironment(
+  env: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined) out[key] = value;
+  }
+  const socketDir =
+    env.ZELLIJ_SOCKET_DIR !== undefined && env.ZELLIJ_SOCKET_DIR.length > 0
+      ? env.ZELLIJ_SOCKET_DIR
+      : DEFAULT_ZELLIJ_SOCKET_DIR;
+  try {
+    mkdirSync(socketDir, { recursive: true, mode: 0o700 });
+  } catch (err) {
+    console.error(
+      `[openvsmobile-next] WARN: failed to create ZELLIJ_SOCKET_DIR ${socketDir}:`,
+      err,
+    );
+  }
+  out.ZELLIJ_SOCKET_DIR = socketDir;
+  return out;
+}
+
 export const realExecRunner: ExecRunner = {
   async run(command, args, options) {
     const { stdout, stderr } = await execFileAsync(command, [...args], {
       timeout: options.timeoutMs,
+      env: zellijEnvironment(),
       // 64 KB output cap. Far more than `zellij --version` or
       // `kill-session` ever produces; anything larger means something
       // is wrong upstream and we'd rather fail fast.

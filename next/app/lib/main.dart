@@ -35,7 +35,9 @@ Future<void> main() async {
 }
 
 class MobileCodeApp extends StatefulWidget {
-  const MobileCodeApp({super.key});
+  const MobileCodeApp({super.key, this.enableSystemTray = true});
+
+  final bool enableSystemTray;
 
   @override
   State<MobileCodeApp> createState() => _MobileCodeAppState();
@@ -62,14 +64,21 @@ class _MobileCodeAppState extends State<MobileCodeApp>
   ThemeMode _themeMode = ThemeMode.system;
   bool _loadingSettings = true;
   String? _lastPersistedWorkspaceId;
+  VoidCallback? _connectedRestoreListener;
+  bool _suspendWorkspaceTracking = false;
+  int _backendSessionOrdinal = 0;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _fgService.init();
-    unawaited(_tray.init());
-    _trayNotifSub = _client.notifications.listen(_onBackendNotificationForTray);
+    if (widget.enableSystemTray) {
+      unawaited(_tray.init());
+      _trayNotifSub = _client.notifications.listen(
+        _onBackendNotificationForTray,
+      );
+    }
     _client.state.addListener(_logConnectionState);
     _bootstrap();
   }
@@ -77,7 +86,10 @@ class _MobileCodeAppState extends State<MobileCodeApp>
   /// Feed backend connection transitions into the debug overlay so a trace
   /// shows reconnect windows alongside any dropped writes.
   void _logConnectionState() {
-    DiagLog.instance.log(DiagCat.net, 'connection → ${_client.state.value.name}');
+    DiagLog.instance.log(
+      DiagCat.net,
+      'connection → ${_client.state.value.name}',
+    );
   }
 
   /// Fan `notification.show` / `.deleted` / `.superseded` pushes to
@@ -141,15 +153,16 @@ class _MobileCodeAppState extends State<MobileCodeApp>
     });
     final active = state.activeBackend;
     if (active != null && active.isComplete) {
+      final sessionOrdinal = _beginBackendSession();
       _client.configure(
         host: active.host,
         port: active.port,
         token: active.token,
         deviceId: did,
       );
+      _scheduleOpenLastWorkspaceWhenConnected(active, sessionOrdinal);
       await _client.start();
       await _maybeStartForegroundService();
-      _scheduleOpenLastWorkspaceWhenConnected(active);
     }
     await _deepLinks.init();
     _deepLinkRemover = _deepLinks.addListener(_openNotificationCenterFor);
@@ -164,10 +177,40 @@ class _MobileCodeAppState extends State<MobileCodeApp>
   /// backend, reopen its last-known workspace (if any) and update
   /// `lastConnectedAt`. Idempotent against multiple transitions — we detach
   /// the listener after the first `connected` event.
-  void _scheduleOpenLastWorkspaceWhenConnected(BackendTarget target) {
-    void listener() {
-      if (_client.state.value != BackendConnectionState.connected) return;
-      _client.state.removeListener(listener);
+  void _clearPendingConnectedRestore() {
+    final listener = _connectedRestoreListener;
+    if (listener == null) return;
+    _client.state.removeListener(listener);
+    _connectedRestoreListener = null;
+  }
+
+  int _beginBackendSession() {
+    _backendSessionOrdinal++;
+    _clearPendingConnectedRestore();
+    _lastPersistedWorkspaceId = null;
+    return _backendSessionOrdinal;
+  }
+
+  Future<void> _disconnectAndResetForBackendSession() async {
+    _suspendWorkspaceTracking = true;
+    try {
+      await _client.userDisconnect();
+      _appState?.resetForBackendSession();
+    } finally {
+      _suspendWorkspaceTracking = false;
+    }
+  }
+
+  void _scheduleOpenLastWorkspaceWhenConnected(
+    BackendTarget target,
+    int sessionOrdinal,
+  ) {
+    _clearPendingConnectedRestore();
+
+    void runRestore() {
+      _clearPendingConnectedRestore();
+      if (sessionOrdinal != _backendSessionOrdinal) return;
+      if (_state.activeBackendId != target.id) return;
       final stamped = target.copyWith(
         lastConnectedAt: DateTime.now().millisecondsSinceEpoch,
       );
@@ -187,12 +230,24 @@ class _MobileCodeAppState extends State<MobileCodeApp>
       }
     }
 
+    if (_client.state.value == BackendConnectionState.connected) {
+      runRestore();
+      return;
+    }
+
+    void listener() {
+      if (_client.state.value != BackendConnectionState.connected) return;
+      runRestore();
+    }
+
+    _connectedRestoreListener = listener;
     _client.state.addListener(listener);
   }
 
   /// Observe currentWorkspace transitions and persist them onto the active
   /// backend so a later switch back lands on the same workspace.
   void _onAppStateForWorkspaceTracking() {
+    if (_suspendWorkspaceTracking) return;
     final cur = _appState?.currentWorkspace;
     final activeId = _state.activeBackendId;
     if (activeId == null) return;
@@ -346,9 +401,9 @@ class _MobileCodeAppState extends State<MobileCodeApp>
     );
     await _persistState(newState);
     if (wasActive) {
-      _lastPersistedWorkspaceId = null;
       if (newActive == null) {
-        await _client.userDisconnect();
+        _beginBackendSession();
+        await _disconnectAndResetForBackendSession();
         await _fgService.stop();
       } else {
         await _restartClientForActive();
@@ -358,7 +413,6 @@ class _MobileCodeAppState extends State<MobileCodeApp>
 
   Future<void> _switchBackend(String id) async {
     if (id == _state.activeBackendId) return;
-    _lastPersistedWorkspaceId = null;
     final newState = _state.copyWith(activeBackendId: id);
     await _persistState(newState);
     await _restartClientForActive();
@@ -368,7 +422,8 @@ class _MobileCodeAppState extends State<MobileCodeApp>
   /// schedules the post-connect "reopen lastWorkspaceId" pass.
   Future<void> _restartClientForActive() async {
     final active = _state.activeBackend;
-    await _client.userDisconnect();
+    final sessionOrdinal = _beginBackendSession();
+    await _disconnectAndResetForBackendSession();
     await _fgService.stop();
     if (active == null || !active.isComplete) return;
     _client.configure(
@@ -377,9 +432,9 @@ class _MobileCodeAppState extends State<MobileCodeApp>
       token: active.token,
       deviceId: _deviceId,
     );
+    _scheduleOpenLastWorkspaceWhenConnected(active, sessionOrdinal);
     await _client.start();
     await _maybeStartForegroundService();
-    _scheduleOpenLastWorkspaceWhenConnected(active);
   }
 
   /// Persist a new [ThemeMode] choice and re-render the `MaterialApp`
@@ -420,6 +475,7 @@ class _MobileCodeAppState extends State<MobileCodeApp>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _deepLinkRemover?.call();
+    _clearPendingConnectedRestore();
     unawaited(_deepLinks.dispose());
     unawaited(_trayNotifSub?.cancel());
     _trayNotifSub = null;

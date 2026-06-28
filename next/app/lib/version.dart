@@ -3,7 +3,7 @@
 //
 // Local debug builds use this value as-is.
 // Release builds via .github/workflows/release.yml substitute it from the v* tag.
-const String kBackendVersion = '0.3.1';
+const String kBackendVersion = '0.4.0';
 
 /// Default port the backend's `install.sh` writes into its systemd unit.
 /// Screens that seed a fresh BackendTarget should reference this rather

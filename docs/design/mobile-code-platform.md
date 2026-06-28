@@ -1037,6 +1037,13 @@ Garbage collection runs opportunistically — at most once per hour on `notifica
 - `--from-json -` reads the full payload from stdin (for scripts that already have JSON ready).
 - Exit codes: 0 success, 2 args, 3 network, 4 auth, 5 server error.
 
+**Agent Stop hooks.** The backend tarball also bundles a tiny hook bridge for
+Claude Code / Codex. `install.sh` runs it after the backend has started and
+`runtime.json` exists. It scans the user's global Claude Code / Codex configs,
+adds an idempotent `Stop` hook when those configs are present, and posts through
+`mobile-notify --from-claude-hook`. This is best-effort: malformed or absent
+agent configs are logged to stderr and never fail backend installation.
+
 **Foreground service (Flutter / Android).** App starts a `flutter_foreground_task`-backed service on launch (gated by a Settings toggle, default on). The service holds the WebSocket, calls `notification.subscribe`, and on `notification.show` posts to the Android system tray via a channel chosen from the `level` field:
 
 | level     | Android channel importance | Sound  |

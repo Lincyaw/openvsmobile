@@ -38,102 +38,121 @@ void main() {
     void enableMouseScrollReporting() => terminal.write('\x1b[?1000h');
     void enableAltScrollMode() => terminal.write('\x1b[?1007h');
 
-    test('normal buffer: drag down 3 × cellHeight → 3 negative scrollback ticks (natural scroll)', () {
-      final adapter = buildAdapter();
-      adapter.onDragStart(const Offset(50, 50));
-      adapter.onDragUpdate(deltaDy: 16, cellHeight: 16);
-      adapter.onDragUpdate(deltaDy: 16, cellHeight: 16);
-      adapter.onDragUpdate(deltaDy: 16, cellHeight: 16);
-      adapter.onDragEnd(velocityDy: 0, rows: 24);
+    test(
+      'normal buffer: drag down 3 × cellHeight → 3 negative scrollback ticks (natural scroll)',
+      () {
+        final adapter = buildAdapter();
+        adapter.onDragStart(const Offset(50, 50));
+        adapter.onDragUpdate(deltaDy: 16, cellHeight: 16);
+        adapter.onDragUpdate(deltaDy: 16, cellHeight: 16);
+        adapter.onDragUpdate(deltaDy: 16, cellHeight: 16);
+        adapter.onDragEnd(velocityDy: 0, rows: 24);
 
-      // Sign reflects natural-scroll vocabulary: finger drag down is a
-      // natural-scroll-up request (reveal earlier content), so the sink
-      // receives negative ticks. Callers translate the sign into whatever
-      // scrollback API they expose.
-      expect(scrollback, [-1, -1, -1]);
-      expect(emitted, isEmpty);
-    });
+        // Sign reflects natural-scroll vocabulary: finger drag down is a
+        // natural-scroll-up request (reveal earlier content), so the sink
+        // receives negative ticks. Callers translate the sign into whatever
+        // scrollback API they expose.
+        expect(scrollback, [-1, -1, -1]);
+        expect(emitted, isEmpty);
+      },
+    );
 
-    test('alt + no mouse + mode 1007: drag down 3 × cellHeight → 3 × \\e[A (arrow up, natural scroll)', () {
+    test(
+      'alt + no mouse + mode 1007: drag down 3 × cellHeight → 3 × \\e[A (arrow up, natural scroll)',
+      () {
+        enterAltBuffer();
+        enableAltScrollMode();
+        expect(terminal.isUsingAltBuffer, isTrue);
+        expect(terminal.mouseMode, MouseMode.none);
+        expect(terminal.altBufferMouseScrollMode, isTrue);
+
+        final adapter = buildAdapter();
+        adapter.onDragStart(const Offset(50, 50));
+        adapter.onDragUpdate(deltaDy: 48, cellHeight: 16);
+        adapter.onDragEnd(velocityDy: 0, rows: 24);
+
+        // Finger drag down = reveal earlier content = arrow ↑.
+        expect(emitted, ['\x1b[A', '\x1b[A', '\x1b[A']);
+        expect(scrollback, isEmpty);
+      },
+    );
+
+    test(
+      'alt + mouse reportScroll: drag down 3 × cellHeight → 3 × SGR wheel-up (natural scroll)',
+      () {
+        enterAltBuffer();
+        enableMouseScrollReporting();
+        expect(terminal.mouseMode.reportScroll, isTrue);
+
+        // Stub cellAt to the spec's expected (10, 5) regardless of pixel
+        // position so the test is independent of any real render geometry.
+        final adapter = buildAdapter(cellAt: (_) => (col: 10, row: 5));
+        adapter.onDragStart(const Offset(120, 80));
+        adapter.onDragUpdate(deltaDy: 48, cellHeight: 16);
+        adapter.onDragEnd(velocityDy: 0, rows: 24);
+
+        // Finger drag down → SGR wheel-up (button 64) at the drag-start cell.
+        expect(emitted, ['\x1b[<64;10;5M', '\x1b[<64;10;5M', '\x1b[<64;10;5M']);
+        expect(scrollback, isEmpty);
+      },
+    );
+
+    test('alt + no mouse + mode 1007: fast fling is a no-op', () {
       enterAltBuffer();
       enableAltScrollMode();
-      expect(terminal.isUsingAltBuffer, isTrue);
-      expect(terminal.mouseMode, MouseMode.none);
-      expect(terminal.altBufferMouseScrollMode, isTrue);
 
       final adapter = buildAdapter();
       adapter.onDragStart(const Offset(50, 50));
-      adapter.onDragUpdate(deltaDy: 48, cellHeight: 16);
-      adapter.onDragEnd(velocityDy: 0, rows: 24);
-
-      // Finger drag down = reveal earlier content = arrow ↑.
-      expect(emitted, ['\x1b[A', '\x1b[A', '\x1b[A']);
-      expect(scrollback, isEmpty);
-    });
-
-    test('alt + mouse reportScroll: drag down 3 × cellHeight → 3 × SGR wheel-up (natural scroll)', () {
-      enterAltBuffer();
-      enableMouseScrollReporting();
-      expect(terminal.mouseMode.reportScroll, isTrue);
-
-      // Stub cellAt to the spec's expected (10, 5) regardless of pixel
-      // position so the test is independent of any real render geometry.
-      final adapter = buildAdapter(cellAt: (_) => (col: 10, row: 5));
-      adapter.onDragStart(const Offset(120, 80));
-      adapter.onDragUpdate(deltaDy: 48, cellHeight: 16);
-      adapter.onDragEnd(velocityDy: 0, rows: 24);
-
-      // Finger drag down → SGR wheel-up (button 64) at the drag-start cell.
-      expect(emitted, [
-        '\x1b[<64;10;5M',
-        '\x1b[<64;10;5M',
-        '\x1b[<64;10;5M',
-      ]);
-      expect(scrollback, isEmpty);
-    });
-
-    test('alt + no mouse + mode 1007: fast fling up → one PgDn (natural scroll)', () {
-      enterAltBuffer();
-      enableAltScrollMode();
-
-      final adapter = buildAdapter();
-      adapter.onDragStart(const Offset(50, 50));
-      // No slow-drag accumulation; fling velocity alone triggers the paging
-      // event on dragEnd. Finger fling up = natural-scroll down = PgDn.
+      // DEC 1007 does not change Termux touch semantics. Without mouse
+      // tracking, fling scrolls transcript history; alt buffer has none.
       adapter.onDragEnd(velocityDy: -1200, rows: 24);
 
-      expect(emitted, ['\x1b[6~']);
+      expect(emitted, isEmpty);
       expect(scrollback, isEmpty);
     });
 
-    test('alt + no mouse + no 1007: drag and fling are suppressed', () {
+    test('alt + no mouse + no 1007: drag emits arrows like Termux', () {
       enterAltBuffer();
       expect(terminal.altBufferMouseScrollMode, isFalse);
 
       final adapter = buildAdapter();
       adapter.onDragStart(const Offset(50, 50));
       adapter.onDragUpdate(deltaDy: 48, cellHeight: 16);
+      adapter.onDragEnd(velocityDy: 0, rows: 24);
+
+      expect(emitted, ['\x1b[A', '\x1b[A', '\x1b[A']);
+      expect(scrollback, isEmpty);
+    });
+
+    test('alt + no mouse + no 1007: fast fling is a no-op', () {
+      enterAltBuffer();
+
+      final adapter = buildAdapter();
+      adapter.onDragStart(const Offset(50, 50));
       adapter.onDragEnd(velocityDy: -1200, rows: 24);
 
       expect(emitted, isEmpty);
       expect(scrollback, isEmpty);
     });
 
-    test('alt + mouse: fast fling → wheel-burst of rows/2 ticks at drag-start cell', () {
-      enterAltBuffer();
-      enableMouseScrollReporting();
+    test(
+      'alt + mouse: fast fling → wheel-burst of rows/2 ticks at drag-start cell',
+      () {
+        enterAltBuffer();
+        enableMouseScrollReporting();
 
-      final adapter = buildAdapter(cellAt: (_) => (col: 10, row: 5));
-      adapter.onDragStart(const Offset(120, 80));
-      // Finger fling down → natural-scroll up → wheel-up burst.
-      adapter.onDragEnd(velocityDy: 1500, rows: 24);
+        final adapter = buildAdapter(cellAt: (_) => (col: 10, row: 5));
+        adapter.onDragStart(const Offset(120, 80));
+        // Finger fling down → natural-scroll up → wheel-up burst.
+        adapter.onDragEnd(velocityDy: 1500, rows: 24);
 
-      // rows/2 = 12 wheel-up events (button 64).
-      expect(emitted.length, 12);
-      for (final s in emitted) {
-        expect(s, '\x1b[<64;10;5M');
-      }
-    });
+        // rows/2 = 12 wheel-up events (button 64).
+        expect(emitted.length, 12);
+        for (final s in emitted) {
+          expect(s, '\x1b[<64;10;5M');
+        }
+      },
+    );
 
     test('sub-cellHeight residual is discarded at drag-end', () {
       final adapter = buildAdapter();

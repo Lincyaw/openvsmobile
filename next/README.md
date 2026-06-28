@@ -10,13 +10,13 @@ artifacts is P6 and not part of this iteration.
 
 ```
 next/
-├── backend/   # Node 20+ / TypeScript backend (auth + workspace + fs + terminal)
-└── app/       # Flutter Android client (Files + Terminal tabs)
+├── backend/   # Node 25+ / TypeScript backend (auth + workspace + fs + terminal)
+└── app/       # Flutter Android client (Files / Terminal / Plugins / Settings)
 ```
 
 ## Running the backend
 
-Requirements: Node ≥ 20, pnpm (or npm), a C/C++ toolchain (for the
+Requirements: Node ≥ 25, pnpm (or npm), a C/C++ toolchain (for the
 `node-pty` native build).
 
 ```bash
@@ -50,6 +50,14 @@ silently reinitialized.
   server. Body is a `Notification` minus server-assigned fields. See
   the `mobile-notify` CLI in `bin/` for an out-of-the-box sender.
 
+Released backend installs also run a best-effort agent-hook scan after the
+service starts. If `~/.claude/settings.json` exists, the installer appends an
+openvsmobile command to the Claude Code `Stop` hook list. If
+`~/.codex/config.toml` exists, it installs and enables a local Codex hook
+plugin. Both hooks call the bundled `mobile-notify` path and post a phone
+notification when the agent finishes; existing hooks are left in place and the
+operation is idempotent.
+
 ### Smoke-testing without the Flutter app
 
 `scripts/smoke.mjs` opens a workspace under `mktemp -d`, lists it,
@@ -68,7 +76,7 @@ If you don't set `TOKEN`, the script reads it from
 
 ## Running the Flutter client
 
-Requirements: Flutter ≥ 3.41 stable, an Android SDK + emulator (or a
+Requirements: Flutter ≥ 3.44 stable, an Android SDK + emulator (or a
 real device with USB debugging) when you want to run on hardware.
 
 ```bash
@@ -80,20 +88,19 @@ flutter build apk --debug  # produces build/app/outputs/flutter-apk/app-debug.ap
 flutter run                # device or emulator
 ```
 
-When the app starts for the first time it shows a Settings screen with
-three fields: **Host**, **Port**, **Bearer token**. Fill in the
-network reachable address of the machine running the backend (e.g.
-`192.168.1.10`, or `10.0.2.2` if you're on the Android emulator
-talking to a backend on the host), the port, and the token printed by
-the backend.
+When the app starts with no configured backend it opens the Backends
+screen. Add the network-reachable address of the machine running the
+backend (e.g. `192.168.1.10`, or `10.0.2.2` if you're on the Android
+emulator talking to a backend on the host), the port, and the token
+printed by the backend.
 
-You can reopen Settings later via the gear icon in the app bar.
+You can manage backends later from the top-level Settings tab.
 
 ### App layout (this iteration)
 
 - **App bar.** Left side: a "(choose workspace)" / workspace-label
-  button that opens the workspace switcher. Right side: a gear icon
-  for Settings.
+  button that opens the workspace switcher. Right side: notification
+  bell.
 - **Workspace switcher** (modal bottom sheet) has three sections:
   1. **Open workspaces** — your active sessions. Tap to switch focus,
      long-press to close (confirm dialog).
@@ -102,15 +109,26 @@ You can reopen Settings later via the gear icon in the app bar.
   3. **Browse new…** — drills through directories step-by-step.
      Workspaces are opened via this picker; **there is no raw path
      text input anywhere in the UI**.
-- **Bottom navigation.** Two tabs in this iteration: **Files** and
-  **Terminal**. Plugins and Settings tabs are deferred (Settings
-  reachable via the app-bar gear icon).
+- **Bottom navigation.** Four tabs: **Files**, **Terminal**,
+  **Plugins**, and **Settings**.
 - **Files.** Lazy-expand tree of the current workspace. Tap a text
-  file to open a read-only viewer; binary files show a placeholder.
-- **Terminal.** Header chip strip = PTY sessions in the current
-  workspace (with a "+ New" chip). Tap to focus, long-press to kill
-  (confirm). The first time you enter a workspace's Terminal tab a
-  PTY is auto-created so the view isn't empty.
+  file to open a read-only viewer with syntax highlighting, line
+  numbers, and in-file search; binary files show a placeholder. In
+  Changes view, tapping a file opens a unified diff with old/new line
+  numbers. Text selected in the file or diff viewer becomes a structured
+  `{ workspaceId, path, relativePath, text, range }` /
+  `{ workspaceId, path, relativePath, text, oldRange, newRange }`
+  context that can be sent to contributed plugin commands.
+- **Terminal.** IM-style PTY session list for the current workspace.
+  Tap a row to open the full-screen terminal; long-press for close /
+  detach actions. The detail view includes a companion key bar and
+  persists the terminal font size preference.
+- **Plugins.** Installed plugin launcher plus native rendering for
+  plugin-owned `ui.tree` panels. Plugin commands can be invoked from
+  the detail surface; crashed plugins keep their last rendered panel
+  visible under the crash banner.
+- **Settings.** Backend management, SSH bootstrap, app update,
+  notifications, webhook tokens, diagnostics, theme, and About.
 
 When focus moves to another workspace, background workspaces' PTYs
 keep running and their output keeps accumulating into per-session
@@ -156,7 +174,7 @@ Frontend → Backend:
 | `plugin.list`                | `{}` → `{ plugins: PluginInfo[] }` where `PluginInfo = { id, name, version, state: "running" \| "stopped" \| "crashed" \| "disabled", capabilities, contributes, crashReason? }`. Backend is the source of truth — clients render from this, never from a cached copy. |
 | `plugin.enable`              | `{ id }` → `{ ok: true }`. Removes the plugin from the persisted disabled set; if the in-memory state was `disabled`, transitions to `stopped` and immediately activates when the manifest declares `onStartup`. Fires `plugin.stateChanged`. |
 | `plugin.disable`             | `{ id }` → `{ ok: true }`. Persists the disabled flag, then terminates the child process (SIGTERM, 10 s grace, SIGKILL). Fires `plugin.stateChanged` to `state: "disabled"`. |
-| `plugin.invokeCommand`       | `{ id, commandId, args? }` → `{ result?: any }`. Routed through the plugin's JSON-RPC channel as a host→plugin `command.invoke` request; the plugin's response (or error) is returned. Triggers `onCommand:<commandId>` activation if the plugin is in `stopped` state and lists that activation event. Disabled / crashed plugins reject with `-32602`. |
+| `plugin.invokeCommand`       | `{ id, commandId, args? }` → `{ result?: any }`. Routed through the plugin's JSON-RPC channel as a host→plugin `command.invoke` request; the plugin's response (or error) is returned. Triggers `onCommand:<commandId>` activation if the plugin is in `stopped` state and lists that activation event. Disabled / crashed plugins reject with `-32602`. When invoked from a code-selection surface, the Flutter client passes `args.selection` with `source`, `workspaceId`, `path`, `relativePath`, selected `text`, and half-open 1-based line/column ranges. |
 | `ui.subscribe`               | `{}` → `{ ok: true }`. Per-connection toggle for the UI-descriptor fan-out (design §4.3 / issue #59). The response is followed (on the next microtask) by one `ui.tree` push per currently-active panel so a fresh subscriber lands in sync. |
 | `ui.unsubscribe`             | `{}` → `{}`. Drops this connection from the `ui.tree` fan-out. Connection-close auto-unsubscribes too. |
 | `ui.event`                   | `{ pluginId, panelId, nodeId, type, payload? }` → `{}`. Forwards a leaf-widget interaction (button tap / text-field change / …) from the app into the owning plugin as a host→plugin `ui.event` JSON-RPC request. Returns `-32602` when the plugin id is unknown or the plugin is not active; returns `-32011 capabilityNotDeclared` when the target plugin's manifest never declared the `ui` capability. The plugin's reply is not surfaced back to the app in v0 — events are fire-and-forget from the client's perspective; plugins react by mutating their tree + re-rendering. |

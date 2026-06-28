@@ -16,12 +16,14 @@ import 'package:flutter/material.dart';
 
 import '../app_state.dart';
 import '../models.dart';
+import '../settings_store.dart';
 import '../ui/app_tokens.dart';
 import 'terminal_detail.dart';
 
 class TerminalTab extends StatefulWidget {
   final AppState appState;
-  const TerminalTab({super.key, required this.appState});
+  final SettingsStore? settingsStore;
+  const TerminalTab({super.key, required this.appState, this.settingsStore});
 
   @override
   State<TerminalTab> createState() => _TerminalTabState();
@@ -117,6 +119,7 @@ class _TerminalTabState extends State<TerminalTab> {
       MaterialPageRoute<void>(
         builder: (_) => TerminalDetailScreen(
           appState: widget.appState,
+          settingsStore: widget.settingsStore,
           sessionId: s.id,
           title: _sessionLabel(index),
         ),
@@ -250,8 +253,9 @@ String _sessionLabel(int index) => 'sh · ${index + 1}';
 /// against the workspace root), so this is a cheap basename.
 String _basename(String path) {
   if (path.isEmpty) return path;
-  final trimmed =
-      path.endsWith('/') && path.length > 1 ? path.substring(0, path.length - 1) : path;
+  final trimmed = path.endsWith('/') && path.length > 1
+      ? path.substring(0, path.length - 1)
+      : path;
   final slash = trimmed.lastIndexOf('/');
   if (slash < 0) return trimmed;
   if (slash == trimmed.length - 1) return trimmed; // "/" itself
@@ -302,15 +306,13 @@ class _SessionTile extends StatelessWidget {
       onLongPress: onLongPress,
       child: Padding(
         padding: const EdgeInsets.symmetric(
-            horizontal: AppSpacing.lg, vertical: AppSpacing.md),
+          horizontal: AppSpacing.lg,
+          vertical: AppSpacing.md,
+        ),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            Icon(
-              Icons.terminal_outlined,
-              color: dim,
-              size: AppIconSize.md,
-            ),
+            Icon(Icons.terminal_outlined, color: dim, size: AppIconSize.md),
             const SizedBox(width: AppSpacing.md),
             Expanded(
               child: Column(
@@ -400,7 +402,9 @@ class _DiscoverSessionsTile extends StatelessWidget {
       onTap: onTap,
       child: Padding(
         padding: const EdgeInsets.symmetric(
-            horizontal: AppSpacing.lg, vertical: AppSpacing.md),
+          horizontal: AppSpacing.lg,
+          vertical: AppSpacing.md,
+        ),
         child: Row(
           children: [
             Icon(Icons.search, color: dim),
@@ -429,7 +433,9 @@ class _NewSessionTile extends StatelessWidget {
       onTap: onTap,
       child: Padding(
         padding: const EdgeInsets.symmetric(
-            horizontal: AppSpacing.lg, vertical: AppSpacing.md),
+          horizontal: AppSpacing.lg,
+          vertical: AppSpacing.md,
+        ),
         child: Row(
           children: [
             Icon(Icons.add, color: theme.colorScheme.primary),
@@ -503,8 +509,7 @@ class _DiscoverSessionsSheetState extends State<_DiscoverSessionsSheet> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Padding(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
+              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
               child: Row(
                 children: [
                   Expanded(
@@ -558,16 +563,14 @@ class _DiscoverSessionsSheetState extends State<_DiscoverSessionsSheet> {
                   return ListView(
                     shrinkWrap: true,
                     children: [
-                      if (active.isNotEmpty)
-                        _DiscoverSectionHeader('Active'),
+                      if (active.isNotEmpty) _DiscoverSectionHeader('Active'),
                       for (final s in active)
                         _DiscoverSessionRow(
                           session: s,
                           enabled: !s.adopted && !_adopting,
                           onTap: () => _onTap(s),
                         ),
-                      if (exited.isNotEmpty)
-                        _DiscoverSectionHeader('Exited'),
+                      if (exited.isNotEmpty) _DiscoverSectionHeader('Exited'),
                       for (final s in exited)
                         _DiscoverSessionRow(
                           session: s,
@@ -595,7 +598,11 @@ class _DiscoverSectionHeader extends StatelessWidget {
     final theme = Theme.of(context);
     return Padding(
       padding: const EdgeInsets.fromLTRB(
-          AppSpacing.lg, AppSpacing.md, AppSpacing.lg, AppSpacing.xs),
+        AppSpacing.lg,
+        AppSpacing.md,
+        AppSpacing.lg,
+        AppSpacing.xs,
+      ),
       child: Text(
         label,
         style: theme.textTheme.labelSmall?.copyWith(
@@ -628,9 +635,7 @@ class _DiscoverSessionRow extends StatelessWidget {
       enabled: enabled,
       title: Text(
         session.name,
-        style: AppText.mono(
-          fontSize: theme.textTheme.bodyMedium?.fontSize,
-        ),
+        style: AppText.mono(fontSize: theme.textTheme.bodyMedium?.fontSize),
       ),
       subtitle: Text(
         subtitle,

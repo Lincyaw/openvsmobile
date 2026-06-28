@@ -261,9 +261,9 @@ class _PluginActionSheet extends StatelessWidget {
             title: const Text('Copy cd command'),
             subtitle: Text(
               '$_kFilesystemPluginsDir${info.id}',
-              style: AppText.monoCaption(context).copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
+              style: AppText.monoCaption(
+                context,
+              ).copyWith(color: theme.colorScheme.onSurfaceVariant),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
@@ -383,7 +383,9 @@ class _PluginsEmptyState extends StatelessWidget {
             Text(
               _kFilesystemPluginsDir,
               textAlign: TextAlign.center,
-              style: AppText.monoCode(context).copyWith(color: scheme.onSurface),
+              style: AppText.monoCode(
+                context,
+              ).copyWith(color: scheme.onSurface),
             ),
           ],
         ),
@@ -452,9 +454,9 @@ class PluginInfoView extends StatelessWidget {
                       children: [
                         Text(
                           info.version,
-                          style: AppText.monoCaption(context).copyWith(
-                            color: theme.colorScheme.onSurfaceVariant,
-                          ),
+                          style: AppText.monoCaption(
+                            context,
+                          ).copyWith(color: theme.colorScheme.onSurfaceVariant),
                         ),
                       ],
                     ),
@@ -515,7 +517,12 @@ class PluginInfoView extends StatelessWidget {
               spacing: AppSpacing.sm,
               runSpacing: AppSpacing.sm,
               children: [
-                for (final c in info.commands) Chip(label: Text(c.title)),
+                for (final c in info.commands)
+                  ActionChip(
+                    key: ValueKey<String>('plugin-command:${info.id}:${c.id}'),
+                    label: Text(c.title),
+                    onPressed: () => _invokeCommand(context, appState, info, c),
+                  ),
               ],
             ),
           const SizedBox(height: AppSpacing.xl),
@@ -530,9 +537,9 @@ class PluginInfoView extends StatelessWidget {
           const SizedBox(height: AppSpacing.xs),
           Text(
             '$_kFilesystemPluginsDir${info.id}/',
-            style: AppText.monoCode(context).copyWith(
-              color: theme.colorScheme.onSurface,
-            ),
+            style: AppText.monoCode(
+              context,
+            ).copyWith(color: theme.colorScheme.onSurface),
           ),
           const SizedBox(height: AppSpacing.sm),
           Text(
@@ -683,7 +690,10 @@ class _PluginThemeScope extends StatelessWidget {
     if (resolved == null) return child;
     final base = Theme.of(context);
     final scheme = base.colorScheme.copyWith(primary: resolved);
-    return Theme(data: base.copyWith(colorScheme: scheme), child: child);
+    return Theme(
+      data: base.copyWith(colorScheme: scheme),
+      child: child,
+    );
   }
 }
 
@@ -757,6 +767,25 @@ Future<void> _safeCall(
   }
 }
 
+Future<void> _invokeCommand(
+  BuildContext context,
+  AppState appState,
+  PluginInfo info,
+  PluginCommandStub command,
+) async {
+  final messenger = ScaffoldMessenger.maybeOf(context);
+  try {
+    await appState.plugins.invokeCommand(info.id, command.id);
+    messenger
+      ?..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text('Invoked ${command.title}')));
+  } catch (e) {
+    messenger?.showSnackBar(
+      SnackBar(content: Text('Command ${command.title} failed: $e')),
+    );
+  }
+}
+
 class _DetailBody extends StatelessWidget {
   final AppState appState;
   final PluginInfo info;
@@ -764,21 +793,33 @@ class _DetailBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (info.state == PluginWireState.crashed) {
-      return _CrashedBanner(appState: appState, info: info);
-    }
     if (info.state == PluginWireState.disabled) {
       return _DisabledHint(appState: appState, info: info);
     }
+    final frozen = info.state == PluginWireState.crashed;
+    final body = _buildPanelBody(frozen: frozen);
+    if (frozen) {
+      return Column(
+        children: [
+          _CrashedBanner(appState: appState, info: info),
+          if (info.panels.isNotEmpty) Expanded(child: body),
+        ],
+      );
+    }
+    return body;
+  }
+
+  Widget _buildPanelBody({required bool frozen}) {
     final panels = info.panels;
     if (panels.isEmpty) {
-      return _NoPanelsHint(info: info);
+      return _NoPanelsHint(appState: appState, info: info);
     }
     if (panels.length == 1) {
       return _PanelRenderer(
         appState: appState,
         pluginId: info.id,
         panel: panels.single,
+        frozen: frozen,
       );
     }
     return DefaultTabController(
@@ -797,6 +838,7 @@ class _DetailBody extends StatelessWidget {
                     appState: appState,
                     pluginId: info.id,
                     panel: p,
+                    frozen: frozen,
                   ),
               ],
             ),
@@ -811,10 +853,12 @@ class _PanelRenderer extends StatefulWidget {
   final AppState appState;
   final String pluginId;
   final PluginPanelStub panel;
+  final bool frozen;
   const _PanelRenderer({
     required this.appState,
     required this.pluginId,
     required this.panel,
+    this.frozen = false,
   });
 
   @override
@@ -851,6 +895,7 @@ class _PanelRendererState extends State<_PanelRenderer> {
 
   void _attachModalListener() {
     _modalSub = widget.appState.uiPanels.modals.listen((push) {
+      if (widget.frozen) return;
       // Filter to this panel only. The model broadcasts every modal to
       // every listener; routing happens here so a panel that isn't this
       // (pluginId, panelId) doesn't open another panel's dialog.
@@ -879,8 +924,10 @@ class _PanelRendererState extends State<_PanelRenderer> {
 
   @override
   Widget build(BuildContext context) {
-    final snapshot =
-        widget.appState.uiPanels.snapshotFor(widget.pluginId, widget.panel.id);
+    final snapshot = widget.appState.uiPanels.snapshotFor(
+      widget.pluginId,
+      widget.panel.id,
+    );
     final tree = snapshot?.tree;
     if (tree == null) {
       return _PanelEmpty(
@@ -889,15 +936,20 @@ class _PanelRendererState extends State<_PanelRenderer> {
         panelCount: widget.appState.uiPanels.panels.length,
       );
     }
+    final renderer = UiRenderer(
+      tree: tree,
+      onEvent: widget.frozen
+          ? (_) {}
+          : (event) => _dispatch(widget.panel.id, event),
+    );
     return SingleChildScrollView(
       key: ValueKey<String>(
         'plugin-panel:${widget.pluginId}/${widget.panel.id}',
       ),
       padding: const EdgeInsets.all(AppSpacing.md),
-      child: UiRenderer(
-        tree: tree,
-        onEvent: (event) => _dispatch(widget.panel.id, event),
-      ),
+      child: widget.frozen
+          ? AbsorbPointer(child: Opacity(opacity: 0.72, child: renderer))
+          : renderer,
     );
   }
 
@@ -943,8 +995,8 @@ class _PanelEmpty extends StatelessWidget {
               'snapshot=${hasSnapshot ? "yes" : "no"}  panels=$panelCount',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
             ),
           ],
         ),
@@ -954,8 +1006,9 @@ class _PanelEmpty extends StatelessWidget {
 }
 
 class _NoPanelsHint extends StatelessWidget {
+  final AppState appState;
   final PluginInfo info;
-  const _NoPanelsHint({required this.info});
+  const _NoPanelsHint({required this.appState, required this.info});
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -988,7 +1041,15 @@ class _NoPanelsHint extends StatelessWidget {
                 runSpacing: AppSpacing.sm,
                 alignment: WrapAlignment.center,
                 children: [
-                  for (final c in info.commands) Chip(label: Text(c.title)),
+                  for (final c in info.commands)
+                    ActionChip(
+                      key: ValueKey<String>(
+                        'plugin-command:${info.id}:${c.id}',
+                      ),
+                      label: Text(c.title),
+                      onPressed: () =>
+                          _invokeCommand(context, appState, info, c),
+                    ),
                 ],
               ),
             ],

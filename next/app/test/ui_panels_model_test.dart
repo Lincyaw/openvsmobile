@@ -8,6 +8,13 @@ import 'package:mobilecode/backend_client.dart';
 import 'package:mobilecode/ui/ui_node.dart';
 import 'package:mobilecode/ui/ui_panels_model.dart';
 
+class _OkBackendClient extends BackendClient {
+  @override
+  Future<dynamic> call(String method, [Map<String, dynamic>? params]) async {
+    return <String, dynamic>{'ok': true};
+  }
+}
+
 Map<String, dynamic> _push({
   required String pluginId,
   required String panelId,
@@ -23,32 +30,38 @@ Map<String, dynamic> _push({
 }
 
 Map<String, dynamic> _textTree(String id, String text) => {
-      'kind': 'Text',
-      'id': id,
-      'text': text,
-    };
+  'kind': 'Text',
+  'id': id,
+  'text': text,
+};
 
 void main() {
   test('keeps only the latest tree for repeated in-order pushes', () {
     final model = UiPanelsModel(client: BackendClient());
-    model.debugInjectPush(_push(
-      pluginId: 'p',
-      panelId: 'home',
-      version: 1,
-      tree: _textTree('t', 'first'),
-    ));
-    model.debugInjectPush(_push(
-      pluginId: 'p',
-      panelId: 'home',
-      version: 2,
-      tree: _textTree('t', 'second'),
-    ));
-    model.debugInjectPush(_push(
-      pluginId: 'p',
-      panelId: 'home',
-      version: 3,
-      tree: _textTree('t', 'third'),
-    ));
+    model.debugInjectPush(
+      _push(
+        pluginId: 'p',
+        panelId: 'home',
+        version: 1,
+        tree: _textTree('t', 'first'),
+      ),
+    );
+    model.debugInjectPush(
+      _push(
+        pluginId: 'p',
+        panelId: 'home',
+        version: 2,
+        tree: _textTree('t', 'second'),
+      ),
+    );
+    model.debugInjectPush(
+      _push(
+        pluginId: 'p',
+        panelId: 'home',
+        version: 3,
+        tree: _textTree('t', 'third'),
+      ),
+    );
     final snap = model.snapshotFor('p', 'home');
     expect(snap, isNotNull);
     expect(snap!.version, 3);
@@ -58,26 +71,32 @@ void main() {
 
   test('drops out-of-order pushes (version <= lastVersion)', () {
     final model = UiPanelsModel(client: BackendClient());
-    model.debugInjectPush(_push(
-      pluginId: 'p',
-      panelId: 'home',
-      version: 5,
-      tree: _textTree('t', 'live'),
-    ));
+    model.debugInjectPush(
+      _push(
+        pluginId: 'p',
+        panelId: 'home',
+        version: 5,
+        tree: _textTree('t', 'live'),
+      ),
+    );
     // Late push from before — must NOT overwrite.
-    model.debugInjectPush(_push(
-      pluginId: 'p',
-      panelId: 'home',
-      version: 3,
-      tree: _textTree('t', 'stale'),
-    ));
+    model.debugInjectPush(
+      _push(
+        pluginId: 'p',
+        panelId: 'home',
+        version: 3,
+        tree: _textTree('t', 'stale'),
+      ),
+    );
     // Equal version — also dropped (duplicates from a flaky transport).
-    model.debugInjectPush(_push(
-      pluginId: 'p',
-      panelId: 'home',
-      version: 5,
-      tree: _textTree('t', 'replay'),
-    ));
+    model.debugInjectPush(
+      _push(
+        pluginId: 'p',
+        panelId: 'home',
+        version: 5,
+        tree: _textTree('t', 'replay'),
+      ),
+    );
     final snap = model.snapshotFor('p', 'home')!;
     expect(snap.version, 5);
     expect((snap.tree as UiText).text, 'live');
@@ -86,19 +105,23 @@ void main() {
 
   test('tree:null retires the panel snapshot', () {
     final model = UiPanelsModel(client: BackendClient());
-    model.debugInjectPush(_push(
-      pluginId: 'p',
-      panelId: 'home',
-      version: 1,
-      tree: _textTree('t', 'alive'),
-    ));
+    model.debugInjectPush(
+      _push(
+        pluginId: 'p',
+        panelId: 'home',
+        version: 1,
+        tree: _textTree('t', 'alive'),
+      ),
+    );
     expect(model.snapshotFor('p', 'home')?.tree, isNotNull);
-    model.debugInjectPush(_push(
-      pluginId: 'p',
-      panelId: 'home',
-      version: 2,
-      // tree omitted => null in the wire payload
-    ));
+    model.debugInjectPush(
+      _push(
+        pluginId: 'p',
+        panelId: 'home',
+        version: 2,
+        // tree omitted => null in the wire payload
+      ),
+    );
     expect(model.snapshotFor('p', 'home')?.tree, isNull);
     expect(model.snapshotFor('p', 'home')?.version, 2);
     model.dispose();
@@ -106,18 +129,22 @@ void main() {
 
   test('tracks versions independently per panel', () {
     final model = UiPanelsModel(client: BackendClient());
-    model.debugInjectPush(_push(
-      pluginId: 'p',
-      panelId: 'home',
-      version: 7,
-      tree: _textTree('t', 'home'),
-    ));
-    model.debugInjectPush(_push(
-      pluginId: 'p',
-      panelId: 'settings',
-      version: 1,
-      tree: _textTree('t2', 'settings'),
-    ));
+    model.debugInjectPush(
+      _push(
+        pluginId: 'p',
+        panelId: 'home',
+        version: 7,
+        tree: _textTree('t', 'home'),
+      ),
+    );
+    model.debugInjectPush(
+      _push(
+        pluginId: 'p',
+        panelId: 'settings',
+        version: 1,
+        tree: _textTree('t2', 'settings'),
+      ),
+    );
     // A version-1 push to settings is NOT dropped just because home is
     // at version 7 — counters are per-panel.
     expect(model.snapshotFor('p', 'home')?.version, 7);
@@ -129,28 +156,49 @@ void main() {
     final model = UiPanelsModel(client: BackendClient());
     var notifications = 0;
     model.addListener(() => notifications++);
-    model.debugInjectPush(_push(
-      pluginId: 'p',
-      panelId: 'home',
-      version: 1,
-      tree: _textTree('t', 'a'),
-    ));
+    model.debugInjectPush(
+      _push(
+        pluginId: 'p',
+        panelId: 'home',
+        version: 1,
+        tree: _textTree('t', 'a'),
+      ),
+    );
     expect(notifications, 1);
     // Stale push — dropped silently.
-    model.debugInjectPush(_push(
-      pluginId: 'p',
-      panelId: 'home',
-      version: 1,
-      tree: _textTree('t', 'b'),
-    ));
+    model.debugInjectPush(
+      _push(
+        pluginId: 'p',
+        panelId: 'home',
+        version: 1,
+        tree: _textTree('t', 'b'),
+      ),
+    );
     expect(notifications, 1);
-    model.debugInjectPush(_push(
-      pluginId: 'p',
-      panelId: 'home',
-      version: 2,
-      tree: _textTree('t', 'c'),
-    ));
+    model.debugInjectPush(
+      _push(
+        pluginId: 'p',
+        panelId: 'home',
+        version: 2,
+        tree: _textTree('t', 'c'),
+      ),
+    );
     expect(notifications, 2);
     model.dispose();
   });
+
+  test(
+    'subscribe notifies listeners when subscription state changes',
+    () async {
+      final model = UiPanelsModel(client: _OkBackendClient());
+      var notifications = 0;
+      model.addListener(() => notifications++);
+
+      await model.subscribe();
+
+      expect(model.isSubscribed, isTrue);
+      expect(notifications, 1);
+      model.dispose();
+    },
+  );
 }

@@ -5,6 +5,8 @@
 // The picker's directory + entry cache lives in AppState so it survives a
 // rebuild and stays in one place — see docs/conventions.md §2.
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
@@ -28,13 +30,18 @@ class _WorkspacePickerScreenState extends State<WorkspacePickerScreen> {
     // Android is something useless like `/data/user/0/...` — the picker
     // would crash or list a placeholder dir. The handshake response carries
     // the server-side default cwd; fall back to "/" if missing.
-    widget.appState.openPicker();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      unawaited(widget.appState.openPicker());
+    });
   }
 
   @override
   void dispose() {
     widget.appState.removeListener(_onAppStateChanged);
-    widget.appState.closePicker();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      widget.appState.closePicker();
+    });
     super.dispose();
   }
 
@@ -79,8 +86,9 @@ class _WorkspacePickerScreenState extends State<WorkspacePickerScreen> {
           IconButton(
             tooltip: 'Refresh',
             icon: const Icon(Icons.refresh),
-            onPressed:
-                loading ? null : () => widget.appState.navigatePicker(path),
+            onPressed: loading
+                ? null
+                : () => widget.appState.navigatePicker(path),
           ),
         ],
       ),
@@ -99,8 +107,7 @@ class _WorkspacePickerScreenState extends State<WorkspacePickerScreen> {
                   tooltip: 'Parent',
                   onPressed: path == '/'
                       ? null
-                      : () =>
-                          widget.appState.navigatePicker(_parent(path)),
+                      : () => widget.appState.navigatePicker(_parent(path)),
                 ),
                 Expanded(
                   child: Text(
@@ -115,8 +122,10 @@ class _WorkspacePickerScreenState extends State<WorkspacePickerScreen> {
           if (error != null)
             Padding(
               padding: const EdgeInsets.all(AppSpacing.md),
-              child: Text(error,
-                  style: TextStyle(color: theme.colorScheme.error)),
+              child: Text(
+                error,
+                style: TextStyle(color: theme.colorScheme.error),
+              ),
             ),
           if (loading) const LinearProgressIndicator(minHeight: 2),
           Expanded(
@@ -142,10 +151,10 @@ class _WorkspacePickerScreenState extends State<WorkspacePickerScreen> {
                         ),
                         onTap: enabled
                             ? () => widget.appState.navigatePicker(
-                                  path.endsWith('/')
-                                      ? '$path${e.name}'
-                                      : '$path/${e.name}',
-                                )
+                                path.endsWith('/')
+                                    ? '$path${e.name}'
+                                    : '$path/${e.name}',
+                              )
                             : null,
                       );
                     },

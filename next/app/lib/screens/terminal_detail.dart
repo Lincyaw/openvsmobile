@@ -8,22 +8,27 @@
 // `AppState.terminalFor`, which keeps it across rebuilds so scrollback
 // survives.
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:xterm/xterm.dart';
 
 import '../app_state.dart';
-import '../models.dart';
 import '../services/terminal_gesture_host.dart';
+import '../settings_store.dart';
 import '../ui/app_tokens.dart';
 
 class TerminalDetailScreen extends StatelessWidget {
   final AppState appState;
+  final SettingsStore? settingsStore;
   final String sessionId;
   final String title;
 
   const TerminalDetailScreen({
     super.key,
     required this.appState,
+    this.settingsStore,
     required this.sessionId,
     required this.title,
   });
@@ -33,15 +38,9 @@ class TerminalDetailScreen extends StatelessWidget {
     return AnimatedBuilder(
       animation: appState,
       builder: (context, _) {
-        final terminal = appState.terminalFor(sessionId);
+        final terminal = appState.terminalForIfKnown(sessionId);
         final generation = appState.terminalGenerationFor(sessionId);
-        TerminalSession? session;
-        for (final t in appState.currentTerminals) {
-          if (t.id == sessionId) {
-            session = t;
-            break;
-          }
-        }
+        final session = appState.terminalSessionFor(sessionId);
         final externalName = session?.externalSessionId;
         return Scaffold(
           appBar: AppBar(
@@ -49,31 +48,65 @@ class TerminalDetailScreen extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  title,
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
+                Text(title, style: Theme.of(context).textTheme.titleMedium),
                 if (externalName != null)
                   Text(
                     'zellij attach $externalName',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .onSurfaceVariant,
-                          fontFamily: 'monospace',
-                        ),
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      fontFamily: 'monospace',
+                    ),
                     overflow: TextOverflow.ellipsis,
                   ),
               ],
             ),
             titleSpacing: 0,
           ),
-          body: TerminalSessionView(
-            key: ValueKey('$sessionId#$generation'),
-            terminal: terminal,
-          ),
+          body: terminal == null
+              ? const _TerminalEndedView()
+              : TerminalSessionView(
+                  key: ValueKey('$sessionId#$generation'),
+                  terminal: terminal,
+                  settingsStore: settingsStore,
+                ),
         );
       },
+    );
+  }
+}
+
+class _TerminalEndedView extends StatelessWidget {
+  const _TerminalEndedView();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(AppSpacing.xl),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.power_settings_new,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+            const SizedBox(height: AppSpacing.sm),
+            Text(
+              'Terminal session ended.',
+              style: Theme.of(context).textTheme.titleMedium,
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: AppSpacing.md),
+            OutlinedButton(
+              onPressed: () {
+                final nav = Navigator.of(context);
+                if (nav.canPop()) nav.pop();
+              },
+              child: const Text('Back to sessions'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -85,7 +118,12 @@ class TerminalDetailScreen extends StatelessWidget {
 /// the outer Scaffold.
 class TerminalSessionView extends StatefulWidget {
   final Terminal terminal;
-  const TerminalSessionView({super.key, required this.terminal});
+  final SettingsStore? settingsStore;
+  const TerminalSessionView({
+    super.key,
+    required this.terminal,
+    this.settingsStore,
+  });
 
   @override
   State<TerminalSessionView> createState() => _TerminalSessionViewState();
@@ -93,6 +131,7 @@ class TerminalSessionView extends StatefulWidget {
 
 class _TerminalSessionViewState extends State<TerminalSessionView> {
   final TerminalController _ctrl = TerminalController();
+  final FocusNode _terminalFocus = FocusNode(debugLabel: 'terminal-session');
   final GlobalKey<TerminalViewState> _terminalViewKey =
       GlobalKey<TerminalViewState>();
   final ScrollController _scrollback = ScrollController();
@@ -103,7 +142,9 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
   /// the Terminal's onOutput (soft keyboard or toolbar) has Ctrl applied,
   /// then auto-disarms. Termux-style.
   bool _ctrlArmed = false;
+  double _terminalFontSize = kTerminalFontSizeDefault;
   void Function(String)? _origOnOutput;
+  Timer? _fontSaveTimer;
 
   AnimationStatusListener? _routeAnimListener;
   Animation<double>? _watchedRouteAnim;
@@ -113,6 +154,23 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
     super.initState();
     _origOnOutput = widget.terminal.onOutput;
     widget.terminal.onOutput = _onOutputProxy;
+    _loadTerminalPrefs();
+  }
+
+  @override
+  void didUpdateWidget(covariant TerminalSessionView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.settingsStore != widget.settingsStore) {
+      _loadTerminalPrefs();
+    }
+  }
+
+  Future<void> _loadTerminalPrefs() async {
+    final store = widget.settingsStore;
+    if (store == null) return;
+    final prefs = await store.loadTerminalPrefs();
+    if (!mounted) return;
+    setState(() => _terminalFontSize = prefs.fontSize);
   }
 
   @override
@@ -151,6 +209,16 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
   void _requestKeyboardAfterTransition() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      _requestTerminalKeyboard();
+    });
+  }
+
+  void _requestTerminalKeyboard() {
+    _terminalFocus.requestFocus();
+    _terminalViewKey.currentState?.requestKeyboard();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _terminalFocus.requestFocus();
       _terminalViewKey.currentState?.requestKeyboard();
     });
   }
@@ -163,8 +231,10 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
     if (widget.terminal.onOutput == _onOutputProxy) {
       widget.terminal.onOutput = _origOnOutput;
     }
+    _fontSaveTimer?.cancel();
     _scrollback.dispose();
     _scrollbackModel.dispose();
+    _terminalFocus.dispose();
     _ctrl.dispose();
     super.dispose();
   }
@@ -193,6 +263,7 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
 
   void _toggleCtrl() {
     setState(() => _ctrlArmed = !_ctrlArmed);
+    _requestTerminalKeyboard();
   }
 
   void _sendKey(TerminalKey key) {
@@ -200,10 +271,30 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
     if (_ctrlArmed && mounted) {
       setState(() => _ctrlArmed = false);
     }
+    _requestTerminalKeyboard();
   }
 
   void _forceSelect() {
     _forceSelectAtCursor?.call();
+  }
+
+  void _scaleFont(double factor) {
+    if (!factor.isFinite || factor <= 0) return;
+    final next = clampTerminalFontSize(_terminalFontSize * factor);
+    if ((next - _terminalFontSize).abs() < 0.05) return;
+    setState(() => _terminalFontSize = next);
+    _scheduleSaveTerminalPrefs();
+  }
+
+  void _scheduleSaveTerminalPrefs() {
+    final store = widget.settingsStore;
+    if (store == null) return;
+    _fontSaveTimer?.cancel();
+    _fontSaveTimer = Timer(const Duration(milliseconds: 250), () {
+      unawaited(
+        store.saveTerminalPrefs(TerminalPrefs(fontSize: _terminalFontSize)),
+      );
+    });
   }
 
   @override
@@ -218,11 +309,14 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
             scrollback: _scrollbackModel,
             scrollbackController: _scrollback,
             registerForceSelect: (cb) => _forceSelectAtCursor = cb,
+            requestKeyboard: _requestTerminalKeyboard,
+            onFontScale: _scaleFont,
             child: TerminalView(
               widget.terminal,
               key: _terminalViewKey,
               controller: _ctrl,
               scrollController: _scrollback,
+              focusNode: _terminalFocus,
               autofocus: false,
               backgroundOpacity: 1.0,
               // simulateScroll stays off — our host emits the right key
@@ -230,9 +324,10 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
               // enabled would only matter if its inner Scrollable saw
               // pointer input, which it no longer does (host wins arena).
               simulateScroll: false,
-              textStyle: const TerminalStyle(
+              textStyle: TerminalStyle(
+                fontSize: _terminalFontSize,
                 fontFamily: 'JetBrainsMonoNF',
-                fontFamilyFallback: ['monospace'],
+                fontFamilyFallback: const ['monospace'],
               ),
             ),
           ),
@@ -241,6 +336,7 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
           ctrlArmed: _ctrlArmed,
           onCtrl: _toggleCtrl,
           onKey: _sendKey,
+          onKeyboard: _requestTerminalKeyboard,
           onForceSelect: _forceSelect,
         ),
       ],
@@ -252,11 +348,13 @@ class _KeyToolbar extends StatelessWidget {
   final bool ctrlArmed;
   final VoidCallback onCtrl;
   final void Function(TerminalKey) onKey;
+  final VoidCallback onKeyboard;
   final VoidCallback onForceSelect;
   const _KeyToolbar({
     required this.ctrlArmed,
     required this.onCtrl,
     required this.onKey,
+    required this.onKeyboard,
     required this.onForceSelect,
   });
 
@@ -282,7 +380,10 @@ class _KeyToolbar extends StatelessWidget {
                         onTap: onCtrl,
                         highlighted: ctrlArmed,
                       ),
-                      _KeyBtn(label: 'Tab', onTap: () => onKey(TerminalKey.tab)),
+                      _KeyBtn(
+                        label: 'Tab',
+                        onTap: () => onKey(TerminalKey.tab),
+                      ),
                       _KeyBtn(
                         label: 'Esc',
                         onTap: () => onKey(TerminalKey.escape),
@@ -291,7 +392,10 @@ class _KeyToolbar extends StatelessWidget {
                         label: 'Home',
                         onTap: () => onKey(TerminalKey.home),
                       ),
-                      _KeyBtn(label: 'End', onTap: () => onKey(TerminalKey.end)),
+                      _KeyBtn(
+                        label: 'End',
+                        onTap: () => onKey(TerminalKey.end),
+                      ),
                     ],
                   ),
                   _KeyRow(
@@ -308,9 +412,10 @@ class _KeyToolbar extends StatelessWidget {
                         label: 'Del',
                         onTap: () => onKey(TerminalKey.delete),
                       ),
-                      // Force-select entry point for mouseReport modes where
-                      // long-press is reserved for the running TUI.
+                      // Explicit selection entry point for users who prefer
+                      // the companion bar over long-press.
                       _KeyBtn(label: 'Sel', onTap: onForceSelect),
+                      _KeyBtn(label: 'Kbd', onTap: onKeyboard),
                     ],
                   ),
                 ],
@@ -337,10 +442,13 @@ class _KeyRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      height: 34,
+      height: 31,
       child: ListView(
         scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xs, vertical: 2),
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.xs,
+          vertical: 2,
+        ),
         children: children,
       ),
     );
@@ -355,8 +463,8 @@ class _DPad extends StatelessWidget {
   final void Function(TerminalKey) onKey;
   const _DPad({required this.onKey});
 
-  static const double _cell = 40;
-  static const double _kDpadRowHeight = 34;
+  static const double _cell = 35;
+  static const double _kDpadRowHeight = 31;
 
   Widget _btn(String label, TerminalKey key) => SizedBox(
     width: _cell,
@@ -405,33 +513,42 @@ class _KeyBtn extends StatelessWidget {
     this.highlighted = false,
   });
 
+  void _handleTap() {
+    HapticFeedback.selectionClick();
+    onTap();
+  }
+
   @override
   Widget build(BuildContext context) {
-    const padding = EdgeInsets.symmetric(horizontal: AppSpacing.sm);
-    const minSize = Size(32, 28);
+    const padding = EdgeInsets.symmetric(horizontal: 7);
+    const minSize = Size(29, 25);
     const density = VisualDensity.compact;
-    final text = Text(label, style: Theme.of(context).textTheme.labelMedium);
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 2),
-      child: highlighted
-          ? FilledButton(
-              onPressed: onTap,
-              style: FilledButton.styleFrom(
-                padding: padding,
-                visualDensity: density,
-                minimumSize: minSize,
+    final text = Text(label, style: Theme.of(context).textTheme.labelSmall);
+    return Focus(
+      canRequestFocus: false,
+      descendantsAreFocusable: false,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 2),
+        child: highlighted
+            ? FilledButton(
+                onPressed: _handleTap,
+                style: FilledButton.styleFrom(
+                  padding: padding,
+                  visualDensity: density,
+                  minimumSize: minSize,
+                ),
+                child: text,
+              )
+            : OutlinedButton(
+                onPressed: _handleTap,
+                style: OutlinedButton.styleFrom(
+                  padding: padding,
+                  visualDensity: density,
+                  minimumSize: minSize,
+                ),
+                child: text,
               ),
-              child: text,
-            )
-          : OutlinedButton(
-              onPressed: onTap,
-              style: OutlinedButton.styleFrom(
-                padding: padding,
-                visualDensity: density,
-                minimumSize: minSize,
-              ),
-              child: text,
-            ),
+      ),
     );
   }
 }

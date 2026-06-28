@@ -56,10 +56,14 @@ class TerminalsNotifier extends ChangeNotifier {
     required WorkspaceRootLookup rootOf,
     required CurrentWorkspaceIdLookup currentWorkspaceId,
     required ReportOperationError reportError,
-  })  : _client = client,
-        _rootOf = rootOf,
-        _currentWorkspaceId = currentWorkspaceId,
-        _reportError = reportError;
+  }) : this._(client, rootOf, currentWorkspaceId, reportError);
+
+  TerminalsNotifier._(
+    this._client,
+    this._rootOf,
+    this._currentWorkspaceId,
+    this._reportError,
+  );
 
   /// Bumps on every per-session preview-buffer mutation. The Terminal-tab
   /// session list listens to this for cheap repaints without going through
@@ -133,11 +137,19 @@ class TerminalsNotifier extends ChangeNotifier {
     return _focusedTermBySpace[wsId];
   }
 
+  TerminalSession? sessionFor(String sessionId) {
+    for (final sessions in _termsByWorkspace.values) {
+      for (final session in sessions) {
+        if (session.id == sessionId) return session;
+      }
+    }
+    return null;
+  }
+
   /// Generation counter for a session's underlying Terminal. The UI uses
   /// this in its ValueKey so the TerminalView force-rebuilds when we swap
   /// the Terminal (e.g. after a reconnect history replay).
-  int terminalGenerationFor(String sessionId) =>
-      _xtermGen[sessionId] ?? 0;
+  int terminalGenerationFor(String sessionId) => _xtermGen[sessionId] ?? 0;
 
   Terminal terminalFor(String sessionId) {
     final existing = _xterms[sessionId];
@@ -151,6 +163,11 @@ class TerminalsNotifier extends ChangeNotifier {
       'terminalFor($sessionId) created → alt=${t.isUsingAltBuffer}',
     );
     return t;
+  }
+
+  Terminal? terminalForIfKnown(String sessionId) {
+    if (sessionFor(sessionId) == null) return null;
+    return terminalFor(sessionId);
   }
 
   /// Last-line preview for [sessionId]'s session-list row. Returns null when
@@ -188,7 +205,7 @@ class TerminalsNotifier extends ChangeNotifier {
     String workspaceId,
     List<TerminalSession> sessions,
   ) {
-    _termsByWorkspace[workspaceId] = sessions;
+    _termsByWorkspace[workspaceId] = sessions.toList(growable: true);
     // Restore focus so the Terminal tab shows a session immediately on
     // reconnect instead of the "Creating terminal…" placeholder. Without
     // this step the user would have to tap a chip after every drop.
@@ -206,9 +223,9 @@ class TerminalsNotifier extends ChangeNotifier {
   Future<void> replayHistory(String sessionId) async {
     Map<String, dynamic> hist;
     try {
-      hist = await _client.call('terminal.history', {
-        'sessionId': sessionId,
-      }) as Map<String, dynamic>;
+      hist =
+          await _client.call('terminal.history', {'sessionId': sessionId})
+              as Map<String, dynamic>;
     } catch (_) {
       // Older backends won't implement terminal.history. Fall back to live-
       // only rendering — set the watermark to 0 so the dedupe path is a
@@ -263,12 +280,15 @@ class TerminalsNotifier extends ChangeNotifier {
     // exactly my zero sessions" in that case, so map empty → unsubscribe.
     final method = ids.isEmpty ? 'terminal.unsubscribe' : 'terminal.subscribe';
     final params = ids.isEmpty ? <String, dynamic>{} : {'ids': ids};
-    _client.call(method, params).catchError(
-      (Object e) {
-        debugPrint('TerminalsNotifier.refreshTerminalSubscription failed: $e');
+    _client.call(method, params).catchError((Object e) {
+      if (e is BackendRpcException &&
+          e.code == -1 &&
+          e.message == 'not connected') {
         return <String, dynamic>{};
-      },
-    );
+      }
+      debugPrint('TerminalsNotifier.refreshTerminalSubscription failed: $e');
+      return <String, dynamic>{};
+    });
   }
 
   // ---- Public actions ----
@@ -281,11 +301,13 @@ class TerminalsNotifier extends ChangeNotifier {
     required int rows,
   }) async {
     try {
-      final r = await _client.call('terminal.create', {
-        'workspaceId': workspaceId,
-        'cols': cols,
-        'rows': rows,
-      }) as Map<String, dynamic>;
+      final r =
+          await _client.call('terminal.create', {
+                'workspaceId': workspaceId,
+                'cols': cols,
+                'rows': rows,
+              })
+              as Map<String, dynamic>;
       final sid = r['sessionId'] as String;
       final wsId = r['workspaceId'] as String;
       final root = _rootOf(wsId);
@@ -323,8 +345,9 @@ class TerminalsNotifier extends ChangeNotifier {
   /// the RPC bubble up so the caller (the discovery sheet) can show a
   /// retry affordance.
   Future<List<ExternalTerminalSession>> listExternalSessions() async {
-    final r = await _client.call('terminal.listExternalSessions', const {})
-        as Map<String, dynamic>;
+    final r =
+        await _client.call('terminal.listExternalSessions', const {})
+            as Map<String, dynamic>;
     final raw = (r['sessions'] as List?) ?? const [];
     return raw
         .cast<Map<String, dynamic>>()
@@ -343,12 +366,14 @@ class TerminalsNotifier extends ChangeNotifier {
     required int rows,
   }) async {
     try {
-      final r = await _client.call('terminal.adoptExternalSession', {
-        'workspaceId': workspaceId,
-        'sessionName': sessionName,
-        'cols': cols,
-        'rows': rows,
-      }) as Map<String, dynamic>;
+      final r =
+          await _client.call('terminal.adoptExternalSession', {
+                'workspaceId': workspaceId,
+                'sessionName': sessionName,
+                'cols': cols,
+                'rows': rows,
+              })
+              as Map<String, dynamic>;
       final sid = r['sessionId'] as String;
       final wsId = r['workspaceId'] as String;
       final root = _rootOf(wsId);
@@ -362,7 +387,8 @@ class TerminalsNotifier extends ChangeNotifier {
         cols: cols,
         rows: rows,
         cwd: (r['cwd'] as String?) ?? root,
-        createdAt: (r['createdAt'] as num?)?.toInt() ??
+        createdAt:
+            (r['createdAt'] as num?)?.toInt() ??
             DateTime.now().millisecondsSinceEpoch,
       );
       final list = _termsByWorkspace.putIfAbsent(wsId, () => []);
@@ -449,7 +475,8 @@ class TerminalsNotifier extends ChangeNotifier {
     // will emit null/undefined; we tolerate that by falling back to a running
     // counter derived from chunk length so dedupe still does *something*
     // sane.
-    final seqEnd = (p['seqEnd'] as num?)?.toInt() ??
+    final seqEnd =
+        (p['seqEnd'] as num?)?.toInt() ??
         ((_lastWrittenSeq[sessionId] ?? 0) +
             (_backlogBytes[sessionId] ?? 0) +
             bytes.length);
@@ -481,8 +508,11 @@ class TerminalsNotifier extends ChangeNotifier {
     // No Terminal yet — buffer with the seqEnd attached so we can dedupe on flush.
     final list = _backlog.putIfAbsent(sessionId, () => <_BacklogChunk>[]);
     list.add(_BacklogChunk(bytes: bytes, seqEnd: seqEnd));
-    _backlogBytes.update(sessionId, (v) => v + bytes.length,
-        ifAbsent: () => bytes.length);
+    _backlogBytes.update(
+      sessionId,
+      (v) => v + bytes.length,
+      ifAbsent: () => bytes.length,
+    );
     // Cap total queued bytes per session.
     while ((_backlogBytes[sessionId] ?? 0) > _backlogCap && list.length > 1) {
       final head = list.removeAt(0);
@@ -580,6 +610,27 @@ class TerminalsNotifier extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Hard reset for an intentional backend target switch. This is not used
+  /// for transient reconnects: those keep last-known state visible until the
+  /// same backend resynchronizes.
+  void clearAll() {
+    for (final t in _resizeTimers.values) {
+      t.cancel();
+    }
+    _resizeTimers.clear();
+    _termsByWorkspace.clear();
+    _focusedTermBySpace.clear();
+    _xterms.clear();
+    _xtermGen.clear();
+    _lastWrittenSeq.clear();
+    _backlog.clear();
+    _backlogBytes.clear();
+    _previewBuffer.clear();
+    _previewLastDataAt.clear();
+    previewVersion.value = previewVersion.value + 1;
+    notifyListeners();
+  }
+
   // ---- Internals ----
 
   Terminal _buildTerminal(String sessionId) {
@@ -615,8 +666,7 @@ class TerminalsNotifier extends ChangeNotifier {
           });
     };
     t.onResize = (w, h, _, _) {
-      DiagLog.instance
-          .log(DiagCat.resize, 'resize → ${w}x$h (cols x rows)');
+      DiagLog.instance.log(DiagCat.resize, 'resize → ${w}x$h (cols x rows)');
       _resizeTimers[sessionId]?.cancel();
       _resizeTimers[sessionId] = Timer(const Duration(milliseconds: 200), () {
         _resizeTimers.remove(sessionId);
@@ -757,8 +807,10 @@ String? extractPreviewFromTerminal(Terminal terminal, {int maxLen = 60}) {
   final cursorAbsY = buffer.absoluteCursorY;
   // Don't walk above the visible viewport — scrollback would otherwise
   // give us output from many minutes ago, which is misleading.
-  final viewportTop =
-      (buffer.lines.length - terminal.viewHeight).clamp(0, buffer.lines.length);
+  final viewportTop = (buffer.lines.length - terminal.viewHeight).clamp(
+    0,
+    buffer.lines.length,
+  );
   for (var row = cursorAbsY; row >= viewportTop; row--) {
     if (row < 0 || row >= buffer.lines.length) continue;
     final raw = buffer.lines[row].getText().trimRight();

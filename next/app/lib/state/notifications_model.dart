@@ -59,9 +59,9 @@ class NotificationsModel extends ChangeNotifier {
     required BackendClient client,
     required String Function() deviceId,
     required void Function(String message) reportError,
-  })  : _client = client,
-        _deviceId = deviceId,
-        _reportError = reportError;
+  }) : this._(client, deviceId, reportError);
+
+  NotificationsModel._(this._client, this._deviceId, this._reportError);
 
   // ---- Read API ----
 
@@ -260,7 +260,8 @@ class NotificationsModel extends ChangeNotifier {
     if (source != null) params['source'] = source;
     try {
       final r =
-          await _client.call('notification.list', params) as Map<String, dynamic>;
+          await _client.call('notification.list', params)
+              as Map<String, dynamic>;
       final raw = r['items'];
       if (raw is! List) return;
       final parsed = raw
@@ -357,10 +358,10 @@ class NotificationsModel extends ChangeNotifier {
     _items[id] = n.withImportant(important);
     notifyListeners();
     try {
-      await _client.call(
-        'notification.markImportant',
-        {'id': id, 'important': important},
-      );
+      await _client.call('notification.markImportant', {
+        'id': id,
+        'important': important,
+      });
     } catch (e) {
       // Revert.
       final cur = _items[id];
@@ -386,10 +387,9 @@ class NotificationsModel extends ChangeNotifier {
     _sortedCache = null;
   }
 
-  /// Reset everything — used when the user disconnects via Settings save.
-  /// (A transient reconnect doesn't reset; first principle #4.)
-  @visibleForTesting
-  void resetForTesting() {
+  /// Hard reset for an intentional backend target switch. A transient
+  /// reconnect does not reset; first principle #4 keeps the feed visible.
+  void resetLocal() {
     _items.clear();
     _deletedIds.clear();
     _filterSource = null;
@@ -397,4 +397,8 @@ class NotificationsModel extends ChangeNotifier {
     _subscribed = false;
     notifyListeners();
   }
+
+  /// Test seam kept for existing tests that need a direct model reset.
+  @visibleForTesting
+  void resetForTesting() => resetLocal();
 }

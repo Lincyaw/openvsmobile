@@ -4,6 +4,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import '../app_state.dart';
 import '../backend_client.dart';
@@ -76,6 +77,7 @@ const int _kSettingsTabIndex = 3;
 
 class _HomeShellState extends State<HomeShell> {
   int _tab = _kFilesTabIndex;
+  bool _appStateFrameScheduled = false;
 
   @override
   void initState() {
@@ -90,6 +92,23 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   void _onAppStateChanged() {
+    if (!mounted) return;
+    final phase = SchedulerBinding.instance.schedulerPhase;
+    if (phase == SchedulerPhase.idle ||
+        phase == SchedulerPhase.postFrameCallbacks) {
+      _flushAppStateChanged();
+      return;
+    }
+    if (_appStateFrameScheduled) return;
+    _appStateFrameScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _appStateFrameScheduled = false;
+      if (!mounted) return;
+      _flushAppStateChanged();
+    });
+  }
+
+  void _flushAppStateChanged() {
     final err = widget.appState.lastOperationError;
     if (err != null && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
@@ -163,7 +182,10 @@ class _HomeShellState extends State<HomeShell> {
               index: _tab,
               children: [
                 FilesTab(appState: widget.appState),
-                TerminalTab(appState: widget.appState),
+                TerminalTab(
+                  appState: widget.appState,
+                  settingsStore: widget.settingsStore,
+                ),
                 PluginsTab(appState: widget.appState),
                 SettingsTab(
                   appState: widget.appState,

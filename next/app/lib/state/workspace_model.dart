@@ -164,7 +164,9 @@ class WorkspacesModel extends ChangeNotifier {
   /// Workspace currently being driven by [subscribe] but waiting for the
   /// initial decoration.snapshot to arrive. Tracked so a snapshot for an
   /// unknown id is treated as a forward-compat ignore rather than an error.
-  WorkspacesModel({required BackendClient client}) : _client = client;
+  WorkspacesModel({required BackendClient client}) : this._(client);
+
+  WorkspacesModel._(this._client);
 
   // ---- Public read API ----
 
@@ -204,6 +206,14 @@ class WorkspacesModel extends ChangeNotifier {
   int changedCount(String workspaceId) =>
       _states[workspaceId]?.changedCount ?? 0;
 
+  /// Hard reset for an intentional backend target switch. Transient
+  /// reconnects keep this model intact and recover through subscribe replay.
+  void clearAll() {
+    if (_states.isEmpty) return;
+    _states.clear();
+    notifyListeners();
+  }
+
   // ---- Subscribe / unsubscribe lifecycle ----
 
   /// Subscribe to [workspaceId]. Reuses the existing per-workspace state if
@@ -222,7 +232,8 @@ class WorkspacesModel extends ChangeNotifier {
     }
     try {
       final r =
-          await _client.call('workspace.subscribe', params) as Map<String, dynamic>;
+          await _client.call('workspace.subscribe', params)
+              as Map<String, dynamic>;
       final mode = r['mode'] as String?;
       final baseVersion = (r['baseVersion'] as num?)?.toInt() ?? 0;
       if (mode == 'snapshot') {
@@ -269,10 +280,7 @@ class WorkspacesModel extends ChangeNotifier {
   Future<void> unsubscribeRemote(String workspaceId) async {
     final hadState = _states.remove(workspaceId) != null;
     if (hadState) notifyListeners();
-    await _client.call(
-      'workspace.unsubscribe',
-      {'workspaceId': workspaceId},
-    );
+    await _client.call('workspace.unsubscribe', {'workspaceId': workspaceId});
   }
 
   // ---- Notification handlers (called from AppState._onNotification) ----
@@ -517,4 +525,3 @@ class WorkspacesModel extends ChangeNotifier {
     return path.substring(0, idx);
   }
 }
-

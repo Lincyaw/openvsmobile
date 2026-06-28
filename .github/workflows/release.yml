@@ -107,9 +107,9 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           # Pin to the version dev/release have been validating against.
-          # Newer stables broke flutter_feather_icons (IconData became final);
-          # bump deliberately, not by drift.
-          flutter-version: 3.41.9
+          # Bump deliberately, not by drift: pubspec.lock currently resolves
+          # shared_preferences_android to a build that requires Flutter 3.44+.
+          flutter-version: 3.44.0
           channel: stable
           cache: true
 

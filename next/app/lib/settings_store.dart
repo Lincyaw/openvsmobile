@@ -76,6 +76,25 @@ class NotificationPrefs {
   }
 }
 
+const double kTerminalFontSizeDefault = 13;
+const double kTerminalFontSizeMin = 10;
+const double kTerminalFontSizeMax = 24;
+
+double clampTerminalFontSize(double value) =>
+    value.clamp(kTerminalFontSizeMin, kTerminalFontSizeMax);
+
+@immutable
+class TerminalPrefs {
+  final double fontSize;
+  const TerminalPrefs({this.fontSize = kTerminalFontSizeDefault});
+
+  TerminalPrefs copyWith({double? fontSize}) => TerminalPrefs(
+    fontSize: fontSize == null
+        ? this.fontSize
+        : clampTerminalFontSize(fontSize),
+  );
+}
+
 /// How a [BackendTarget] entered the user's backends list. Persisted as a
 /// string tag rather than an int so the on-disk blob stays diffable.
 enum BackendOrigin {
@@ -315,6 +334,7 @@ class SettingsStore {
   static const _kQuietHoursEnd = 'quiet-hours-end';
   static const _kDefaultTtlDays = 'notifications-default-ttl-days';
   static const _kThemeMode = 'theme-mode';
+  static const _kTerminalFontSize = 'terminal-font-size';
 
   Future<Settings> load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -472,6 +492,24 @@ class SettingsStore {
   Future<void> saveThemeMode(ThemeMode mode) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_kThemeMode, _themeModeToString(mode));
+  }
+
+  Future<TerminalPrefs> loadTerminalPrefs() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getDouble(_kTerminalFontSize);
+    return TerminalPrefs(
+      fontSize: raw == null
+          ? kTerminalFontSizeDefault
+          : clampTerminalFontSize(raw),
+    );
+  }
+
+  Future<void> saveTerminalPrefs(TerminalPrefs value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(
+      _kTerminalFontSize,
+      clampTerminalFontSize(value.fontSize),
+    );
   }
 }
 

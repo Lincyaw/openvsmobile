@@ -11,6 +11,16 @@ import 'package:mobilecode/backend_client.dart';
 import 'package:mobilecode/notification.dart';
 import 'package:mobilecode/screens/notification_center.dart';
 
+class _RecordingBackendClient extends BackendClient {
+  final List<({String method, Map<String, dynamic>? params})> calls = [];
+
+  @override
+  Future<dynamic> call(String method, [Map<String, dynamic>? params]) async {
+    calls.add((method: method, params: params));
+    return <String, dynamic>{'ok': true};
+  }
+}
+
 AppNotification _n({
   required String id,
   required String title,
@@ -125,5 +135,45 @@ void main() {
     );
     expect(find.byType(Badge), findsOneWidget);
     expect(find.text('2'), findsOneWidget);
+  });
+
+  testWidgets('opening the center only marks rendered visible cards as read', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 420);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final client = _RecordingBackendClient();
+    final appState = AppState(client: client, deviceId: 'me');
+    addTearDown(appState.dispose);
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    for (var i = 0; i < 18; i++) {
+      appState.notifications.onShow(_n(
+        id: 'n$i',
+        title: 'Notification $i',
+        source: 'ci',
+        ts: now - i,
+        body: 'body $i',
+      ));
+    }
+
+    await _pumpCenter(tester, appState);
+    await tester.pump(const Duration(milliseconds: 650));
+
+    final markReadCalls =
+        client.calls.where((c) => c.method == 'notification.markRead').toList();
+    expect(markReadCalls, isNotEmpty);
+    final markedIds = <String>{
+      for (final c in markReadCalls)
+        ...((c.params?['ids'] as List?) ?? const []).whereType<String>(),
+    };
+
+    expect(markedIds, contains('n0'));
+    expect(markedIds, isNot(contains('n17')));
+    expect(appState.notifications.isRead('n0'), isTrue);
+    expect(appState.notifications.isRead('n17'), isFalse);
   });
 }

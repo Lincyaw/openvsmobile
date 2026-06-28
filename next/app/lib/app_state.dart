@@ -19,6 +19,7 @@ import 'package:xterm/xterm.dart';
 import 'backend_client.dart';
 import 'models.dart';
 import 'notification.dart';
+import 'selection_context.dart';
 import 'services/ssh_bootstrap.dart';
 import 'state/notifications_model.dart';
 import 'state/plugins_model.dart';
@@ -50,6 +51,7 @@ class AppState extends ChangeNotifier {
   late final PluginsModel _plugins;
   late final UiPanelsModel _uiPanels;
   StreamSubscription<BackendNotification>? _notifSub;
+  int _backendSessionEpoch = 0;
 
   /// Whether the Files tab should filter to the Changes view (decorated
   /// paths only) instead of the full tree. Lives in AppState rather than
@@ -107,6 +109,9 @@ class AppState extends ChangeNotifier {
   // ---- Last operation error (surfaced via SnackBar by the calling screen) ----
   String? _lastOperationError;
 
+  // ---- Current code/diff selection context (plugin command input) ----
+  SelectionContext? _selectionContext;
+
   AppState({required this.client, this.deviceId = ''}) {
     _connectionState = client.state.value;
     _lastConnectionError = client.lastError.value;
@@ -145,6 +150,10 @@ class AppState extends ChangeNotifier {
   List<String> get recentRoots => List.unmodifiable(_recents);
   Workspace? get currentWorkspace => _current;
 
+  /// Monotonic client-local epoch for intentional backend target switches.
+  /// Transient reconnects keep the same epoch and preserve last-known UI.
+  int get backendSessionEpoch => _backendSessionEpoch;
+
   /// Backend-reported $HOME (or "/" on older backends). The picker starts
   /// here instead of the phone's $HOME, which has no meaning to the backend.
   String get backendDefaultCwd {
@@ -163,8 +172,13 @@ class AppState extends ChangeNotifier {
   int terminalGenerationFor(String sessionId) =>
       _terminals.terminalGenerationFor(sessionId);
 
-  Terminal terminalFor(String sessionId) =>
-      _terminals.terminalFor(sessionId);
+  Terminal terminalFor(String sessionId) => _terminals.terminalFor(sessionId);
+
+  Terminal? terminalForIfKnown(String sessionId) =>
+      _terminals.terminalForIfKnown(sessionId);
+
+  TerminalSession? terminalSessionFor(String sessionId) =>
+      _terminals.sessionFor(sessionId);
 
   /// Listenable that fires whenever any session's preview ring buffer
   /// changes. The Terminal-tab list view listens to this for cheap
@@ -244,14 +258,71 @@ class AppState extends ChangeNotifier {
   /// has displayed it.
   String? get lastOperationError => _lastOperationError;
 
+  /// Last structured selection made in a code surface. File and diff viewers
+  /// update this as the user drags handles; plugin commands receive it as
+  /// `{ selection: ... }` when invoked from a selection-aware surface.
+  SelectionContext? get selectionContext => _selectionContext;
+
   void clearLastOperationError() {
     if (_lastOperationError == null) return;
     _lastOperationError = null;
     notifyListeners();
   }
 
+  void setSelectionContext(SelectionContext? selection) {
+    if (_selectionContext == selection) return;
+    _selectionContext = selection;
+    notifyListeners();
+  }
+
+  void clearSelectionContext({String? sourceId}) {
+    final current = _selectionContext;
+    if (current == null) return;
+    if (sourceId != null && current.sourceId != sourceId) return;
+    _selectionContext = null;
+    notifyListeners();
+  }
+
+  Future<dynamic> invokePluginCommandWithSelection({
+    required String pluginId,
+    required String commandId,
+  }) {
+    final selection = _selectionContext;
+    return _plugins.invokeCommand(
+      pluginId,
+      commandId,
+      args: selection == null
+          ? null
+          : <String, dynamic>{'selection': selection.toJson()},
+    );
+  }
+
   void _reportOperationError(String message) {
     _lastOperationError = message;
+    notifyListeners();
+  }
+
+  /// Clear every server-derived mirror for an intentional backend target
+  /// switch. This is separate from transient disconnect handling: reconnects
+  /// must keep last-known state visible and resynchronize with versions.
+  void resetForBackendSession() {
+    _backendSessionEpoch++;
+    _changesViewActive = false;
+    _active = const [];
+    _recents = const [];
+    _current = null;
+    _fileTreeByWorkspace.clear();
+    _diffCache.clear();
+    _pickerState = null;
+    _lastBootstrapSuccess = null;
+    _lastBootstrapFailure = null;
+    _lastOperationError = null;
+    _selectionContext = null;
+    _terminals.clearAll();
+    _workspacesModel.clearAll();
+    _notifications.resetLocal();
+    _plugins.resetLocal();
+    _uiPanels.resetLocal();
     notifyListeners();
   }
 
@@ -276,9 +347,7 @@ class AppState extends ChangeNotifier {
       // missed rows on subscribe. We pass `sinceTs` forward-compatibly so a
       // future backend can deliver the incremental tail. (Backend support
       // for `sinceTs` on `notification.subscribe` is pending.)
-      unawaited(_notifications.subscribe(
-        sinceTs: _notifications.lastSeenTs,
-      ));
+      unawaited(_notifications.subscribe(sinceTs: _notifications.lastSeenTs));
       // Plugin surface + UI-descriptor fan-out follow the same shape —
       // subscribe on every successful connect; failures self-log. We do
       // NOT call subscribeAndRefresh()'s refresh leg or uiPanels.refresh —
@@ -350,9 +419,7 @@ class AppState extends ChangeNotifier {
         // A fresh decoration snapshot means the working-tree state may have
         // shifted arbitrarily — drop the diff cache for the affected
         // workspace so we don't serve stale unified-diff bytes.
-        _invalidateDiffCacheForWorkspace(
-          params['workspaceId'] as String?,
-        );
+        _invalidateDiffCacheForWorkspace(params['workspaceId'] as String?);
         break;
       case BackendNotifications.workspaceHeadChanged:
         _workspacesModel.onHeadChanged(params);
@@ -367,7 +434,8 @@ class AppState extends ChangeNotifier {
         }
         break;
       case BackendNotifications.notificationReadChanged:
-        final ids = (params['ids'] as List?)?.whereType<String>().toList() ??
+        final ids =
+            (params['ids'] as List?)?.whereType<String>().toList() ??
             const <String>[];
         final by = params['readByDevice'];
         final ts = (params['ts'] as num?)?.toInt() ?? 0;
@@ -376,7 +444,8 @@ class AppState extends ChangeNotifier {
         }
         break;
       case BackendNotifications.notificationDeleted:
-        final ids = (params['ids'] as List?)?.whereType<String>().toList() ??
+        final ids =
+            (params['ids'] as List?)?.whereType<String>().toList() ??
             const <String>[];
         _notifications.onDeleted(ids);
         break;
@@ -461,8 +530,9 @@ class AppState extends ChangeNotifier {
           .cast<Map<String, dynamic>>()
           .map(Workspace.fromJson)
           .toList();
-      _recents =
-          (res['recents'] as List).cast<String>().toList(growable: false);
+      _recents = (res['recents'] as List).cast<String>().toList(
+        growable: false,
+      );
       final cur =
           await client.call('workspace.current') as Map<String, dynamic>;
       final curRaw = cur['workspace'];
@@ -478,10 +548,9 @@ class AppState extends ChangeNotifier {
         unawaited(_workspacesModel.subscribe(w.id));
       }
       for (final w in _active) {
-        final tres = await client.call(
-          'terminal.list',
-          {'workspaceId': w.id},
-        ) as Map<String, dynamic>;
+        final tres =
+            await client.call('terminal.list', {'workspaceId': w.id})
+                as Map<String, dynamic>;
         final sessions = (tres['sessions'] as List)
             .cast<Map<String, dynamic>>()
             .map(TerminalSession.fromJson)
@@ -504,9 +573,7 @@ class AppState extends ChangeNotifier {
       // and the connection banner is the user-visible signal for that
       // case — adding a SnackBar on top would just be noise.
       if (_connectionState != BackendConnectionState.connected) {
-        debugPrint(
-          'AppState.refreshWorkspaces dropped during reconnect: $e',
-        );
+        debugPrint('AppState.refreshWorkspaces dropped during reconnect: $e');
         return;
       }
       _reportOperationError('Could not load workspaces: $e');
@@ -519,8 +586,9 @@ class AppState extends ChangeNotifier {
   /// SnackBar.
   Future<Workspace?> openWorkspace(String root) async {
     try {
-      final r = await client.call('workspace.open', {'root': root})
-          as Map<String, dynamic>;
+      final r =
+          await client.call('workspace.open', {'root': root})
+              as Map<String, dynamic>;
       final ws = Workspace.fromJson(r['workspace'] as Map<String, dynamic>);
       if (!_active.any((w) => w.id == ws.id)) {
         _active = [..._active, ws];
@@ -541,8 +609,9 @@ class AppState extends ChangeNotifier {
 
   Future<void> activateWorkspace(String id) async {
     try {
-      final r = await client.call('workspace.activate', {'id': id})
-          as Map<String, dynamic>;
+      final r =
+          await client.call('workspace.activate', {'id': id})
+              as Map<String, dynamic>;
       _current = Workspace.fromJson(r['workspace'] as Map<String, dynamic>);
       notifyListeners();
     } catch (e) {
@@ -567,24 +636,17 @@ class AppState extends ChangeNotifier {
     required String workspaceId,
     required int cols,
     required int rows,
-  }) =>
-      _terminals.createTerminal(
-        workspaceId: workspaceId,
-        cols: cols,
-        rows: rows,
-      );
+  }) => _terminals.createTerminal(
+    workspaceId: workspaceId,
+    cols: cols,
+    rows: rows,
+  );
 
   Future<void> disposeTerminal(String sessionId) =>
-      _terminals.disposeTerminal(
-        sessionId,
-        connectionState: _connectionState,
-      );
+      _terminals.disposeTerminal(sessionId, connectionState: _connectionState);
 
   Future<void> detachTerminal(String sessionId) =>
-      _terminals.detachTerminal(
-        sessionId,
-        connectionState: _connectionState,
-      );
+      _terminals.detachTerminal(sessionId, connectionState: _connectionState);
 
   void focusTerminal(String sessionId) => _terminals.focusTerminal(sessionId);
 
@@ -597,13 +659,12 @@ class AppState extends ChangeNotifier {
     required String sessionName,
     required int cols,
     required int rows,
-  }) =>
-      _terminals.adoptExternalSession(
-        workspaceId: workspaceId,
-        sessionName: sessionName,
-        cols: cols,
-        rows: rows,
-      );
+  }) => _terminals.adoptExternalSession(
+    workspaceId: workspaceId,
+    sessionName: sessionName,
+    cols: cols,
+    rows: rows,
+  );
 
   // ---- File tree (per workspace) ----
 
@@ -623,9 +684,7 @@ class AppState extends ChangeNotifier {
     if (ws == null) {
       // Workspace was closed between the trigger and this call. Surface
       // rather than throwing into the void.
-      _reportOperationError(
-        'Could not refresh file tree: workspace gone',
-      );
+      _reportOperationError('Could not refresh file tree: workspace gone');
       return;
     }
     final root = FileTreeNode(path: ws.root, name: ws.label, isDir: true);
@@ -661,16 +720,15 @@ class AppState extends ChangeNotifier {
         throw StateError('workspace $workspaceId no longer active');
       }
       final relPath = _relPathFromAbs(ws.root, node.path);
-      final entries = await listDir(
-        workspaceId: workspaceId,
-        relPath: relPath,
-      );
+      final entries = await listDir(workspaceId: workspaceId, relPath: relPath);
       node.children = entries
-          .map((e) => FileTreeNode(
-                path: _joinPath(node.path, e.name),
-                name: e.name,
-                isDir: e.isDir,
-              ))
+          .map(
+            (e) => FileTreeNode(
+              path: _joinPath(node.path, e.name),
+              name: e.name,
+              isDir: e.isDir,
+            ),
+          )
           .toList();
       node.expanded = true;
     } catch (e) {
@@ -765,9 +823,7 @@ class AppState extends ChangeNotifier {
     final ws = _workspaceById(workspaceId);
     if (ws == null) {
       // Workspace closed between trigger and call. Surface and bail.
-      _reportOperationError(
-        'Could not list directory: workspace gone',
-      );
+      _reportOperationError('Could not list directory: workspace gone');
       return const [];
     }
     final absPath = _resolveWorkspacePath(ws.root, relPath);
@@ -775,10 +831,12 @@ class AppState extends ChangeNotifier {
       workspaceId: workspaceId,
       relPath: relPath,
       fetch: () async {
-        final r = await client.call('fs.listDir', {
-          'workspaceId': workspaceId,
-          'path': absPath,
-        }) as Map<String, dynamic>;
+        final r =
+            await client.call('fs.listDir', {
+                  'workspaceId': workspaceId,
+                  'path': absPath,
+                })
+                as Map<String, dynamic>;
         return (r['entries'] as List)
             .cast<Map<String, dynamic>>()
             .map(DirEntry.fromJson)
@@ -838,10 +896,12 @@ class AppState extends ChangeNotifier {
         return hit;
       }
     }
-    final r = await client.call('git.diff', {
-      'workspaceId': workspaceId,
-      'path': path,
-    }) as Map<String, dynamic>;
+    final r =
+        await client.call('git.diff', {
+              'workspaceId': workspaceId,
+              'path': path,
+            })
+            as Map<String, dynamic>;
     // Store under two aliasing keys (same underlying map):
     //   * probe key from the workspace's commit-level HEAD — what gitDiff
     //     looks up on its next call when HEAD has not moved.
@@ -854,10 +914,7 @@ class AppState extends ChangeNotifier {
     final baseSha = r['baseSha'] as String?;
     final headSha = r['headSha'] as String?;
     if (baseSha != null && headSha != null) {
-      _putDiffCache(
-        _diffContentKey(workspaceId, baseSha, headSha, path),
-        r,
-      );
+      _putDiffCache(_diffContentKey(workspaceId, baseSha, headSha, path), r);
     }
     return r;
   }
@@ -875,14 +932,13 @@ class AppState extends ChangeNotifier {
     String workspaceId,
     String workspaceHead,
     String path,
-  ) =>
-      (
-        workspaceId: workspaceId,
-        workspaceHead: workspaceHead,
-        baseSha: null,
-        headSha: null,
-        path: path,
-      );
+  ) => (
+    workspaceId: workspaceId,
+    workspaceHead: workspaceHead,
+    baseSha: null,
+    headSha: null,
+    path: path,
+  );
 
   /// Content-addressed key — derived from the per-blob baseSha + headSha
   /// returned by the backend. Per first principle #3.
@@ -891,14 +947,13 @@ class AppState extends ChangeNotifier {
     String baseSha,
     String headSha,
     String path,
-  ) =>
-      (
-        workspaceId: workspaceId,
-        workspaceHead: null,
-        baseSha: baseSha,
-        headSha: headSha,
-        path: path,
-      );
+  ) => (
+    workspaceId: workspaceId,
+    workspaceHead: null,
+    baseSha: baseSha,
+    headSha: headSha,
+    path: path,
+  );
 
   /// Number of cached diff results. Test hook for the LRU contract; widgets
   /// have no reason to read this.
@@ -914,10 +969,9 @@ class AppState extends ChangeNotifier {
   }
 
   Future<List<DirEntry>> pickerListDir(String path) async {
-    final r = await client.call('fs.listDir', {
-      'path': path,
-      'picker': true,
-    }) as Map<String, dynamic>;
+    final r =
+        await client.call('fs.listDir', {'path': path, 'picker': true})
+            as Map<String, dynamic>;
     return (r['entries'] as List)
         .cast<Map<String, dynamic>>()
         .map(DirEntry.fromJson)
@@ -928,10 +982,12 @@ class AppState extends ChangeNotifier {
     required String workspaceId,
     required String path,
   }) async {
-    final r = await client.call('fs.readFile', {
-      'workspaceId': workspaceId,
-      'path': path,
-    }) as Map<String, dynamic>;
+    final r =
+        await client.call('fs.readFile', {
+              'workspaceId': workspaceId,
+              'path': path,
+            })
+            as Map<String, dynamic>;
     final bytes = base64Decode(r['contentBase64'] as String);
     return FileContent(
       bytes: bytes,
@@ -950,12 +1006,14 @@ class AppState extends ChangeNotifier {
     int limit = 50,
     bool includeIgnored = false,
   }) async {
-    final r = await client.call('workspace.findFiles', {
-      'workspaceId': workspaceId,
-      'query': query,
-      'limit': limit,
-      'includeIgnored': includeIgnored,
-    }) as Map<String, dynamic>;
+    final r =
+        await client.call('workspace.findFiles', {
+              'workspaceId': workspaceId,
+              'query': query,
+              'limit': limit,
+              'includeIgnored': includeIgnored,
+            })
+            as Map<String, dynamic>;
     return FindFilesResult.fromJson(r);
   }
 
@@ -984,6 +1042,15 @@ class AppState extends ChangeNotifier {
   @visibleForTesting
   void debugInjectTerminalOutput(String sessionId, List<int> bytes) {
     _terminals.debugInjectOutput(sessionId, bytes);
+  }
+
+  /// Test-only seam: apply the same local cleanup as a `terminal.exit`
+  /// notification without constructing a BackendNotification.
+  @visibleForTesting
+  void debugApplyTerminalExit(String sessionId, {String? workspaceId}) {
+    final params = <String, dynamic>{'sessionId': sessionId};
+    if (workspaceId != null) params['workspaceId'] = workspaceId;
+    _terminals.onTerminalExit(params);
   }
 
   /// Test-only seam: inject a fully-built `FileTreeNode` for [workspaceId]

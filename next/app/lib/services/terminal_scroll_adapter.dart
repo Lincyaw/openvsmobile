@@ -15,9 +15,9 @@ const int kMediumDragBurstSize = 4;
 /// buffer) cannot flip the routing mid-swipe.
 class ScrollRouting {
   ScrollRouting.capture(Terminal terminal)
-      : isAltBuffer = terminal.isUsingAltBuffer,
-        reportScroll = terminal.mouseMode.reportScroll,
-        altScrollMode = terminal.altBufferMouseScrollMode;
+    : isAltBuffer = terminal.isUsingAltBuffer,
+      reportScroll = terminal.mouseMode.reportScroll,
+      altScrollMode = terminal.altBufferMouseScrollMode;
 
   /// Use pre-captured [routing] if available, otherwise snapshot [terminal].
   factory ScrollRouting.resolve(ScrollRouting? routing, Terminal terminal) =>
@@ -26,8 +26,8 @@ class ScrollRouting {
   final bool isAltBuffer;
   final bool reportScroll;
 
-  /// DEC mode 1007. When true the program has opted in to having wheel
-  /// events translated to arrow keys while in the alt buffer.
+  /// DEC mode 1007. Captured for diagnostics, but Termux touch scrolling does
+  /// not branch on it: alt buffer without mouse tracking maps to arrow keys.
   final bool altScrollMode;
 }
 
@@ -116,8 +116,8 @@ class TerminalScrollAdapter {
   /// Routing priority (exactly one fires):
   ///   1. Normal buffer → scrollback model
   ///   2. Alt buffer + mouse reportScroll → SGR wheel events
-  ///   3. Alt buffer + DEC 1007 altScrollMode → arrow keys (program opt-in)
-  ///   4. Alt buffer + neither → no-op (avoid sending arrows to vim/claude)
+  ///   3. Alt buffer + no mouse → row-level arrow-key fallback, matching
+  ///      Termux's TerminalView#doScroll.
   static void dispatchUnits({
     required Terminal terminal,
     required int magnitude,
@@ -142,21 +142,19 @@ class TerminalScrollAdapter {
       for (int i = 0; i < magnitude; i++) {
         terminal.onOutput?.call(seq);
       }
-    } else if (r.altScrollMode) {
+    } else {
       onDiag?.call('arrows', 'x$magnitude ${down ? 'Down' : 'Up'}');
       for (int i = 0; i < magnitude; i++) {
         terminal.keyInput(down ? TerminalKey.arrowDown : TerminalKey.arrowUp);
       }
-    } else {
-      onDiag?.call('suppressed', 'alt+noMouse+no1007 x$magnitude');
     }
   }
 
   /// Emit a fling-sized burst.
   /// Normal buffer: a half-page scrollback burst so momentum feels natural.
   /// Alt + reportScroll: rows/2 wheel events at the drag-start cell.
-  /// Alt + altScrollMode (1007): a single PgUp / PgDn keystroke.
-  /// Alt + neither: no-op.
+  /// Alt + no mouse: no-op. Termux flings without mouse tracking by scrolling
+  /// transcript history; the alternate buffer has no transcript history.
   static void dispatchFling({
     required Terminal terminal,
     required bool down,
@@ -178,15 +176,15 @@ class TerminalScrollAdapter {
       final cell = cellAt(anchor);
       final ticks = (rows / 2).floor().clamp(1, rows);
       final seq = _sgrWheel(cell, down: down);
-      onDiag?.call('fling-wheel', 'x$ticks cell=(${cell.col},${cell.row}) $seq');
+      onDiag?.call(
+        'fling-wheel',
+        'x$ticks cell=(${cell.col},${cell.row}) $seq',
+      );
       for (int i = 0; i < ticks; i++) {
         terminal.onOutput?.call(seq);
       }
-    } else if (r.altScrollMode) {
-      onDiag?.call('fling-page', down ? 'PgDn' : 'PgUp');
-      terminal.keyInput(down ? TerminalKey.pageDown : TerminalKey.pageUp);
     } else {
-      onDiag?.call('fling-suppressed', 'alt+noMouse+no1007');
+      onDiag?.call('fling-alt-noop', 'alternate buffer has no transcript');
     }
   }
 

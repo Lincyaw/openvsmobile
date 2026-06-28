@@ -23,20 +23,19 @@ import 'file_viewer.dart';
 
 /// Signature of the function FilesTab uses to perform a search. Production
 /// wires this to `AppState.findFiles`; tests inject a fake.
-typedef FindFilesFn = Future<FindFilesResult> Function(
-  String workspaceId,
-  String query,
-);
+typedef FindFilesFn =
+    Future<FindFilesResult> Function(String workspaceId, String query);
 
 /// Signature of the function FilesTab uses when a search result row is
 /// tapped. Production wires this to opening the read-only file viewer;
 /// tests inject a recorder so they can assert navigation occurred without
 /// needing a real `fs.readFile` over the wire.
-typedef OpenSearchResultFn = Future<void> Function(
-  BuildContext context,
-  String workspaceId,
-  String relPath,
-);
+typedef OpenSearchResultFn =
+    Future<void> Function(
+      BuildContext context,
+      String workspaceId,
+      String relPath,
+    );
 
 class FilesTab extends StatefulWidget {
   final AppState appState;
@@ -164,12 +163,13 @@ class _FilesTabState extends State<FilesTab> {
       _searchError = null;
     });
     try {
-      final searchFn = widget.searchOverride ??
+      final searchFn =
+          widget.searchOverride ??
           (String wsId, String q) => widget.appState.findFiles(
-                workspaceId: wsId,
-                query: q,
-                limit: _kSearchLimit,
-              );
+            workspaceId: wsId,
+            query: q,
+            limit: _kSearchLimit,
+          );
       final result = await searchFn(workspace.id, query);
       if (!mounted) return;
       if (seq != _searchSeq) {
@@ -211,7 +211,11 @@ class _FilesTabState extends State<FilesTab> {
       if (!mounted) return;
       navigator.push(
         MaterialPageRoute<void>(
-          builder: (_) => FileViewerScreen(path: absPath, content: content),
+          builder: (_) => FileViewerScreen(
+            path: absPath,
+            content: content,
+            appState: widget.appState,
+          ),
         ),
       );
     } catch (e) {
@@ -263,7 +267,11 @@ class _FilesTabState extends State<FilesTab> {
       if (!mounted) return;
       navigator.push(
         MaterialPageRoute<void>(
-          builder: (_) => FileViewerScreen(path: node.path, content: content),
+          builder: (_) => FileViewerScreen(
+            path: node.path,
+            content: content,
+            appState: widget.appState,
+          ),
         ),
       );
     } catch (e) {
@@ -327,11 +335,7 @@ class _FilesTabState extends State<FilesTab> {
     return v.status != null || v.rollupCount > 0;
   }
 
-  Widget _buildRow(
-    FileTreeNode node,
-    int depth,
-    Workspace workspace,
-  ) {
+  Widget _buildRow(FileTreeNode node, int depth, Workspace workspace) {
     final theme = Theme.of(context);
     final wsId = workspace.id;
     final rel = _relPathFor(node.path, workspace.root);
@@ -366,8 +370,8 @@ class _FilesTabState extends State<FilesTab> {
             Icon(
               node.isDir
                   ? (node.expanded
-                      ? Icons.keyboard_arrow_down
-                      : Icons.keyboard_arrow_right)
+                        ? Icons.keyboard_arrow_down
+                        : Icons.keyboard_arrow_right)
                   : Icons.insert_drive_file_outlined,
               size: AppIconSize.sm,
             ),
@@ -393,8 +397,11 @@ class _FilesTabState extends State<FilesTab> {
             if (node.error != null)
               Tooltip(
                 message: node.error!,
-                child: Icon(Icons.error_outline,
-                    size: 16, color: theme.colorScheme.error),
+                child: Icon(
+                  Icons.error_outline,
+                  size: 16,
+                  color: theme.colorScheme.error,
+                ),
               ),
             _DecorationBadge(node: node, decoration: decoration),
           ],
@@ -471,34 +478,34 @@ class _FilesTabState extends State<FilesTab> {
                   onTapResult: _openSearchResult,
                 )
               : root == null
-                  ? Center(
-                      // Wrapped in Semantics so the "Loading workspace…"
-                      // label travels with the spinner for screen-reader
-                      // users — conventions §2 "no bare spinners".
-                      child: Semantics(
-                        label: 'Loading workspace',
-                        container: true,
-                        child: const Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            ),
-                            SizedBox(height: AppSpacing.md),
-                            Text('Loading workspace…'),
-                          ],
+              ? Center(
+                  // Wrapped in Semantics so the "Loading workspace…"
+                  // label travels with the spinner for screen-reader
+                  // users — conventions §2 "no bare spinners".
+                  child: Semantics(
+                    label: 'Loading workspace',
+                    container: true,
+                    child: const Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
                         ),
-                      ),
-                    )
-                  : ListView(
-                      // No pull-to-refresh: per first principle #1 the file
-                      // tree is push-driven via `workspace.tree.delta`. If
-                      // the user perceives the tree as stale, the push path
-                      // is wrong, not the UI.
-                      children: _flatten(root, 0, cur, changesActive),
+                        SizedBox(height: AppSpacing.md),
+                        Text('Loading workspace…'),
+                      ],
                     ),
+                  ),
+                )
+              : ListView(
+                  // No pull-to-refresh: per first principle #1 the file
+                  // tree is push-driven via `workspace.tree.delta`. If
+                  // the user perceives the tree as stale, the push path
+                  // is wrong, not the UI.
+                  children: _flatten(root, 0, cur, changesActive),
+                ),
         ),
       ],
     );
@@ -529,7 +536,11 @@ class _SearchBar extends StatelessWidget {
       color: theme.colorScheme.surface,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(
-            AppSpacing.md, AppSpacing.xs, AppSpacing.md, AppSpacing.xs),
+          AppSpacing.md,
+          AppSpacing.xs,
+          AppSpacing.md,
+          AppSpacing.xs,
+        ),
         child: TextField(
           controller: controller,
           focusNode: focusNode,
@@ -540,8 +551,10 @@ class _SearchBar extends StatelessWidget {
             isDense: true,
             hintText: 'Search files',
             prefixIcon: const Icon(Icons.search, size: AppIconSize.sm),
-            prefixIconConstraints:
-                const BoxConstraints(minWidth: 32, minHeight: 32),
+            prefixIconConstraints: const BoxConstraints(
+              minWidth: 32,
+              minHeight: 32,
+            ),
             suffixIcon: AnimatedBuilder(
               animation: controller,
               builder: (context, _) {
@@ -559,9 +572,7 @@ class _SearchBar extends StatelessWidget {
             ),
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(AppRadius.md),
-              borderSide: BorderSide(
-                color: theme.colorScheme.outlineVariant,
-              ),
+              borderSide: BorderSide(color: theme.colorScheme.outlineVariant),
             ),
             contentPadding: const EdgeInsets.symmetric(
               horizontal: AppSpacing.sm,
@@ -645,7 +656,9 @@ class _SearchResultsView extends StatelessWidget {
       children.add(
         Padding(
           padding: const EdgeInsets.symmetric(
-              horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+            horizontal: AppSpacing.md,
+            vertical: AppSpacing.sm,
+          ),
           child: Text(
             'Showing top ${r.matches.length} matches — refine the query for more.',
             style: TextStyle(
@@ -697,19 +710,22 @@ class _SearchResultRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final lastSlash = match.path.lastIndexOf('/');
-    final dirPart =
-        lastSlash >= 0 ? match.path.substring(0, lastSlash + 1) : '';
-    final basePart =
-        lastSlash >= 0 ? match.path.substring(lastSlash + 1) : match.path;
+    final dirPart = lastSlash >= 0
+        ? match.path.substring(0, lastSlash + 1)
+        : '';
+    final basePart = lastSlash >= 0
+        ? match.path.substring(lastSlash + 1)
+        : match.path;
     return InkWell(
       onTap: onTap,
       child: Padding(
         padding: const EdgeInsets.symmetric(
-            horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+          horizontal: AppSpacing.md,
+          vertical: AppSpacing.sm,
+        ),
         child: Row(
           children: [
-            const Icon(Icons.insert_drive_file_outlined,
-                size: AppIconSize.sm),
+            const Icon(Icons.insert_drive_file_outlined, size: AppIconSize.sm),
             const SizedBox(width: AppSpacing.sm),
             Expanded(
               child: Column(
@@ -766,10 +782,12 @@ class _SearchResultRow extends StatelessWidget {
           spans.add(TextSpan(text: buffer.toString(), style: baseStyle));
           buffer.clear();
         }
-        spans.add(TextSpan(
-          text: text[p],
-          style: baseStyle.copyWith(color: matchColor),
-        ));
+        spans.add(
+          TextSpan(
+            text: text[p],
+            style: baseStyle.copyWith(color: matchColor),
+          ),
+        );
         q++;
       } else {
         buffer.write(text[p]);
@@ -844,7 +862,9 @@ class _StatusBar extends StatelessWidget {
                 Text('Not a git repository', style: bodyStyle)
               else ...[
                 Icon(
-                  changesActive ? Icons.filter_alt : Icons.account_tree_outlined,
+                  changesActive
+                      ? Icons.filter_alt
+                      : Icons.account_tree_outlined,
                   size: 14,
                   color: theme.colorScheme.onSurface,
                 ),
@@ -860,10 +880,7 @@ class _StatusBar extends StatelessWidget {
                 // Always show `· ↑N ↓M` (zero values included) so the bar
                 // has a stable shape and matches the issue spec's exact
                 // format string `<branch> · ↑N ↓M · K changed`.
-                Text(
-                  '· ↑${st.ahead} ↓${st.behind}',
-                  style: bodyStyle,
-                ),
+                Text('· ↑${st.ahead} ↓${st.behind}', style: bodyStyle),
                 const SizedBox(width: 8),
                 Text(
                   changesActive
@@ -882,19 +899,20 @@ class _StatusBar extends StatelessWidget {
                     minWidth: 28,
                     minHeight: 28,
                   ),
-                  tooltip: changesActive ? 'Show all files' : 'Show changes only',
+                  tooltip: changesActive
+                      ? 'Show all files'
+                      : 'Show changes only',
                   icon: Icon(
-                    changesActive ? Icons.filter_alt : Icons.filter_alt_outlined,
+                    changesActive
+                        ? Icons.filter_alt
+                        : Icons.filter_alt_outlined,
                     color: changesActive
                         ? theme.colorScheme.primary
                         : theme.colorScheme.onSurface,
                   ),
                   onPressed: appState.toggleChangesView,
                 ),
-              if (isOffline) ...[
-                const SizedBox(width: 4),
-                _OfflinePill(),
-              ],
+              if (isOffline) ...[const SizedBox(width: 4), _OfflinePill()],
             ],
           ),
         ),
@@ -909,7 +927,9 @@ class _OfflinePill extends StatelessWidget {
     final theme = Theme.of(context);
     return Container(
       padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.xs, vertical: AppSpacing.xs),
+        horizontal: AppSpacing.xs,
+        vertical: AppSpacing.xs,
+      ),
       decoration: BoxDecoration(
         color: theme.colorScheme.secondaryContainer,
         borderRadius: BorderRadius.circular(AppRadius.md),

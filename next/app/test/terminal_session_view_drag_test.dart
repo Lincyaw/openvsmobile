@@ -16,6 +16,13 @@ import 'package:xterm/xterm.dart';
 
 import 'package:mobilecode/screens/terminal_detail.dart';
 
+Offset _terminalCenter(WidgetTester tester) =>
+    tester.getCenter(find.byType(TerminalView));
+
+Future<void> _dragTerminal(WidgetTester tester, Offset offset) async {
+  await tester.dragFrom(_terminalCenter(tester), offset);
+}
+
 void main() {
   testWidgets(
     'alt + mouse reportScroll: vertical drag emits SGR wheel reports via onOutput',
@@ -34,9 +41,7 @@ void main() {
 
       await tester.pumpWidget(
         MaterialApp(
-          home: Scaffold(
-            body: TerminalSessionView(terminal: terminal),
-          ),
+          home: Scaffold(body: TerminalSessionView(terminal: terminal)),
         ),
       );
       // Two pumps so xterm.dart's TerminalView has a chance to build its
@@ -45,19 +50,21 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 50));
 
-      final terminalFinder = find.byType(TerminalView);
-      expect(terminalFinder, findsOneWidget);
+      expect(find.byType(TerminalView), findsOneWidget);
 
       // A modest downward drag — enough to clear at least one cellHeight
       // and trigger at least one SGR wheel-up report (natural-scroll
       // semantics: finger down = reveal earlier content = wheel-up).
       // Exact count depends on the rendered cell height in the test
       // environment, so we assert on shape, not magnitude.
-      await tester.drag(terminalFinder, const Offset(0, 120));
+      await _dragTerminal(tester, const Offset(0, 120));
       await tester.pump();
 
-      expect(captured, isNotEmpty,
-          reason: 'drag should have emitted at least one SGR wheel report');
+      expect(
+        captured,
+        isNotEmpty,
+        reason: 'drag should have emitted at least one SGR wheel report',
+      );
       for (final s in captured) {
         // SGR wheel-up (button 64) at some cell (col, row >= 1).
         expect(
@@ -68,4 +75,74 @@ void main() {
       }
     },
   );
+
+  testWidgets('two-finger vertical pan emits PageUp without scaling font', (
+    tester,
+  ) async {
+    final terminal = Terminal(maxLines: 1000);
+    terminal.resize(80, 24);
+    terminal.write('\x1b[?1049h');
+
+    final captured = <String>[];
+    terminal.onOutput = captured.add;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: TerminalSessionView(terminal: terminal)),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    final terminalFinder = find.byType(TerminalView);
+    final before = tester.widget<TerminalView>(terminalFinder).textStyle;
+    expect(before, isNotNull);
+
+    final center = tester.getCenter(terminalFinder);
+    final first = await tester.startGesture(center + const Offset(-20, 0));
+    final second = await tester.startGesture(center + const Offset(20, 0));
+    await tester.pump();
+    await first.moveTo(center + const Offset(-20, 120));
+    await second.moveTo(center + const Offset(20, 120));
+    await tester.pump();
+    await first.up();
+    await second.up();
+    await tester.pump();
+
+    final after = tester.widget<TerminalView>(terminalFinder).textStyle;
+    expect(after.fontSize, before.fontSize);
+    expect(captured, isNotEmpty);
+    expect(captured.every((s) => s == '\x1b[5~'), isTrue);
+  });
+
+  testWidgets('two-finger pinch increases terminal font size', (tester) async {
+    final terminal = Terminal(maxLines: 1000);
+    terminal.resize(80, 24);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: TerminalSessionView(terminal: terminal)),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    final terminalFinder = find.byType(TerminalView);
+    final before = tester.widget<TerminalView>(terminalFinder).textStyle;
+    expect(before, isNotNull);
+
+    final center = tester.getCenter(terminalFinder);
+    final first = await tester.startGesture(center + const Offset(-20, 0));
+    final second = await tester.startGesture(center + const Offset(20, 0));
+    await tester.pump();
+    await first.moveTo(center + const Offset(-45, 0));
+    await second.moveTo(center + const Offset(45, 0));
+    await tester.pump();
+    await first.up();
+    await second.up();
+    await tester.pump();
+
+    final after = tester.widget<TerminalView>(terminalFinder).textStyle;
+    expect(after.fontSize, greaterThan(before.fontSize));
+  });
 }

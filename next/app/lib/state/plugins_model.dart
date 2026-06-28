@@ -100,10 +100,12 @@ class PluginInfo {
           final pid = raw['id'];
           final title = raw['title'];
           if (pid is! String || pid.isEmpty) continue;
-          panels.add(PluginPanelStub(
-            id: pid,
-            title: title is String && title.isNotEmpty ? title : pid,
-          ));
+          panels.add(
+            PluginPanelStub(
+              id: pid,
+              title: title is String && title.isNotEmpty ? title : pid,
+            ),
+          );
         }
       }
       final rawCommands = contributes['commands'];
@@ -113,10 +115,12 @@ class PluginInfo {
           final cid = raw['id'];
           final ctitle = raw['title'];
           if (cid is! String || cid.isEmpty) continue;
-          commands.add(PluginCommandStub(
-            id: cid,
-            title: ctitle is String && ctitle.isNotEmpty ? ctitle : cid,
-          ));
+          commands.add(
+            PluginCommandStub(
+              id: cid,
+              title: ctitle is String && ctitle.isNotEmpty ? ctitle : cid,
+            ),
+          );
         }
       }
     }
@@ -151,8 +155,7 @@ class PluginInfo {
       name: name,
       version: version,
       state: state ?? this.state,
-      crashReason:
-          clearCrashReason ? null : (crashReason ?? this.crashReason),
+      crashReason: clearCrashReason ? null : (crashReason ?? this.crashReason),
       panels: panels,
       commands: commands,
       capabilities: capabilities,
@@ -186,13 +189,15 @@ class PluginsModel extends ChangeNotifier {
   Future<Map<String, dynamic>?> Function(
     String method,
     Map<String, dynamic>? params,
-  )? debugRpcOverride;
+  )?
+  debugRpcOverride;
 
   PluginsModel({
     required BackendClient client,
     void Function(String message)? reportError,
-  })  : _client = client,
-        _reportError = reportError;
+  }) : this._(client, reportError);
+
+  PluginsModel._(this._client, this._reportError);
 
   Future<dynamic> _call(String method, [Map<String, dynamic>? params]) {
     final ovr = debugRpcOverride;
@@ -209,6 +214,15 @@ class PluginsModel extends ChangeNotifier {
 
   bool get isSubscribed => _subscribed;
   bool get isLoaded => _loaded;
+
+  /// Hard reset for an intentional backend target switch. Reconnect keeps
+  /// the last-known list visible and only re-subscribes to pushes.
+  void resetLocal() {
+    _byId.clear();
+    _subscribed = false;
+    _loaded = false;
+    notifyListeners();
+  }
 
   /// Subscribe to push updates only. Used on reconnect so we keep the
   /// last-known plugin list visible (first principle #4) instead of
@@ -313,6 +327,16 @@ class PluginsModel extends ChangeNotifier {
   /// Disable a plugin. Same fire-and-await pattern as [enable].
   Future<void> disable(String pluginId) async {
     await _call('plugin.disable', <String, dynamic>{'id': pluginId});
+  }
+
+  Future<dynamic> invokeCommand(
+    String pluginId,
+    String commandId, {
+    Object? args,
+  }) {
+    final params = <String, dynamic>{'id': pluginId, 'commandId': commandId};
+    if (args != null) params['args'] = args;
+    return _call('plugin.invokeCommand', params);
   }
 
   /// Reload a crashed plugin: disable then enable. The interleaving of

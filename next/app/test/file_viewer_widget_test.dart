@@ -8,8 +8,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_highlight/flutter_highlight.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:mobilecode/app_state.dart';
+import 'package:mobilecode/backend_client.dart';
 import 'package:mobilecode/models.dart';
 import 'package:mobilecode/screens/file_viewer.dart';
+import 'package:mobilecode/state/plugins_model.dart';
 import 'package:mobilecode/ui/app_tokens.dart';
 import 'package:mobilecode/ui/highlight_theme.dart';
 
@@ -21,11 +24,12 @@ Future<void> _pumpViewer(
   required String path,
   required FileContent content,
   ThemeData? theme,
+  AppState? appState,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
       theme: theme,
-      home: FileViewerScreen(path: path, content: content),
+      home: FileViewerScreen(path: path, content: content, appState: appState),
     ),
   );
   await tester.pump();
@@ -80,6 +84,35 @@ void main() {
     expect(find.byType(SelectableText), findsOneWidget);
   });
 
+  testWidgets('text viewer shows line numbers and find-in-file summary', (
+    tester,
+  ) async {
+    await _pumpViewer(
+      tester,
+      path: 'lib/sample.dart',
+      content: _text("void main() {\n  print('hello');\n}\n"),
+    );
+
+    expect(
+      find.byKey(const ValueKey<String>('file-line-number:1')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('file-line-number:2')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const ValueKey<String>('file-search-toggle')));
+    await tester.pump();
+    await tester.enterText(
+      find.byKey(const ValueKey<String>('file-search-field')),
+      'print',
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('1 of 1 · line 2'), findsOneWidget);
+  });
+
   testWidgets('binary content still shows the byte-count placeholder', (
     tester,
   ) async {
@@ -116,5 +149,69 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(find.byType(HighlightView), findsNothing);
     expect(find.byType(SelectableText), findsOneWidget);
+  });
+
+  testWidgets('plugin command receives structured file selection context', (
+    tester,
+  ) async {
+    final appState = AppState(client: BackendClient());
+    addTearDown(appState.dispose);
+    appState.debugSetActiveWorkspace(
+      const Workspace(id: 'ws-1', root: '/repo', label: 'repo', createdAt: 0),
+    );
+    appState.plugins.debugSeed([
+      const PluginInfo(
+        id: 'p',
+        name: 'Plugin',
+        version: '1.0.0',
+        state: PluginWireState.running,
+        crashReason: null,
+        panels: [],
+        commands: [PluginCommandStub(id: 'p.act', title: 'Act')],
+      ),
+    ]);
+    Map<String, dynamic>? rpcParams;
+    appState.plugins.debugRpcOverride = (method, params) async {
+      if (method == 'plugin.invokeCommand') rpcParams = params;
+      return <String, dynamic>{'ok': true};
+    };
+
+    await _pumpViewer(
+      tester,
+      path: '/repo/notes/random.unknownext',
+      content: _text('hello world\nnext line'),
+      appState: appState,
+    );
+
+    final selectable = tester.widget<SelectableText>(
+      find.byType(SelectableText),
+    );
+    selectable.onSelectionChanged!(
+      const TextSelection(baseOffset: 6, extentOffset: 11),
+      SelectionChangedCause.longPress,
+    );
+    await tester.pump();
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('selection-plugin-actions')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Plugin: Act'));
+    await tester.pumpAndSettle();
+
+    expect(rpcParams?['id'], 'p');
+    expect(rpcParams?['commandId'], 'p.act');
+    final args = rpcParams?['args'] as Map<String, dynamic>;
+    final selection = args['selection'] as Map<String, dynamic>;
+    expect(selection['source'], 'file');
+    expect(selection['workspaceId'], 'ws-1');
+    expect(selection['workspaceRoot'], '/repo');
+    expect(selection['path'], '/repo/notes/random.unknownext');
+    expect(selection['relativePath'], 'notes/random.unknownext');
+    expect(selection['text'], 'world');
+    final range = selection['range'] as Map<String, dynamic>;
+    expect(range['start'], {'line': 1, 'column': 7});
+    expect(range['end'], {'line': 1, 'column': 12});
+    expect(range['endExclusive'], isTrue);
   });
 }

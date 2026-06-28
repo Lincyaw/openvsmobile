@@ -33,16 +33,16 @@ PluginInfo _info({
   PluginWireState state = PluginWireState.running,
   String? crashReason,
   List<PluginPanelStub> panels = const [],
-}) =>
-    PluginInfo(
-      id: id,
-      name: name ?? id,
-      version: version,
-      state: state,
-      crashReason: crashReason,
-      panels: panels,
-      commands: const [],
-    );
+  List<PluginCommandStub> commands = const [],
+}) => PluginInfo(
+  id: id,
+  name: name ?? id,
+  version: version,
+  state: state,
+  crashReason: crashReason,
+  panels: panels,
+  commands: commands,
+);
 
 Future<AppState> _appStateWithSeed(List<PluginInfo> seed) async {
   final state = AppState(client: BackendClient());
@@ -53,8 +53,9 @@ Future<AppState> _appStateWithSeed(List<PluginInfo> seed) async {
 Widget _wrap(Widget child) => MaterialApp(home: Scaffold(body: child));
 
 void main() {
-  testWidgets('grid renders one tile per plugin with the tile name visible',
-      (tester) async {
+  testWidgets('grid renders one tile per plugin with the tile name visible', (
+    tester,
+  ) async {
     // Batch 1 redesign: the Plugins tab now goes through UiAppGrid; tiles
     // surface the plugin name as a caption and a state-derived UiBadge.
     // The legacy in-grid Switch + badge-label affordances moved to the
@@ -89,8 +90,9 @@ void main() {
     );
   });
 
-  testWidgets('tap row → detail view with single panel renders UiRenderer',
-      (tester) async {
+  testWidgets('tap row → detail view with single panel renders UiRenderer', (
+    tester,
+  ) async {
     final appState = await _appStateWithSeed([
       _info(
         id: 'panelplug',
@@ -121,9 +123,11 @@ void main() {
 
     // Use MaterialApp with home: PluginsTab so the tap pushes onto a
     // real Navigator.
-    await tester.pumpWidget(MaterialApp(
-      home: Scaffold(body: PluginsTab(appState: appState)),
-    ));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: PluginsTab(appState: appState)),
+      ),
+    );
     await tester.pump();
 
     await tester.tap(find.text('panelplug'));
@@ -135,53 +139,56 @@ void main() {
     expect(find.text('hello from plugin'), findsOneWidget);
   });
 
-  testWidgets('plugin.stateChanged push reflects crashed state in detail view',
-      (tester) async {
-    // Batch 1: state labels live in the detail / info view, not the grid.
-    // Render the detail view directly and assert the banner appears after
-    // a state push flips the plugin to crashed.
+  testWidgets(
+    'plugin.stateChanged push reflects crashed state in detail view',
+    (tester) async {
+      // Batch 1: state labels live in the detail / info view, not the grid.
+      // Render the detail view directly and assert the banner appears after
+      // a state push flips the plugin to crashed.
+      final appState = await _appStateWithSeed([
+        _info(id: 'alpha', state: PluginWireState.running),
+      ]);
+      addTearDown(appState.dispose);
+      final initialInfo = appState.plugins.plugin('alpha')!;
+      await tester.pumpWidget(
+        _wrap(PluginDetailView(appState: appState, info: initialInfo)),
+      );
+      await tester.pump();
+
+      expect(
+        find.byKey(const ValueKey<String>('plugin-crashed-banner')),
+        findsNothing,
+      );
+
+      appState.plugins.debugApplyStateChange(<String, dynamic>{
+        'id': 'alpha',
+        'state': 'crashed',
+        'crashReason': 'segfault',
+      });
+      await tester.pump();
+
+      // Detail view is a const StatelessWidget against the snapshot it was
+      // built with — pump the updated info through PluginDetailScreen so
+      // the AnimatedBuilder picks up the listener mutation.
+      final updated = appState.plugins.plugin('alpha')!;
+      await tester.pumpWidget(
+        _wrap(PluginDetailView(appState: appState, info: updated)),
+      );
+      await tester.pump();
+
+      expect(
+        find.byKey(const ValueKey<String>('plugin-crashed-banner')),
+        findsOneWidget,
+      );
+      expect(find.textContaining('segfault'), findsOneWidget);
+    },
+  );
+
+  testWidgets('crashed detail shows banner; Reload calls disable then enable', (
+    tester,
+  ) async {
     final appState = await _appStateWithSeed([
-      _info(id: 'alpha', state: PluginWireState.running),
-    ]);
-    addTearDown(appState.dispose);
-    final initialInfo = appState.plugins.plugin('alpha')!;
-    await tester.pumpWidget(_wrap(
-      PluginDetailView(appState: appState, info: initialInfo),
-    ));
-    await tester.pump();
-
-    expect(find.byKey(const ValueKey<String>('plugin-crashed-banner')),
-        findsNothing);
-
-    appState.plugins.debugApplyStateChange(<String, dynamic>{
-      'id': 'alpha',
-      'state': 'crashed',
-      'crashReason': 'segfault',
-    });
-    await tester.pump();
-
-    // Detail view is a const StatelessWidget against the snapshot it was
-    // built with — pump the updated info through PluginDetailScreen so
-    // the AnimatedBuilder picks up the listener mutation.
-    final updated = appState.plugins.plugin('alpha')!;
-    await tester.pumpWidget(_wrap(
-      PluginDetailView(appState: appState, info: updated),
-    ));
-    await tester.pump();
-
-    expect(find.byKey(const ValueKey<String>('plugin-crashed-banner')),
-        findsOneWidget);
-    expect(find.textContaining('segfault'), findsOneWidget);
-  });
-
-  testWidgets('crashed detail shows banner; Reload calls disable then enable',
-      (tester) async {
-    final appState = await _appStateWithSeed([
-      _info(
-        id: 'crashy',
-        state: PluginWireState.crashed,
-        crashReason: 'panic',
-      ),
+      _info(id: 'crashy', state: PluginWireState.crashed, crashReason: 'panic'),
     ]);
     addTearDown(appState.dispose);
 
@@ -207,9 +214,9 @@ void main() {
     };
 
     final info = appState.plugins.plugin('crashy')!;
-    await tester.pumpWidget(_wrap(
-      PluginDetailView(appState: appState, info: info),
-    ));
+    await tester.pumpWidget(
+      _wrap(PluginDetailView(appState: appState, info: info)),
+    );
     await tester.pump();
 
     expect(
@@ -226,8 +233,76 @@ void main() {
     expect(calls, ['plugin.disable:crashy', 'plugin.enable:crashy']);
   });
 
-  testWidgets('empty state hints at the filesystem install path',
-      (tester) async {
+  testWidgets('crashed plugin preserves the last rendered panel below banner', (
+    tester,
+  ) async {
+    final appState = await _appStateWithSeed([
+      _info(
+        id: 'crashy-panel',
+        state: PluginWireState.crashed,
+        crashReason: 'panic',
+        panels: const [PluginPanelStub(id: 'main', title: 'Main')],
+      ),
+    ]);
+    addTearDown(appState.dispose);
+    appState.uiPanels.debugInjectPush(<String, dynamic>{
+      'pluginId': 'crashy-panel',
+      'panelId': 'main',
+      'version': 1,
+      'tree': <String, dynamic>{
+        'kind': 'Text',
+        'id': 'last-good',
+        'text': 'last rendered state',
+      },
+    });
+
+    final info = appState.plugins.plugin('crashy-panel')!;
+    await tester.pumpWidget(
+      _wrap(PluginDetailView(appState: appState, info: info)),
+    );
+    await tester.pump();
+
+    expect(
+      find.byKey(const ValueKey<String>('plugin-crashed-banner')),
+      findsOneWidget,
+    );
+    expect(find.text('last rendered state'), findsOneWidget);
+  });
+
+  testWidgets('command chip invokes plugin.invokeCommand', (tester) async {
+    final appState = await _appStateWithSeed([
+      _info(
+        id: 'cmdplug',
+        state: PluginWireState.running,
+        commands: const [
+          PluginCommandStub(id: 'cmdplug.do', title: 'Do thing'),
+        ],
+      ),
+    ]);
+    addTearDown(appState.dispose);
+    final calls = <String>[];
+    appState.plugins.debugRpcOverride = (method, params) async {
+      calls.add('$method:${params?['id']}:${params?['commandId']}');
+      return <String, dynamic>{'ok': true};
+    };
+
+    final info = appState.plugins.plugin('cmdplug')!;
+    await tester.pumpWidget(
+      _wrap(PluginDetailView(appState: appState, info: info)),
+    );
+    await tester.pump();
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('plugin-command:cmdplug:cmdplug.do')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(calls, ['plugin.invokeCommand:cmdplug:cmdplug.do']);
+  });
+
+  testWidgets('empty state hints at the filesystem install path', (
+    tester,
+  ) async {
     final appState = await _appStateWithSeed(const []);
     addTearDown(appState.dispose);
     await tester.pumpWidget(_wrap(PluginsTab(appState: appState)));
@@ -240,8 +315,9 @@ void main() {
     );
   });
 
-  testWidgets('detail kebab → Disable routes through plugin.disable',
-      (tester) async {
+  testWidgets('detail kebab → Disable routes through plugin.disable', (
+    tester,
+  ) async {
     // Batch 1: the enable/disable toggle moved off the grid tile into the
     // detail view. Production goes through the kebab menu; the contract
     // we verify is that selecting Disable still invokes plugin.disable.
@@ -256,9 +332,9 @@ void main() {
     };
 
     final info = appState.plugins.plugin('alpha')!;
-    await tester.pumpWidget(_wrap(
-      PluginDetailView(appState: appState, info: info),
-    ));
+    await tester.pumpWidget(
+      _wrap(PluginDetailView(appState: appState, info: info)),
+    );
     await tester.pumpAndSettle();
 
     await tester.tap(find.byKey(const ValueKey<String>('plugin-kebab')));
@@ -288,8 +364,9 @@ void main() {
     expect(info.commands.single.id, 'p.do');
   });
 
-  testWidgets('UiNodeEvent dispatch routes through ui.event RPC',
-      (tester) async {
+  testWidgets('UiNodeEvent dispatch routes through ui.event RPC', (
+    tester,
+  ) async {
     // Multiple-panel case → TabBar with two tabs.
     final appState = await _appStateWithSeed([
       _info(
@@ -324,9 +401,9 @@ void main() {
     });
 
     final info = appState.plugins.plugin('two')!;
-    await tester.pumpWidget(_wrap(
-      PluginDetailView(appState: appState, info: info),
-    ));
+    await tester.pumpWidget(
+      _wrap(PluginDetailView(appState: appState, info: info)),
+    );
     await tester.pump();
     expect(find.byType(TabBar), findsOneWidget);
     expect(find.text('A'), findsOneWidget);
@@ -334,8 +411,9 @@ void main() {
     expect(find.text('panel A content'), findsOneWidget);
   });
 
-  testWidgets('grid renders through UiAppGrid with one tile per plugin',
-      (tester) async {
+  testWidgets('grid renders through UiAppGrid with one tile per plugin', (
+    tester,
+  ) async {
     final appState = await _appStateWithSeed([
       _info(id: 'alpha', state: PluginWireState.running),
       _info(id: 'beta', state: PluginWireState.disabled),
@@ -357,26 +435,32 @@ void main() {
     );
   });
 
-  testWidgets('tapping a disabled plugin opens the info screen with path hint',
-      (tester) async {
-    final appState = await _appStateWithSeed([
-      _info(id: 'sleepy', state: PluginWireState.disabled),
-    ]);
-    addTearDown(appState.dispose);
-    await tester.pumpWidget(MaterialApp(
-      home: Scaffold(body: PluginsTab(appState: appState)),
-    ));
-    await tester.pump();
+  testWidgets(
+    'tapping a disabled plugin opens the info screen with path hint',
+    (tester) async {
+      final appState = await _appStateWithSeed([
+        _info(id: 'sleepy', state: PluginWireState.disabled),
+      ]);
+      addTearDown(appState.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: PluginsTab(appState: appState)),
+        ),
+      );
+      await tester.pump();
 
-    await tester.tap(find.text('sleepy'));
-    await tester.pumpAndSettle();
+      await tester.tap(find.text('sleepy'));
+      await tester.pumpAndSettle();
 
-    // Info screen shows the filesystem path and an Enable button.
-    expect(find.textContaining('~/.local/share/openvsmobile-next/plugins/'),
-        findsOneWidget);
-    expect(
-      find.byKey(const ValueKey<String>('plugin-info-toggle:sleepy')),
-      findsOneWidget,
-    );
-  });
+      // Info screen shows the filesystem path and an Enable button.
+      expect(
+        find.textContaining('~/.local/share/openvsmobile-next/plugins/'),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('plugin-info-toggle:sleepy')),
+        findsOneWidget,
+      );
+    },
+  );
 }

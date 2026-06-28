@@ -21,15 +21,18 @@
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
+import '../selection_context.dart';
 import '../ui/app_tokens.dart';
+import 'selection_plugin_action_button.dart';
 
 /// Signature of the diff fetch the viewer uses. Production wires this to
 /// `AppState.gitDiff`; widget tests inject a fake to render against a
 /// canned response without spinning up a backend.
-typedef GitDiffFn = Future<Map<String, dynamic>> Function({
-  required String workspaceId,
-  required String path,
-});
+typedef GitDiffFn =
+    Future<Map<String, dynamic>> Function({
+      required String workspaceId,
+      required String path,
+    });
 
 class DiffViewerScreen extends StatefulWidget {
   final AppState appState;
@@ -55,14 +58,42 @@ class DiffViewerScreen extends StatefulWidget {
 class _DiffViewerScreenState extends State<DiffViewerScreen> {
   Future<Map<String, dynamic>>? _future;
 
+  String get _selectionSourceId => SelectionContext.diffSourceId(widget.path);
+
   @override
   void initState() {
     super.initState();
+    widget.appState.clearSelectionContext();
     final fetch = widget.diffOverride ?? widget.appState.gitDiff;
-    _future = fetch(
-      workspaceId: widget.workspaceId,
-      path: widget.path,
-    );
+    _future = fetch(workspaceId: widget.workspaceId, path: widget.path);
+  }
+
+  @override
+  void didUpdateWidget(covariant DiffViewerScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.path != widget.path ||
+        oldWidget.appState != widget.appState) {
+      oldWidget.appState.clearSelectionContext(
+        sourceId: SelectionContext.diffSourceId(oldWidget.path),
+      );
+      widget.appState.clearSelectionContext();
+      final fetch = widget.diffOverride ?? widget.appState.gitDiff;
+      _future = fetch(workspaceId: widget.workspaceId, path: widget.path);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.appState.clearSelectionContext(sourceId: _selectionSourceId);
+    super.dispose();
+  }
+
+  void _onSelectionContextChanged(SelectionContext? selection) {
+    if (selection == null) {
+      widget.appState.clearSelectionContext(sourceId: _selectionSourceId);
+    } else {
+      widget.appState.setSelectionContext(selection);
+    }
   }
 
   @override
@@ -72,13 +103,14 @@ class _DiffViewerScreenState extends State<DiffViewerScreen> {
       appBar: AppBar(
         title: Text(filename, overflow: TextOverflow.ellipsis),
         actions: [
+          SelectionPluginActionButton(appState: widget.appState),
           IconButton(
             tooltip: 'Show full path',
             icon: const Icon(Icons.info_outline),
             onPressed: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text(widget.path)),
-              );
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(SnackBar(content: Text(widget.path)));
             },
           ),
         ],
@@ -103,10 +135,7 @@ class _DiffViewerScreenState extends State<DiffViewerScreen> {
             );
           }
           if (snap.hasError) {
-            return _DiffErrorView(
-              path: widget.path,
-              message: '${snap.error}',
-            );
+            return _DiffErrorView(path: widget.path, message: '${snap.error}');
           }
           final data = snap.data;
           if (data == null) {
@@ -115,7 +144,12 @@ class _DiffViewerScreenState extends State<DiffViewerScreen> {
               message: 'No response from backend',
             );
           }
-          return _DiffBody(path: widget.path, data: data);
+          return _DiffBody(
+            path: widget.path,
+            workspaceId: widget.workspaceId,
+            data: data,
+            onSelectionContextChanged: _onSelectionContextChanged,
+          );
         },
       ),
     );
@@ -124,8 +158,15 @@ class _DiffViewerScreenState extends State<DiffViewerScreen> {
 
 class _DiffBody extends StatelessWidget {
   final String path;
+  final String workspaceId;
   final Map<String, dynamic> data;
-  const _DiffBody({required this.path, required this.data});
+  final ValueChanged<SelectionContext?>? onSelectionContextChanged;
+  const _DiffBody({
+    required this.path,
+    required this.workspaceId,
+    required this.data,
+    this.onSelectionContextChanged,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -152,10 +193,7 @@ class _DiffBody extends StatelessWidget {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(AppSpacing.xl),
-          child: Text(
-            'No changes vs HEAD.',
-            style: theme.textTheme.bodyLarge,
-          ),
+          child: Text('No changes vs HEAD.', style: theme.textTheme.bodyLarge),
         ),
       );
     }
@@ -177,7 +215,12 @@ class _DiffBody extends StatelessWidget {
             itemBuilder: (context, i) {
               if (i.isEven) {
                 final hunk = hunks[i ~/ 2];
-                return _HunkCard(hunk: hunk);
+                return _HunkCard(
+                  path: path,
+                  workspaceId: workspaceId,
+                  hunk: hunk,
+                  onSelectionContextChanged: onSelectionContextChanged,
+                );
               }
               final prev = hunks[(i - 1) ~/ 2];
               final next = hunks[(i + 1) ~/ 2];
@@ -205,10 +248,12 @@ class _DiffBody extends StatelessWidget {
     final linesRaw = m['lines'] as List? ?? const [];
     final lines = <_DiffLine>[];
     for (final ln in linesRaw.whereType<Map<String, dynamic>>()) {
-      lines.add(_DiffLine(
-        kind: ln['kind'] as String? ?? 'context',
-        text: ln['text'] as String? ?? '',
-      ));
+      lines.add(
+        _DiffLine(
+          kind: ln['kind'] as String? ?? 'context',
+          text: ln['text'] as String? ?? '',
+        ),
+      );
     }
     return _Hunk(
       oldStart: oldStart,
@@ -224,7 +269,11 @@ class _DiffHeader extends StatelessWidget {
   final String path;
   final int adds;
   final int dels;
-  const _DiffHeader({required this.path, required this.adds, required this.dels});
+  const _DiffHeader({
+    required this.path,
+    required this.adds,
+    required this.dels,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -233,7 +282,9 @@ class _DiffHeader extends StatelessWidget {
       width: double.infinity,
       color: theme.colorScheme.surfaceContainerHighest,
       padding: const EdgeInsets.symmetric(
-          horizontal: AppDensity.bannerHPad, vertical: AppDensity.bannerVPad),
+        horizontal: AppDensity.bannerHPad,
+        vertical: AppDensity.bannerVPad,
+      ),
       child: Row(
         children: [
           Expanded(
@@ -273,19 +324,49 @@ class _DiffHeader extends StatelessWidget {
 }
 
 class _HunkCard extends StatelessWidget {
+  final String path;
+  final String workspaceId;
   final _Hunk hunk;
-  const _HunkCard({required this.hunk});
+  final ValueChanged<SelectionContext?>? onSelectionContextChanged;
+  const _HunkCard({
+    required this.path,
+    required this.workspaceId,
+    required this.hunk,
+    this.onSelectionContextChanged,
+  });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final rows = <({int? oldLine, int? newLine, _DiffLine line})>[];
+    var oldLine = hunk.oldStart;
+    var newLine = hunk.newStart;
+    for (final line in hunk.lines) {
+      switch (line.kind) {
+        case 'add':
+          rows.add((oldLine: null, newLine: newLine, line: line));
+          newLine++;
+          break;
+        case 'del':
+          rows.add((oldLine: oldLine, newLine: null, line: line));
+          oldLine++;
+          break;
+        case 'noNewline':
+          rows.add((oldLine: null, newLine: null, line: line));
+          break;
+        default:
+          rows.add((oldLine: oldLine, newLine: newLine, line: line));
+          oldLine++;
+          newLine++;
+      }
+    }
     return Container(
       margin: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.sm, vertical: AppSpacing.xs),
+        horizontal: AppSpacing.sm,
+        vertical: AppSpacing.xs,
+      ),
       decoration: BoxDecoration(
-        border: Border.all(
-          color: theme.colorScheme.outlineVariant,
-        ),
+        border: Border.all(color: theme.colorScheme.outlineVariant),
         borderRadius: BorderRadius.circular(AppRadius.sm),
       ),
       child: Column(
@@ -294,16 +375,26 @@ class _HunkCard extends StatelessWidget {
           Container(
             color: theme.colorScheme.surfaceContainer,
             padding: const EdgeInsets.symmetric(
-                horizontal: AppSpacing.sm, vertical: AppSpacing.xs),
+              horizontal: AppSpacing.sm,
+              vertical: AppSpacing.xs,
+            ),
             child: Text(
               '@@ -${hunk.oldStart},${hunk.oldLines} '
               '+${hunk.newStart},${hunk.newLines} @@',
-              style: AppText.monoCaption(context).copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
+              style: AppText.monoCaption(
+                context,
+              ).copyWith(color: theme.colorScheme.onSurfaceVariant),
             ),
           ),
-          for (final ln in hunk.lines) _DiffLineRow(line: ln),
+          for (final row in rows)
+            _DiffLineRow(
+              path: path,
+              workspaceId: workspaceId,
+              oldLine: row.oldLine,
+              newLine: row.newLine,
+              line: row.line,
+              onSelectionContextChanged: onSelectionContextChanged,
+            ),
         ],
       ),
     );
@@ -311,8 +402,20 @@ class _HunkCard extends StatelessWidget {
 }
 
 class _DiffLineRow extends StatelessWidget {
+  final String path;
+  final String workspaceId;
+  final int? oldLine;
+  final int? newLine;
   final _DiffLine line;
-  const _DiffLineRow({required this.line});
+  final ValueChanged<SelectionContext?>? onSelectionContextChanged;
+  const _DiffLineRow({
+    required this.path,
+    required this.workspaceId,
+    required this.oldLine,
+    required this.newLine,
+    required this.line,
+    this.onSelectionContextChanged,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -343,7 +446,10 @@ class _DiffLineRow extends StatelessWidget {
     }
     return Container(
       color: bg,
-      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm, vertical: 1),
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.sm,
+        vertical: 1,
+      ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -355,23 +461,52 @@ class _DiffLineRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: AppSpacing.xs),
-          // TODO(structured-selection): mirrors the comment in
-          // file_viewer.dart. CLAUDE.md §2 capability #3 wants selection
-          // to surface as a typed context object (path + new/old line
-          // ranges in a diff) the plugin host can route to subscribers.
-          // Today this is a plain `SelectableText` so a long-press only
-          // copies to the clipboard. When the plugin host lands, swap
-          // in the same wrapper as the file viewer and have it carry
-          // both old/new line numbers (mapping from the hunk header)
-          // so a plugin can build "blame this added line" / "look up
-          // the deleted line in HEAD" UX without re-parsing the diff.
+          _LineNumberCell(side: 'old', value: oldLine),
+          _LineNumberCell(side: 'new', value: newLine),
+          const SizedBox(width: AppSpacing.xs),
           Expanded(
             child: SelectableText(
               line.text,
               style: AppText.monoCode(context).copyWith(color: fg),
+              onSelectionChanged: (selection, _) {
+                onSelectionContextChanged?.call(
+                  SelectionContext.fromDiffLineOffsets(
+                    path: path,
+                    lineText: line.text,
+                    lineKind: line.kind,
+                    oldLine: oldLine,
+                    newLine: newLine,
+                    baseOffset: selection.baseOffset,
+                    extentOffset: selection.extentOffset,
+                    workspaceId: workspaceId,
+                  ),
+                );
+              },
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _LineNumberCell extends StatelessWidget {
+  final String side;
+  final int? value;
+  const _LineNumberCell({required this.side, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return SizedBox(
+      width: 36,
+      child: Text(
+        value == null ? '' : '$value',
+        key: value == null ? null : ValueKey<String>('diff-line:$side:$value'),
+        textAlign: TextAlign.right,
+        style: AppText.monoCaption(
+          context,
+        ).copyWith(color: theme.colorScheme.onSurfaceVariant),
       ),
     );
   }
@@ -386,14 +521,16 @@ class _GapStrip extends StatelessWidget {
     final theme = Theme.of(context);
     return Container(
       margin: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.sm, vertical: 2),
+        horizontal: AppSpacing.sm,
+        vertical: 2,
+      ),
       padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
       alignment: Alignment.center,
       child: Text(
         '… $unchanged unchanged line${unchanged == 1 ? '' : 's'} …',
-        style: AppText.monoCaption(context).copyWith(
-          color: theme.colorScheme.onSurfaceVariant,
-        ),
+        style: AppText.monoCaption(
+          context,
+        ).copyWith(color: theme.colorScheme.onSurfaceVariant),
       ),
     );
   }
@@ -425,9 +562,9 @@ class _DiffPlaceholder extends StatelessWidget {
               children: [
                 Text(
                   path,
-                  style: AppText.monoCaption(context).copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
+                  style: AppText.monoCaption(
+                    context,
+                  ).copyWith(color: theme.colorScheme.onSurfaceVariant),
                 ),
                 const SizedBox(height: AppSpacing.sm),
                 Text(reason, style: theme.textTheme.bodyMedium),

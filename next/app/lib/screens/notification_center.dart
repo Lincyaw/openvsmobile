@@ -46,9 +46,14 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
   /// reopening the screen starts with everything collapsed.
   final Set<String> _expanded = {};
 
-  /// Debounce for batch markRead. We accumulate ids visible-on-screen and
-  /// flush every 500 ms so a fast scroll doesn't spam the backend with one
-  /// markRead per row.
+  final ScrollController _scrollController = ScrollController();
+  final Map<String, GlobalKey> _visibilityKeys = {};
+  final Map<String, List<String>> _entryIdsByKey = {};
+  bool _visibilityPassScheduled = false;
+
+  /// Debounce for batch markRead. We accumulate ids whose rendered cards
+  /// intersect the viewport and flush every 500 ms so a fast scroll doesn't
+  /// spam the backend with one markRead per row.
   final Set<String> _pendingRead = {};
   Timer? _readDebounce;
 
@@ -56,14 +61,18 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
   void initState() {
     super.initState();
     widget.appState.addListener(_onAppStateChanged);
-    // Schedule the initial mark-visible pass after first paint so any
-    // highlighted item is read on open.
+    _scrollController.addListener(_scheduleMarkVisible);
+    // Schedule the initial mark-visible pass after first paint. This only
+    // marks cards that actually rendered into the viewport; it deliberately
+    // does not clear the whole filtered feed.
     WidgetsBinding.instance.addPostFrameCallback((_) => _scheduleMarkVisible());
   }
 
   @override
   void dispose() {
     widget.appState.removeListener(_onAppStateChanged);
+    _scrollController.removeListener(_scheduleMarkVisible);
+    _scrollController.dispose();
     _readDebounce?.cancel();
     super.dispose();
   }
@@ -71,15 +80,41 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
   void _onAppStateChanged() {
     if (!mounted) return;
     setState(() {});
+    _scheduleMarkVisible();
   }
 
   void _scheduleMarkVisible() {
     if (!mounted) return;
+    if (_visibilityPassScheduled) return;
+    _visibilityPassScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _visibilityPassScheduled = false;
+      if (!mounted) return;
+      _markRenderedVisibleItemsRead();
+    });
+  }
+
+  void _markRenderedVisibleItemsRead() {
+    final rootObject = context.findRenderObject();
+    if (rootObject is! RenderBox || !rootObject.hasSize) return;
+    final viewport = Offset.zero & rootObject.size;
     final notifs = widget.appState.notifications;
     final me = widget.appState.deviceId;
-    for (final n in notifs.filteredItems) {
-      if (!n.readByDevice(me)) {
-        _pendingRead.add(n.id);
+    for (final entry in _entryIdsByKey.entries) {
+      final itemContext = _visibilityKeys[entry.key]?.currentContext;
+      if (itemContext == null) continue;
+      final itemObject = itemContext.findRenderObject();
+      if (itemObject is! RenderBox || !itemObject.hasSize) continue;
+      final topLeft = rootObject.globalToLocal(
+        itemObject.localToGlobal(Offset.zero),
+      );
+      final itemRect = topLeft & itemObject.size;
+      if (!itemRect.overlaps(viewport)) continue;
+      for (final id in entry.value) {
+        final n = notifs.byId(id);
+        if (n != null && !n.readByDevice(me)) {
+          _pendingRead.add(id);
+        }
       }
     }
     if (_pendingRead.isEmpty) return;
@@ -89,6 +124,29 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
       _pendingRead.clear();
       unawaited(notifs.markRead(ids));
     });
+  }
+
+  String _entryKeyFor(List<AppNotification> group) {
+    if (group.length == 1) return 'n:${group.first.id}';
+    final key = group.first.groupKey ?? group.first.id;
+    return 'g:$key:${group.first.id}:${group.length}';
+  }
+
+  GlobalKey _visibilityKeyFor(String key) =>
+      _visibilityKeys.putIfAbsent(key, GlobalKey.new);
+
+  void _syncVisibilityEntries(List<List<AppNotification>> groups) {
+    final live = <String>{};
+    for (final group in groups) {
+      final key = _entryKeyFor(group);
+      live.add(key);
+      _entryIdsByKey[key] = [
+        for (final n in group) n.id,
+      ];
+      _visibilityKeyFor(key);
+    }
+    _visibilityKeys.removeWhere((key, _) => !live.contains(key));
+    _entryIdsByKey.removeWhere((key, _) => !live.contains(key));
   }
 
   Future<void> _markAllRead() async {
@@ -172,6 +230,7 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
     final sources = notifs.knownSources;
     final items = notifs.filteredItems;
     final groups = _groupConsecutive(items);
+    _syncVisibilityEntries(groups);
     final connState = widget.appState.connectionState;
     return Scaffold(
       appBar: AppBar(
@@ -249,32 +308,42 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
                 // `.deleted`. The "Refresh" menu item still pulls a full
                 // snapshot for users who explicitly ask.
                 : ListView.builder(
+                    controller: _scrollController,
                     padding: const EdgeInsets.symmetric(vertical: 4),
                     itemCount: groups.length,
                     itemBuilder: (ctx, i) {
                       final g = groups[i];
+                      final entryKey = _entryKeyFor(g);
                       if (g.length == 1) {
-                        return _NotificationCard(
-                          notification: g.first,
-                          expanded: _expanded.contains(g.first.id),
-                          highlighted: g.first.id == widget.highlightId,
-                          onToggleExpand: () {
-                            setState(() {
-                              if (!_expanded.add(g.first.id)) {
-                                _expanded.remove(g.first.id);
-                              }
-                            });
-                          },
-                          onAction: _onAction,
-                          onLongPressMenu: () =>
-                              _showLongPressMenu(g.first),
+                        return KeyedSubtree(
+                          key: _visibilityKeyFor(entryKey),
+                          child: _NotificationCard(
+                            notification: g.first,
+                            expanded: _expanded.contains(g.first.id),
+                            highlighted: g.first.id == widget.highlightId,
+                            onToggleExpand: () {
+                              setState(() {
+                                if (!_expanded.add(g.first.id)) {
+                                  _expanded.remove(g.first.id);
+                                }
+                              });
+                              _scheduleMarkVisible();
+                            },
+                            onAction: _onAction,
+                            onLongPressMenu: () =>
+                                _showLongPressMenu(g.first),
+                          ),
                         );
                       }
                       // Grouped: render as collapsible card.
-                      return _GroupCard(
-                        members: g,
-                        deviceId: widget.appState.deviceId,
-                        onAction: _onAction,
+                      return KeyedSubtree(
+                        key: _visibilityKeyFor(entryKey),
+                        child: _GroupCard(
+                          members: g,
+                          deviceId: widget.appState.deviceId,
+                          onAction: _onAction,
+                          onExpandedChanged: _scheduleMarkVisible,
+                        ),
                       );
                     },
                   ),
@@ -621,10 +690,12 @@ class _GroupCard extends StatefulWidget {
   final List<AppNotification> members;
   final String deviceId;
   final Future<void> Function(NotificationAction) onAction;
+  final VoidCallback onExpandedChanged;
   const _GroupCard({
     required this.members,
     required this.deviceId,
     required this.onAction,
+    required this.onExpandedChanged,
   });
 
   @override
@@ -645,7 +716,10 @@ class _GroupCardState extends State<_GroupCard> {
       child: Card(
         clipBehavior: Clip.antiAlias,
         child: InkWell(
-          onTap: () => setState(() => _expanded = !_expanded),
+          onTap: () {
+            setState(() => _expanded = !_expanded);
+            widget.onExpandedChanged();
+          },
           child: IntrinsicHeight(
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,

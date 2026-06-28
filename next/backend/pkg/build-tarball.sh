@@ -129,6 +129,9 @@ if [[ ! -f "$BACKEND_DIR/pnpm-lock.yaml" ]]; then
   exit 1
 fi
 cp "$BACKEND_DIR/pnpm-lock.yaml" "$BUILD_DIR/"
+if [[ -d "$BACKEND_DIR/scripts" ]]; then
+  cp -R "$BACKEND_DIR/scripts" "$BUILD_DIR/"
+fi
 # pnpm 11+ reads `allowBuilds:` from pnpm-workspace.yaml to decide which
 # packages may run install scripts. Without this file pnpm refuses to
 # compile node-pty's native binding and the tarball ships broken.
@@ -253,6 +256,7 @@ node -e "
       if (typeof obj[k] === 'string' && obj[k].startsWith('workspace:')) delete obj[k];
     }
   }
+  delete pkg.scripts;
   fs.writeFileSync('$COMPILE_DIR/package.json', JSON.stringify(pkg, null, 2) + '\n');
 "
 # We use the project's own typescript devDep — install it locally for
