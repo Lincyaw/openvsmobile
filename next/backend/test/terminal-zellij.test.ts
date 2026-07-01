@@ -844,6 +844,42 @@ describe("probeMultiplexer", () => {
   });
 });
 
+describe("zellij CLI wrappers", () => {
+  it("does not inject a private socket namespace by default", async () => {
+    const { zellijEnvironment } = await import("../src/multiplexer.js");
+    const env = zellijEnvironment({ PATH: "/usr/bin" });
+    expect(env.PATH).toBe("/usr/bin");
+    expect(env.ZELLIJ_SOCKET_DIR).toBeUndefined();
+  });
+
+  it("preserves an explicitly configured socket namespace", async () => {
+    const { zellijEnvironment } = await import("../src/multiplexer.js");
+    const base = await mkdtemp(join(tmpdir(), "ovsm-zellij-env-"));
+    tempDirs.push(base);
+    const socketDir = join(base, "sockets");
+    const env = zellijEnvironment({
+      PATH: "/usr/bin",
+      ZELLIJ_SOCKET_DIR: socketDir,
+    });
+    expect(env.ZELLIJ_SOCKET_DIR).toBe(socketDir);
+  });
+
+  it("lists sessions without formatting so status parsing is stable", async () => {
+    const { listZellijSessions } = await import("../src/multiplexer.js");
+    const calls: ExecCall[] = [];
+    const runner: ExecRunner = {
+      async run(command, args) {
+        calls.push({ command, args });
+        return { stdout: "work [Created 1m ago]\n", stderr: "" };
+      },
+    };
+    await listZellijSessions(runner);
+    expect(calls).toEqual([
+      { command: "zellij", args: ["list-sessions", "--no-formatting"] },
+    ]);
+  });
+});
+
 describe("zellij detach handling", () => {
   it("client exit with session still alive demotes to hydrated and fires onDetached", async () => {
     // The bug we are fixing: Ctrl-O d exits the zellij client cleanly

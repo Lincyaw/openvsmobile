@@ -28,7 +28,6 @@ const execFileAsync = promisify(execFile);
 /// healthy invocations complete in tens of milliseconds — and an upper
 /// bound on how long a stuck CLI can stall the surrounding flow.
 export const ZELLIJ_CLI_TIMEOUT_MS = 2000;
-const DEFAULT_ZELLIJ_SOCKET_DIR = "/tmp/openvsmobile-zellij";
 
 /// Prefix applied to zellij session names spawned by the backend. Keeps
 /// our sessions visually distinct from any the user spawned manually so
@@ -82,19 +81,22 @@ export function zellijEnvironment(
   for (const [key, value] of Object.entries(env)) {
     if (value !== undefined) out[key] = value;
   }
-  const socketDir =
-    env.ZELLIJ_SOCKET_DIR !== undefined && env.ZELLIJ_SOCKET_DIR.length > 0
-      ? env.ZELLIJ_SOCKET_DIR
-      : DEFAULT_ZELLIJ_SOCKET_DIR;
-  try {
-    mkdirSync(socketDir, { recursive: true, mode: 0o700 });
-  } catch (err) {
-    console.error(
-      `[openvsmobile-next] WARN: failed to create ZELLIJ_SOCKET_DIR ${socketDir}:`,
-      err,
-    );
+  const socketDir = env.ZELLIJ_SOCKET_DIR;
+  if (socketDir !== undefined && socketDir.length > 0) {
+    try {
+      mkdirSync(socketDir, { recursive: true, mode: 0o700 });
+    } catch (err) {
+      console.error(
+        `[openvsmobile-next] WARN: failed to create ZELLIJ_SOCKET_DIR ${socketDir}:`,
+        err,
+      );
+    }
+    out.ZELLIJ_SOCKET_DIR = socketDir;
+  } else {
+    // Default to zellij's own namespace so sessions created in a normal
+    // desktop/SSH terminal are discoverable and adoptable from the app.
+    delete out.ZELLIJ_SOCKET_DIR;
   }
-  out.ZELLIJ_SOCKET_DIR = socketDir;
   return out;
 }
 
@@ -220,9 +222,13 @@ export async function listZellijSessions(
   runner: ExecRunner = realExecRunner,
 ): Promise<ExternalSession[]> {
   try {
-    const { stdout } = await runner.run("zellij", ["list-sessions"], {
-      timeoutMs: ZELLIJ_CLI_TIMEOUT_MS,
-    });
+    const { stdout } = await runner.run(
+      "zellij",
+      ["list-sessions", "--no-formatting"],
+      {
+        timeoutMs: ZELLIJ_CLI_TIMEOUT_MS,
+      },
+    );
     return parseZellijListSessions(stdout);
   } catch (err) {
     // "no sessions" surfaces as exit 1 with the friendly string on
