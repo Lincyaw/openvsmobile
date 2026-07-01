@@ -972,7 +972,13 @@ type Notification = {
   action?:                                         // tap on the notif itself
     | { kind: "open-url"; url: string }
     | { kind: "copy"; text: string }
-    | { kind: "open-workspace"; workspaceId: string };
+    | { kind: "open-workspace"; workspaceId: string }
+    | {
+        kind: "open-terminal";
+        sessionId: string;
+        backendId?: string;         // client-local backend id; absent means active backend
+        externalSessionId?: string; // e.g. managed zellij session name
+      };
   groupKey?: string;                 // consecutive notifs with same key collapse in UI
   supersedes?: string;               // id of an earlier notif this replaces
                                      //   (progress updates → final result)
@@ -1033,7 +1039,7 @@ Garbage collection runs opportunistically — at most once per hour on `notifica
 
 - Local: reads `~/.config/openvsmobile-next/config.json` for port and token; POSTs to `http://127.0.0.1:<port>/notify`.
 - Remote: `--server host:port --token $TOKEN`, or env `OPENVSMOBILE_SERVER` / `OPENVSMOBILE_TOKEN`.
-- Args: `--source`, `--level`, `--title`, `--body`, `--field k=v` (repeatable), `--link title=url` (repeatable), `--action open-url:URL` or `copy:TEXT` or `open-workspace:ID`, `--group-key`, `--supersedes`, `--important`, `--ttl`.
+- Args: `--source`, `--level`, `--title`, `--body`, `--field k=v` (repeatable), `--link title=url` (repeatable), `--action open-url:URL` or `copy:TEXT` or `open-workspace:ID` or `open-terminal:ID`, `--group-key`, `--supersedes`, `--important`, `--ttl`.
 - `--from-json -` reads the full payload from stdin (for scripts that already have JSON ready).
 - Exit codes: 0 success, 2 args, 3 network, 4 auth, 5 server error.
 
@@ -1042,7 +1048,11 @@ Claude Code / Codex. `install.sh` runs it after the backend has started and
 `runtime.json` exists. It scans the user's global Claude Code / Codex configs,
 adds an idempotent `Stop` hook when those configs are present, and posts through
 `mobile-notify --from-claude-hook`. This is best-effort: malformed or absent
-agent configs are logged to stderr and never fail backend installation.
+agent configs are logged to stderr and never fail backend installation. Stop
+notifications include the last assistant message when the hook envelope or
+transcript exposes it. When the hook runs inside a backend-managed zellij
+session (`ovsm-*`), the notification action deep-links back to that terminal
+session.
 
 **Foreground service (Flutter / Android).** App starts a `flutter_foreground_task`-backed service on launch (gated by a Settings toggle, default on). The service holds the WebSocket, calls `notification.subscribe`, and on `notification.show` posts to the Android system tray via a channel chosen from the `level` field:
 
@@ -1061,7 +1071,7 @@ The persistent foreground notification ("openvsmobile-next active") is low-impor
 - Per-source filter pills along the top.
 - Each item: source pill, level color stripe, title, expandable body (markdown), action button row from `links`, relative timestamp.
 - Long-press: mark read / delete / pin / mute source.
-- Tap: execute `action` if present (open url, open workspace, copy text); else expand inline.
+- Tap: execute `action` if present (open url, open workspace, open terminal, copy text); else expand inline.
 - Rendering: if `widget` is present, use the §4.3 panel renderer; on render error fall back to the default field-and-links layout. (v0 reserves the widget field but ships only the default renderer; the §4.3 renderer slot is wired but disabled until plugin host lands.)
 
 **Settings.** Per-source rules (mute, priority override, sound override), quiet hours, default TTL, foreground-service toggle.

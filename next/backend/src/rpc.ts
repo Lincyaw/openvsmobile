@@ -13,7 +13,7 @@
 //   6. dispatch() + runAuthHandshake() entry points.
 
 import type { WebSocket } from "ws";
-import { listDirAt, readFileAt, type ActiveWorkspace } from "./workspace.js";
+import { listDirAt, readFileAt } from "./workspace.js";
 import type { ProcessState, Subscriber } from "./state.js";
 import { findFiles } from "./findFiles.js";
 import { PluginHostError } from "./plugins/host.js";
@@ -359,6 +359,15 @@ methods.set("workspace.open", async (ctx, params) => {
   return { workspace: ws.info() };
 });
 
+methods.set("workspace.forgetRecent", (ctx, params) => {
+  const p = asBag(params);
+  return { recents: ctx.state.workspaces.forgetRecent(p.root) };
+});
+
+methods.set("workspace.clearRecents", (ctx) => ({
+  recents: ctx.state.workspaces.clearRecents(),
+}));
+
 methods.set("workspace.activate", (ctx, params) => {
   const p = asBag(params);
   const ws = ctx.state.workspaces.activate(p.id);
@@ -491,21 +500,36 @@ methods.set("workspace.unsubscribe", (ctx, params) => {
 
 methods.set("terminal.create", (ctx, params) => {
   const p = asBag(params);
-  const ws = ctx.state.workspaces.requireById(p.workspaceId);
+  const workspaceId = optionalString(p, "workspaceId");
+  const ws =
+    workspaceId === undefined
+      ? ctx.state.workspaces.current()
+      : ctx.state.workspaces.requireById(workspaceId);
   const cols = typeof p.cols === "number" ? p.cols : 80;
   const rows = typeof p.rows === "number" ? p.rows : 24;
   const cwd =
-    typeof p.cwd === "string" && p.cwd.length > 0 ? p.cwd : ws.root;
-  const snap = ws.terminals.create(cols, rows, cwd);
-  return { sessionId: snap.id, workspaceId: ws.id };
+    typeof p.cwd === "string" && p.cwd.length > 0
+      ? p.cwd
+      : (ws?.root ?? process.env.HOME ?? "/");
+  const snap = ctx.state.terminals.createWithWorkspaceRoot(
+    cols,
+    rows,
+    cwd,
+    workspaceId === undefined ? null : ws?.root,
+  );
+  return {
+    sessionId: snap.id,
+    workspaceId: ctx.state.workspaceIdForRoot(snap.workspaceRoot),
+    ...snap,
+  };
 });
 
 methods.set("terminal.write", (ctx, params) => {
   const p = asBag(params);
   const sessionId = requireString(p, "sessionId");
   const dataBase64 = requireString(p, "dataBase64");
-  const ws = findWorkspaceOwning(ctx, sessionId);
-  ws.terminals.write(sessionId, Buffer.from(dataBase64, "base64"));
+  findTerminal(ctx, sessionId);
+  ctx.state.terminals.write(sessionId, Buffer.from(dataBase64, "base64"));
   return {};
 });
 
@@ -514,38 +538,56 @@ methods.set("terminal.resize", (ctx, params) => {
   const sessionId = requireString(p, "sessionId");
   const cols = requirePositiveInt(p, "cols");
   const rows = requirePositiveInt(p, "rows");
-  const ws = findWorkspaceOwning(ctx, sessionId);
-  ws.terminals.resize(sessionId, cols, rows);
+  findTerminal(ctx, sessionId);
+  ctx.state.terminals.resize(sessionId, cols, rows);
   return {};
 });
 
 methods.set("terminal.detach", (ctx, params) => {
   const p = asBag(params);
   const sessionId = requireString(p, "sessionId");
-  const ws = findWorkspaceOwning(ctx, sessionId);
-  ws.terminals.detach(sessionId);
+  findTerminal(ctx, sessionId);
+  ctx.state.terminals.detach(sessionId);
   return {};
+});
+
+methods.set("terminal.rename", (ctx, params) => {
+  const p = asBag(params);
+  const sessionId = requireString(p, "sessionId");
+  const rawTitle = p.title;
+  if (rawTitle !== null && rawTitle !== undefined && typeof rawTitle !== "string") {
+    throw new RpcError(
+      RPC_ERR.invalidParams,
+      "title must be a string or null when provided",
+    );
+  }
+  findTerminal(ctx, sessionId);
+  const session = ctx.state.renameTerminal(
+    sessionId,
+    rawTitle === undefined ? null : rawTitle,
+  );
+  return { session };
 });
 
 methods.set("terminal.dispose", (ctx, params) => {
   const p = asBag(params);
   const sessionId = requireString(p, "sessionId");
-  const ws = findWorkspaceOwning(ctx, sessionId);
-  ws.terminals.dispose(sessionId);
+  findTerminal(ctx, sessionId);
+  ctx.state.terminals.dispose(sessionId);
   return {};
 });
 
 methods.set("terminal.list", (ctx, params) => {
   const p = asBag(params);
   if (p.workspaceId === undefined || p.workspaceId === null) {
-    // No filter — return every session across every active workspace.
+    // No filter — return every session known to this backend, whether or
+    // not its workspaceRoot is currently open as a Workspace instance.
     return { sessions: ctx.state.listAllTerminals() };
   }
-  const ws = ctx.state.workspaces.requireById(p.workspaceId);
   return {
-    sessions: ws.terminals
-      .list()
-      .map((t) => ({ ...t, workspaceId: ws.id })),
+    sessions: ctx.state.listTerminalsForWorkspace(
+      requireString(p, "workspaceId"),
+    ),
   };
 });
 
@@ -595,39 +637,52 @@ methods.set("terminal.adoptExternalSession", (ctx, params) => {
   if (ctx.state.isExternalSessionAdopted(sessionName)) {
     throw new RpcError(
       RPC_ERR.invalidParams,
-      `zellij session "${sessionName}" is already adopted by an open workspace`,
+      `zellij session "${sessionName}" is already adopted`,
     );
   }
-  const ws = ctx.state.workspaces.requireById(p.workspaceId);
-  // cwd defaults to the workspace root; the adopted zellij session may
-  // be re-adopted from another workspace later (no exclusive lock) — the
-  // backend treats the chip ↔ session mapping per-workspace, but zellij
-  // itself multiplexes attach clients kernel-side.
-  const cwd = cwdRaw !== undefined && cwdRaw.length > 0 ? cwdRaw : ws.root;
-  const snap = ws.terminals.adopt(sessionName, cols, rows, cwd);
-  return { sessionId: snap.id, workspaceId: ws.id, ...snap };
+  const workspaceId = optionalString(p, "workspaceId");
+  const ws =
+    workspaceId === undefined
+      ? ctx.state.workspaces.current()
+      : ctx.state.workspaces.requireById(workspaceId);
+  const workspaceRoot = workspaceId === undefined ? null : ws?.root;
+  const cwd =
+    cwdRaw !== undefined && cwdRaw.length > 0
+      ? cwdRaw
+      : (ws?.root ?? process.env.HOME ?? "/");
+  const snap = ctx.state.terminals.adopt(
+    sessionName,
+    cols,
+    rows,
+    cwd,
+    workspaceRoot,
+  );
+  return {
+    sessionId: snap.id,
+    workspaceId: ctx.state.workspaceIdForRoot(snap.workspaceRoot),
+    ...snap,
+  };
 });
 
 methods.set("terminal.history", (ctx, params) => {
   const p = asBag(params);
   const sessionId = requireString(p, "sessionId");
   const maxBytes = optionalNonNegativeInt(p, "maxBytes");
-  const ws = findWorkspaceOwning(ctx, sessionId);
-  return ws.terminals.history(sessionId, maxBytes);
+  findTerminal(ctx, sessionId);
+  return ctx.state.terminals.history(sessionId, maxBytes);
 });
 
-function findWorkspaceOwning(
+function findTerminal(
   ctx: RpcContext,
   sessionId: string,
-): ActiveWorkspace {
-  const ws = ctx.state.findSession(sessionId);
-  if (ws === null) {
+): void {
+  const session = ctx.state.findSession(sessionId);
+  if (session === null) {
     throw new RpcError(
       RPC_ERR.invalidParams,
       `no such session: ${sessionId}`,
     );
   }
-  return ws;
 }
 
 // notification.* handlers live in ./rpcHandlers/notificationHandlers.ts (registered below).

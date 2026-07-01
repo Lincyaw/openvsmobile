@@ -11,7 +11,7 @@ The workflow detects `-rc` / `-beta` / `-alpha` suffixes in the tag and flips th
 Install or upgrade the backend by passing the desired release version once:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/install.sh | bash -s -- 0.4.2
+curl -fsSL https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/install.sh | bash -s -- 0.4.5
 ```
 
 The root `install.sh` is a small wrapper that fetches the canonical installer from `next/backend/pkg/install.sh` on `main`, then forwards the arguments unchanged. The installer downloads the matching backend tarball from GitHub Releases based on the version argument.

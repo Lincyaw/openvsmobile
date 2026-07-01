@@ -6,11 +6,11 @@
 // TerminalRegistry itself is process-resident and reset on restart; this
 // DB is the only place the link survives.
 //
-// Reads happen at workspace.open time: every row whose `workspace_root`
-// matches the freshly-opened workspace is hydrated into the workspace's
-// TerminalRegistry as metadata-only ("not yet attached"). Spawning the
-// zellij client is deferred to the first user-perceived interaction —
-// see TerminalRegistry.lazyAttachIfNeeded.
+// Reads happen at backend boot (global terminal hub) and, for the legacy
+// workspace-scoped path used by tests, at workspace.open time. Hydrated rows
+// become metadata-only entries ("not yet attached"). Spawning the zellij
+// client is deferred to the first user-perceived interaction — see
+// TerminalRegistry.lazyAttachIfNeeded.
 //
 // SQLite file path follows the same convention as notifications.db:
 //   $OPENVSMOBILE_TERMINAL_DB  (override, used by tests)
@@ -48,7 +48,8 @@ function defaultDbPath(): string {
 /// straight pass-through.
 export interface PersistedTerminal {
   id: string;
-  workspaceRoot: string;
+  title: string | null;
+  workspaceRoot: string | null;
   cwd: string;
   cols: number;
   rows: number;
@@ -60,7 +61,9 @@ export class TerminalPersistence {
   private readonly db: BetterSqliteDatabase;
   private readonly insertStmt: Database.Statement;
   private readonly deleteStmt: Database.Statement;
+  private readonly renameStmt: Database.Statement;
   private readonly loadByRootStmt: Database.Statement;
+  private readonly loadAllStmt: Database.Statement;
 
   constructor(opts: TerminalPersistenceOptions = {}) {
     const dbPath = opts.dbPath ?? defaultDbPath();
@@ -70,20 +73,29 @@ export class TerminalPersistence {
     this.initSchema();
     this.insertStmt = this.db.prepare(`
       INSERT OR REPLACE INTO terminals (
-        id, workspace_root, cwd, cols, rows, external_session_id, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        id, title, workspace_root, cwd, cols, rows, external_session_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
     this.deleteStmt = this.db.prepare(`DELETE FROM terminals WHERE id = ?`);
+    this.renameStmt = this.db.prepare(`
+      UPDATE terminals SET title = ? WHERE id = ?
+    `);
     // Ordered by createdAt so chips reappear in the same left-to-right
     // order the user originally arranged them. The list is tiny in
     // practice (single-digit per workspace) so the index-free ORDER BY
     // is fine.
     this.loadByRootStmt = this.db.prepare(`
-      SELECT id, workspace_root, cwd, cols, rows, external_session_id,
+      SELECT id, title, workspace_root, cwd, cols, rows, external_session_id,
              created_at
       FROM terminals
       WHERE workspace_root = ?
       ORDER BY created_at ASC
+    `);
+    this.loadAllStmt = this.db.prepare(`
+      SELECT id, title, workspace_root, cwd, cols, rows, external_session_id,
+             created_at
+      FROM terminals
+      ORDER BY workspace_root ASC, created_at ASC
     `);
   }
 
@@ -96,6 +108,7 @@ export class TerminalPersistence {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS terminals (
         id                   TEXT PRIMARY KEY,
+        title                TEXT,
         workspace_root       TEXT NOT NULL,
         cwd                  TEXT NOT NULL,
         cols                 INTEGER NOT NULL,
@@ -116,6 +129,10 @@ export class TerminalPersistence {
     if (!hasExternal) {
       this.db.exec(`ALTER TABLE terminals ADD COLUMN external_session_id TEXT`);
     }
+    const hasTitle = cols.some((c) => c.name === "title");
+    if (!hasTitle) {
+      this.db.exec(`ALTER TABLE terminals ADD COLUMN title TEXT`);
+    }
   }
 
   /// Record a freshly-created terminal. `externalSessionId` is null when
@@ -124,7 +141,8 @@ export class TerminalPersistence {
   /// running at the moment of the last create.
   public recordCreate(row: {
     id: string;
-    workspaceRoot: string;
+    title: string | null;
+    workspaceRoot: string | null;
     cwd: string;
     cols: number;
     rows: number;
@@ -133,7 +151,8 @@ export class TerminalPersistence {
   }): void {
     this.insertStmt.run(
       row.id,
-      row.workspaceRoot,
+      row.title,
+      row.workspaceRoot ?? "",
       row.cwd,
       row.cols,
       row.rows,
@@ -144,6 +163,10 @@ export class TerminalPersistence {
 
   public recordDispose(id: string): void {
     this.deleteStmt.run(id);
+  }
+
+  public recordRename(id: string, title: string | null): void {
+    this.renameStmt.run(title, id);
   }
 
   /// Read every persisted terminal whose `workspace_root` matches the
@@ -161,6 +184,7 @@ export class TerminalPersistence {
   public loadByWorkspaceRoot(workspaceRoot: string): PersistedTerminal[] {
     const rows = this.loadByRootStmt.all(workspaceRoot) as Array<{
       id: string;
+      title: string | null;
       workspace_root: string;
       cwd: string;
       cols: number;
@@ -168,23 +192,58 @@ export class TerminalPersistence {
       external_session_id: string | null;
       created_at: number;
     }>;
-    const out: PersistedTerminal[] = [];
-    for (const r of rows) {
-      if (r.external_session_id === null) continue;
-      out.push({
-        id: r.id,
-        workspaceRoot: r.workspace_root,
-        cwd: r.cwd,
-        cols: r.cols,
-        rows: r.rows,
-        externalSessionId: r.external_session_id,
-        createdAt: r.created_at,
-      });
-    }
-    return out;
+    return persistedRowsFromDb(rows);
+  }
+
+  /// Read every resurrectable persisted terminal across every workspace root.
+  /// The process-global terminal registry uses this at backend boot so the
+  /// Terminal tab can show sessions before any workspace is opened. Empty
+  /// `workspace_root` is the on-disk representation for an intentionally
+  /// unbound session and maps back to `workspaceRoot: null`.
+  public loadAll(): PersistedTerminal[] {
+    const rows = this.loadAllStmt.all() as Array<{
+      id: string;
+      title: string | null;
+      workspace_root: string;
+      cwd: string;
+      cols: number;
+      rows: number;
+      external_session_id: string | null;
+      created_at: number;
+    }>;
+    return persistedRowsFromDb(rows);
   }
 
   public close(): void {
     this.db.close();
   }
+}
+
+function persistedRowsFromDb(
+  rows: Array<{
+    id: string;
+    title: string | null;
+    workspace_root: string;
+    cwd: string;
+    cols: number;
+    rows: number;
+    external_session_id: string | null;
+    created_at: number;
+  }>,
+): PersistedTerminal[] {
+  const out: PersistedTerminal[] = [];
+  for (const r of rows) {
+    if (r.external_session_id === null) continue;
+    out.push({
+      id: r.id,
+      title: r.title,
+      workspaceRoot: r.workspace_root.length > 0 ? r.workspace_root : null,
+      cwd: r.cwd,
+      cols: r.cols,
+      rows: r.rows,
+      externalSessionId: r.external_session_id,
+      createdAt: r.created_at,
+    });
+  }
+  return out;
 }

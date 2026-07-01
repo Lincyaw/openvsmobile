@@ -117,13 +117,6 @@ class AppState extends ChangeNotifier {
     _lastConnectionError = client.lastError.value;
     _terminals = TerminalsNotifier(
       client: client,
-      rootOf: (workspaceId) {
-        for (final w in _active) {
-          if (w.id == workspaceId) return w.root;
-        }
-        return null;
-      },
-      currentWorkspaceId: () => _current?.id,
       reportError: _reportOperationError,
     );
     _terminals.addListener(notifyListeners);
@@ -161,7 +154,8 @@ class AppState extends ChangeNotifier {
     return cwd.isEmpty ? '/' : cwd;
   }
 
-  /// Terminal sessions belonging to the currently-focused workspace.
+  /// Terminal sessions known on the active backend. Sessions carry an
+  /// optional workspaceRoot link but are not scoped to the current workspace.
   List<TerminalSession> get currentTerminals => _terminals.currentTerminals;
 
   String? get focusedTerminalId => _terminals.focusedTerminalId;
@@ -403,6 +397,9 @@ class AppState extends ChangeNotifier {
       case BackendNotifications.terminalDetached:
         _terminals.onTerminalDetached(params);
         break;
+      case BackendNotifications.terminalRenamed:
+        _terminals.onTerminalRenamed(params);
+        break;
       case BackendNotifications.workspaceClosed:
         final id = params['id'];
         if (id is String) _onWorkspaceClosed(id);
@@ -547,9 +544,7 @@ class AppState extends ChangeNotifier {
       for (final w in _active) {
         unawaited(_workspacesModel.subscribe(w.id));
       }
-      for (final w in _active) {
-        await _refreshTerminalsForWorkspace(w.id);
-      }
+      await refreshTerminals();
       notifyListeners();
     } catch (e) {
       // Discriminate: mid-call socket drop vs. real RPC failure.
@@ -595,7 +590,7 @@ class AppState extends ChangeNotifier {
       return null;
     }
     try {
-      await _refreshTerminalsForWorkspace(ws.id);
+      await refreshTerminals();
     } catch (e) {
       if (_connectionState == BackendConnectionState.connected) {
         _reportOperationError('Could not load terminals: $e');
@@ -605,18 +600,45 @@ class AppState extends ChangeNotifier {
     return ws;
   }
 
-  /// Re-fetch one workspace's terminal registry and replay each session's
-  /// scrollback. Used both by reconnect-wide refresh and by `workspace.open`:
-  /// a freshly-opened workspace may immediately contain hydrated zellij rows.
-  Future<void> _refreshTerminalsForWorkspace(String workspaceId) async {
+  Future<void> forgetRecentWorkspace(String root) async {
+    try {
+      final r =
+          await client.call('workspace.forgetRecent', {'root': root})
+              as Map<String, dynamic>;
+      _recents = ((r['recents'] as List?) ?? const [])
+          .whereType<String>()
+          .toList(growable: false);
+      notifyListeners();
+    } catch (e) {
+      _reportOperationError('Could not remove recent workspace: $e');
+    }
+  }
+
+  Future<void> clearRecentWorkspaces() async {
+    try {
+      final r =
+          await client.call('workspace.clearRecents', const {})
+              as Map<String, dynamic>;
+      _recents = ((r['recents'] as List?) ?? const [])
+          .whereType<String>()
+          .toList(growable: false);
+      notifyListeners();
+    } catch (e) {
+      _reportOperationError('Could not clear recent workspaces: $e');
+    }
+  }
+
+  /// Re-fetch the backend-global terminal registry and replay each session's
+  /// scrollback. Terminal sessions are weakly linked to workspaces via
+  /// workspaceRoot metadata; the list itself is not workspace-scoped.
+  Future<void> refreshTerminals() async {
     final tres =
-        await client.call('terminal.list', {'workspaceId': workspaceId})
-            as Map<String, dynamic>;
+        await client.call('terminal.list', const {}) as Map<String, dynamic>;
     final sessions = (tres['sessions'] as List)
         .cast<Map<String, dynamic>>()
         .map(TerminalSession.fromJson)
         .toList();
-    _terminals.setSessionsForWorkspace(workspaceId, sessions);
+    _terminals.setSessions(sessions);
     // Replay each session's scrollback. Order matters: we must finish the
     // replay (and set the seq watermark) BEFORE any live terminal.data
     // notifications race in. Notifications observed while the call is in
@@ -653,7 +675,7 @@ class AppState extends ChangeNotifier {
   }
 
   Future<TerminalSession?> createTerminal({
-    required String workspaceId,
+    String? workspaceId,
     required int cols,
     required int rows,
   }) => _terminals.createTerminal(
@@ -668,6 +690,9 @@ class AppState extends ChangeNotifier {
   Future<void> detachTerminal(String sessionId) =>
       _terminals.detachTerminal(sessionId, connectionState: _connectionState);
 
+  Future<void> renameTerminal(String sessionId, String? title) =>
+      _terminals.renameTerminal(sessionId, title);
+
   void focusTerminal(String sessionId) => _terminals.focusTerminal(sessionId);
 
   /// Wrapper for the discovery sheet.
@@ -675,7 +700,7 @@ class AppState extends ChangeNotifier {
       _terminals.listExternalSessions();
 
   Future<TerminalSession?> adoptExternalSession({
-    required String workspaceId,
+    String? workspaceId,
     required String sessionName,
     required int cols,
     required int rows,
@@ -1049,12 +1074,20 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Test-only seam: seed the terminal session list for [workspaceId]
-  /// without going over the wire. The Terminal-tab widget tests need a
-  /// known set of sessions to render rows against.
+  /// Test-only seam: seed the backend-global terminal session list without
+  /// going over the wire. [workspaceId] is retained for older widget tests
+  /// that expect a workspace-linked session shape.
   @visibleForTesting
   void debugSeedTerminals(String workspaceId, List<TerminalSession> sessions) {
-    _terminals.setSessionsForWorkspace(workspaceId, sessions);
+    _terminals.setSessions(
+      sessions
+          .map(
+            (s) => s.workspaceId == null
+                ? s.copyWith(workspaceId: workspaceId)
+                : s,
+          )
+          .toList(),
+    );
   }
 
   /// Test-only seam: feed bytes through a session's preview pipeline.

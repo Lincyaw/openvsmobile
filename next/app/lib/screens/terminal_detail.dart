@@ -17,31 +17,51 @@ import 'package:xterm/xterm.dart';
 import '../app_state.dart';
 import '../services/terminal_gesture_host.dart';
 import '../settings_store.dart';
+import '../state/terminal_hub.dart';
 import '../ui/app_tokens.dart';
 
 class TerminalDetailScreen extends StatelessWidget {
-  final AppState appState;
+  final AppState? appState;
+  final TerminalHub? terminalHub;
+  final String? backendId;
   final SettingsStore? settingsStore;
   final String sessionId;
   final String title;
+  final Future<void> Function()? onOpenFiles;
 
   const TerminalDetailScreen({
     super.key,
-    required this.appState,
+    this.appState,
+    this.terminalHub,
+    this.backendId,
     this.settingsStore,
     required this.sessionId,
     required this.title,
-  });
+    this.onOpenFiles,
+  }) : assert(
+         appState != null || (terminalHub != null && backendId != null),
+         'TerminalDetailScreen needs AppState or TerminalHub + backendId.',
+       );
 
   @override
   Widget build(BuildContext context) {
+    final listenable = terminalHub ?? appState!;
     return AnimatedBuilder(
-      animation: appState,
+      animation: listenable,
       builder: (context, _) {
-        final terminal = appState.terminalForIfKnown(sessionId);
-        final generation = appState.terminalGenerationFor(sessionId);
-        final session = appState.terminalSessionFor(sessionId);
+        final hub = terminalHub;
+        final bid = backendId;
+        final terminal = hub == null
+            ? appState!.terminalForIfKnown(sessionId)
+            : hub.terminalForIfKnown(bid!, sessionId);
+        final generation = hub == null
+            ? appState!.terminalGenerationFor(sessionId)
+            : hub.terminalGenerationFor(bid!, sessionId);
+        final session = hub == null
+            ? appState!.terminalSessionFor(sessionId)
+            : hub.sessionFor(bid!, sessionId)?.session;
         final externalName = session?.externalSessionId;
+        final canOpenFiles = session?.workspaceRoot != null;
         return Scaffold(
           appBar: AppBar(
             title: Column(
@@ -61,6 +81,22 @@ class TerminalDetailScreen extends StatelessWidget {
               ],
             ),
             titleSpacing: 0,
+            actions: [
+              if (canOpenFiles)
+                IconButton(
+                  icon: const Icon(Icons.folder_open),
+                  tooltip: 'Open Files',
+                  onPressed: onOpenFiles == null
+                      ? null
+                      : () async {
+                          await onOpenFiles!();
+                          if (context.mounted &&
+                              Navigator.of(context).canPop()) {
+                            Navigator.of(context).pop();
+                          }
+                        },
+                ),
+            ],
           ),
           body: terminal == null
               ? const _TerminalEndedView()

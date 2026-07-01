@@ -1122,7 +1122,13 @@ export interface NotificationLink {
 export type NotificationAction =
   | { kind: "open-url"; url: string }
   | { kind: "copy"; text: string }
-  | { kind: "open-workspace"; workspaceId: string };
+  | { kind: "open-workspace"; workspaceId: string }
+  | {
+      kind: "open-terminal";
+      sessionId: string;
+      backendId?: string;
+      externalSessionId?: string;
+    };
 
 /// Inbound payload a plugin hands to `ctx.showNotification`. Matches the
 /// host's `NotificationInput` verbatim. `source` is required by the type

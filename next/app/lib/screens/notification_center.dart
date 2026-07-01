@@ -22,6 +22,7 @@ import '../settings_store.dart';
 class NotificationCenterScreen extends StatefulWidget {
   final AppState appState;
   final SettingsStore? settingsStore;
+  final Future<void> Function(OpenTerminalAction action)? onOpenTerminal;
 
   /// Optional id to scroll-to / highlight on first build. Set by the tap
   /// handler in the foreground service when the user taps a system-tray
@@ -32,6 +33,7 @@ class NotificationCenterScreen extends StatefulWidget {
     super.key,
     required this.appState,
     this.settingsStore,
+    this.onOpenTerminal,
     this.highlightId,
   });
 
@@ -56,6 +58,7 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
   /// spam the backend with one markRead per row.
   final Set<String> _pendingRead = {};
   Timer? _readDebounce;
+  bool _highlightActionHandled = false;
 
   @override
   void initState() {
@@ -65,7 +68,10 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
     // Schedule the initial mark-visible pass after first paint. This only
     // marks cards that actually rendered into the viewport; it deliberately
     // does not clear the whole filtered feed.
-    WidgetsBinding.instance.addPostFrameCallback((_) => _scheduleMarkVisible());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scheduleMarkVisible();
+      unawaited(_runHighlightedActionIfAny());
+    });
   }
 
   @override
@@ -140,9 +146,7 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
     for (final group in groups) {
       final key = _entryKeyFor(group);
       live.add(key);
-      _entryIdsByKey[key] = [
-        for (final n in group) n.id,
-      ];
+      _entryIdsByKey[key] = [for (final n in group) n.id];
       _visibilityKeyFor(key);
     }
     _visibilityKeys.removeWhere((key, _) => !live.contains(key));
@@ -175,6 +179,22 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
     await widget.appState.notifications.refresh();
   }
 
+  Future<void> _runHighlightedActionIfAny() async {
+    if (_highlightActionHandled) return;
+    final id = widget.highlightId;
+    if (id == null) return;
+    _highlightActionHandled = true;
+    var notification = widget.appState.notifications.byId(id);
+    if (notification == null) {
+      await widget.appState.notifications.refresh();
+      if (!mounted) return;
+      notification = widget.appState.notifications.byId(id);
+    }
+    final action = notification?.action;
+    if (action == null) return;
+    await _onAction(action);
+  }
+
   Future<void> _onAction(NotificationAction action) async {
     switch (action) {
       case OpenUrlAction():
@@ -205,21 +225,34 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
         if (!launched) {
           await Clipboard.setData(ClipboardData(text: action.url));
           messenger.showSnackBar(
-            SnackBar(content: Text('Could not open, URL copied: ${action.url}')),
+            SnackBar(
+              content: Text('Could not open, URL copied: ${action.url}'),
+            ),
           );
         }
       case CopyAction():
         await Clipboard.setData(ClipboardData(text: action.text));
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Copied to clipboard')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Copied to clipboard')));
       case OpenWorkspaceAction():
         // Workspace switching is on AppState, but we don't pop back here —
         // let the user verify they actually moved.
         await widget.appState.activateWorkspace(action.workspaceId);
         if (!mounted) return;
         Navigator.of(context).pop();
+      case OpenTerminalAction():
+        final opener = widget.onOpenTerminal;
+        if (opener == null) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Terminal target is unavailable')),
+          );
+          return;
+        }
+        Navigator.of(context).pop();
+        await Future<void>.delayed(Duration.zero);
+        await opener(action);
     }
   }
 
@@ -251,10 +284,7 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
               }
             },
             itemBuilder: (_) => const [
-              PopupMenuItem(
-                value: 'clear-read',
-                child: Text('Clear all read'),
-              ),
+              PopupMenuItem(value: 'clear-read', child: Text('Clear all read')),
               PopupMenuItem(value: 'refresh', child: Text('Refresh')),
             ],
           ),
@@ -330,8 +360,7 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
                               _scheduleMarkVisible();
                             },
                             onAction: _onAction,
-                            onLongPressMenu: () =>
-                                _showLongPressMenu(g.first),
+                            onLongPressMenu: () => _showLongPressMenu(g.first),
                           ),
                         );
                       }
@@ -375,14 +404,10 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
               ),
             ListTile(
               leading: Icon(
-                n.important
-                    ? Icons.push_pin
-                    : Icons.push_pin_outlined,
+                n.important ? Icons.push_pin : Icons.push_pin_outlined,
               ),
               title: Text(n.important ? 'Unpin' : 'Pin'),
-              onTap: () => Navigator.of(ctx).pop(
-                n.important ? 'unpin' : 'pin',
-              ),
+              onTap: () => Navigator.of(ctx).pop(n.important ? 'unpin' : 'pin'),
             ),
             ListTile(
               leading: const Icon(Icons.delete_outline),
@@ -417,18 +442,16 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
           cur.copyWith(mutedSources: [...cur.mutedSources, n.source]),
         );
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Muted ${n.source}')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Muted ${n.source}')));
     }
   }
 
   /// Group consecutive items by `groupKey`. Already-sorted list goes in;
   /// list-of-lists comes out where each inner list is one group (always
   /// length >= 1).
-  List<List<AppNotification>> _groupConsecutive(
-    List<AppNotification> sorted,
-  ) {
+  List<List<AppNotification>> _groupConsecutive(List<AppNotification> sorted) {
     final out = <List<AppNotification>>[];
     for (final n in sorted) {
       if (out.isEmpty) {
@@ -551,7 +574,9 @@ class _NotificationCard extends StatelessWidget {
                 Expanded(
                   child: Padding(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 10),
+                      horizontal: 12,
+                      vertical: 10,
+                    ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -562,16 +587,15 @@ class _NotificationCard extends StatelessWidget {
                             if (n.important)
                               Padding(
                                 padding: const EdgeInsets.only(right: 6),
-                                child: Icon(Icons.push_pin,
-                                    size: 14,
-                                    color: cs.tertiary),
+                                child: Icon(
+                                  Icons.push_pin,
+                                  size: 14,
+                                  color: cs.tertiary,
+                                ),
                               ),
                             Text(
                               _relativeTime(n.timestamp),
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: cs.outline,
-                              ),
+                              style: TextStyle(fontSize: 12, color: cs.outline),
                             ),
                           ],
                         ),
@@ -601,7 +625,9 @@ class _NotificationCard extends StatelessWidget {
                                     child: Text(
                                       f.key,
                                       style: TextStyle(
-                                          color: cs.outline, fontSize: 12),
+                                        color: cs.outline,
+                                        fontSize: 12,
+                                      ),
                                     ),
                                   ),
                                   Expanded(child: Text(f.value)),
@@ -618,11 +644,11 @@ class _NotificationCard extends StatelessWidget {
                               for (final link in n.links)
                                 OutlinedButton.icon(
                                   icon: const Icon(Icons.open_in_new, size: 16),
-                                  label: Text(link.title.isEmpty
-                                      ? link.url
-                                      : link.title),
-                                  onPressed: () => onAction(
-                                      OpenUrlAction(link.url)),
+                                  label: Text(
+                                    link.title.isEmpty ? link.url : link.title,
+                                  ),
+                                  onPressed: () =>
+                                      onAction(OpenUrlAction(link.url)),
                                 ),
                               if (n.action != null)
                                 _ActionButton(
@@ -656,6 +682,7 @@ class _ActionButton extends StatelessWidget {
       OpenUrlAction() => (Icons.open_in_new, 'Open'),
       CopyAction() => (Icons.copy, 'Copy'),
       OpenWorkspaceAction() => (Icons.folder_open, 'Open workspace'),
+      OpenTerminalAction() => (Icons.terminal, 'Open terminal'),
     };
     return OutlinedButton.icon(
       icon: Icon(icon, size: 16),
@@ -728,7 +755,9 @@ class _GroupCardState extends State<_GroupCard> {
                 Expanded(
                   child: Padding(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 10),
+                      horizontal: 12,
+                      vertical: 10,
+                    ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -738,7 +767,9 @@ class _GroupCardState extends State<_GroupCard> {
                             const SizedBox(width: 8),
                             Container(
                               padding: const EdgeInsets.symmetric(
-                                  horizontal: 6, vertical: 2),
+                                horizontal: 6,
+                                vertical: 2,
+                              ),
                               decoration: BoxDecoration(
                                 color: cs.tertiaryContainer,
                                 borderRadius: BorderRadius.circular(4),
@@ -754,10 +785,7 @@ class _GroupCardState extends State<_GroupCard> {
                             const Spacer(),
                             Text(
                               _relativeTime(newest.timestamp),
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: cs.outline,
-                              ),
+                              style: TextStyle(fontSize: 12, color: cs.outline),
                             ),
                           ],
                         ),

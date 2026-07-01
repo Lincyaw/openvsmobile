@@ -40,17 +40,6 @@ function readStdin() {
   });
 }
 
-function titleFor(agent) {
-  switch (agent) {
-    case "codex":
-      return "Codex finished";
-    case "claude-code":
-      return "Claude finished";
-    default:
-      return "Agent finished";
-  }
-}
-
 function sourceFor(agent) {
   switch (agent) {
     case "codex":
@@ -95,8 +84,6 @@ async function main() {
     "--from-claude-hook",
     "--source",
     source,
-    "--title",
-    titleFor(agent),
     "--quiet",
   ];
   const sessionId = sessionIdFor(parsed);

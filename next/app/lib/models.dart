@@ -15,11 +15,11 @@ class Workspace {
   });
 
   factory Workspace.fromJson(Map<String, dynamic> json) => Workspace(
-        id: json['id'] as String,
-        root: json['root'] as String,
-        label: json['label'] as String,
-        createdAt: (json['createdAt'] as num).toInt(),
-      );
+    id: json['id'] as String,
+    root: json['root'] as String,
+    label: json['label'] as String,
+    createdAt: (json['createdAt'] as num).toInt(),
+  );
 
   @override
   bool operator ==(Object other) => other is Workspace && other.id == id;
@@ -42,11 +42,11 @@ class DirEntry {
   });
 
   factory DirEntry.fromJson(Map<String, dynamic> json) => DirEntry(
-        name: json['name'] as String,
-        isDir: (json['type'] as String) == 'dir',
-        size: (json['size'] as num?)?.toInt(),
-        mtime: (json['mtime'] as num?)?.toInt(),
-      );
+    name: json['name'] as String,
+    isDir: (json['type'] as String) == 'dir',
+    size: (json['size'] as num?)?.toInt(),
+    mtime: (json['mtime'] as num?)?.toInt(),
+  );
 }
 
 class FileContent {
@@ -66,14 +66,15 @@ class FindFilesMatch {
   const FindFilesMatch({required this.path, required this.score});
 
   factory FindFilesMatch.fromJson(Map<String, dynamic> json) => FindFilesMatch(
-        path: json['path'] as String,
-        score: (json['score'] as num).toInt(),
-      );
+    path: json['path'] as String,
+    score: (json['score'] as num).toInt(),
+  );
 }
 
 /// Response shape for `workspace.findFiles`.
 class FindFilesResult {
   final List<FindFilesMatch> matches;
+
   /// `true` when the walker hit the candidate ceiling before exhausting
   /// the tree. The UI surfaces a small hint when this is set.
   final bool truncated;
@@ -148,15 +149,19 @@ const Object _noChange = Object();
 
 class TerminalSession {
   final String id;
-  final String workspaceId;
+  final String? title;
+  final String? workspaceId;
+  final String? workspaceRoot;
   final int cols;
   final int rows;
   final String cwd;
   final int createdAt;
+
   /// Zellij session name when this session is multiplexer-backed; null for
   /// direct-shell sessions. Used to show the user the exact
   /// `zellij attach <name>` invocation after a detach.
   final String? externalSessionId;
+
   /// True when the backend pushed `terminal.detached` for this session
   /// (zellij client exited but the server session is still alive). The
   /// flag clears on the next `terminal.data` for this id — the lazy-
@@ -166,7 +171,9 @@ class TerminalSession {
 
   const TerminalSession({
     required this.id,
-    required this.workspaceId,
+    this.title,
+    this.workspaceId,
+    this.workspaceRoot,
     required this.cols,
     required this.rows,
     required this.cwd,
@@ -175,21 +182,35 @@ class TerminalSession {
     this.detached = false,
   });
 
-  TerminalSession copyWith({bool? detached}) => TerminalSession(
-        id: id,
-        workspaceId: workspaceId,
-        cols: cols,
-        rows: rows,
-        cwd: cwd,
-        createdAt: createdAt,
-        externalSessionId: externalSessionId,
-        detached: detached ?? this.detached,
-      );
+  TerminalSession copyWith({
+    String? title,
+    bool clearTitle = false,
+    String? workspaceId,
+    bool clearWorkspaceId = false,
+    String? workspaceRoot,
+    bool clearWorkspaceRoot = false,
+    bool? detached,
+  }) => TerminalSession(
+    id: id,
+    title: clearTitle ? null : (title ?? this.title),
+    workspaceId: clearWorkspaceId ? null : (workspaceId ?? this.workspaceId),
+    workspaceRoot: clearWorkspaceRoot
+        ? null
+        : (workspaceRoot ?? this.workspaceRoot),
+    cols: cols,
+    rows: rows,
+    cwd: cwd,
+    createdAt: createdAt,
+    externalSessionId: externalSessionId,
+    detached: detached ?? this.detached,
+  );
 
   factory TerminalSession.fromJson(Map<String, dynamic> json) =>
       TerminalSession(
         id: json['id'] as String,
-        workspaceId: json['workspaceId'] as String,
+        title: json['title'] as String?,
+        workspaceId: json['workspaceId'] as String?,
+        workspaceRoot: json['workspaceRoot'] as String?,
         cols: (json['cols'] as num).toInt(),
         rows: (json['rows'] as num).toInt(),
         cwd: json['cwd'] as String,
@@ -202,6 +223,7 @@ class TerminalSession {
 /// the backend's `ExternalSession & { adopted }` shape.
 class ExternalTerminalSession {
   final String name;
+
   /// "active" or "exited". Exited sessions can still be revived via
   /// `zellij attach --create <name>` — the same code path adoption uses
   /// — so the UI still allows tapping them.

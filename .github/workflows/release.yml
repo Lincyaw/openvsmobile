@@ -74,6 +74,20 @@ jobs:
         working-directory: next/backend
         run: pnpm typecheck
 
+      - name: Pin backend package.json version to tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: next/backend
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          # Backend reports its version via package.json's "version" field
+          # (see src/version.ts) which lands in runtime.json. install.sh's
+          # post-start check refuses to proceed when the file version
+          # disagrees with the installer's expected version, so this must
+          # happen before building the backend tarball.
+          sed -i "s/^  \"version\": \".*\",$/  \"version\": \"${tag}\",/" package.json
+          grep "\"version\": \"${tag}\"" package.json
+
       - name: Build tarball for linux-${{ matrix.arch }}
         working-directory: next/backend
         run: pkg/build-tarball.sh ${{ matrix.arch }}
@@ -131,18 +145,37 @@ jobs:
           # the wrong version.
           grep "kBackendVersion = '${tag}'" lib/version.dart
 
-      - name: Pin backend package.json version to tag
-        working-directory: next/backend
+      - name: Compute Android build metadata
+        id: android-meta
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
-          # Backend reports its version via package.json's "version" field
-          # (see src/version.ts) which lands in runtime.json. install.sh's
-          # post-start check refuses to proceed when the file version
-          # disagrees with the installer's expected version, so this
-          # MUST stay in lock-step with the kBackendVersion pin above.
-          sed -i "s/^  \"version\": \".*\",$/  \"version\": \"${tag}\",/" package.json
-          grep "\"version\": \"${tag}\"" package.json
+          core="${tag%%-*}"
+          IFS=. read -r major minor patch extra <<< "$core"
+          if [[ -z "${major:-}" || -z "${minor:-}" || -z "${patch:-}" || -n "${extra:-}" ]]; then
+            echo "::error::Tag '${GITHUB_REF_NAME}' is not v<major>.<minor>.<patch>[-suffix]"
+            exit 1
+          fi
+          if [[ ! "$major" =~ ^[0-9]+$ || ! "$minor" =~ ^[0-9]+$ || ! "$patch" =~ ^[0-9]+$ ]]; then
+            echo "::error::Tag '${GITHUB_REF_NAME}' contains a non-numeric semver core"
+            exit 1
+          fi
+          base=$((10#$major * 1000000 + 10#$minor * 10000 + 10#$patch * 100))
+          if [[ "$tag" == "$core" ]]; then
+            offset=99
+          elif [[ "$tag" =~ ([0-9]+)$ ]]; then
+            offset="${BASH_REMATCH[1]}"
+            if (( offset < 1 || offset > 98 )); then
+              echo "::error::Pre-release numeric suffix must be 1..98 for Android versionCode"
+              exit 1
+            fi
+          else
+            offset=1
+          fi
+          build_number=$((base + offset))
+          echo "build_name=${tag}" >> "$GITHUB_OUTPUT"
+          echo "build_number=${build_number}" >> "$GITHUB_OUTPUT"
+          echo "Android versionName=${tag} versionCode=${build_number}"
 
       - name: Configure release signing (if secrets present)
         id: signing
@@ -176,11 +209,17 @@ jobs:
 
       - name: Build split-per-ABI release APKs
         working-directory: next/app
-        run: flutter build apk --release --split-per-abi
+        run: >
+          flutter build apk --release --split-per-abi
+          --build-name '${{ steps.android-meta.outputs.build_name }}'
+          --build-number '${{ steps.android-meta.outputs.build_number }}'
 
       - name: Build universal release APK
         working-directory: next/app
-        run: flutter build apk --release
+        run: >
+          flutter build apk --release
+          --build-name '${{ steps.android-meta.outputs.build_name }}'
+          --build-number '${{ steps.android-meta.outputs.build_number }}'
 
       - name: Stage APKs and sha256 sidecars
         id: stage

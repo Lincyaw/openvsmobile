@@ -17,7 +17,7 @@
 
 import { describe, expect, it, afterEach, beforeEach, vi } from "vitest";
 import type { IPty, IPtyForkOptions } from "node-pty";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -280,6 +280,7 @@ describe("TerminalPersistence", () => {
     const persistence = new TerminalPersistence(opts);
     persistence.recordCreate({
       id: "term-1",
+      title: null,
       workspaceRoot: "/work",
       cwd: "/work/src",
       cols: 80,
@@ -290,13 +291,14 @@ describe("TerminalPersistence", () => {
     const db = new Database(opts.dbPath as string);
     const row = db
       .prepare(
-        `SELECT id, workspace_root, cwd, cols, rows, external_session_id,
+        `SELECT id, title, workspace_root, cwd, cols, rows, external_session_id,
                 created_at
          FROM terminals WHERE id = ?`,
       )
       .get("term-1") as
       | {
           id: string;
+          title: string | null;
           workspace_root: string;
           cwd: string;
           cols: number;
@@ -306,6 +308,7 @@ describe("TerminalPersistence", () => {
         }
       | undefined;
     expect(row).toBeDefined();
+    expect(row?.title).toBeNull();
     expect(row?.external_session_id).toBe("ovsm-term-1");
     expect(row?.workspace_root).toBe("/work");
     db.close();
@@ -317,6 +320,7 @@ describe("TerminalPersistence", () => {
     const persistence = new TerminalPersistence(opts);
     persistence.recordCreate({
       id: "term-x",
+      title: null,
       workspaceRoot: "/work",
       cwd: "/work",
       cols: 80,
@@ -334,7 +338,29 @@ describe("TerminalPersistence", () => {
     persistence.close();
   });
 
-  it("migrates a pre-existing table that lacks `external_session_id`", async () => {
+  it("recordRename persists and clears the display title", async () => {
+    const opts = await tempDbPath();
+    const persistence = new TerminalPersistence(opts);
+    persistence.recordCreate({
+      id: "term-rename",
+      title: null,
+      workspaceRoot: "/work",
+      cwd: "/work",
+      cols: 80,
+      rows: 24,
+      externalSessionId: "ovsm-term-rename",
+      createdAt: 1,
+    });
+    persistence.recordRename("term-rename", "deploy box");
+    expect(persistence.loadByWorkspaceRoot("/work")[0].title).toBe(
+      "deploy box",
+    );
+    persistence.recordRename("term-rename", null);
+    expect(persistence.loadByWorkspaceRoot("/work")[0].title).toBeNull();
+    persistence.close();
+  });
+
+  it("migrates a pre-existing table that lacks new terminal columns", async () => {
     // Simulate an older backend's schema by hand-creating the table
     // without the new column; opening a fresh TerminalPersistence
     // against that DB must ALTER TABLE the column in, not throw.
@@ -359,7 +385,7 @@ describe("TerminalPersistence", () => {
 
     const persistence = new TerminalPersistence(opts);
     // After migration the legacy row is still there, with NULL in the
-    // new column — exactly what the design intends ("we cannot
+    // new columns — exactly what the design intends ("we cannot
     // resurrect this session" is indistinguishable from "this was a
     // fallback-mode row").
     const db2 = new Database(dbPath);
@@ -376,6 +402,7 @@ describe("TerminalPersistence", () => {
     // produced a usable schema, not a half-migrated one.
     persistence.recordCreate({
       id: "fresh-1",
+      title: null,
       workspaceRoot: "/work",
       cwd: "/work",
       cols: 80,
@@ -398,6 +425,7 @@ describe("TerminalPersistence.loadByWorkspaceRoot", () => {
     const persistence = new TerminalPersistence(opts);
     persistence.recordCreate({
       id: "term-a",
+      title: null,
       workspaceRoot: "/work-A",
       cwd: "/work-A",
       cols: 80,
@@ -407,6 +435,7 @@ describe("TerminalPersistence.loadByWorkspaceRoot", () => {
     });
     persistence.recordCreate({
       id: "term-b",
+      title: null,
       workspaceRoot: "/work-A",
       cwd: "/work-A/src",
       cols: 100,
@@ -416,6 +445,7 @@ describe("TerminalPersistence.loadByWorkspaceRoot", () => {
     });
     persistence.recordCreate({
       id: "term-c",
+      title: null,
       workspaceRoot: "/other-root",
       cwd: "/other-root",
       cols: 80,
@@ -438,6 +468,7 @@ describe("TerminalPersistence.loadByWorkspaceRoot", () => {
     const persistence = new TerminalPersistence(opts);
     persistence.recordCreate({
       id: "fallback-only",
+      title: null,
       workspaceRoot: "/work",
       cwd: "/work",
       cols: 80,
@@ -447,6 +478,7 @@ describe("TerminalPersistence.loadByWorkspaceRoot", () => {
     });
     persistence.recordCreate({
       id: "with-mux",
+      title: null,
       workspaceRoot: "/work",
       cwd: "/work",
       cols: 80,
@@ -490,7 +522,16 @@ describe("TerminalRegistry hydrate + lazy attach", () => {
     // where a stray `state` slips into snapshotOf and changes
     // terminal.list's response.
     expect(Object.keys(listed[0]).sort()).toEqual(
-      ["cols", "createdAt", "cwd", "externalSessionId", "id", "rows"].sort(),
+      [
+        "cols",
+        "createdAt",
+        "cwd",
+        "externalSessionId",
+        "id",
+        "rows",
+        "title",
+        "workspaceRoot",
+      ].sort(),
     );
   });
 
@@ -499,6 +540,7 @@ describe("TerminalRegistry hydrate + lazy attach", () => {
     const persistence = new TerminalPersistence(opts);
     persistence.recordCreate({
       id: "abc",
+      title: null,
       workspaceRoot: "/work",
       cwd: "/work",
       cols: 80,
@@ -532,6 +574,7 @@ describe("TerminalRegistry hydrate + lazy attach", () => {
     const persistence = new TerminalPersistence(opts);
     persistence.recordCreate({
       id: "shared",
+      title: null,
       workspaceRoot: "/work",
       cwd: "/work",
       cols: 80,
@@ -682,6 +725,7 @@ describe("TerminalRegistry hydrate + lazy attach", () => {
     const persistence = new TerminalPersistence(opts);
     persistence.recordCreate({
       id: "lazy-1",
+      title: null,
       workspaceRoot: "/work",
       cwd: "/work",
       cols: 80,
@@ -720,6 +764,7 @@ describe("TerminalRegistry hydrate + lazy attach", () => {
     const persistence = new TerminalPersistence(opts);
     persistence.recordCreate({
       id: "doomed",
+      title: null,
       workspaceRoot: "/work",
       cwd: "/work",
       cols: 80,
@@ -789,6 +834,7 @@ describe("TerminalRegistry hydrate + lazy attach", () => {
     // for both shapes.
     persistence.recordCreate({
       id: "hydrated-1",
+      title: null,
       workspaceRoot: "/work",
       cwd: "/work",
       cols: 80,
@@ -1158,9 +1204,8 @@ describe("ProcessState external-session helpers", () => {
       multiplexer: { kind: "zellij" },
       execRunner: runner,
     });
-    // Open a workspace and adopt one of the sessions.
-    const ws = await state.workspaces.open(tmp);
-    ws.terminals.adopt("ovsm-adopted", 80, 24, tmp);
+    await state.workspaces.open(tmp);
+    state.terminals.adopt("ovsm-adopted", 80, 24, tmp, tmp);
     const sessions = await state.listExternalSessions();
     expect(sessions).toEqual([
       { name: "ovsm-adopted", status: "active", adopted: true },
@@ -1173,13 +1218,43 @@ describe("ProcessState external-session helpers", () => {
     const { ProcessState } = await import("../src/state.js");
     const tmp = await mkdtemp(join(tmpdir(), "ovsm-state-test-"));
     tempDirs.push(tmp);
+    const root = await realpath(tmp);
     const state = new ProcessState({
       multiplexer: { kind: "zellij" },
     });
-    const ws = await state.workspaces.open(tmp);
-    ws.terminals.adopt("ovsm-shared", 80, 24, tmp);
+    await state.workspaces.open(tmp);
+    state.terminals.adopt("ovsm-shared", 80, 24, tmp, tmp);
     expect(state.isExternalSessionAdopted("ovsm-shared")).toBe(true);
     expect(state.isExternalSessionAdopted("ovsm-other")).toBe(false);
+    state.shutdownAll();
+  });
+
+  it("workspace close does not dispose process-global terminal sessions", async () => {
+    const { ProcessState } = await import("../src/state.js");
+    const tmp = await mkdtemp(join(tmpdir(), "ovsm-state-test-"));
+    tempDirs.push(tmp);
+    const root = await realpath(tmp);
+    const state = new ProcessState({
+      multiplexer: { kind: "zellij" },
+    });
+    const terminalId = "11111111-2222-3333-4444-555555555555";
+    state.terminals.hydrate({
+      id: terminalId,
+      workspaceRoot: root,
+      cwd: root,
+      cols: 80,
+      rows: 24,
+      externalSessionId: "ovsm-persisted",
+      createdAt: 123,
+    });
+    const ws = await state.workspaces.open(tmp);
+    expect(state.listAllTerminals()).toMatchObject([
+      { id: terminalId, workspaceRoot: root, workspaceId: ws.id },
+    ]);
+    state.workspaces.close(ws.id);
+    expect(state.listAllTerminals()).toMatchObject([
+      { id: terminalId, workspaceRoot: root, workspaceId: null },
+    ]);
     state.shutdownAll();
   });
 });

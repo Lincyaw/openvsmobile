@@ -1,5 +1,5 @@
-// PTY-side state: the per-workspace session lists, the focused session per
-// workspace, live xterm.dart Terminal objects, and the seqEnd / backlog
+// PTY-side state: the backend-global session list, the focused session,
+// live xterm.dart Terminal objects, and the seqEnd / backlog
 // machinery that keeps history-replay vs. live-stream watertight on
 // reconnect. Composed as a child of AppState (see docs/conventions.md §2 —
 // "If `AppState` outgrows one file, split it into composed sub-notifiers").
@@ -35,35 +35,16 @@ import '../services/terminal_diag.dart';
 /// SnackBar in the standard way.
 typedef ReportOperationError = void Function(String message);
 
-/// Resolve a workspace id to its root path, or null if the workspace has
-/// since been closed. Used when a fresh terminal needs a cwd.
-typedef WorkspaceRootLookup = String? Function(String workspaceId);
-
-/// Resolve the currently-focused workspace id, or null if none. Used by the
-/// view helpers `currentTerminals` / `focusedTerminalId` so the widget tree
-/// can ask "what's relevant right now" without threading the workspace id
-/// through every getter.
-typedef CurrentWorkspaceIdLookup = String? Function();
-
 class TerminalsNotifier extends ChangeNotifier {
   final BackendClient _client;
-  final WorkspaceRootLookup _rootOf;
-  final CurrentWorkspaceIdLookup _currentWorkspaceId;
   final ReportOperationError _reportError;
 
   TerminalsNotifier({
     required BackendClient client,
-    required WorkspaceRootLookup rootOf,
-    required CurrentWorkspaceIdLookup currentWorkspaceId,
     required ReportOperationError reportError,
-  }) : this._(client, rootOf, currentWorkspaceId, reportError);
+  }) : this._(client, reportError);
 
-  TerminalsNotifier._(
-    this._client,
-    this._rootOf,
-    this._currentWorkspaceId,
-    this._reportError,
-  );
+  TerminalsNotifier._(this._client, this._reportError);
 
   /// Bumps on every per-session preview-buffer mutation. The Terminal-tab
   /// session list listens to this for cheap repaints without going through
@@ -74,13 +55,12 @@ class TerminalsNotifier extends ChangeNotifier {
   /// update.
   final ValueNotifier<int> previewVersion = ValueNotifier<int>(0);
 
-  // Per-workspace terminal session lists (mirror of the backend state).
-  final Map<String, List<TerminalSession>> _termsByWorkspace = {};
+  // Backend-global terminal session list (mirror of `terminal.list`).
+  final List<TerminalSession> _sessions = [];
 
-  // Per-workspace focused session id. Workspace-scoped UI state — belongs
-  // here rather than in widget state because it needs to survive a tab
-  // switch and a screen rebuild.
-  final Map<String, String?> _focusedTermBySpace = {};
+  // Focused session id. Terminal focus is no longer workspace-scoped because
+  // sessions are backend-global and only carry an optional workspace link.
+  String? _focusedTerminalId;
 
   // Live xterm Terminal objects keyed by sessionId. Created lazily on first
   // focus (or when we replay history on reconnect) and kept fed by every
@@ -124,24 +104,16 @@ class TerminalsNotifier extends ChangeNotifier {
 
   // ---- Getters ----
 
-  /// Terminal sessions belonging to the currently-focused workspace.
-  List<TerminalSession> get currentTerminals {
-    final wsId = _currentWorkspaceId();
-    if (wsId == null) return const [];
-    return List.unmodifiable(_termsByWorkspace[wsId] ?? const []);
-  }
+  /// Terminal sessions known on the active backend. The name is preserved
+  /// for the existing widget-facing AppState API; it is no longer scoped to
+  /// the current workspace.
+  List<TerminalSession> get currentTerminals => List.unmodifiable(_sessions);
 
-  String? get focusedTerminalId {
-    final wsId = _currentWorkspaceId();
-    if (wsId == null) return null;
-    return _focusedTermBySpace[wsId];
-  }
+  String? get focusedTerminalId => _focusedTerminalId;
 
   TerminalSession? sessionFor(String sessionId) {
-    for (final sessions in _termsByWorkspace.values) {
-      for (final session in sessions) {
-        if (session.id == sessionId) return session;
-      }
+    for (final session in _sessions) {
+      if (session.id == sessionId) return session;
     }
     return null;
   }
@@ -198,19 +170,16 @@ class TerminalsNotifier extends ChangeNotifier {
 
   // ---- Snapshot installation (called from AppState.refreshWorkspaces) ----
 
-  /// Replace the cached session list for [workspaceId]. Used after a
-  /// successful `terminal.list` RPC during reconnect. Caller is responsible
-  /// for invoking [replayHistory] for each session afterward.
-  void setSessionsForWorkspace(
-    String workspaceId,
-    List<TerminalSession> sessions,
-  ) {
-    _termsByWorkspace[workspaceId] = sessions.toList(growable: true);
-    // Restore focus so the Terminal tab shows a session immediately on
-    // reconnect instead of the "Creating terminal…" placeholder. Without
-    // this step the user would have to tap a chip after every drop.
-    if (sessions.isNotEmpty) {
-      _focusedTermBySpace[workspaceId] ??= sessions.first.id;
+  /// Replace the cached backend-global session list. Used after a successful
+  /// `terminal.list` RPC during reconnect. Caller is responsible for invoking
+  /// [replayHistory] for each session afterward.
+  void setSessions(List<TerminalSession> sessions) {
+    _sessions
+      ..clear()
+      ..addAll(sessions);
+    if (_focusedTerminalId == null ||
+        !_sessions.any((s) => s.id == _focusedTerminalId)) {
+      _focusedTerminalId = _sessions.isEmpty ? null : _sessions.first.id;
     }
     refreshTerminalSubscription();
     notifyListeners();
@@ -271,10 +240,7 @@ class TerminalsNotifier extends ChangeNotifier {
   /// settles the next call rectifies it. Called from AppState on
   /// reconnect, and locally on every mutation of the known-id set.
   void refreshTerminalSubscription() {
-    final ids = <String>[
-      for (final list in _termsByWorkspace.values)
-        for (final t in list) t.id,
-    ];
+    final ids = <String>[for (final t in _sessions) t.id];
     // Backend semantic: `terminal.subscribe` with an empty/omitted `ids` is
     // explicit subscribe-ALL (legacy compatibility). We want "subscribe to
     // exactly my zero sessions" in that case, so map empty → unsubscribe.
@@ -293,44 +259,24 @@ class TerminalsNotifier extends ChangeNotifier {
 
   // ---- Public actions ----
 
-  /// Create a fresh PTY session in [workspaceId]. Returns the new session,
-  /// or null if the RPC failed (the error is reported to AppState).
+  /// Create a fresh PTY session. When [workspaceId] is supplied the backend
+  /// stores that workspace root as a weak link; otherwise the terminal is
+  /// intentionally unbound.
   Future<TerminalSession?> createTerminal({
-    required String workspaceId,
+    String? workspaceId,
     required int cols,
     required int rows,
   }) async {
     try {
+      final params = <String, dynamic>{'cols': cols, 'rows': rows};
+      if (workspaceId != null) params['workspaceId'] = workspaceId;
       final r =
-          await _client.call('terminal.create', {
-                'workspaceId': workspaceId,
-                'cols': cols,
-                'rows': rows,
-              })
-              as Map<String, dynamic>;
-      final sid = r['sessionId'] as String;
-      final wsId = r['workspaceId'] as String;
-      final root = _rootOf(wsId);
-      if (root == null) {
-        // The workspace was closed between us calling and the response
-        // arriving — bail rather than fabricating a cwd. The notification
-        // path will surface the close via terminal.exit when it lands.
-        _reportError('Could not create terminal: workspace gone');
-        return null;
-      }
-      final session = TerminalSession(
-        id: sid,
-        workspaceId: wsId,
-        cols: cols,
-        rows: rows,
-        cwd: root,
-        createdAt: DateTime.now().millisecondsSinceEpoch,
-      );
-      final list = _termsByWorkspace.putIfAbsent(wsId, () => []);
-      list.add(session);
-      _focusedTermBySpace[wsId] = sid;
+          await _client.call('terminal.create', params) as Map<String, dynamic>;
+      final session = TerminalSession.fromJson(r);
+      _sessions.add(session);
+      _focusedTerminalId = session.id;
       // Fresh session — no history to fetch.
-      _lastWrittenSeq[sid] = 0;
+      _lastWrittenSeq[session.id] = 0;
       refreshTerminalSubscription();
       notifyListeners();
       return session;
@@ -355,52 +301,51 @@ class TerminalsNotifier extends ChangeNotifier {
         .toList(growable: false);
   }
 
-  /// Adopt an external zellij session into [workspaceId] at the given size.
-  /// Returns the new TerminalSession; errors bubble so the caller can
-  /// surface them. The session id is fresh; the zellij session NAME is
-  /// preserved (no `ovsm-` prefix forced).
+  /// Adopt an external zellij session. [workspaceId] weak-links it to a
+  /// workspace root when provided; omitted means unbound.
   Future<TerminalSession?> adoptExternalSession({
-    required String workspaceId,
+    String? workspaceId,
     required String sessionName,
     required int cols,
     required int rows,
   }) async {
     try {
+      final params = <String, dynamic>{
+        'sessionName': sessionName,
+        'cols': cols,
+        'rows': rows,
+      };
+      if (workspaceId != null) params['workspaceId'] = workspaceId;
       final r =
-          await _client.call('terminal.adoptExternalSession', {
-                'workspaceId': workspaceId,
-                'sessionName': sessionName,
-                'cols': cols,
-                'rows': rows,
-              })
+          await _client.call('terminal.adoptExternalSession', params)
               as Map<String, dynamic>;
-      final sid = r['sessionId'] as String;
-      final wsId = r['workspaceId'] as String;
-      final root = _rootOf(wsId);
-      if (root == null) {
-        _reportError('Could not adopt session: workspace gone');
-        return null;
-      }
-      final session = TerminalSession(
-        id: sid,
-        workspaceId: wsId,
-        cols: cols,
-        rows: rows,
-        cwd: (r['cwd'] as String?) ?? root,
-        createdAt:
-            (r['createdAt'] as num?)?.toInt() ??
-            DateTime.now().millisecondsSinceEpoch,
-      );
-      final list = _termsByWorkspace.putIfAbsent(wsId, () => []);
-      list.add(session);
-      _focusedTermBySpace[wsId] = sid;
-      _lastWrittenSeq[sid] = 0;
+      final session = TerminalSession.fromJson(r);
+      _sessions.add(session);
+      _focusedTerminalId = session.id;
+      _lastWrittenSeq[session.id] = 0;
       refreshTerminalSubscription();
       notifyListeners();
       return session;
     } catch (e) {
       _reportError('Could not adopt session: $e');
       return null;
+    }
+  }
+
+  Future<void> renameTerminal(String sessionId, String? title) async {
+    try {
+      final r =
+          await _client.call('terminal.rename', {
+                'sessionId': sessionId,
+                'title': title,
+              })
+              as Map<String, dynamic>;
+      final raw = r['session'];
+      if (raw is Map<String, dynamic>) {
+        _upsertSession(TerminalSession.fromJson(raw));
+      }
+    } catch (e) {
+      _reportError('Could not rename terminal: $e');
     }
   }
 
@@ -450,14 +395,9 @@ class TerminalsNotifier extends ChangeNotifier {
     }
   }
 
-  /// Set the focused session for the currently-active workspace.
   void focusTerminal(String sessionId) {
-    // Capture the current workspace id once: this method runs synchronously
-    // but the lookup is via callback into AppState, which could in
-    // principle change between two reads. One read = one decision.
-    final wsId = _currentWorkspaceId();
-    if (wsId == null) return;
-    _focusedTermBySpace[wsId] = sessionId;
+    if (!_sessions.any((s) => s.id == sessionId)) return;
+    _focusedTerminalId = sessionId;
     notifyListeners();
   }
 
@@ -535,26 +475,37 @@ class TerminalsNotifier extends ChangeNotifier {
   void onTerminalDetached(Map<String, dynamic> p) {
     final sessionId = p['sessionId'] as String?;
     if (sessionId == null) return;
-    for (final list in _termsByWorkspace.values) {
-      for (var i = 0; i < list.length; i++) {
-        if (list[i].id == sessionId) {
-          if (!list[i].detached) {
-            list[i] = list[i].copyWith(detached: true);
-          }
-        }
+    for (var i = 0; i < _sessions.length; i++) {
+      if (_sessions[i].id == sessionId && !_sessions[i].detached) {
+        _sessions[i] = _sessions[i].copyWith(detached: true);
       }
     }
     notifyListeners();
   }
 
+  void onTerminalRenamed(Map<String, dynamic> p) {
+    final sessionId = p['sessionId'] as String?;
+    if (sessionId == null) return;
+    final title = p['title'] as String?;
+    var changed = false;
+    for (var i = 0; i < _sessions.length; i++) {
+      if (_sessions[i].id == sessionId) {
+        _sessions[i] = _sessions[i].copyWith(
+          title: title,
+          clearTitle: title == null,
+        );
+        changed = true;
+      }
+    }
+    if (changed) notifyListeners();
+  }
+
   void _clearDetachedIfSet(String sessionId) {
     var changed = false;
-    for (final list in _termsByWorkspace.values) {
-      for (var i = 0; i < list.length; i++) {
-        if (list[i].id == sessionId && list[i].detached) {
-          list[i] = list[i].copyWith(detached: false);
-          changed = true;
-        }
+    for (var i = 0; i < _sessions.length; i++) {
+      if (_sessions[i].id == sessionId && _sessions[i].detached) {
+        _sessions[i] = _sessions[i].copyWith(detached: false);
+        changed = true;
       }
     }
     if (changed) notifyListeners();
@@ -562,7 +513,6 @@ class TerminalsNotifier extends ChangeNotifier {
 
   void onTerminalExit(Map<String, dynamic> p) {
     final sessionId = p['sessionId'] as String;
-    final wsId = p['workspaceId'] as String?;
     _resizeTimers.remove(sessionId)?.cancel();
     _xterms.remove(sessionId);
     _xtermGen.remove(sessionId);
@@ -571,42 +521,37 @@ class TerminalsNotifier extends ChangeNotifier {
     _backlogBytes.remove(sessionId);
     _previewBuffer.remove(sessionId);
     _previewLastDataAt.remove(sessionId);
-    if (wsId != null) {
-      final list = _termsByWorkspace[wsId];
-      if (list != null) {
-        list.removeWhere((t) => t.id == sessionId);
-      }
-      if (_focusedTermBySpace[wsId] == sessionId) {
-        _focusedTermBySpace[wsId] = list != null && list.isNotEmpty
-            ? list.first.id
-            : null;
-      }
-    } else {
-      // Workspace already closed locally — search all.
-      for (final entry in _termsByWorkspace.entries) {
-        entry.value.removeWhere((t) => t.id == sessionId);
-      }
+    _sessions.removeWhere((t) => t.id == sessionId);
+    if (_focusedTerminalId == sessionId) {
+      _focusedTerminalId = _sessions.isNotEmpty ? _sessions.first.id : null;
     }
     refreshTerminalSubscription();
     notifyListeners();
   }
 
-  /// Drop every piece of state tied to [workspaceId] — sessions, focus,
-  /// per-session Terminals and seq watermarks. Called when AppState
-  /// processes a `workspace.closed` notification.
+  /// A workspace close no longer owns terminal lifetime. Keep every session
+  /// and only clear the volatile workspaceId shortcut; workspaceRoot remains
+  /// as the stable Files jump locator.
   void onWorkspaceClosed(String workspaceId) {
-    final sessions = _termsByWorkspace.remove(workspaceId) ?? const [];
-    _focusedTermBySpace.remove(workspaceId);
-    for (final s in sessions) {
-      _resizeTimers.remove(s.id)?.cancel();
-      _xterms.remove(s.id);
-      _xtermGen.remove(s.id);
-      _lastWrittenSeq.remove(s.id);
-      _backlog.remove(s.id);
-      _backlogBytes.remove(s.id);
-      _previewBuffer.remove(s.id);
-      _previewLastDataAt.remove(s.id);
+    var changed = false;
+    for (var i = 0; i < _sessions.length; i++) {
+      if (_sessions[i].workspaceId == workspaceId) {
+        _sessions[i] = _sessions[i].copyWith(clearWorkspaceId: true);
+        changed = true;
+      }
     }
+    if (changed) notifyListeners();
+  }
+
+  void _upsertSession(TerminalSession session) {
+    for (var i = 0; i < _sessions.length; i++) {
+      if (_sessions[i].id == session.id) {
+        _sessions[i] = session;
+        notifyListeners();
+        return;
+      }
+    }
+    _sessions.add(session);
     notifyListeners();
   }
 
@@ -618,8 +563,8 @@ class TerminalsNotifier extends ChangeNotifier {
       t.cancel();
     }
     _resizeTimers.clear();
-    _termsByWorkspace.clear();
-    _focusedTermBySpace.clear();
+    _sessions.clear();
+    _focusedTerminalId = null;
     _xterms.clear();
     _xtermGen.clear();
     _lastWrittenSeq.clear();
@@ -690,9 +635,9 @@ class TerminalsNotifier extends ChangeNotifier {
   /// enters the correct buffer mode. Harmless if already in alt buffer.
   void _restoreAltBufferIfNeeded(String sessionId, Terminal term) {
     if (term.isUsingAltBuffer) return;
-    final isZellij = _termsByWorkspace.values
-        .expand((list) => list)
-        .any((s) => s.id == sessionId && s.externalSessionId != null);
+    final isZellij = _sessions.any(
+      (s) => s.id == sessionId && s.externalSessionId != null,
+    );
     if (!isZellij) return;
     term.write('\x1b[?1049h');
     DiagLog.instance.log(

@@ -37,6 +37,7 @@ const EXIT_RATE_LIMITED = 7;
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const VALID_LEVELS = new Set(["info", "success", "warning", "error"]);
+const MANAGED_ZELLIJ_PREFIX = "ovsm-";
 
 function die(code, message) {
   process.stderr.write(`mobile-notify: ${message}\n`);
@@ -96,7 +97,9 @@ function parseKv(raw, flag) {
 }
 
 function parseAction(raw) {
-  // Action grammar: "open-url:<url>" | "copy:<text>" | "open-workspace:<id>".
+  // Action grammar:
+  //   "open-url:<url>" | "copy:<text>" | "open-workspace:<id>" |
+  //   "open-terminal:<sessionId>"
   // The text after the kind is everything to the right of the FIRST colon —
   // copy: text may contain colons.
   const colon = raw.indexOf(":");
@@ -108,7 +111,8 @@ function parseAction(raw) {
   if (kind === "open-url") return { kind: "open-url", url: rest };
   if (kind === "copy") return { kind: "copy", text: rest };
   if (kind === "open-workspace") return { kind: "open-workspace", workspaceId: rest };
-  die(EXIT_ARGS, `--action kind must be open-url|copy|open-workspace, got: ${kind}`);
+  if (kind === "open-terminal") return { kind: "open-terminal", sessionId: rest };
+  die(EXIT_ARGS, `--action kind must be open-url|copy|open-workspace|open-terminal, got: ${kind}`);
 }
 
 function readStdin() {
@@ -125,12 +129,177 @@ function truncate(s, max) {
   return s.length > max ? s.slice(0, max - 1) + "…" : s;
 }
 
-/// Translate a Claude Code hook envelope to a Notification payload. The
-/// hook docs are at https://docs.claude.com/en/docs/claude-code/hooks —
-/// we pick sensible defaults for the fields we care about and pass
-/// everything through `field` arrays for the rest so a curious reader can
-/// see the full event on the phone if they tap the card open.
-function claudeHookToNotification(ev) {
+function truncateUtf8(s, maxBytes) {
+  if (typeof s !== "string") return s;
+  if (Buffer.byteLength(s, "utf8") <= maxBytes) return s;
+  const ellipsis = "…";
+  const ellipsisBytes = Buffer.byteLength(ellipsis, "utf8");
+  let out = "";
+  let used = 0;
+  for (const ch of s) {
+    const n = Buffer.byteLength(ch, "utf8");
+    if (used + n + ellipsisBytes > maxBytes) break;
+    out += ch;
+    used += n;
+  }
+  return out + ellipsis;
+}
+
+function firstNonEmptyLine(text) {
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length > 0) return trimmed;
+  }
+  return "";
+}
+
+function agentLabelForSource(source) {
+  if (source === "codex") return "Codex";
+  if (source === "claude-code") return "Claude";
+  return "Agent";
+}
+
+function stopTitleForSource(source) {
+  return `${agentLabelForSource(source)} finished`;
+}
+
+function stringField(obj, key) {
+  if (!obj || typeof obj !== "object") return undefined;
+  const value = obj[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function textFromContent(value) {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => textFromContent(item))
+      .filter((s) => s.trim().length > 0)
+      .join("\n");
+  }
+  if (value && typeof value === "object") {
+    if (typeof value.text === "string") return value.text;
+    if (typeof value.message === "string") return value.message;
+    if (value.content !== undefined) return textFromContent(value.content);
+  }
+  return "";
+}
+
+function assistantTextFromRecord(record) {
+  if (!record || typeof record !== "object") return "";
+  const role =
+    record.role ??
+    (record.message && typeof record.message === "object"
+      ? record.message.role
+      : undefined);
+  const type = record.type;
+  const isAssistant =
+    role === "assistant" ||
+    type === "assistant" ||
+    type === "agent_message" ||
+    type === "assistant_message";
+  if (!isAssistant) return "";
+
+  const candidates = [
+    record.content,
+    record.text,
+    record.message,
+    record.output,
+    record.response,
+  ];
+  for (const candidate of candidates) {
+    const text = textFromContent(candidate).trim();
+    if (text.length > 0) return text;
+  }
+  return "";
+}
+
+function lastAssistantTextFromTranscript(path) {
+  if (typeof path !== "string" || path.length === 0) return undefined;
+  let raw;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  }
+  let last;
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    let record;
+    try {
+      record = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    const text = assistantTextFromRecord(record).trim();
+    if (text.length > 0) last = text;
+  }
+  return last;
+}
+
+function lastAgentMessageFromHook(event) {
+  const direct =
+    stringField(event, "last_message") ??
+    stringField(event, "lastMessage") ??
+    stringField(event, "final_message") ??
+    stringField(event, "finalMessage") ??
+    stringField(event, "assistant_message") ??
+    stringField(event, "assistantMessage");
+  if (direct !== undefined) return direct;
+  return lastAssistantTextFromTranscript(
+    stringField(event, "transcript_path") ??
+      stringField(event, "transcriptPath"),
+  );
+}
+
+function zellijSessionNameFromEnv(env = process.env) {
+  const keys = [
+    "OPENVSMOBILE_ZELLIJ_SESSION_NAME",
+    "ZELLIJ_SESSION_NAME",
+  ];
+  for (const key of keys) {
+    const value = env[key];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return undefined;
+}
+
+function terminalActionFromHook(event, env = process.env) {
+  const explicitSessionId =
+    stringField(event, "openvsmobile_terminal_session_id") ??
+    stringField(event, "terminal_session_id");
+  const externalSessionId =
+    stringField(event, "openvsmobile_external_session_id") ??
+    zellijSessionNameFromEnv(env);
+
+  if (explicitSessionId !== undefined) {
+    const action = { kind: "open-terminal", sessionId: explicitSessionId };
+    if (externalSessionId !== undefined) action.externalSessionId = externalSessionId;
+    return action;
+  }
+
+  if (
+    externalSessionId !== undefined &&
+    externalSessionId.startsWith(MANAGED_ZELLIJ_PREFIX)
+  ) {
+    const sessionId = externalSessionId.slice(MANAGED_ZELLIJ_PREFIX.length);
+    if (/^[A-Za-z0-9_-]+$/.test(sessionId)) {
+      return {
+        kind: "open-terminal",
+        sessionId,
+        externalSessionId,
+      };
+    }
+  }
+  return undefined;
+}
+
+/// Translate an agent hook envelope to a Notification payload. Claude Code
+/// and Codex hooks both send JSON envelopes; fields vary by version, so this
+/// parser prefers explicit "last message" fields and falls back to the JSONL
+/// transcript when present.
+function agentHookToNotification(ev, { source = "claude-code" } = {}) {
   const event = typeof ev === "object" && ev !== null ? ev : {};
   const eventName =
     typeof event.hook_event_name === "string"
@@ -140,7 +309,7 @@ function claudeHookToNotification(ev) {
     typeof event.session_id === "string" ? event.session_id : undefined;
   // groupKey: collapse repeated events from one session into one card.
   // Without this a long session produces N "Stop" notifications.
-  const groupKey = session ? `claude-code:${session}` : undefined;
+  const groupKey = session ? `${source}:${session}` : undefined;
   // Default title is the event name + a hint of context (tool name for
   // PreToolUse / PostToolUse; message body for Notification).
   let title = eventName;
@@ -163,21 +332,41 @@ function claudeHookToNotification(ev) {
       }
     }
   } else if (eventName === "Stop" || eventName === "SubagentStop") {
-    title = eventName === "Stop" ? "Claude finished" : "Subagent finished";
+    const lastMessage = lastAgentMessageFromHook(event);
+    if (lastMessage !== undefined && lastMessage.trim().length > 0) {
+      const firstLine = firstNonEmptyLine(lastMessage);
+      const prefix =
+        eventName === "Stop" ? agentLabelForSource(source) : "Subagent";
+      title = truncate(`${prefix}: ${firstLine}`, 80);
+      body = truncateUtf8(lastMessage, 16_000);
+    } else {
+      title =
+        eventName === "Stop" ? stopTitleForSource(source) : "Subagent finished";
+    }
   } else if (eventName === "UserPromptSubmit" && typeof event.prompt === "string") {
     title = truncate(`Prompt: ${event.prompt.split(/\r?\n/)[0] ?? ""}`, 80);
     body = event.prompt;
   }
   const out = {
-    source: "claude-code",
+    source,
     level,
     title,
   };
-  if (body !== undefined) out.body = truncate(body, 16_000);
+  if (body !== undefined) out.body = truncateUtf8(body, 16_000);
   if (groupKey !== undefined) out.groupKey = groupKey;
+  const action = terminalActionFromHook(event);
+  if (action !== undefined) out.action = action;
   const fields = [];
   if (typeof event.cwd === "string") fields.push({ key: "cwd", value: event.cwd });
   if (session) fields.push({ key: "session", value: session });
+  const transcriptPath =
+    stringField(event, "transcript_path") ?? stringField(event, "transcriptPath");
+  if (transcriptPath !== undefined) {
+    fields.push({ key: "transcript", value: transcriptPath });
+  }
+  if (action?.externalSessionId !== undefined) {
+    fields.push({ key: "zellij", value: action.externalSessionId });
+  }
   if (fields.length > 0) out.fields = fields;
   return out;
 }
@@ -272,10 +461,10 @@ async function main() {
     } catch (err) {
       die(EXIT_ARGS, `--from-claude-hook: invalid JSON on stdin: ${err.message}`);
     }
-    payload = claudeHookToNotification(hookEvent);
+    const source = values.source || "claude-code";
+    payload = agentHookToNotification(hookEvent, { source });
     // Optional flag overrides on top of the derived payload (same as
     // --from-json).
-    if (values.source) payload.source = values.source;
     if (values.level) payload.level = values.level;
     if (values.title) payload.title = values.title;
     if (values.body) payload.body = values.body;
@@ -448,13 +637,13 @@ Payload:
   --body <body>
   --field key=value            repeatable
   --link title=url             repeatable
-  --action open-url:URL | copy:TEXT | open-workspace:ID
+  --action open-url:URL | copy:TEXT | open-workspace:ID | open-terminal:ID
   --group-key <key>
   --supersedes <id>
   --important
   --ttl <seconds>
   --from-json -                read full payload from stdin (overrides above)
-  --from-claude-hook           read a Claude Code hook envelope from stdin
+  --from-claude-hook           read an agent hook envelope from stdin
                                and translate it; --source/--level/etc.
                                still apply as overrides.
   --quiet                      suppress success output (id still returned via exit 0)

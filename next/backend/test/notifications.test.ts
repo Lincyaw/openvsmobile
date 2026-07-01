@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
 import { WebSocketServer } from "ws";
 import WebSocket from "ws";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -972,45 +972,89 @@ describe("CLI smoke: mobile-notify --from-json -", () => {
   });
 
   it("--from-claude-hook translates a Stop event into a notification", async () => {
+    const transcriptDir = mkdtempSync(join(tmpdir(), "ovsm-transcript-"));
+    const transcriptPath = join(transcriptDir, "session.jsonl");
+    writeFileSync(
+      transcriptPath,
+      [
+        JSON.stringify({
+          type: "user",
+          message: { role: "user", content: "run the check" },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "text",
+                text: "All checks passed.\nNo follow-up needed.",
+              },
+            ],
+          },
+        }),
+        "",
+      ].join("\n"),
+    );
     const hookEvent = {
       hook_event_name: "Stop",
       session_id: "abc123",
       cwd: "/home/u/proj",
+      transcript_path: transcriptPath,
     };
-    const child = spawn(
-      process.execPath,
-      [
-        CLI_PATH,
-        "--server",
-        `127.0.0.1:${h.port}`,
-        "--token",
-        TOKEN,
-        "--from-claude-hook",
-      ],
-      { stdio: ["pipe", "pipe", "pipe"] },
-    );
-    child.stdin.write(JSON.stringify(hookEvent));
-    child.stdin.end();
-    const stdoutChunks: Buffer[] = [];
-    const stderrChunks: Buffer[] = [];
-    child.stdout.on("data", (c) => stdoutChunks.push(c));
-    child.stderr.on("data", (c) => stderrChunks.push(c));
-    const exitCode: number = await new Promise((resolve) =>
-      child.on("close", (code) => resolve(code ?? -1)),
-    );
-    const stdout = Buffer.concat(stdoutChunks).toString("utf8").trim();
-    const stderr = Buffer.concat(stderrChunks).toString("utf8");
-    expect(exitCode, `stderr: ${stderr}`).toBe(0);
-    const stored = h.state.notificationHub
-      .list({ limit: 5 })
-      .items.find((n) => n.id === stdout);
-    expect(stored).toBeDefined();
-    expect(stored!.source).toBe("claude-code");
-    expect(stored!.title).toBe("Claude finished");
-    expect(stored!.groupKey).toBe("claude-code:abc123");
-    expect(stored!.fields?.find((f) => f.key === "cwd")?.value).toBe(
-      "/home/u/proj",
-    );
+    try {
+      const child = spawn(
+        process.execPath,
+        [
+          CLI_PATH,
+          "--server",
+          `127.0.0.1:${h.port}`,
+          "--token",
+          TOKEN,
+          "--from-claude-hook",
+        ],
+        {
+          stdio: ["pipe", "pipe", "pipe"],
+          env: {
+            ...process.env,
+            ZELLIJ_SESSION_NAME: "ovsm-123e4567-e89b-12d3-a456-426614174000",
+          },
+        },
+      );
+      child.stdin.write(JSON.stringify(hookEvent));
+      child.stdin.end();
+      const stdoutChunks: Buffer[] = [];
+      const stderrChunks: Buffer[] = [];
+      child.stdout.on("data", (c) => stdoutChunks.push(c));
+      child.stderr.on("data", (c) => stderrChunks.push(c));
+      const exitCode: number = await new Promise((resolve) =>
+        child.on("close", (code) => resolve(code ?? -1)),
+      );
+      const stdout = Buffer.concat(stdoutChunks).toString("utf8").trim();
+      const stderr = Buffer.concat(stderrChunks).toString("utf8");
+      expect(exitCode, `stderr: ${stderr}`).toBe(0);
+      const stored = h.state.notificationHub
+        .list({ limit: 5 })
+        .items.find((n) => n.id === stdout);
+      expect(stored).toBeDefined();
+      expect(stored!.source).toBe("claude-code");
+      expect(stored!.title).toBe("Claude: All checks passed.");
+      expect(stored!.body).toBe("All checks passed.\nNo follow-up needed.");
+      expect(stored!.groupKey).toBe("claude-code:abc123");
+      expect(stored!.action).toEqual({
+        kind: "open-terminal",
+        sessionId: "123e4567-e89b-12d3-a456-426614174000",
+        externalSessionId: "ovsm-123e4567-e89b-12d3-a456-426614174000",
+      });
+      expect(stored!.fields?.find((f) => f.key === "cwd")?.value).toBe(
+        "/home/u/proj",
+      );
+      expect(stored!.fields?.find((f) => f.key === "transcript")?.value).toBe(
+        transcriptPath,
+      );
+    } finally {
+      rmSync(transcriptDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1134,4 +1178,3 @@ describe("NotificationHub wiring (unit)", () => {
     }
   });
 });
-

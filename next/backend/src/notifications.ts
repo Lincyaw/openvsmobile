@@ -66,7 +66,13 @@ export interface NotificationLink {
 export type NotificationAction =
   | { kind: "open-url"; url: string }
   | { kind: "copy"; text: string }
-  | { kind: "open-workspace"; workspaceId: string };
+  | { kind: "open-workspace"; workspaceId: string }
+  | {
+      kind: "open-terminal";
+      sessionId: string;
+      backendId?: string;
+      externalSessionId?: string;
+    };
 
 /// The wire-shape Notification — what fan-out emits, what `notification.list`
 /// returns, what the foreground service POSTs back to the client UI. Matches
@@ -141,7 +147,32 @@ function validateAction(raw: unknown): NotificationAction | undefined {
     }
     return { kind: "open-workspace", workspaceId: raw.workspaceId };
   }
-  fail("action.kind must be open-url | copy | open-workspace");
+  if (kind === "open-terminal") {
+    if (typeof raw.sessionId !== "string" || raw.sessionId.length === 0) {
+      fail("action.sessionId required for open-terminal");
+    }
+    const out: Extract<NotificationAction, { kind: "open-terminal" }> = {
+      kind: "open-terminal",
+      sessionId: raw.sessionId,
+    };
+    if (raw.backendId !== undefined && raw.backendId !== null) {
+      if (typeof raw.backendId !== "string" || raw.backendId.length === 0) {
+        fail("action.backendId must be a non-empty string when provided");
+      }
+      out.backendId = raw.backendId;
+    }
+    if (raw.externalSessionId !== undefined && raw.externalSessionId !== null) {
+      if (
+        typeof raw.externalSessionId !== "string" ||
+        raw.externalSessionId.length === 0
+      ) {
+        fail("action.externalSessionId must be a non-empty string when provided");
+      }
+      out.externalSessionId = raw.externalSessionId;
+    }
+    return out;
+  }
+  fail("action.kind must be open-url | copy | open-workspace | open-terminal");
 }
 
 function validateFields(raw: unknown): NotificationField[] | undefined {

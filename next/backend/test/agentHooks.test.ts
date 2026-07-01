@@ -194,8 +194,6 @@ describe("install-agent-hooks", () => {
         "--from-claude-hook",
         "--source",
         "codex",
-        "--title",
-        "Codex finished",
         "--quiet",
         "--group-key",
         "codex:codex-session",

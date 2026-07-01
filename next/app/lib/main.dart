@@ -11,11 +11,13 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import 'app_state.dart';
 import 'backend_client.dart';
+import 'models.dart';
 import 'notification.dart';
 import 'screens/backends_screen.dart';
 import 'screens/diag_overlay.dart';
 import 'screens/home_shell.dart';
 import 'screens/notification_center.dart';
+import 'screens/terminal_detail.dart';
 import 'services/backend_backup_service.dart';
 import 'services/connectivity_probe.dart';
 import 'services/deep_link_service.dart';
@@ -23,6 +25,7 @@ import 'services/diag_log.dart';
 import 'services/notification_foreground_service.dart';
 import 'services/system_tray.dart';
 import 'settings_store.dart';
+import 'state/terminal_hub.dart';
 import 'ui/app_theme.dart';
 import 'ui/app_tokens.dart';
 
@@ -51,6 +54,9 @@ class _MobileCodeAppState extends State<MobileCodeApp>
       const BackendBackupService();
   late final BackendClient _client = BackendClient(
     probe: ConnectivityPlusProbe(),
+  );
+  late final TerminalHub _terminalHub = TerminalHub(
+    clientFactory: () => BackendClient(probe: ConnectivityPlusProbe()),
   );
   final NotificationServiceController _fgService =
       NotificationServiceController();
@@ -146,6 +152,11 @@ class _MobileCodeAppState extends State<MobileCodeApp>
     if (!mounted) return;
     final appState = AppState(client: _client, deviceId: did);
     appState.addListener(_onAppStateForWorkspaceTracking);
+    _terminalHub.updateBackends(
+      state.backends,
+      activeBackendId: state.activeBackendId,
+      deviceId: did,
+    );
     setState(() {
       _state = state;
       _deviceId = did;
@@ -326,10 +337,80 @@ class _MobileCodeAppState extends State<MobileCodeApp>
         builder: (_) => NotificationCenterScreen(
           appState: state,
           settingsStore: _settingsStore,
+          onOpenTerminal: _openTerminalFromNotification,
           highlightId: id,
         ),
       ),
     );
+  }
+
+  Future<void> _openTerminalFromNotification(OpenTerminalAction action) async {
+    final backendId = action.backendId ?? _state.activeBackendId;
+    if (backendId == null || backendId.isEmpty) {
+      _showRootSnack('No backend is active for this terminal');
+      return;
+    }
+    var ref = _terminalHub.sessionFor(backendId, action.sessionId);
+    if (ref == null) {
+      await _terminalHub.refreshAll();
+      ref = _terminalHub.sessionFor(backendId, action.sessionId);
+    }
+    if (ref == null) {
+      final suffix = action.externalSessionId == null
+          ? ''
+          : ' (${action.externalSessionId})';
+      _showRootSnack('Terminal session not found$suffix');
+      return;
+    }
+    final target = ref;
+    _terminalHub.focusTerminal(target.backendId, target.sessionId);
+    final sessions = _terminalHub.sessionsForBackend(target.backendId);
+    final index = sessions.indexWhere((s) => s.sessionId == target.sessionId);
+    final nav = _navKey.currentState;
+    if (nav == null) return;
+    await nav.push(
+      MaterialPageRoute<void>(
+        builder: (_) => TerminalDetailScreen(
+          terminalHub: _terminalHub,
+          backendId: target.backendId,
+          settingsStore: _settingsStore,
+          sessionId: target.sessionId,
+          title: _terminalSessionTitle(
+            target.session,
+            index >= 0 ? index : sessions.length - 1,
+          ),
+          onOpenFiles: () => _openFilesForBackendTerminalSession(target),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openFilesForBackendTerminalSession(
+    BackendTerminalSession ref,
+  ) async {
+    final root = ref.session.workspaceRoot;
+    if (root == null || root.isEmpty) return;
+    if (ref.backendId != _state.activeBackendId) {
+      await _switchBackend(ref.backendId);
+    }
+    final appState = _appState;
+    if (appState == null) return;
+    final matching = appState.activeWorkspaces
+        .where((w) => w.root == root)
+        .toList(growable: false);
+    if (matching.isNotEmpty) {
+      await appState.activateWorkspace(matching.first.id);
+    } else {
+      await appState.openWorkspace(root);
+    }
+  }
+
+  void _showRootSnack(String message) {
+    final context = _navKey.currentContext;
+    if (context == null) return;
+    ScaffoldMessenger.maybeOf(
+      context,
+    )?.showSnackBar(SnackBar(content: Text(message)));
   }
 
   // ---- Backends list mutations ----
@@ -337,6 +418,11 @@ class _MobileCodeAppState extends State<MobileCodeApp>
   /// Persist [_state] and reflect it locally. Pure write — no client touch.
   Future<void> _persistState(AppPersistedState next) async {
     await _settingsStore.saveAppState(next);
+    _terminalHub.updateBackends(
+      next.backends,
+      activeBackendId: next.activeBackendId,
+      deviceId: _deviceId,
+    );
     if (!mounted) return;
     setState(() => _state = next);
   }
@@ -481,6 +567,7 @@ class _MobileCodeAppState extends State<MobileCodeApp>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _client.requestReconnectNow();
+      _terminalHub.requestReconnectNow();
       _consumePendingTapIfAny();
       final id = _deepLinks.consumePendingId();
       if (id != null) _openNotificationCenterFor(id);
@@ -497,6 +584,7 @@ class _MobileCodeAppState extends State<MobileCodeApp>
     _trayNotifSub = null;
     _appState?.removeListener(_onAppStateForWorkspaceTracking);
     _appState?.dispose();
+    _terminalHub.dispose();
     _client.state.removeListener(_logConnectionState);
     _client.dispose();
     super.dispose();
@@ -538,6 +626,7 @@ class _MobileCodeAppState extends State<MobileCodeApp>
           ? _buildBackendsScreen()
           : HomeShell(
               appState: _appState!,
+              terminalHub: _terminalHub,
               settingsStore: _settingsStore,
               state: _state,
               systemTrayController: _tray,
@@ -550,11 +639,18 @@ class _MobileCodeAppState extends State<MobileCodeApp>
                   ),
                 );
               },
+              onSwitchBackend: _switchBackend,
               onBackendInstalled: _addBackend,
               onNotificationPrefsChanged: _onNotificationPrefsChanged,
             ),
     );
   }
+}
+
+String _terminalSessionTitle(TerminalSession session, int index) {
+  final title = session.title?.trim();
+  if (title != null && title.isNotEmpty) return title;
+  return 'sh · ${index + 1}';
 }
 
 class _BootSplash extends StatelessWidget {

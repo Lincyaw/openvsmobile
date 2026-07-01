@@ -13,8 +13,8 @@
 //   * Provides `NotificationServiceController` for `main.dart` to start
 //     and stop the Android foreground service. The service's only
 //     purpose is to keep the process resident on aggressive OEMs
-//     (MIUI / EMUI / OxygenOS …) so the main isolate's WS keeps
-//     receiving pushes while the user is in another app.
+//     (MIUI / EMUI / OxygenOS …) so the main isolate's notification WS
+//     keeps receiving pushes while the user is in another app.
 //   * Provides `NotificationForegroundHandler`, the task handler
 //     `FlutterForegroundTask.setTaskHandler` requires. The handler is
 //     intentionally empty — no network, no notification rendering,
@@ -44,10 +44,12 @@ void startNotificationForegroundHandler() {
 }
 
 /// Service-side task handler. Runs on its own isolate but does no real
-/// work: the main isolate's `BackendClient` + `SystemTrayController`
-/// own notification delivery. This handler exists purely to satisfy
-/// the `flutter_foreground_task` API contract — registering a handler
-/// is what keeps the foreground service ticking.
+/// work: the main isolate's AppState `BackendClient` +
+/// `SystemTrayController` own notification delivery. Terminal aggregation
+/// may own terminal-only WS clients; this handler still has no network
+/// responsibility. It exists purely to satisfy the `flutter_foreground_task`
+/// API contract — registering a handler is what keeps the foreground service
+/// ticking.
 class NotificationForegroundHandler extends TaskHandler {
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {

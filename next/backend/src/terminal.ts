@@ -1,7 +1,7 @@
-// PTY session manager scoped to a single workspace. Each ActiveWorkspace
-// owns one TerminalRegistry. Output sinks receive the *terminal* session
-// id; the surrounding layer adds the workspace id when emitting JSON-RPC
-// notifications.
+// PTY session manager. Production owns one process-global TerminalRegistry;
+// legacy tests can still construct a workspace-defaulted registry. Output
+// sinks receive the *terminal* session id; the surrounding layer adds the
+// currently-open workspace id, if any, when emitting JSON-RPC notifications.
 //
 // Each session keeps a circular scrollback buffer (default 1 MiB, override
 // via OPENVSMOBILE_SCROLLBACK_BYTES) so a reconnecting client can replay
@@ -60,6 +60,14 @@ const SCROLLBACK_CAP = resolveScrollbackCap();
 
 export interface TerminalSnapshot {
   id: string;
+  /// User-facing display name. Null means "use the client-generated
+  /// fallback" (e.g. `sh · 1`). This is metadata only; it does not rename
+  /// the underlying zellij session, whose name remains the stable attach id.
+  title: string | null;
+  /// Stable workspace locator hint. A terminal may outlive, or never have,
+  /// a Workspace instance; in that case this remains the path-level link
+  /// the app can use to jump/open Files. Null means intentionally unbound.
+  workspaceRoot: string | null;
   cols: number;
   rows: number;
   cwd: string;
@@ -204,7 +212,8 @@ interface Entry extends TerminalSnapshot {
 export interface TerminalPersistenceHook {
   recordCreate(row: {
     id: string;
-    workspaceRoot: string;
+    title: string | null;
+    workspaceRoot: string | null;
     cwd: string;
     cols: number;
     rows: number;
@@ -212,9 +221,21 @@ export interface TerminalPersistenceHook {
     createdAt: number;
   }): void;
   recordDispose(id: string): void;
+  recordRename(id: string, title: string | null): void;
   loadByWorkspaceRoot(workspaceRoot: string): Array<{
     id: string;
-    workspaceRoot: string;
+    title: string | null;
+    workspaceRoot: string | null;
+    cwd: string;
+    cols: number;
+    rows: number;
+    externalSessionId: string | null;
+    createdAt: number;
+  }>;
+  loadAll(): Array<{
+    id: string;
+    title: string | null;
+    workspaceRoot: string | null;
     cwd: string;
     cols: number;
     rows: number;
@@ -229,9 +250,10 @@ export interface TerminalRegistryOptions {
   /// `create()` spawns the user's shell directly (status quo). May be
   /// omitted entirely by callers that don't care (older tests).
   multiplexer?: MultiplexerInfo;
-  /// Workspace root this registry belongs to. Persisted alongside each
-  /// terminal so a future tool can group sessions by workspace without
-  /// extra bookkeeping. Pass-through; never used for any access check.
+  /// Default workspace-root hint for callers that do not pass one to
+  /// `create()` / `adopt()`. Production leaves this unset and passes the
+  /// hint per session; older tests still construct workspace-defaulted
+  /// registries.
   workspaceRoot?: string;
   /// Durable storage hook. Optional so the legacy two-arg constructor
   /// signature keeps working for tests that don't need persistence.
@@ -255,7 +277,7 @@ export class TerminalRegistry {
   private readonly resizeTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private shuttingDown = false;
   private readonly multiplexer: MultiplexerInfo;
-  private readonly workspaceRoot: string;
+  private readonly defaultWorkspaceRoot: string | null;
   private readonly persistence: TerminalPersistenceHook | null;
   private readonly execRunner: ExecRunner | undefined;
   private readonly ptySpawner: PtySpawner;
@@ -267,7 +289,10 @@ export class TerminalRegistry {
     options: TerminalRegistryOptions = {},
   ) {
     this.multiplexer = options.multiplexer ?? { kind: "none" };
-    this.workspaceRoot = options.workspaceRoot ?? "";
+    this.defaultWorkspaceRoot =
+      options.workspaceRoot !== undefined && options.workspaceRoot.length > 0
+        ? options.workspaceRoot
+        : null;
     this.persistence = options.persistence ?? null;
     this.execRunner = options.execRunner;
     this.ptySpawner = options.ptySpawner ?? ptySpawn;
@@ -279,7 +304,12 @@ export class TerminalRegistry {
   /// `terminal.adoptExternalSession` (the active workspace's root is the
   /// natural fallback).
   public getWorkspaceRoot(): string {
-    return this.workspaceRoot;
+    return this.defaultWorkspaceRoot ?? "";
+  }
+
+  public getSnapshot(id: string): TerminalSnapshot | null {
+    const entry = this.sessions.get(id);
+    return entry === undefined ? null : snapshotOf(entry);
   }
 
   /// Iterate every entry's `externalSessionId`. Used by the cross-workspace
@@ -306,6 +336,7 @@ export class TerminalRegistry {
     cols: number,
     rows: number,
     cwd: string,
+    workspaceRoot?: string | null,
   ): TerminalSnapshot {
     if (!Number.isInteger(cols) || cols < 1) {
       throw new RpcError(RPC_ERR.invalidParams, "cols must be a positive int");
@@ -330,7 +361,7 @@ export class TerminalRegistry {
           cols,
           rows,
           cwd,
-          env: zellijEnvironment(),
+          env: zellijPtyEnvironment(sessionName),
           encoding: null,
         },
       );
@@ -343,6 +374,8 @@ export class TerminalRegistry {
     }
     const entry: Entry = {
       id,
+      title: null,
+      workspaceRoot: this.resolveWorkspaceRoot(workspaceRoot),
       cols,
       rows,
       cwd,
@@ -356,7 +389,8 @@ export class TerminalRegistry {
     if (this.persistence !== null) {
       this.persistence.recordCreate({
         id,
-        workspaceRoot: this.workspaceRoot,
+        title: entry.title,
+        workspaceRoot: entry.workspaceRoot,
         cwd,
         cols,
         rows,
@@ -369,6 +403,15 @@ export class TerminalRegistry {
   }
 
   public create(cols: number, rows: number, cwd: string): TerminalSnapshot {
+    return this.createWithWorkspaceRoot(cols, rows, cwd);
+  }
+
+  public createWithWorkspaceRoot(
+    cols: number,
+    rows: number,
+    cwd: string,
+    workspaceRoot?: string | null,
+  ): TerminalSnapshot {
     if (!Number.isInteger(cols) || cols < 1) {
       throw new RpcError(RPC_ERR.invalidParams, "cols must be a positive int");
     }
@@ -406,7 +449,7 @@ export class TerminalRegistry {
         rows,
         cwd,
         env: useZellij
-          ? zellijEnvironment()
+          ? zellijPtyEnvironment(externalSessionId as string)
           : (process.env as { [key: string]: string }),
         // `encoding: null` tells node-pty to deliver raw bytes to onData
         // instead of decoding UTF-8 with replacement chars at chunk
@@ -423,6 +466,8 @@ export class TerminalRegistry {
     }
     const entry: Entry = {
       id,
+      title: null,
+      workspaceRoot: this.resolveWorkspaceRoot(workspaceRoot),
       cols,
       rows,
       cwd,
@@ -436,7 +481,8 @@ export class TerminalRegistry {
     if (this.persistence !== null) {
       this.persistence.recordCreate({
         id,
-        workspaceRoot: this.workspaceRoot,
+        title: entry.title,
+        workspaceRoot: entry.workspaceRoot,
         cwd,
         cols,
         rows,
@@ -446,6 +492,12 @@ export class TerminalRegistry {
     }
     this.wirePtyListeners(entry);
     return snapshotOf(entry);
+  }
+
+  private resolveWorkspaceRoot(workspaceRoot?: string | null): string | null {
+    if (workspaceRoot === undefined) return this.defaultWorkspaceRoot;
+    if (workspaceRoot === null || workspaceRoot.length === 0) return null;
+    return workspaceRoot;
   }
 
   /// Read every persisted row for this registry's workspaceRoot and
@@ -459,7 +511,9 @@ export class TerminalRegistry {
   public hydrateFromPersistence(excludeIds: Set<string>): string[] {
     if (this.persistence === null) return [];
     const claimed: string[] = [];
-    const rows = this.persistence.loadByWorkspaceRoot(this.workspaceRoot);
+    const root = this.defaultWorkspaceRoot;
+    if (root === null) return [];
+    const rows = this.persistence.loadByWorkspaceRoot(root);
     for (const row of rows) {
       if (excludeIds.has(row.id)) continue;
       // Direct-shell rows (externalSessionId === null) can't be
@@ -468,6 +522,33 @@ export class TerminalRegistry {
       if (row.externalSessionId === null) continue;
       const snap = this.hydrate({
         id: row.id,
+        title: row.title,
+        workspaceRoot: row.workspaceRoot,
+        cwd: row.cwd,
+        cols: row.cols,
+        rows: row.rows,
+        externalSessionId: row.externalSessionId,
+        createdAt: row.createdAt,
+      });
+      if (snap !== null) claimed.push(snap.id);
+    }
+    return claimed;
+  }
+
+  /// Process-global hydration path: load every resurrectable row regardless
+  /// of workspace root. Used at backend boot so terminal sessions are
+  /// visible before any Files workspace has been opened.
+  public hydrateAllFromPersistence(excludeIds: Set<string>): string[] {
+    if (this.persistence === null) return [];
+    const claimed: string[] = [];
+    const rows = this.persistence.loadAll();
+    for (const row of rows) {
+      if (excludeIds.has(row.id)) continue;
+      if (row.externalSessionId === null) continue;
+      const snap = this.hydrate({
+        id: row.id,
+        title: row.title,
+        workspaceRoot: row.workspaceRoot,
         cwd: row.cwd,
         cols: row.cols,
         rows: row.rows,
@@ -493,6 +574,8 @@ export class TerminalRegistry {
   /// each spawning their own client.
   public hydrate(row: {
     id: string;
+    title?: string | null;
+    workspaceRoot?: string | null;
     cwd: string;
     cols: number;
     rows: number;
@@ -509,6 +592,8 @@ export class TerminalRegistry {
     }
     const entry: Entry = {
       id: row.id,
+      title: normalizeTerminalTitle(row.title),
+      workspaceRoot: this.resolveWorkspaceRoot(row.workspaceRoot),
       cols: row.cols,
       rows: row.rows,
       cwd: row.cwd,
@@ -569,7 +654,7 @@ export class TerminalRegistry {
           cols: entry.cols,
           rows: entry.rows,
           cwd: entry.cwd,
-          env: zellijEnvironment(),
+          env: zellijPtyEnvironment(externalSessionId),
           // See `create()` — byte-faithful scrollback requires raw Buffers.
           encoding: null,
         },
@@ -849,6 +934,16 @@ export class TerminalRegistry {
     }
   }
 
+  public rename(id: string, rawTitle: string | null): TerminalSnapshot {
+    const entry = this.requireSession(id);
+    const title = normalizeTerminalTitle(rawTitle);
+    entry.title = title;
+    if (this.persistence !== null) {
+      this.persistence.recordRename(id, title);
+    }
+    return snapshotOf(entry);
+  }
+
   public list(): TerminalSnapshot[] {
     return [...this.sessions.values()].map(snapshotOf);
   }
@@ -948,11 +1043,29 @@ export class TerminalRegistry {
 function snapshotOf(entry: Entry): TerminalSnapshot {
   return {
     id: entry.id,
+    title: entry.title,
+    workspaceRoot: entry.workspaceRoot,
     cols: entry.cols,
     rows: entry.rows,
     cwd: entry.cwd,
     createdAt: entry.createdAt,
     externalSessionId: entry.externalSessionId,
+  };
+}
+
+const MAX_TERMINAL_TITLE_CHARS = 80;
+
+function normalizeTerminalTitle(raw: string | null | undefined): string | null {
+  if (raw === null || raw === undefined) return null;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  return [...trimmed].slice(0, MAX_TERMINAL_TITLE_CHARS).join("");
+}
+
+function zellijPtyEnvironment(sessionName: string): Record<string, string> {
+  return {
+    ...zellijEnvironment(),
+    OPENVSMOBILE_ZELLIJ_SESSION_NAME: sessionName,
   };
 }
 

@@ -1,5 +1,5 @@
-// Top-level scaffold: app bar with workspace switcher + bell, bottom nav,
-// connection-state banner. Backend management lives in the Settings tab.
+// Top-level scaffold: tab-aware app bar + bell, bottom nav, connection-state
+// banner. Backend management lives in the Settings tab.
 
 import 'dart:async';
 
@@ -9,18 +9,22 @@ import 'package:flutter/scheduler.dart';
 import '../app_state.dart';
 import '../backend_client.dart';
 import '../models.dart';
+import '../notification.dart';
 import '../services/system_tray.dart';
 import '../settings_store.dart';
+import '../state/terminal_hub.dart';
 import '../ui/app_tokens.dart';
 import 'files_tab.dart';
 import 'notification_center.dart';
 import 'plugins_tab.dart';
 import 'settings_tab.dart';
+import 'terminal_detail.dart';
 import 'terminal_tab.dart';
 import 'workspace_picker.dart';
 
 class HomeShell extends StatefulWidget {
   final AppState appState;
+  final TerminalHub terminalHub;
   final SettingsStore settingsStore;
   final AppPersistedState state;
   final SystemTrayController systemTrayController;
@@ -28,6 +32,10 @@ class HomeShell extends StatefulWidget {
   /// Push the Backends management screen. Owned by main.dart so navigation
   /// happens on the root navigator.
   final VoidCallback onOpenBackends;
+
+  /// Switch the active backend before jumping from a cross-backend terminal
+  /// session into its Files workspace.
+  final Future<void> Function(String backendId) onSwitchBackend;
 
   /// Wire a freshly-bootstrapped backend back into the persisted list.
   /// Forwarded to the Settings tab so SSH bootstrap launched from there
@@ -51,10 +59,12 @@ class HomeShell extends StatefulWidget {
   const HomeShell({
     super.key,
     required this.appState,
+    required this.terminalHub,
     required this.settingsStore,
     required this.state,
     required this.systemTrayController,
     required this.onOpenBackends,
+    required this.onSwitchBackend,
     required this.onBackendInstalled,
     required this.onNotificationPrefsChanged,
     required this.themeMode,
@@ -73,6 +83,8 @@ class HomeShell extends StatefulWidget {
 /// listed; if a future code path needs Files / Terminal / Plugins by
 /// name, extend this block — don't reintroduce raw `0` / `1` / `2`.
 const int _kFilesTabIndex = 0;
+const int _kTerminalTabIndex = 1;
+const int _kPluginsTabIndex = 2;
 const int _kSettingsTabIndex = 3;
 
 class _HomeShellState extends State<HomeShell> {
@@ -83,10 +95,12 @@ class _HomeShellState extends State<HomeShell> {
   void initState() {
     super.initState();
     widget.appState.addListener(_onAppStateChanged);
+    widget.terminalHub.addListener(_onTerminalHubChanged);
   }
 
   @override
   void dispose() {
+    widget.terminalHub.removeListener(_onTerminalHubChanged);
     widget.appState.removeListener(_onAppStateChanged);
     super.dispose();
   }
@@ -117,11 +131,36 @@ class _HomeShellState extends State<HomeShell> {
     setState(() {});
   }
 
+  void _onTerminalHubChanged() {
+    if (!mounted) return;
+    final err = widget.terminalHub.lastOperationError;
+    if (err != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+      widget.terminalHub.clearLastOperationError();
+    }
+    setState(() {});
+  }
+
   Future<void> _openSwitcher() async {
+    final backend = await showModalBottomSheet<BackendTarget>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => _WorkspaceBackendSheet(state: widget.state),
+    );
+    if (!mounted || backend == null) return;
+    if (backend.id != widget.state.activeBackendId) {
+      await widget.onSwitchBackend(backend.id);
+      if (!mounted) return;
+      if (widget.appState.connectionState == BackendConnectionState.connected) {
+        await widget.appState.refreshWorkspaces();
+        if (!mounted) return;
+      }
+    }
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      builder: (ctx) => _WorkspaceSwitcherSheet(appState: widget.appState),
+      builder: (ctx) =>
+          _WorkspaceSwitcherSheet(appState: widget.appState, backend: backend),
     );
   }
 
@@ -131,6 +170,118 @@ class _HomeShellState extends State<HomeShell> {
     setState(() => _tab = _kSettingsTabIndex);
   }
 
+  Future<void> _openFilesForTerminalSession(TerminalSession session) async {
+    final root = session.workspaceRoot;
+    if (root == null || root.isEmpty) return;
+    final matching = widget.appState.activeWorkspaces
+        .where((w) => w.root == root)
+        .toList(growable: false);
+    if (matching.isNotEmpty) {
+      await widget.appState.activateWorkspace(matching.first.id);
+    } else {
+      final opened = await widget.appState.openWorkspace(root);
+      if (opened == null) return;
+    }
+    if (!mounted) return;
+    setState(() => _tab = _kFilesTabIndex);
+  }
+
+  Future<void> _openFilesForBackendTerminalSession(
+    BackendTerminalSession ref,
+  ) async {
+    final root = ref.session.workspaceRoot;
+    if (root == null || root.isEmpty) return;
+    if (ref.backend.id != widget.state.activeBackendId) {
+      await widget.onSwitchBackend(ref.backend.id);
+    }
+    if (!mounted) return;
+    final matching = widget.appState.activeWorkspaces
+        .where((w) => w.root == root)
+        .toList(growable: false);
+    if (matching.isNotEmpty) {
+      await widget.appState.activateWorkspace(matching.first.id);
+    } else {
+      final opened = await widget.appState.openWorkspace(root);
+      if (opened == null) return;
+    }
+    if (!mounted) return;
+    setState(() => _tab = _kFilesTabIndex);
+  }
+
+  Future<void> _openTerminalFromNotification(OpenTerminalAction action) async {
+    final backendId = action.backendId ?? widget.state.activeBackendId;
+    if (backendId == null || backendId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No backend is active for this terminal')),
+      );
+      return;
+    }
+
+    var ref = widget.terminalHub.sessionFor(backendId, action.sessionId);
+    if (ref == null) {
+      await widget.terminalHub.refreshAll();
+      if (!mounted) return;
+      ref = widget.terminalHub.sessionFor(backendId, action.sessionId);
+    }
+    if (ref == null) {
+      final suffix = action.externalSessionId == null
+          ? ''
+          : ' (${action.externalSessionId})';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Terminal session not found$suffix')),
+      );
+      setState(() => _tab = _kTerminalTabIndex);
+      return;
+    }
+
+    final target = ref;
+    widget.terminalHub.focusTerminal(target.backendId, target.sessionId);
+    final sessions = widget.terminalHub.sessionsForBackend(target.backendId);
+    final index = sessions.indexWhere((s) => s.sessionId == target.sessionId);
+    if (!mounted) return;
+    setState(() => _tab = _kTerminalTabIndex);
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => TerminalDetailScreen(
+          terminalHub: widget.terminalHub,
+          backendId: target.backendId,
+          settingsStore: widget.settingsStore,
+          sessionId: target.sessionId,
+          title: _terminalSessionTitle(
+            target.session,
+            index >= 0 ? index : sessions.length - 1,
+          ),
+          onOpenFiles: () => _openFilesForBackendTerminalSession(target),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAppBarTitle(Workspace? currentWorkspace) {
+    return switch (_tab) {
+      _kFilesTabIndex => _WorkspaceAppBarTitle(
+        currentWorkspace: currentWorkspace,
+        onTap: _openSwitcher,
+      ),
+      _kTerminalTabIndex => const _StaticAppBarTitle(
+        icon: Icons.terminal_outlined,
+        label: 'Terminal',
+      ),
+      _kPluginsTabIndex => const _StaticAppBarTitle(
+        icon: Icons.extension_outlined,
+        label: 'Plugins',
+      ),
+      _kSettingsTabIndex => const _StaticAppBarTitle(
+        icon: Icons.settings_outlined,
+        label: 'Settings',
+      ),
+      _ => const _StaticAppBarTitle(
+        icon: Icons.folder_outlined,
+        label: 'OpenVSMobile',
+      ),
+    };
+  }
+
   @override
   Widget build(BuildContext context) {
     final cur = widget.appState.currentWorkspace;
@@ -138,35 +289,12 @@ class _HomeShellState extends State<HomeShell> {
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
-        title: InkWell(
-          onTap: _openSwitcher,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: AppSpacing.md,
-              vertical: AppSpacing.xs,
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  cur == null ? Icons.folder_off_outlined : Icons.folder_open,
-                  size: AppIconSize.md,
-                ),
-                const SizedBox(width: AppSpacing.sm),
-                Flexible(
-                  child: Text(
-                    cur?.label ?? '(choose workspace)',
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                const Icon(Icons.arrow_drop_down),
-              ],
-            ),
-          ),
-        ),
+        title: _buildAppBarTitle(cur),
         actions: [
           _BellIconAction(
             appState: widget.appState,
             settingsStore: widget.settingsStore,
+            onOpenTerminal: _openTerminalFromNotification,
           ),
         ],
       ),
@@ -184,7 +312,12 @@ class _HomeShellState extends State<HomeShell> {
                 FilesTab(appState: widget.appState),
                 TerminalTab(
                   appState: widget.appState,
+                  terminalHub: widget.terminalHub,
+                  activeBackendId: widget.state.activeBackendId,
                   settingsStore: widget.settingsStore,
+                  onOpenFilesForSession: _openFilesForTerminalSession,
+                  onOpenFilesForBackendSession:
+                      _openFilesForBackendTerminalSession,
                 ),
                 PluginsTab(appState: widget.appState),
                 SettingsTab(
@@ -226,6 +359,67 @@ class _HomeShellState extends State<HomeShell> {
             selectedIcon: Icon(Icons.settings),
             label: 'Settings',
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class _WorkspaceAppBarTitle extends StatelessWidget {
+  final Workspace? currentWorkspace;
+  final VoidCallback onTap;
+
+  const _WorkspaceAppBarTitle({
+    required this.currentWorkspace,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cur = currentWorkspace;
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.md,
+          vertical: AppSpacing.xs,
+        ),
+        child: Row(
+          children: [
+            Icon(
+              cur == null ? Icons.folder_off_outlined : Icons.folder_open,
+              size: AppIconSize.md,
+            ),
+            const SizedBox(width: AppSpacing.sm),
+            Flexible(
+              child: Text(
+                cur?.label ?? '(choose workspace)',
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            const Icon(Icons.arrow_drop_down),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _StaticAppBarTitle extends StatelessWidget {
+  final IconData icon;
+  final String label;
+
+  const _StaticAppBarTitle({required this.icon, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+      child: Row(
+        children: [
+          Icon(icon, size: AppIconSize.md),
+          const SizedBox(width: AppSpacing.sm),
+          Flexible(child: Text(label, overflow: TextOverflow.ellipsis)),
         ],
       ),
     );
@@ -373,9 +567,80 @@ class _ConnectionBannerState extends State<_ConnectionBanner> {
   }
 }
 
-class _WorkspaceSwitcherSheet extends StatelessWidget {
+class _WorkspaceBackendSheet extends StatelessWidget {
+  final AppPersistedState state;
+
+  const _WorkspaceBackendSheet({required this.state});
+
+  @override
+  Widget build(BuildContext context) {
+    final backends = state.backends.where((b) => b.isComplete).toList();
+    final activeId = state.activeBackendId;
+    final theme = Theme.of(context);
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(
+                AppSpacing.lg,
+                AppSpacing.sm,
+                AppSpacing.lg,
+                AppSpacing.xs,
+              ),
+              child: Text(
+                'Choose backend',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+            if (backends.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(AppSpacing.lg),
+                child: Text('No configured backends.'),
+              ),
+            for (final backend in backends)
+              ListTile(
+                leading: const Icon(Icons.dns_outlined),
+                title: Text(backend.name.isEmpty ? '(unnamed)' : backend.name),
+                subtitle: Text(
+                  '${backend.host}:${backend.port}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppText.mono(
+                    fontSize: theme.textTheme.labelSmall?.fontSize,
+                  ),
+                ),
+                trailing: backend.id == activeId
+                    ? Icon(Icons.check, color: theme.colorScheme.primary)
+                    : null,
+                onTap: () => Navigator.of(context).pop(backend),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _WorkspaceSwitcherSheet extends StatefulWidget {
   final AppState appState;
-  const _WorkspaceSwitcherSheet({required this.appState});
+  final BackendTarget backend;
+
+  const _WorkspaceSwitcherSheet({
+    required this.appState,
+    required this.backend,
+  });
+
+  @override
+  State<_WorkspaceSwitcherSheet> createState() =>
+      _WorkspaceSwitcherSheetState();
+}
+
+class _WorkspaceSwitcherSheetState extends State<_WorkspaceSwitcherSheet> {
+  bool _mutatingRecents = false;
 
   Future<void> _confirmClose(BuildContext context, Workspace w) async {
     final ok = await showDialog<bool>(
@@ -398,12 +663,29 @@ class _WorkspaceSwitcherSheet extends StatelessWidget {
       ),
     );
     if (ok == true) {
-      await appState.closeWorkspace(w.id);
+      await widget.appState.closeWorkspace(w.id);
     }
+  }
+
+  Future<void> _forgetRecent(String root) async {
+    if (_mutatingRecents) return;
+    setState(() => _mutatingRecents = true);
+    await widget.appState.forgetRecentWorkspace(root);
+    if (!mounted) return;
+    setState(() => _mutatingRecents = false);
+  }
+
+  Future<void> _clearRecents() async {
+    if (_mutatingRecents) return;
+    setState(() => _mutatingRecents = true);
+    await widget.appState.clearRecentWorkspaces();
+    if (!mounted) return;
+    setState(() => _mutatingRecents = false);
   }
 
   @override
   Widget build(BuildContext context) {
+    final appState = widget.appState;
     final active = appState.activeWorkspaces;
     final activeRoots = active.map((w) => w.root).toSet();
     final recentsOnly = appState.recentRoots
@@ -418,6 +700,45 @@ class _WorkspaceSwitcherSheet extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
+                AppSpacing.lg,
+                AppSpacing.sm,
+                AppSpacing.lg,
+                AppSpacing.xs,
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.dns_outlined, size: AppIconSize.sm),
+                  const SizedBox(width: AppSpacing.sm),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.backend.name.isEmpty
+                              ? '(unnamed)'
+                              : widget.backend.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        Text(
+                          '${widget.backend.host}:${widget.backend.port}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppText.mono(
+                            fontSize: theme.textTheme.labelSmall?.fontSize,
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
             const Padding(
               padding: EdgeInsets.fromLTRB(
                 AppSpacing.lg,
@@ -463,16 +784,28 @@ class _WorkspaceSwitcherSheet extends StatelessWidget {
                 onLongPress: () => _confirmClose(context, w),
               ),
             const Divider(),
-            const Padding(
-              padding: EdgeInsets.fromLTRB(
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
                 AppSpacing.lg,
                 AppSpacing.sm,
                 AppSpacing.lg,
                 AppSpacing.xs,
               ),
-              child: Text(
-                'Recent',
-                style: TextStyle(fontWeight: FontWeight.bold),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Recent',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                  if (recentsOnly.isNotEmpty)
+                    TextButton.icon(
+                      onPressed: _mutatingRecents ? null : _clearRecents,
+                      icon: const Icon(Icons.clear_all),
+                      label: const Text('Clear'),
+                    ),
+                ],
               ),
             ),
             if (recentsOnly.isEmpty)
@@ -493,6 +826,11 @@ class _WorkspaceSwitcherSheet extends StatelessWidget {
                 leading: const Icon(Icons.history),
                 title: Text(_recentLabel(r)),
                 subtitle: Text(r, maxLines: 1, overflow: TextOverflow.ellipsis),
+                trailing: IconButton(
+                  tooltip: 'Remove recent',
+                  icon: const Icon(Icons.close),
+                  onPressed: _mutatingRecents ? null : () => _forgetRecent(r),
+                ),
                 onTap: () async {
                   Navigator.of(context).pop();
                   await appState.openWorkspace(r);
@@ -534,7 +872,12 @@ class _WorkspaceSwitcherSheet extends StatelessWidget {
 class _BellIconAction extends StatelessWidget {
   final AppState appState;
   final SettingsStore settingsStore;
-  const _BellIconAction({required this.appState, required this.settingsStore});
+  final Future<void> Function(OpenTerminalAction action) onOpenTerminal;
+  const _BellIconAction({
+    required this.appState,
+    required this.settingsStore,
+    required this.onOpenTerminal,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -556,10 +899,17 @@ class _BellIconAction extends StatelessWidget {
             builder: (_) => NotificationCenterScreen(
               appState: appState,
               settingsStore: settingsStore,
+              onOpenTerminal: onOpenTerminal,
             ),
           ),
         );
       },
     );
   }
+}
+
+String _terminalSessionTitle(TerminalSession session, int index) {
+  final title = session.title?.trim();
+  if (title != null && title.isNotEmpty) return title;
+  return 'sh · ${index + 1}';
 }

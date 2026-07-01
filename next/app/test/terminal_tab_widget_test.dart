@@ -33,9 +33,14 @@ const Workspace _ws = Workspace(
   createdAt: 0,
 );
 
-TerminalSession _session(String id, {String cwd = '/tmp/ws-1/src'}) {
+TerminalSession _session(
+  String id, {
+  String cwd = '/tmp/ws-1/src',
+  String? title,
+}) {
   return TerminalSession(
     id: id,
+    title: title,
     workspaceId: _ws.id,
     cols: 80,
     rows: 24,
@@ -59,12 +64,12 @@ Future<AppState> _appStateWith({
 }
 
 Widget _wrap(Widget child) => MaterialApp(
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
-        useMaterial3: true,
-      ),
-      home: Scaffold(body: child),
-    );
+  theme: ThemeData(
+    colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
+    useMaterial3: true,
+  ),
+  home: Scaffold(body: child),
+);
 
 void main() {
   testWidgets('empty state shows the Start terminal CTA', (tester) async {
@@ -80,28 +85,31 @@ void main() {
     expect(find.text('New terminal'), findsNothing);
   });
 
-  testWidgets(
-    'seeded session renders one row with the no-output placeholder',
-    (tester) async {
-      final appState =
-          await _appStateWith(sessions: [_session('sid-aaaaaaaaaaaa')]);
-      addTearDown(appState.dispose);
-      await tester.pumpWidget(_wrap(TerminalTab(appState: appState)));
-      await tester.pump();
+  testWidgets('seeded session renders one row with the no-output placeholder', (
+    tester,
+  ) async {
+    final appState = await _appStateWith(
+      sessions: [_session('sid-aaaaaaaaaaaa')],
+    );
+    addTearDown(appState.dispose);
+    await tester.pumpWidget(_wrap(TerminalTab(appState: appState)));
+    await tester.pump();
 
-      expect(find.text('sh · 1'), findsOneWidget);
-      // cwd basename — "src" comes from /tmp/ws-1/src.
-      expect(find.text('src'), findsOneWidget);
-      // Placeholder text while the session has no buffered output yet.
-      expect(find.text('(no output yet)'), findsOneWidget);
-      // The "+ New" trailing row.
-      expect(find.text('New terminal'), findsOneWidget);
-    },
-  );
+    expect(find.text('sh · 1'), findsOneWidget);
+    // cwd basename — "src" comes from /tmp/ws-1/src.
+    expect(find.text('src'), findsOneWidget);
+    // Placeholder text while the session has no buffered output yet.
+    expect(find.text('(no output yet)'), findsOneWidget);
+    // The "+ New" trailing row.
+    expect(find.text('New terminal'), findsOneWidget);
+  });
 
-  testWidgets('preview row updates live when bytes flow through', (tester) async {
-    final appState =
-        await _appStateWith(sessions: [_session('sid-aaaaaaaaaaaa')]);
+  testWidgets('preview row updates live when bytes flow through', (
+    tester,
+  ) async {
+    final appState = await _appStateWith(
+      sessions: [_session('sid-aaaaaaaaaaaa')],
+    );
     addTearDown(appState.dispose);
     await tester.pumpWidget(_wrap(TerminalTab(appState: appState)));
     await tester.pump();
@@ -131,10 +139,26 @@ void main() {
     expect(find.text('done'), findsOneWidget);
   });
 
-  testWidgets('ANSI / OSC / control bytes are stripped from the preview',
-      (tester) async {
-    final appState =
-        await _appStateWith(sessions: [_session('sid-aaaaaaaaaaaa')]);
+  testWidgets('custom terminal title overrides the generated row label', (
+    tester,
+  ) async {
+    final appState = await _appStateWith(
+      sessions: [_session('sid-aaaaaaaaaaaa', title: 'deploy box')],
+    );
+    addTearDown(appState.dispose);
+    await tester.pumpWidget(_wrap(TerminalTab(appState: appState)));
+    await tester.pump();
+
+    expect(find.text('deploy box'), findsOneWidget);
+    expect(find.text('sh · 1'), findsNothing);
+  });
+
+  testWidgets('ANSI / OSC / control bytes are stripped from the preview', (
+    tester,
+  ) async {
+    final appState = await _appStateWith(
+      sessions: [_session('sid-aaaaaaaaaaaa')],
+    );
     addTearDown(appState.dispose);
     await tester.pumpWidget(_wrap(TerminalTab(appState: appState)));
     await tester.pump();
@@ -149,10 +173,12 @@ void main() {
     expect(find.text('ERR: not found'), findsOneWidget);
   });
 
-  testWidgets('long-press on "+ New" row does NOT trigger the kill dialog',
-      (tester) async {
-    final appState =
-        await _appStateWith(sessions: [_session('sid-aaaaaaaaaaaa')]);
+  testWidgets('long-press on "+ New" row does NOT trigger the kill dialog', (
+    tester,
+  ) async {
+    final appState = await _appStateWith(
+      sessions: [_session('sid-aaaaaaaaaaaa')],
+    );
     addTearDown(appState.dispose);
     await tester.pumpWidget(_wrap(TerminalTab(appState: appState)));
     await tester.pump();
@@ -179,8 +205,7 @@ void main() {
     expect(preview.endsWith('…'), isTrue);
   });
 
-  testWidgets('detached chip renders the "(detached)" hint',
-      (tester) async {
+  testWidgets('detached chip renders the "(detached)" hint', (tester) async {
     final detached = TerminalSession(
       id: 'sid-detached-00',
       workspaceId: _ws.id,
@@ -199,8 +224,7 @@ void main() {
     expect(find.text('sh · 1'), findsOneWidget);
   });
 
-  test('extractPreviewLine returns null for empty / whitespace-only input',
-      () {
+  test('extractPreviewLine returns null for empty / whitespace-only input', () {
     expect(extractPreviewLine(Uint8List(0)), isNull);
     expect(
       extractPreviewLine(Uint8List.fromList(utf8.encode('   \n  \n'))),

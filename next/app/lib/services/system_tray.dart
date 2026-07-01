@@ -10,13 +10,14 @@
 // though the main isolate kept receiving the same pushes and updating
 // the in-app notification center.
 //
-// New shape: the main isolate's `BackendClient` is the sole WS, and
-// `main.dart` fans `notification.show` / `notification.deleted` /
-// `notification.superseded` events to `SystemTrayController` to post to
-// the tray. The foreground service stays — Android still needs an active
-// FGS to keep the main isolate alive on aggressive OEMs — but it has
-// degenerated to a pure "keep the process resident" shell with no
-// network responsibilities.
+// New shape: the main isolate's AppState `BackendClient` is the sole
+// notification WS, and `main.dart` fans `notification.show` /
+// `notification.deleted` / `notification.superseded` events to
+// `SystemTrayController` to post to the tray. Terminal aggregation may own
+// terminal-only WS clients; they do not subscribe to notification pushes.
+// The foreground service stays — Android still needs an active FGS to keep
+// the main isolate alive on aggressive OEMs — but it has degenerated to a
+// pure "keep the process resident" shell with no network responsibilities.
 //
 // This file owns:
 //   * The per-level Android notification channels (created on `init`).
@@ -149,7 +150,9 @@ class SystemTrayController {
 
   final ValueNotifier<DateTime?> lastShowAt = ValueNotifier<DateTime?>(null);
   final ValueNotifier<String?> lastShowResult = ValueNotifier<String?>(null);
-  final ValueNotifier<List<String>> logs = ValueNotifier<List<String>>(const []);
+  final ValueNotifier<List<String>> logs = ValueNotifier<List<String>>(
+    const [],
+  );
 
   void _log(String line) {
     final now = DateTime.now();
@@ -192,8 +195,10 @@ class SystemTrayController {
 
     final AndroidFlutterLocalNotificationsPlugin? android;
     try {
-      android = _notif.resolvePlatformSpecificImplementation<
-          AndroidFlutterLocalNotificationsPlugin>();
+      android = _notif
+          .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin
+          >();
     } catch (e) {
       _log('resolvePlatformSpecificImplementation failed: $e');
       _initialized = true;
@@ -205,32 +210,38 @@ class SystemTrayController {
       return;
     }
     final vibrationPattern = Int64List.fromList([0, 300, 200, 300]);
-    await android.createNotificationChannel(AndroidNotificationChannel(
-      NotificationChannels.low,
-      _channelName(NotificationChannels.low),
-      description: _channelDescription(NotificationChannels.low),
-      importance: Importance.low,
-      playSound: false,
-      enableVibration: false,
-    ));
-    await android.createNotificationChannel(AndroidNotificationChannel(
-      NotificationChannels.defaultImp,
-      _channelName(NotificationChannels.defaultImp),
-      description: _channelDescription(NotificationChannels.defaultImp),
-      importance: Importance.defaultImportance,
-      playSound: true,
-      enableVibration: true,
-      vibrationPattern: vibrationPattern,
-    ));
-    await android.createNotificationChannel(AndroidNotificationChannel(
-      NotificationChannels.high,
-      _channelName(NotificationChannels.high),
-      description: _channelDescription(NotificationChannels.high),
-      importance: Importance.high,
-      playSound: true,
-      enableVibration: true,
-      vibrationPattern: vibrationPattern,
-    ));
+    await android.createNotificationChannel(
+      AndroidNotificationChannel(
+        NotificationChannels.low,
+        _channelName(NotificationChannels.low),
+        description: _channelDescription(NotificationChannels.low),
+        importance: Importance.low,
+        playSound: false,
+        enableVibration: false,
+      ),
+    );
+    await android.createNotificationChannel(
+      AndroidNotificationChannel(
+        NotificationChannels.defaultImp,
+        _channelName(NotificationChannels.defaultImp),
+        description: _channelDescription(NotificationChannels.defaultImp),
+        importance: Importance.defaultImportance,
+        playSound: true,
+        enableVibration: true,
+        vibrationPattern: vibrationPattern,
+      ),
+    );
+    await android.createNotificationChannel(
+      AndroidNotificationChannel(
+        NotificationChannels.high,
+        _channelName(NotificationChannels.high),
+        description: _channelDescription(NotificationChannels.high),
+        importance: Importance.high,
+        playSound: true,
+        enableVibration: true,
+        vibrationPattern: vibrationPattern,
+      ),
+    );
     _log('channels created');
     _initialized = true;
   }
@@ -289,10 +300,13 @@ class SystemTrayController {
       return;
     }
     final inQuiet = _inQuietHours(quietStartMinutes, quietEndMinutes);
-    final channelId =
-        inQuiet ? NotificationChannels.low : channelForLevel(n.level);
-    _log('show id=${n.id} title=${n.title} level=${n.level} '
-        'channel=$channelId icon=$_smallIcon inQuiet=$inQuiet');
+    final channelId = inQuiet
+        ? NotificationChannels.low
+        : channelForLevel(n.level);
+    _log(
+      'show id=${n.id} title=${n.title} level=${n.level} '
+      'channel=$channelId icon=$_smallIcon inQuiet=$inQuiet',
+    );
     final details = AndroidNotificationDetails(
       channelId,
       _channelName(channelId),
@@ -303,6 +317,13 @@ class SystemTrayController {
       icon: _smallIcon,
       silent: inQuiet || channelId == NotificationChannels.low,
       autoCancel: true,
+      styleInformation: n.body == null || n.body!.isEmpty
+          ? null
+          : BigTextStyleInformation(
+              n.body!,
+              contentTitle: n.title,
+              summaryText: n.source,
+            ),
     );
     final payload = jsonEncode({'id': n.id});
     try {

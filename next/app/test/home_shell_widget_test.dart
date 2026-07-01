@@ -18,6 +18,7 @@ import 'package:mobilecode/screens/home_shell.dart';
 import 'package:mobilecode/screens/settings_tab.dart';
 import 'package:mobilecode/services/system_tray.dart';
 import 'package:mobilecode/settings_store.dart';
+import 'package:mobilecode/state/terminal_hub.dart';
 
 Future<void> _pumpHomeShell(
   WidgetTester tester, {
@@ -38,6 +39,8 @@ Future<void> _pumpHomeShell(
     ],
     activeBackendId: 'b1',
   );
+  final terminalHub = TerminalHub();
+  addTearDown(terminalHub.dispose);
   await tester.pumpWidget(
     MaterialApp(
       theme: ThemeData(
@@ -46,10 +49,12 @@ Future<void> _pumpHomeShell(
       ),
       home: HomeShell(
         appState: appState,
+        terminalHub: terminalHub,
         settingsStore: SettingsStore(),
         state: state,
         systemTrayController: SystemTrayController(),
         onOpenBackends: onOpenBackends ?? () {},
+        onSwitchBackend: (_) async {},
         onBackendInstalled: (target, {required bool makeActive}) async {},
         onNotificationPrefsChanged: () async {},
         themeMode: ThemeMode.system,
@@ -132,6 +137,30 @@ void main() {
       find.text('No workspace open.\nTap the title bar to choose one.'),
       findsOneWidget,
     );
+  });
+
+  testWidgets('Terminal tab app bar does not show workspace chooser', (
+    tester,
+  ) async {
+    final appState = AppState(client: BackendClient());
+    addTearDown(appState.dispose);
+    await _pumpHomeShell(tester, appState: appState);
+
+    expect(find.text('(choose workspace)'), findsOneWidget);
+    expect(find.byIcon(Icons.folder_off_outlined), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.terminal_outlined));
+    await tester.pumpAndSettle();
+
+    expect(find.text('(choose workspace)'), findsNothing);
+    expect(find.byIcon(Icons.folder_off_outlined), findsNothing);
+    expect(find.byIcon(Icons.terminal_outlined), findsWidgets);
+
+    await tester.tap(find.byIcon(Icons.folder_outlined));
+    await tester.pumpAndSettle();
+
+    expect(find.text('(choose workspace)'), findsOneWidget);
+    expect(find.byIcon(Icons.folder_off_outlined), findsOneWidget);
   });
 
   testWidgets(

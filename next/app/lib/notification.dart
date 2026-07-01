@@ -61,7 +61,7 @@ class NotificationLink {
       );
 }
 
-/// Tap-target for the notification body. Mirrors the three-arm sum in §4.5.
+/// Tap-target for the notification body. Mirrors the backend action sum.
 sealed class NotificationAction {
   const NotificationAction();
   static NotificationAction? fromJson(Map<String, dynamic>? json) {
@@ -80,6 +80,23 @@ sealed class NotificationAction {
         final id = json['workspaceId'];
         if (id is String && id.isNotEmpty) {
           return OpenWorkspaceAction(id);
+        }
+        return null;
+      case 'open-terminal':
+        final sessionId = json['sessionId'];
+        if (sessionId is String && sessionId.isNotEmpty) {
+          final backendId = json['backendId'];
+          final externalSessionId = json['externalSessionId'];
+          return OpenTerminalAction(
+            sessionId: sessionId,
+            backendId: backendId is String && backendId.isNotEmpty
+                ? backendId
+                : null,
+            externalSessionId:
+                externalSessionId is String && externalSessionId.isNotEmpty
+                ? externalSessionId
+                : null,
+          );
         }
         return null;
       default:
@@ -101,6 +118,17 @@ class CopyAction extends NotificationAction {
 class OpenWorkspaceAction extends NotificationAction {
   final String workspaceId;
   const OpenWorkspaceAction(this.workspaceId);
+}
+
+class OpenTerminalAction extends NotificationAction {
+  final String sessionId;
+  final String? backendId;
+  final String? externalSessionId;
+  const OpenTerminalAction({
+    required this.sessionId,
+    this.backendId,
+    this.externalSessionId,
+  });
 }
 
 /// One persisted notification entry. Server-assigned fields (`id`,
@@ -151,44 +179,44 @@ class AppNotification {
   bool readByDevice(String deviceId) => readBy.contains(deviceId);
 
   AppNotification withReadBy(List<String> next) => AppNotification(
-        id: id,
-        source: source,
-        level: level,
-        title: title,
-        body: body,
-        fields: fields,
-        links: links,
-        action: action,
-        groupKey: groupKey,
-        supersedes: supersedes,
-        supersededBy: supersededBy,
-        important: important,
-        ttl: ttl,
-        ttlUntil: ttlUntil,
-        timestamp: timestamp,
-        widget: widget,
-        readBy: next,
-      );
+    id: id,
+    source: source,
+    level: level,
+    title: title,
+    body: body,
+    fields: fields,
+    links: links,
+    action: action,
+    groupKey: groupKey,
+    supersedes: supersedes,
+    supersededBy: supersededBy,
+    important: important,
+    ttl: ttl,
+    ttlUntil: ttlUntil,
+    timestamp: timestamp,
+    widget: widget,
+    readBy: next,
+  );
 
   AppNotification withImportant(bool next) => AppNotification(
-        id: id,
-        source: source,
-        level: level,
-        title: title,
-        body: body,
-        fields: fields,
-        links: links,
-        action: action,
-        groupKey: groupKey,
-        supersedes: supersedes,
-        supersededBy: supersededBy,
-        important: next,
-        ttl: ttl,
-        ttlUntil: ttlUntil,
-        timestamp: timestamp,
-        widget: widget,
-        readBy: readBy,
-      );
+    id: id,
+    source: source,
+    level: level,
+    title: title,
+    body: body,
+    fields: fields,
+    links: links,
+    action: action,
+    groupKey: groupKey,
+    supersedes: supersedes,
+    supersededBy: supersededBy,
+    important: next,
+    ttl: ttl,
+    ttlUntil: ttlUntil,
+    timestamp: timestamp,
+    widget: widget,
+    readBy: readBy,
+  );
 
   factory AppNotification.fromJson(Map<String, dynamic> json) {
     final fieldsRaw = json['fields'];
@@ -202,15 +230,15 @@ class AppNotification {
       body: json['body'] as String?,
       fields: fieldsRaw is List
           ? fieldsRaw
-              .whereType<Map<String, dynamic>>()
-              .map(NotificationField.fromJson)
-              .toList(growable: false)
+                .whereType<Map<String, dynamic>>()
+                .map(NotificationField.fromJson)
+                .toList(growable: false)
           : const [],
       links: linksRaw is List
           ? linksRaw
-              .whereType<Map<String, dynamic>>()
-              .map(NotificationLink.fromJson)
-              .toList(growable: false)
+                .whereType<Map<String, dynamic>>()
+                .map(NotificationLink.fromJson)
+                .toList(growable: false)
           : const [],
       action: NotificationAction.fromJson(
         json['action'] is Map<String, dynamic>

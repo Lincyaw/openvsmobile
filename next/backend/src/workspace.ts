@@ -1,8 +1,10 @@
 // Workspace model + filesystem helpers.
 //
 // A workspace is a window-like session: it has a UUID, a root path, a label,
-// and (via the registry) its own terminal sessions. The user can have N
-// active workspaces at once; closing one disposes its terminals.
+// and a legacy empty terminal registry kept for older test seams. Production
+// terminal sessions live in ProcessState's global registry and only carry an
+// optional workspace-root locator. The user can have N active workspaces at
+// once; closing one does not dispose process-global terminals.
 //
 // Recents are persisted as plain root strings. Re-opening the same path
 // later creates a *new* workspace with a fresh id unless the caller opts
@@ -216,6 +218,21 @@ export class WorkspaceRegistry {
 
   public listRecents(): string[] {
     return [...this.recents];
+  }
+
+  public forgetRecent(rawRoot: unknown): string[] {
+    if (typeof rawRoot !== "string" || rawRoot.length === 0) {
+      throw new RpcError(RPC_ERR.invalidParams, "root must be a non-empty string");
+    }
+    this.recents = this.recents.filter((root) => root !== rawRoot);
+    saveRecents(this.recents);
+    return this.listRecents();
+  }
+
+  public clearRecents(): string[] {
+    this.recents = [];
+    saveRecents(this.recents);
+    return [];
   }
 
   public current(): ActiveWorkspace | null {

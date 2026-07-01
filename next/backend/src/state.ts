@@ -14,14 +14,12 @@
 
 import type { WebSocket } from "ws";
 import { sendNotification } from "./rpc.js";
-import {
-  WorkspaceRegistry,
-  type ActiveWorkspace,
-} from "./workspace.js";
+import { WorkspaceRegistry } from "./workspace.js";
 import type {
   TerminalSnapshot,
   TerminalPersistenceHook,
 } from "./terminal.js";
+import { TerminalRegistry } from "./terminal.js";
 import {
   listZellijSessions,
   type ExecRunner,
@@ -114,6 +112,12 @@ export class ProcessState {
   /// sinks are wired through this class so the registry stays unaware of
   /// individual subscribers.
   public readonly workspaces: WorkspaceRegistry;
+
+  /// Process-global terminal registry. Terminal sessions are not owned by
+  /// workspaces; a session only carries an optional `workspaceRoot` locator
+  /// so the app can jump from Terminal to Files when a matching workspace is
+  /// open or can be opened.
+  public readonly terminals: TerminalRegistry;
   /// Process-global diff cache keyed by
   /// `<workspaceId> <path> <baseSha|WT> <workingHash>`. LRU-evicted at 64
   /// entries (see BoundedMap below). Invalidated by the drain loop when
@@ -202,18 +206,20 @@ export class ProcessState {
       const wsId = this.workspaceIdForTerminal(sessionId);
       this.broadcast(
         "terminal.detached",
-        { sessionId, workspaceId: wsId },
+        {
+          sessionId,
+          workspaceId: wsId,
+          workspaceRoot: this.terminalWorkspaceRoot(sessionId),
+        },
         (sub) => terminalSubscriberMatches(sub, sessionId),
       );
     };
-    this.workspaces = new WorkspaceRegistry(
-      // terminal data → broadcast filtered by per-connection terminal scope.
+    this.terminals = new TerminalRegistry(
       (sessionId, data, seqEnd) => {
-        const wsId = this.workspaceIdForTerminal(sessionId);
-        if (wsId === null) return;
         const params = {
           sessionId,
-          workspaceId: wsId,
+          workspaceId: this.workspaceIdForTerminal(sessionId),
+          workspaceRoot: this.terminalWorkspaceRoot(sessionId),
           dataBase64: data.toString("base64"),
           seqEnd,
         };
@@ -221,12 +227,50 @@ export class ProcessState {
           terminalSubscriberMatches(sub, sessionId),
         );
       },
-      // terminal exit → broadcast filtered by per-connection terminal scope.
       (sessionId, exitCode) => {
-        const wsId = this.workspaceIdForTerminal(sessionId);
         const params = {
           sessionId,
-          workspaceId: wsId, // may be null if workspace was already closed
+          workspaceId: this.workspaceIdForTerminal(sessionId),
+          workspaceRoot: this.terminalWorkspaceRoot(sessionId),
+          exitCode,
+        };
+        this.broadcast("terminal.exit", params, (sub) =>
+          terminalSubscriberMatches(sub, sessionId),
+        );
+      },
+      {
+        multiplexer,
+        ...(terminalPersistence !== null
+          ? { persistence: terminalPersistence }
+          : {}),
+        ...(opts.execRunner !== undefined
+          ? { execRunner: opts.execRunner }
+          : {}),
+        onDetached: onTerminalDetached,
+      },
+    );
+    this.terminals.hydrateAllFromPersistence(new Set());
+    this.workspaces = new WorkspaceRegistry(
+      // Legacy workspace-scoped terminal sinks. Production RPC no longer
+      // creates terminals through ActiveWorkspace.terminals; keeping the
+      // no-op-compatible sinks preserves older tests and private helpers.
+      (sessionId, data, seqEnd) => {
+        const params = {
+          sessionId,
+          workspaceId: this.workspaceIdForTerminal(sessionId),
+          workspaceRoot: this.terminalWorkspaceRoot(sessionId),
+          dataBase64: data.toString("base64"),
+          seqEnd,
+        };
+        this.broadcast("terminal.data", params, (sub) =>
+          terminalSubscriberMatches(sub, sessionId),
+        );
+      },
+      (sessionId, exitCode) => {
+        const params = {
+          sessionId,
+          workspaceId: this.workspaceIdForTerminal(sessionId),
+          workspaceRoot: this.terminalWorkspaceRoot(sessionId),
           exitCode,
         };
         this.broadcast("terminal.exit", params, (sub) =>
@@ -234,7 +278,7 @@ export class ProcessState {
         );
       },
       multiplexer,
-      terminalPersistence,
+      null,
       onTerminalDetached,
     );
     this.workspaces.setInvalidateHook((workspaceId) => {
@@ -290,33 +334,65 @@ export class ProcessState {
   /// Find the owning workspace for a terminal session id, or null if the
   /// session was just removed (e.g. exit fired during workspace close).
   public workspaceIdForTerminal(sessionId: string): string | null {
+    const snap = this.terminals.getSnapshot(sessionId);
+    if (snap === null) return null;
+    return this.workspaceIdForRoot(snap.workspaceRoot);
+  }
+
+  public terminalWorkspaceRoot(sessionId: string): string | null {
+    return this.terminals.getSnapshot(sessionId)?.workspaceRoot ?? null;
+  }
+
+  public workspaceIdForRoot(workspaceRoot: string | null): string | null {
+    if (workspaceRoot === null) return null;
     for (const info of this.workspaces.listActive()) {
-      const ws = this.workspaces.get(info.id);
-      if (ws.terminals.has(sessionId)) return ws.id;
+      if (info.root === workspaceRoot) return info.id;
     }
     return null;
   }
 
-  public findSession(sessionId: string): ActiveWorkspace | null {
-    for (const info of this.workspaces.listActive()) {
-      const ws = this.workspaces.get(info.id);
-      if (ws.terminals.has(sessionId)) return ws;
-    }
-    return null;
+  public findSession(sessionId: string): TerminalSnapshot | null {
+    return this.terminals.getSnapshot(sessionId);
   }
 
-  /// Flat list of every terminal session across every active workspace, each
-  /// annotated with its owning workspaceId. Used by `terminal.list` when the
-  /// caller omits a workspaceId filter.
-  public listAllTerminals(): Array<TerminalSnapshot & { workspaceId: string }> {
-    const out: Array<TerminalSnapshot & { workspaceId: string }> = [];
-    for (const info of this.workspaces.listActive()) {
-      const ws = this.workspaces.get(info.id);
-      for (const t of ws.terminals.list()) {
-        out.push({ ...t, workspaceId: ws.id });
-      }
-    }
-    return out;
+  public renameTerminal(
+    sessionId: string,
+    title: string | null,
+  ): TerminalSnapshot & { workspaceId: string | null } {
+    const snap = this.terminals.rename(sessionId, title);
+    const enriched = {
+      ...snap,
+      workspaceId: this.workspaceIdForRoot(snap.workspaceRoot),
+    };
+    this.broadcast(
+      "terminal.renamed",
+      {
+        sessionId: snap.id,
+        title: snap.title,
+        workspaceId: enriched.workspaceId,
+        workspaceRoot: snap.workspaceRoot,
+      },
+      (sub) => terminalSubscriberMatches(sub, sessionId),
+    );
+    return enriched;
+  }
+
+  /// Flat list of every terminal session, each annotated with the currently
+  /// open workspaceId matching its workspaceRoot locator, if one exists.
+  public listAllTerminals(): Array<
+    TerminalSnapshot & { workspaceId: string | null }
+  > {
+    return this.terminals.list().map((t) => ({
+      ...t,
+      workspaceId: this.workspaceIdForRoot(t.workspaceRoot),
+    }));
+  }
+
+  public listTerminalsForWorkspace(workspaceId: string): Array<
+    TerminalSnapshot & { workspaceId: string | null }
+  > {
+    const ws = this.workspaces.get(workspaceId);
+    return this.listAllTerminals().filter((t) => t.workspaceRoot === ws.root);
   }
 
   /// Walk every active workspace, detach its PTY clients, and emit
@@ -327,6 +403,7 @@ export class ProcessState {
   /// themselves are not persisted, so wiping the in-memory map is
   /// fine.
   public shutdownAll(): void {
+    this.terminals.detachAll();
     const ids = this.workspaces.detachAllForShutdown();
     for (const id of ids) {
       this.broadcastWorkspaceClosed(id);
@@ -355,12 +432,7 @@ export class ProcessState {
     if (this.multiplexer.kind !== "zellij") return [];
     const sessions = await listZellijSessions(this.execRunner);
     const claimed = new Set<string>();
-    for (const info of this.workspaces.listActive()) {
-      const ws = this.workspaces.get(info.id);
-      for (const name of ws.terminals.externalSessionIds()) {
-        claimed.add(name);
-      }
-    }
+    for (const name of this.terminals.externalSessionIds()) claimed.add(name);
     return sessions.map((s) => ({ ...s, adopted: claimed.has(s.name) }));
   }
 
@@ -368,11 +440,7 @@ export class ProcessState {
   /// ANY active workspace's registry. Used by the adoption handler to
   /// refuse double-adoption per the task brief.
   public isExternalSessionAdopted(sessionName: string): boolean {
-    for (const info of this.workspaces.listActive()) {
-      const ws = this.workspaces.get(info.id);
-      if (ws.terminals.externalSessionIds().includes(sessionName)) return true;
-    }
-    return false;
+    return this.terminals.externalSessionIds().includes(sessionName);
   }
 
   /// `plugin.stateChanged` fan-out — same per-subscriber subscription
