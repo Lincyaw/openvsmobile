@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- shared_preferences_android stores current values in DataStore and can
+         still read legacy SharedPreferences. Include both so reinstall and
+         device-transfer restore the saved backend list. -->
+    <include
+        domain="file"
+        path="datastore/FlutterSharedPreferences.preferences_pb" />
+    <include
+        domain="sharedpref"
+        path="FlutterSharedPreferences.xml" />
+</full-backup-content>

@@ -16,6 +16,7 @@ import 'screens/backends_screen.dart';
 import 'screens/diag_overlay.dart';
 import 'screens/home_shell.dart';
 import 'screens/notification_center.dart';
+import 'services/backend_backup_service.dart';
 import 'services/connectivity_probe.dart';
 import 'services/deep_link_service.dart';
 import 'services/diag_log.dart';
@@ -46,6 +47,8 @@ class MobileCodeApp extends StatefulWidget {
 class _MobileCodeAppState extends State<MobileCodeApp>
     with WidgetsBindingObserver {
   final SettingsStore _settingsStore = SettingsStore();
+  final BackendBackupService _backendBackupService =
+      const BackendBackupService();
   late final BackendClient _client = BackendClient(
     probe: ConnectivityPlusProbe(),
   );
@@ -418,6 +421,19 @@ class _MobileCodeAppState extends State<MobileCodeApp>
     await _restartClientForActive();
   }
 
+  Future<bool> _exportBackendBackup() async {
+    return _backendBackupService.exportBackends(_state);
+  }
+
+  Future<int?> _importBackendBackup() async {
+    final imported = await _backendBackupService.importBackends();
+    if (imported == null) return null;
+    final next = normalizeBackendBackupState(imported);
+    await _persistState(next);
+    await _restartClientForActive();
+    return next.backends.length;
+  }
+
   /// Tear down and reopen the client against the active backend. Also
   /// schedules the post-connect "reopen lastWorkspaceId" pass.
   Future<void> _restartClientForActive() async {
@@ -494,6 +510,8 @@ class _MobileCodeAppState extends State<MobileCodeApp>
       onUpdate: _updateBackend,
       onDelete: _deleteBackend,
       onSwitch: _switchBackend,
+      onExport: _exportBackendBackup,
+      onImport: _importBackendBackup,
     );
   }
 

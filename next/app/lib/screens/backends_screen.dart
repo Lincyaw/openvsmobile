@@ -6,6 +6,8 @@
 // "Add your first backend" prompt instead of pushing the user into a form
 // without context.
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
@@ -21,7 +23,7 @@ class BackendsScreen extends StatelessWidget {
 
   /// Add a brand-new backend. Caller decides whether to make it active.
   final Future<void> Function(BackendTarget target, {required bool makeActive})
-      onAdd;
+  onAdd;
 
   /// Persist edits (rename / host:port / token) to an existing entry.
   /// If the edited entry is currently active, main.dart will trigger a
@@ -35,6 +37,13 @@ class BackendsScreen extends StatelessWidget {
   /// Switch the active backend to [id].
   final Future<void> Function(String id) onSwitch;
 
+  /// Save the current backend list to a user-chosen document.
+  final Future<bool> Function() onExport;
+
+  /// Load a user-chosen backend backup. Returns the imported backend count,
+  /// or null if the picker was canceled.
+  final Future<int?> Function() onImport;
+
   const BackendsScreen({
     super.key,
     required this.state,
@@ -43,6 +52,8 @@ class BackendsScreen extends StatelessWidget {
     required this.onUpdate,
     required this.onDelete,
     required this.onSwitch,
+    required this.onExport,
+    required this.onImport,
   });
 
   Future<void> _showAddSheet(BuildContext context) async {
@@ -66,8 +77,9 @@ class BackendsScreen extends StatelessWidget {
             ListTile(
               leading: const Icon(Icons.edit_outlined),
               title: const Text('Manual entry'),
-              subtitle:
-                  const Text('Type host, port, and bearer token yourself.'),
+              subtitle: const Text(
+                'Type host, port, and bearer token yourself.',
+              ),
               onTap: () {
                 Navigator.of(ctx).pop();
                 _startManualEntry(context);
@@ -76,9 +88,7 @@ class BackendsScreen extends StatelessWidget {
             ListTile(
               leading: const Icon(Icons.wifi_find),
               title: const Text('Scan LAN'),
-              subtitle: const Text(
-                'Discover backends on your local network.',
-              ),
+              subtitle: const Text('Discover backends on your local network.'),
               onTap: () {
                 Navigator.of(ctx).pop();
                 _startLanDiscovery(context);
@@ -137,7 +147,9 @@ class BackendsScreen extends StatelessWidget {
   }
 
   Future<void> _editBackend(
-      BuildContext context, BackendTarget existing) async {
+    BuildContext context,
+    BackendTarget existing,
+  ) async {
     final navigator = Navigator.of(context);
     await navigator.push<void>(
       MaterialPageRoute(
@@ -151,8 +163,7 @@ class BackendsScreen extends StatelessWidget {
     );
   }
 
-  Future<void> _renameBackend(
-      BuildContext context, BackendTarget t) async {
+  Future<void> _renameBackend(BuildContext context, BackendTarget t) async {
     final ctrl = TextEditingController(text: t.name);
     final newName = await showDialog<String>(
       context: context,
@@ -179,8 +190,7 @@ class BackendsScreen extends StatelessWidget {
     await onUpdate(t.copyWith(name: newName));
   }
 
-  Future<void> _confirmDelete(
-      BuildContext context, BackendTarget t) async {
+  Future<void> _confirmDelete(BuildContext context, BackendTarget t) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -205,6 +215,97 @@ class BackendsScreen extends StatelessWidget {
     await onDelete(t.id);
   }
 
+  Future<void> _exportBackup(BuildContext context) async {
+    if (state.backends.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('No backends to export')));
+      return;
+    }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Export backend backup'),
+        content: const Text(
+          'The backup includes backend bearer tokens. Save it somewhere '
+          'private.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Export'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    try {
+      final saved = await onExport();
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(saved ? 'Backend backup saved' : 'Export canceled'),
+        ),
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Export failed: $e')));
+    }
+  }
+
+  Future<void> _importBackup(BuildContext context) async {
+    if (state.backends.isNotEmpty) {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Import backend backup'),
+          content: Text(
+            'This replaces ${state.backends.length} saved '
+            '${state.backends.length == 1 ? 'backend' : 'backends'} on this '
+            'device.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('Import'),
+            ),
+          ],
+        ),
+      );
+      if (ok != true) return;
+    }
+
+    try {
+      final count = await onImport();
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            count == null
+                ? 'Import canceled'
+                : 'Imported $count ${count == 1 ? 'backend' : 'backends'}',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Import failed: $e')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -215,6 +316,27 @@ class BackendsScreen extends StatelessWidget {
             tooltip: 'Add backend',
             icon: const Icon(Icons.add),
             onPressed: () => _showAddSheet(context),
+          ),
+          PopupMenuButton<_BackendsAction>(
+            tooltip: 'Backend backup',
+            onSelected: (action) {
+              switch (action) {
+                case _BackendsAction.export:
+                  unawaited(_exportBackup(context));
+                case _BackendsAction.import:
+                  unawaited(_importBackup(context));
+              }
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(
+                value: _BackendsAction.export,
+                child: Text('Export backup'),
+              ),
+              PopupMenuItem(
+                value: _BackendsAction.import,
+                child: Text('Import backup'),
+              ),
+            ],
           ),
         ],
       ),
@@ -240,6 +362,8 @@ class BackendsScreen extends StatelessWidget {
   }
 }
 
+enum _BackendsAction { export, import }
+
 class _EmptyState extends StatelessWidget {
   final VoidCallback onAdd;
   const _EmptyState({required this.onAdd});
@@ -259,10 +383,7 @@ class _EmptyState extends StatelessWidget {
               color: theme.colorScheme.onSurfaceVariant,
             ),
             const SizedBox(height: 16),
-            Text(
-              'No backends yet',
-              style: theme.textTheme.titleLarge,
-            ),
+            Text('No backends yet', style: theme.textTheme.titleLarge),
             const SizedBox(height: 8),
             Text(
               'Add one to connect. You can install a backend via SSH or '
@@ -301,10 +422,10 @@ class _BackendTile extends StatelessWidget {
   });
 
   String _originLabel() => switch (target.origin) {
-        BackendOrigin.manual => 'manual',
-        BackendOrigin.sshInstall => 'ssh-install',
-        BackendOrigin.discovery => 'discovery',
-      };
+    BackendOrigin.manual => 'manual',
+    BackendOrigin.sshInstall => 'ssh-install',
+    BackendOrigin.discovery => 'discovery',
+  };
 
   String _statusLabel() {
     if (isActive) return 'active';
@@ -334,9 +455,7 @@ class _BackendTile extends StatelessWidget {
       leading: Icon(
         isActive ? Icons.circle : Icons.circle_outlined,
         size: 14,
-        color: isActive
-            ? theme.colorScheme.primary
-            : theme.colorScheme.outline,
+        color: isActive ? theme.colorScheme.primary : theme.colorScheme.outline,
       ),
       title: Text(target.name.isEmpty ? '(unnamed)' : target.name),
       subtitle: Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),

@@ -14,19 +14,23 @@ BackendTarget _target({
   String host = 'h.local',
   int port = 7860,
   String token = 't',
-}) =>
-    BackendTarget(
-      id: id,
-      name: name,
-      host: host,
-      port: port,
-      token: token,
-      origin: BackendOrigin.manual,
-      addedAt: 0,
-    );
+}) => BackendTarget(
+  id: id,
+  name: name,
+  host: host,
+  port: port,
+  token: token,
+  origin: BackendOrigin.manual,
+  addedAt: 0,
+);
 
-Future<void> _pump(WidgetTester tester, AppPersistedState state,
-    {AppState? appState}) async {
+Future<void> _pump(
+  WidgetTester tester,
+  AppPersistedState state, {
+  AppState? appState,
+  Future<bool> Function()? onExport,
+  Future<int?> Function()? onImport,
+}) async {
   appState ??= AppState(client: BackendClient());
   await tester.pumpWidget(
     MaterialApp(
@@ -37,6 +41,8 @@ Future<void> _pump(WidgetTester tester, AppPersistedState state,
         onUpdate: (_) async {},
         onDelete: (_) async {},
         onSwitch: (_) async {},
+        onExport: onExport ?? () async => true,
+        onImport: onImport ?? () async => 1,
       ),
     ),
   );
@@ -52,8 +58,9 @@ void main() {
     expect(find.text('Add your first backend'), findsOneWidget);
   });
 
-  testWidgets('renders a single backend with host:port subtitle and menu',
-      (tester) async {
+  testWidgets('renders a single backend with host:port subtitle and menu', (
+    tester,
+  ) async {
     final appState = AppState(client: BackendClient());
     addTearDown(appState.dispose);
     final state = AppPersistedState(
@@ -67,5 +74,58 @@ void main() {
     expect(find.byIcon(Icons.circle), findsOneWidget);
     // PopupMenuButton is present.
     expect(find.byType(PopupMenuButton<String>), findsOneWidget);
+  });
+
+  testWidgets('exports backend backup from the overflow menu', (tester) async {
+    final appState = AppState(client: BackendClient());
+    addTearDown(appState.dispose);
+    var exported = false;
+    final state = AppPersistedState(
+      backends: [_target()],
+      activeBackendId: 'b1',
+    );
+    await _pump(
+      tester,
+      state,
+      appState: appState,
+      onExport: () async {
+        exported = true;
+        return true;
+      },
+    );
+
+    await tester.tap(find.byTooltip('Backend backup'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Export backup'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('bearer tokens'), findsOneWidget);
+    await tester.tap(find.text('Export'));
+    await tester.pumpAndSettle();
+
+    expect(exported, isTrue);
+    expect(find.text('Backend backup saved'), findsOneWidget);
+  });
+
+  testWidgets('imports backend backup from the empty state', (tester) async {
+    final appState = AppState(client: BackendClient());
+    addTearDown(appState.dispose);
+    var imported = false;
+    await _pump(
+      tester,
+      const AppPersistedState(),
+      appState: appState,
+      onImport: () async {
+        imported = true;
+        return 2;
+      },
+    );
+
+    await tester.tap(find.byTooltip('Backend backup'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Import backup'));
+    await tester.pumpAndSettle();
+
+    expect(imported, isTrue);
+    expect(find.text('Imported 2 backends'), findsOneWidget);
   });
 }

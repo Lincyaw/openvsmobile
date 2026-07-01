@@ -94,7 +94,11 @@ backend (e.g. `192.168.1.10`, or `10.0.2.2` if you're on the Android
 emulator talking to a backend on the host), the port, and the token
 printed by the backend.
 
-You can manage backends later from the top-level Settings tab.
+You can manage backends later from the top-level Settings tab. The
+Backends screen can also export/import the backend list as JSON through
+Android's document picker; the file includes bearer tokens, so keep it
+private. On Android, the app opts into OS backup/device-transfer for the
+Flutter preferences file that stores this list.
 
 ### App layout (this iteration)
 
