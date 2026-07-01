@@ -25,7 +25,11 @@ import { initNtfySender } from "./ntfy.js";
 import { MdnsAdvertiser } from "./mdnsAdvertiser.js";
 
 const DEFAULT_PORT = 7860;
-const SHUTDOWN_HARD_EXIT_MS = 3000;
+// Plugin shutdown uses a SIGTERM -> grace -> SIGKILL path with a 10s default
+// grace window. The backend hard deadline must be longer than that; otherwise
+// normal systemd stop/restart turns into exit(1), which systemd treats as a
+// crash and loops until StartLimitBurst is hit.
+const SHUTDOWN_HARD_EXIT_MS = 15_000;
 
 function parsePort(): number {
   const raw = process.env.PORT;
@@ -243,8 +247,19 @@ async function main(): Promise<void> {
       await mdnsAdvertiser.stop().catch(() => {});
     }
     unlinkRuntimeInfo();
-    wss.close();
-    httpServer.close(() => process.exit(0));
+    for (const client of wss.clients) {
+      client.close(1001, "server shutdown");
+    }
+    const forceCloseClients = setTimeout(() => {
+      for (const client of wss.clients) {
+        client.terminate();
+      }
+    }, 1000);
+    forceCloseClients.unref();
+    wss.close(() => {
+      clearTimeout(forceCloseClients);
+      httpServer.close(() => process.exit(0));
+    });
   };
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));

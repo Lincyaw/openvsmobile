@@ -256,8 +256,11 @@ class BackendClient {
   /// on `resumed` to short-circuit the backoff timer.
   void requestReconnectNow() {
     if (_userStop) return;
-    if (state.value == BackendConnectionState.connected ||
-        state.value == BackendConnectionState.connecting) {
+    if (state.value == BackendConnectionState.connected) {
+      _probeConnectedSocket();
+      return;
+    }
+    if (state.value == BackendConnectionState.connecting) {
       return;
     }
     if (!_online) {
@@ -267,6 +270,23 @@ class BackendClient {
     _cancelReconnect();
     _backoffStep = 0;
     unawaited(_attemptConnect(reset: true));
+  }
+
+  void _probeConnectedSocket() {
+    _rawCall('system.ping', const {})
+        .timeout(_resumeProbeTimeout())
+        .then((_) {
+          // The connection is alive; stay connected.
+        })
+        .catchError((Object e) {
+          lastError.value = 'resume ping failed: $e';
+          _dropSocketAndReconnect();
+        });
+  }
+
+  Duration _resumeProbeTimeout() {
+    const cap = Duration(seconds: 2);
+    return _timing.heartbeatGrace < cap ? _timing.heartbeatGrace : cap;
   }
 
   void _onConnectivity(bool online) {
@@ -460,10 +480,23 @@ class BackendClient {
 
   void _dropSocketAndReconnect() {
     final ch = _channel;
-    _onSocketGone();
-    if (ch != null) {
-      unawaited(ch.sink.close(ws_status.normalClosure).catchError((_) {}));
+    if (ch == null) {
+      _stopHeartbeat();
+      _failPending('connection dropped');
+      if (_userStop) {
+        state.value = BackendConnectionState.disconnected;
+        return;
+      }
+      if (state.value == BackendConnectionState.failed) return;
+      if (!_online) {
+        state.value = BackendConnectionState.waitingForNetwork;
+        return;
+      }
+      _scheduleReconnect();
+      return;
     }
+    _onSocketGone();
+    unawaited(ch.sink.close(ws_status.normalClosure).catchError((_) {}));
   }
 
   void _stopHeartbeat() {
