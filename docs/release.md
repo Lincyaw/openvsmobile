@@ -6,6 +6,16 @@ The APK's `kBackendVersion` is substituted from the tag at build time, so a rele
 
 The workflow detects `-rc` / `-beta` / `-alpha` suffixes in the tag and flips the GitHub Release `prerelease` flag accordingly.
 
+## Backend install one-liner
+
+Install or upgrade the backend by passing the desired release version once:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/install.sh | bash -s -- 0.4.1
+```
+
+The root `install.sh` is a small wrapper that fetches the canonical installer from `next/backend/pkg/install.sh` on `main`, then forwards the arguments unchanged. The installer downloads the matching backend tarball from GitHub Releases based on the version argument.
+
 ## Setting up release signing (optional)
 
 The workflow degrades gracefully. If the four signing secrets below are **not** configured, the workflow emits a warning and produces a **debug-signed** APK — installable, but cannot coexist with a release-signed install of the same app. For internal smoke testing this is fine; for any user-facing distribution, configure real signing.

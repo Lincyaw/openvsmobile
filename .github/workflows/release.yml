@@ -298,8 +298,15 @@ jobs:
             echo
             echo '### Install'
             echo
+            version="${GITHUB_REF_NAME#v}"
+            echo 'Direct install:'
+            echo
+            echo '```bash'
+            echo "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/install.sh | bash -s -- ${version}"
+            echo '```'
+            echo
             echo "SSH-bootstrap from the app's Settings screen → SSH bootstrap."
-            echo "Or directly: see \`install.sh\` in the assets."
+            echo "The attached \`install.sh\` asset is still published for pinned, release-local installs."
             if [[ "${SIGNING_MODE}" != "release" ]]; then
               echo
               echo "> ⚠️ This release's APKs are **debug-signed** — installing alongside a release-signed build is not possible. See [\`docs/release.md\`](${DOCS_RELEASE_URL}) for setting up release signing."
