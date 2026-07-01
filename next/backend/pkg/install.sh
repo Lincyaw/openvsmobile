@@ -18,6 +18,7 @@ CACHE_DIR="$HOME/.cache/openvsmobile"
 UNIT_PATH="$HOME/.config/systemd/user/openvsmobile.service"
 SERVICE_NAME="openvsmobile.service"
 POLL_TIMEOUT_SECS=10
+STOP_TIMEOUT_SECS=20
 
 # ----- usage -----
 usage() {
@@ -69,6 +70,73 @@ log() { printf '[install] %s\n' "$*" >&2; }
 fatal() { printf '[install] error: %s\n' "${1:-unspecified error}" >&2; exit "${2:-1}"; }
 need() {
   command -v "$1" >/dev/null 2>&1 || fatal "missing dependency: $1 (install it and retry)" 7
+}
+
+pid_alive() {
+  local pid="${1:-}"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  [[ "$pid" -gt 0 ]] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+service_main_pid() {
+  local pid
+  pid="$(systemctl --user show "$SERVICE_NAME" -p MainPID --value 2>/dev/null || true)"
+  if [[ "$pid" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$pid"
+  else
+    printf '0\n'
+  fi
+}
+
+runtime_version() {
+  local path="$1"
+  grep -E '"version"[[:space:]]*:' "$path" 2>/dev/null | head -n1 | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true
+}
+
+runtime_pid() {
+  local path="$1"
+  grep -E '"pid"[[:space:]]*:' "$path" 2>/dev/null | head -n1 | sed -E 's/.*"pid"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/' || true
+}
+
+wait_service_stopped() {
+  local deadline state pid
+  deadline=$(( $(date +%s) + STOP_TIMEOUT_SECS ))
+  while true; do
+    state="$(systemctl --user is-active "$SERVICE_NAME" 2>/dev/null || true)"
+    pid="$(service_main_pid)"
+    if [[ "$state" != "active" && "$state" != "activating" ]] && ! pid_alive "$pid"; then
+      return 0
+    fi
+    if (( $(date +%s) >= deadline )); then
+      log "diagnostic: $SERVICE_NAME is still ${state:-unknown} (MainPID=${pid:-unknown}) after stop"
+      return 1
+    fi
+    sleep 0.2
+  done
+}
+
+runtime_ready() {
+  local path="$1"
+  local got_version got_pid
+  [[ -f "$path" ]] || return 1
+  got_version="$(runtime_version "$path")"
+  if [[ "$got_version" != "$VERSION" ]]; then
+    if [[ -n "$got_version" ]]; then
+      log "ignoring stale runtime info: file reports version '$got_version', installer expects '$VERSION'"
+    else
+      log "ignoring malformed runtime info: missing version"
+    fi
+    rm -f "$path" 2>/dev/null || true
+    return 1
+  fi
+  got_pid="$(runtime_pid "$path")"
+  if ! pid_alive "$got_pid"; then
+    log "ignoring stale runtime info: pid '${got_pid:-missing}' is not running"
+    rm -f "$path" 2>/dev/null || true
+    return 1
+  fi
+  return 0
 }
 
 install_agent_hooks() {
@@ -271,12 +339,14 @@ fi
 # active, so an upgrade flips `current` to a new tree while the old node
 # process keeps running. Worse, it might resolve some new files via the
 # symlink at runtime. Always stop first; ignore failures (unit may not be
-# loaded yet on a first install).
+# loaded yet on a first install). `stop` also cancels a pending restart
+# job, which matters after a crash loop: `is-active` may already be false
+# while systemd still has a restart queued that can rewrite old runtime.json.
 if [[ "$DRY_RUN_SYSTEMD" -eq 0 ]]; then
-  if systemctl --user is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-    log "stopping running $SERVICE_NAME before upgrade"
-    systemctl --user stop "$SERVICE_NAME" >/dev/null 2>&1 || true
-  fi
+  log "stopping $SERVICE_NAME before upgrade"
+  systemctl --user stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+  wait_service_stopped || fatal "$SERVICE_NAME did not stop within ${STOP_TIMEOUT_SECS}s"
+  systemctl --user reset-failed "$SERVICE_NAME" >/dev/null 2>&1 || true
 fi
 
 # ----- extract (idempotent) -----
@@ -440,17 +510,17 @@ else
 fi
 
 # ----- poll runtime.json -----
-log "waiting for $POLL_TARGET (up to ${POLL_TIMEOUT_SECS}s)"
+log "waiting for valid $POLL_TARGET (up to ${POLL_TIMEOUT_SECS}s)"
 deadline=$(( $(date +%s) + POLL_TIMEOUT_SECS ))
-while [[ ! -f "$POLL_TARGET" ]]; do
+while ! runtime_ready "$POLL_TARGET"; do
   if (( $(date +%s) >= deadline )); then
     if [[ "$DRY_RUN_SYSTEMD" -eq 1 ]]; then
       log "diagnostic backend log:"
       sed -e 's/^/  /' "$DRY_HOME/.backend.log" >&2 || true
-      fatal "backend did not write $POLL_TARGET within ${POLL_TIMEOUT_SECS}s (dry-run)"
+      fatal "backend did not write valid $POLL_TARGET within ${POLL_TIMEOUT_SECS}s (dry-run)"
     fi
     log "diagnostic: 'systemctl --user status openvsmobile' may explain why"
-    fatal "backend did not write $POLL_TARGET within ${POLL_TIMEOUT_SECS}s"
+    fatal "backend did not write valid $POLL_TARGET within ${POLL_TIMEOUT_SECS}s"
   fi
   sleep 0.2
 done
