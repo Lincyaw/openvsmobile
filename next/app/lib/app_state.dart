@@ -548,23 +548,7 @@ class AppState extends ChangeNotifier {
         unawaited(_workspacesModel.subscribe(w.id));
       }
       for (final w in _active) {
-        final tres =
-            await client.call('terminal.list', {'workspaceId': w.id})
-                as Map<String, dynamic>;
-        final sessions = (tres['sessions'] as List)
-            .cast<Map<String, dynamic>>()
-            .map(TerminalSession.fromJson)
-            .toList();
-        _terminals.setSessionsForWorkspace(w.id, sessions);
-        // Replay each session's scrollback. Order matters: we must finish
-        // the replay (and set the seq watermark) BEFORE any live terminal.data
-        // notifications race in. Notifications observed while the call is
-        // in flight land in the backlog (because no Terminal exists yet for
-        // that sid) and get drained when we finally install the Terminal.
-        // That keeps the dedupe protocol watertight.
-        for (final s in sessions) {
-          await _terminals.replayHistory(s.id);
-        }
+        await _refreshTerminalsForWorkspace(w.id);
       }
       notifyListeners();
     } catch (e) {
@@ -585,25 +569,61 @@ class AppState extends ChangeNotifier {
   /// [lastOperationError] and returns null — the caller surfaces it via
   /// SnackBar.
   Future<Workspace?> openWorkspace(String root) async {
+    Workspace ws;
     try {
       final r =
-          await client.call('workspace.open', {'root': root})
+          await client.call('workspace.open', {
+                'root': root,
+                'reuseExisting': true,
+              })
               as Map<String, dynamic>;
-      final ws = Workspace.fromJson(r['workspace'] as Map<String, dynamic>);
+      ws = Workspace.fromJson(r['workspace'] as Map<String, dynamic>);
       if (!_active.any((w) => w.id == ws.id)) {
         _active = [..._active, ws];
+      } else {
+        _active = _active.map((w) => w.id == ws.id ? ws : w).toList();
       }
       _current = ws;
-      _recents = [root, ..._recents.where((r) => r != root)];
+      _recents = [ws.root, ..._recents.where((r) => r != ws.root)];
       // Open the resident-model push stream for this workspace. Fire-and-
       // forget: the subscribe handler logs any failure and leaves state
       // for the next reconnect cycle to retry.
       unawaited(_workspacesModel.subscribe(ws.id));
       notifyListeners();
-      return ws;
     } catch (e) {
       _reportOperationError('Failed to open $root: $e');
       return null;
+    }
+    try {
+      await _refreshTerminalsForWorkspace(ws.id);
+    } catch (e) {
+      if (_connectionState == BackendConnectionState.connected) {
+        _reportOperationError('Could not load terminals: $e');
+      }
+    }
+    notifyListeners();
+    return ws;
+  }
+
+  /// Re-fetch one workspace's terminal registry and replay each session's
+  /// scrollback. Used both by reconnect-wide refresh and by `workspace.open`:
+  /// a freshly-opened workspace may immediately contain hydrated zellij rows.
+  Future<void> _refreshTerminalsForWorkspace(String workspaceId) async {
+    final tres =
+        await client.call('terminal.list', {'workspaceId': workspaceId})
+            as Map<String, dynamic>;
+    final sessions = (tres['sessions'] as List)
+        .cast<Map<String, dynamic>>()
+        .map(TerminalSession.fromJson)
+        .toList();
+    _terminals.setSessionsForWorkspace(workspaceId, sessions);
+    // Replay each session's scrollback. Order matters: we must finish the
+    // replay (and set the seq watermark) BEFORE any live terminal.data
+    // notifications race in. Notifications observed while the call is in
+    // flight land in the backlog (because no Terminal exists yet for that
+    // sid) and get drained when we finally install the Terminal.
+    for (final s in sessions) {
+      await _terminals.replayHistory(s.id);
     }
   }
 

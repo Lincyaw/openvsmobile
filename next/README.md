@@ -149,7 +149,7 @@ Frontend → Backend:
 | `auth.handshake`      | `{ token, protocolVersion, client }` → `{ ok, serverVersion, protocolVersion, defaultCwd }`. Closes the socket on bad token. |
 | `system.ping`         | `{}` → `{ now }`. Heartbeat used by the client to detect silent NAT drops. |
 | `workspace.list`      | `{} → { active: Workspace[], recents: string[] }` |
-| `workspace.open`      | `{ root, activate?: boolean = true }` → `{ workspace }`. Adds root to recents. With `activate:true` (default) sets the new workspace as current; with `activate:false` the existing focus is preserved and the new workspace is staged in the background. |
+| `workspace.open`      | `{ root, activate?: boolean = true, reuseExisting?: boolean = false }` → `{ workspace }`. Adds root to recents. With `activate:true` (default) sets the workspace as current; with `activate:false` the existing focus is preserved and the workspace is staged in the background. When `reuseExisting:true`, an already-active workspace with the same canonical root is returned instead of opening a duplicate. |
 | `workspace.activate`  | `{ id }` → `{ workspace }`. Focus only — no filesystem touch. |
 | `workspace.close`     | `{ id }` → `{}`. Kills all PTYs in the workspace, updates current. |
 | `workspace.current`   | `{} → { workspace \| null }` |

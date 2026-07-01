@@ -151,16 +151,17 @@ const BackendClientTiming _kDefaultTiming = BackendClientTiming();
 
 class BackendClient {
   BackendClient({ConnectivityProbe? probe, BackendClientTiming? timing})
-      : _probe = probe ?? AlwaysOnlineProbe(),
-        _timing = timing ?? _kDefaultTiming;
+    : _probe = probe ?? AlwaysOnlineProbe(),
+      _timing = timing ?? _kDefaultTiming;
 
   final ConnectivityProbe _probe;
   final BackendClientTiming _timing;
   StreamSubscription<bool>? _connectivitySub;
 
   /// Current connection state. Listenable for UI.
-  final ValueNotifier<BackendConnectionState> state =
-      ValueNotifier(BackendConnectionState.disconnected);
+  final ValueNotifier<BackendConnectionState> state = ValueNotifier(
+    BackendConnectionState.disconnected,
+  );
 
   /// Last failure message; cleared on successful handshake.
   final ValueNotifier<String?> lastError = ValueNotifier(null);
@@ -301,12 +302,13 @@ class BackendClient {
     }
     if (reset) {
       // First attempt in a (re)start sequence.
-      state.value = state.value == BackendConnectionState.disconnected ||
+      state.value =
+          state.value == BackendConnectionState.disconnected ||
               state.value == BackendConnectionState.waitingForNetwork
           ? BackendConnectionState.connecting
           : (state.value == BackendConnectionState.connected
-              ? BackendConnectionState.reconnecting
-              : state.value);
+                ? BackendConnectionState.reconnecting
+                : state.value);
     }
 
     final uri = Uri.parse('ws://$host:$port/rpc');
@@ -348,11 +350,13 @@ class BackendClient {
       if (did != null && did.isNotEmpty) {
         clientInfo['deviceId'] = did;
       }
-      final hsResult = await _rawCall('auth.handshake', {
-        'token': token,
-        'protocolVersion': '1.0',
-        'client': clientInfo,
-      }) as Map<String, dynamic>;
+      final hsResult =
+          await _rawCall('auth.handshake', {
+                'token': token,
+                'protocolVersion': '1.0',
+                'client': clientInfo,
+              })
+              as Map<String, dynamic>;
       final cwd = hsResult['defaultCwd'];
       defaultCwd = cwd is String ? cwd : '/';
     } on BackendRpcException catch (e) {
@@ -436,17 +440,30 @@ class BackendClient {
       _heartbeatTimeout = Timer(_timing.heartbeatGrace, () {
         // No pong → force-close. _onSocketGone runs and starts backoff.
         lastError.value = 'heartbeat timeout';
-        unawaited(_closeSocket());
+        _dropSocketAndReconnect();
       });
-      _rawCall('system.ping', const {}).then((_) {
-        _heartbeatTimeout?.cancel();
-        _heartbeatTimeout = null;
-      }).catchError((Object _) {
-        _heartbeatTimeout?.cancel();
-        _heartbeatTimeout = null;
-        // Failure here triggers reconnect via socket close path.
-      });
+      _rawCall('system.ping', const {})
+          .then((_) {
+            _heartbeatTimeout?.cancel();
+            _heartbeatTimeout = null;
+          })
+          .catchError((Object _) {
+            _heartbeatTimeout?.cancel();
+            _heartbeatTimeout = null;
+            // A send-side failure may happen before the stream's onDone/onError
+            // callback runs. Drive the reconnect path directly so we never get
+            // stuck in connected-with-no-channel.
+            _dropSocketAndReconnect();
+          });
     });
+  }
+
+  void _dropSocketAndReconnect() {
+    final ch = _channel;
+    _onSocketGone();
+    if (ch != null) {
+      unawaited(ch.sink.close(ws_status.normalClosure).catchError((_) {}));
+    }
   }
 
   void _stopHeartbeat() {
@@ -473,7 +490,11 @@ class BackendClient {
     }
     // In a transitional state — queue.
     final completer = Completer<dynamic>();
-    final entry = _QueuedCall(method: method, params: params, completer: completer);
+    final entry = _QueuedCall(
+      method: method,
+      params: params,
+      completer: completer,
+    );
     entry.timer = Timer(_timing.queueBudget, () {
       if (_queue.remove(entry) && !completer.isCompleted) {
         completer.completeError(
@@ -491,10 +512,10 @@ class BackendClient {
     for (final q in drained) {
       q.timer?.cancel();
       if (q.completer.isCompleted) continue;
-      _rawCall(q.method, q.params).then(
-        q.completer.complete,
-        onError: q.completer.completeError,
-      );
+      _rawCall(
+        q.method,
+        q.params,
+      ).then(q.completer.complete, onError: q.completer.completeError);
     }
   }
 
@@ -582,11 +603,13 @@ class BackendClient {
       if (completer == null) return;
       if (decoded.containsKey('error')) {
         final err = decoded['error'] as Map<String, dynamic>;
-        completer.completeError(BackendRpcException(
-          (err['code'] as num).toInt(),
-          err['message'] as String? ?? 'error',
-          err['data'],
-        ));
+        completer.completeError(
+          BackendRpcException(
+            (err['code'] as num).toInt(),
+            err['message'] as String? ?? 'error',
+            err['data'],
+          ),
+        );
       } else {
         completer.complete(decoded['result']);
       }
@@ -613,5 +636,9 @@ class _QueuedCall {
   final Map<String, dynamic>? params;
   final Completer<dynamic> completer;
   Timer? timer;
-  _QueuedCall({required this.method, required this.params, required this.completer});
+  _QueuedCall({
+    required this.method,
+    required this.params,
+    required this.completer,
+  });
 }

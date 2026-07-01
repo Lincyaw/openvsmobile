@@ -366,7 +366,7 @@ Method surface (frontend → backend):
 | Namespace    | Methods                                                              |
 |--------------|----------------------------------------------------------------------|
 | `auth`       | `handshake`, `rotateToken`                                           |
-| `workspace`  | `list` (→ `{ active: Workspace[], recents: string[] }`), `open({ root })`, `activate({ id })`, `close({ id })`, `current`, `findFiles({ workspaceId, ... })`, `subscribe({ workspaceId, sinceVersion?, paths? })`, `unsubscribe({ workspaceId })` |
+| `workspace`  | `list` (→ `{ active: Workspace[], recents: string[] }`), `open({ root, reuseExisting? })`, `activate({ id })`, `close({ id })`, `current`, `findFiles({ workspaceId, ... })`, `subscribe({ workspaceId, sinceVersion?, paths? })`, `unsubscribe({ workspaceId })` |
 | `fs`         | `listDir({ workspaceId, path })` or `listDir({ path, picker: true })`; `readFile({ workspaceId, path, ifEtag? })` |
 | `terminal`   | `create({ workspaceId, cols, rows, cwd? })`, `write`, `resize`, `dispose`, `list({ workspaceId? })`, `listExternalSessions()` (enumerate zellij sessions visible to the backend, annotated with `adopted`), `adoptExternalSession({ workspaceId, sessionName, cols, rows, cwd? })` (attach a workspace chip to an existing zellij session by name) |
 | `git`        | `diff({ workspaceId, path, baseSha?, workingHash? })`, `log({ workspaceId, path?, limit, beforeSha? })` |

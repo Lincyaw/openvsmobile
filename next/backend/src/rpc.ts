@@ -351,7 +351,11 @@ methods.set("workspace.list", (ctx) => ({
 methods.set("workspace.open", async (ctx, params) => {
   const p = asBag(params);
   const activate = optionalBool(p, "activate") ?? true;
-  const ws = await ctx.state.workspaces.open(p.root, { activate });
+  const reuseExisting = optionalBool(p, "reuseExisting") ?? false;
+  const ws = await ctx.state.workspaces.open(p.root, {
+    activate,
+    reuseExisting,
+  });
   return { workspace: ws.info() };
 });
 

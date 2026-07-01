@@ -110,4 +110,30 @@ describe("WorkspaceRegistry activated-hook", () => {
     registry.detachAllForShutdown();
     expect(hook).not.toHaveBeenCalled();
   });
+
+  it("reuseExisting returns an active workspace with the same canonical root", async () => {
+    const registry = newRegistry();
+    const wsA = await registry.open(repoA);
+
+    const reused = await registry.open(repoA, { reuseExisting: true });
+
+    expect(reused.id).toBe(wsA.id);
+    expect(registry.listActive().map((w) => w.id)).toEqual([wsA.id]);
+
+    registry.disposeAll();
+  });
+
+  it("still allows duplicate roots when reuseExisting is omitted", async () => {
+    const registry = newRegistry();
+    const wsA = await registry.open(repoA);
+
+    const wsB = await registry.open(repoA);
+
+    expect(wsB.id).not.toBe(wsA.id);
+    expect(registry.listActive().map((w) => w.id).sort()).toEqual(
+      [wsA.id, wsB.id].sort(),
+    );
+
+    registry.disposeAll();
+  });
 });

@@ -5,8 +5,8 @@
 // active workspaces at once; closing one disposes its terminals.
 //
 // Recents are persisted as plain root strings. Re-opening the same path
-// later creates a *new* workspace with a fresh id; matching by path is
-// intentional only at the recents UI level.
+// later creates a *new* workspace with a fresh id unless the caller opts
+// into `reuseExisting`, which focuses an already-active canonical root.
 
 import { promises as fs, constants as fsConstants } from "node:fs";
 import { basename, isAbsolute, normalize, resolve } from "node:path";
@@ -233,9 +233,23 @@ export class WorkspaceRegistry {
 
   public async open(
     rawRoot: unknown,
-    options: { activate?: boolean } = {},
+    options: { activate?: boolean; reuseExisting?: boolean } = {},
   ): Promise<ActiveWorkspace> {
     const root = await validatedRoot(rawRoot);
+    const activate = options.activate ?? true;
+    if (options.reuseExisting === true) {
+      for (const ws of this.active.values()) {
+        if (ws.root !== root) continue;
+        const previousId = this.currentId;
+        if (activate) {
+          this.currentId = ws.id;
+        }
+        this.recents = pushRecent(this.recents, root);
+        saveRecents(this.recents);
+        this.fireActivatedIfChanged(previousId);
+        return ws;
+      }
+    }
     const ws = new ActiveWorkspace(
       root,
       this.onTerminalData,
@@ -265,7 +279,6 @@ export class WorkspaceRegistry {
     for (const id of claimed) this.hydrationClaims.add(id);
     const previousId = this.currentId;
     this.active.set(ws.id, ws);
-    const activate = options.activate ?? true;
     if (activate) {
       this.currentId = ws.id;
     }

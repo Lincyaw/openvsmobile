@@ -1,6 +1,6 @@
 {
   "name": "openvsmobile-next-backend",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "private": true,
   "description": "openvsmobile backend — workspaces, terminal, fs, git, notifications, plugin host (forthcoming).",
   "type": "module",
