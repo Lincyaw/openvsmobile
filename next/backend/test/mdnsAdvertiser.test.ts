@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { MdnsAdvertiser } from "../src/mdnsAdvertiser.js";
+import {
+  isCiaoProbeMtuError,
+  MdnsAdvertiser,
+  mdnsEnabled,
+} from "../src/mdnsAdvertiser.js";
 
 describe("MdnsAdvertiser", () => {
   it("constructs without throwing", () => {
@@ -20,5 +24,23 @@ describe("MdnsAdvertiser", () => {
       serviceName: "my-macbook",
     });
     expect(a).toBeDefined();
+  });
+
+  it("can be disabled through OPENVSMOBILE_MDNS", () => {
+    expect(mdnsEnabled({})).toBe(true);
+    expect(mdnsEnabled({ OPENVSMOBILE_MDNS: "0" })).toBe(false);
+    expect(mdnsEnabled({ OPENVSMOBILE_MDNS: "off" })).toBe(false);
+    expect(mdnsEnabled({ OPENVSMOBILE_MDNS: "1" })).toBe(true);
+  });
+
+  it("recognizes ciao probe MTU assertion errors", () => {
+    const err = new Error(
+      "Probe query packet exceeds the mtu size (1480>1440). Can't split probe queries at the moment!",
+    );
+    err.stack = `${err.name}: ${err.message}
+    at DNSPacket.createDNSQueryPackets (/app/node_modules/@homebridge/ciao/lib/coder/DNSPacket.js:128:25)`;
+
+    expect(isCiaoProbeMtuError(err)).toBe(true);
+    expect(isCiaoProbeMtuError(new Error("different failure"))).toBe(false);
   });
 });
