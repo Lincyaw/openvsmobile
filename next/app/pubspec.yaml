@@ -92,6 +92,9 @@ dependencies:
   # the font has not been cached yet, the package silently falls back to the
   # platform's default font — acceptable for v0.
   google_fonts: ^6.2.1
+  # Backend pairing QR scanner. The QR payload is parsed locally into a
+  # BackendTarget; no network call happens during scanning.
+  mobile_scanner: ^7.2.0
 
 dev_dependencies:
   flutter_test:

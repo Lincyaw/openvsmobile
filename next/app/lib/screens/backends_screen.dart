@@ -15,6 +15,7 @@ import '../app_state.dart';
 import '../settings_store.dart';
 import '../version.dart';
 import 'backend_editor_screen.dart';
+import 'backend_pairing_scan_screen.dart';
 import 'lan_discovery_sheet.dart';
 import 'ssh_bootstrap_screen.dart';
 
@@ -61,53 +62,84 @@ class BackendsScreen extends StatelessWidget {
     await showModalBottomSheet<void>(
       context: context,
       builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.cloud_download),
-              title: const Text('Install via SSH'),
-              subtitle: const Text(
-                'Run install.sh on a remote host and add the result.',
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.qr_code_scanner),
+                title: const Text('Scan QR'),
+                subtitle: const Text(
+                  'Read the token and ticket printed by install.sh.',
+                ),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  _startQrScan(context);
+                },
               ),
-              onTap: () {
-                Navigator.of(ctx).pop();
-                _startSshBootstrap(context);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.edit_outlined),
-              title: const Text('WebSocket backend'),
-              subtitle: const Text(
-                'Type host, port, and bearer token yourself.',
+              ListTile(
+                leading: const Icon(Icons.cloud_download),
+                title: const Text('Install via SSH'),
+                subtitle: const Text(
+                  'Run install.sh on a remote host and add the result.',
+                ),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  _startSshBootstrap(context);
+                },
               ),
-              onTap: () {
-                Navigator.of(ctx).pop();
-                _startManualEntry(context);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.hub_outlined),
-              title: const Text('Iroh ticket'),
-              subtitle: const Text('Paste endpoint ticket and bearer token.'),
-              onTap: () {
-                Navigator.of(ctx).pop();
-                _startIrohEntry(context);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.wifi_find),
-              title: const Text('Scan LAN'),
-              subtitle: const Text('Discover backends on your local network.'),
-              onTap: () {
-                Navigator.of(ctx).pop();
-                _startLanDiscovery(context);
-              },
-            ),
-          ],
+              ListTile(
+                leading: const Icon(Icons.edit_outlined),
+                title: const Text('WebSocket backend'),
+                subtitle: const Text(
+                  'Type host, port, and bearer token yourself.',
+                ),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  _startManualEntry(context);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.hub_outlined),
+                title: const Text('Iroh ticket'),
+                subtitle: const Text('Paste endpoint ticket and bearer token.'),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  _startIrohEntry(context);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.wifi_find),
+                title: const Text('Scan LAN'),
+                subtitle: const Text(
+                  'Discover backends on your local network.',
+                ),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  _startLanDiscovery(context);
+                },
+              ),
+            ],
+          ),
         ),
       ),
     );
+  }
+
+  Future<void> _startQrScan(BuildContext context) async {
+    final navigator = Navigator.of(context);
+    final target = await navigator.push<BackendTarget>(
+      MaterialPageRoute(builder: (_) => const BackendPairingScanScreen()),
+    );
+    if (target == null) return;
+    await onAdd(target, makeActive: true);
+    if (!context.mounted) return;
+    final name = target.name.isEmpty
+        ? _backendEndpointLabel(target)
+        : target.name;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('Added $name')));
   }
 
   Future<void> _startSshBootstrap(BuildContext context) async {
@@ -474,6 +506,7 @@ class _BackendTile extends StatelessWidget {
     BackendOrigin.manual => 'manual',
     BackendOrigin.sshInstall => 'ssh-install',
     BackendOrigin.discovery => 'discovery',
+    BackendOrigin.pairingQr => 'qr-pairing',
   };
 
   String _statusLabel() {

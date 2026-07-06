@@ -108,6 +108,9 @@ enum BackendOrigin {
   /// the discovery path is not implemented in v0; the enum value exists so
   /// the persisted schema does not need a breaking bump when it lands.
   discovery,
+
+  /// Scanned from the install/update pairing QR printed by install.sh.
+  pairingQr,
 }
 
 /// Transport used to reach a backend. `websocket` is the original host:port
@@ -119,11 +122,13 @@ String _originToString(BackendOrigin o) => switch (o) {
   BackendOrigin.manual => 'manual',
   BackendOrigin.sshInstall => 'sshInstall',
   BackendOrigin.discovery => 'discovery',
+  BackendOrigin.pairingQr => 'pairingQr',
 };
 
 BackendOrigin _originFromString(String s) => switch (s) {
   'sshInstall' => BackendOrigin.sshInstall,
   'discovery' => BackendOrigin.discovery,
+  'pairingQr' => BackendOrigin.pairingQr,
   _ => BackendOrigin.manual,
 };
 

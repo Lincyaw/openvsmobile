@@ -1,5 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Camera is used only by the backend-pairing QR scanner. -->
+    <uses-permission android:name="android.permission.CAMERA"/>
     <!-- Foreground service for notification delivery (design §4.5). The
          service holds an always-on WS so backend notifications reach the
          system tray even when the app is backgrounded. POST_NOTIFICATIONS

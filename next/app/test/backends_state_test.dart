@@ -98,7 +98,7 @@ void main() {
             irohTicket: 'iroh-ticket',
             irohEndpointId: 'endpoint-id',
             irohAlpn: 'openvsmobile.rpc.v1',
-            origin: BackendOrigin.manual,
+            origin: BackendOrigin.pairingQr,
             addedAt: 4000,
           ),
         ],
@@ -125,6 +125,7 @@ void main() {
       expect(loaded.backends[2].irohTicket, 'iroh-ticket');
       expect(loaded.backends[2].irohEndpointId, 'endpoint-id');
       expect(loaded.backends[2].irohAlpn, 'openvsmobile.rpc.v1');
+      expect(loaded.backends[2].origin, BackendOrigin.pairingQr);
       expect(loaded.backends[2].isComplete, isTrue);
       expect(loaded.discoverySources, hasLength(1));
       expect(

@@ -1,6 +1,6 @@
 {
   "name": "openvsmobile-next-backend",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "private": true,
   "description": "openvsmobile backend — workspaces, terminal, fs, git, notifications, plugin host (forthcoming).",
   "type": "module",
@@ -23,6 +23,7 @@
     "chokidar": "^4.0.3",
     "ignore": "^7.0.3",
     "node-pty": "^1.0.0",
+    "qrcode-terminal": "^0.12.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {

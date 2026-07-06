@@ -56,6 +56,11 @@ Env:
   OPENVSMOBILE_IROH=1   Persist optional Iroh remote transport into the
                         systemd unit. Related OPENVSMOBILE_IROH_* variables
                         present during install are persisted too.
+  OPENVSMOBILE_PAIRING_QR=auto|1|0
+                        Print a terminal QR code with the token and ticket
+                        on stderr after install. Default "auto" prints only
+                        when stderr is an interactive terminal. "1" forces it;
+                        "0" disables it.
 
 Exit codes:
   0   success
@@ -169,6 +174,24 @@ install_agent_hooks() {
     log "agent Stop hook scan complete"
   else
     log "warn: agent Stop hook scan failed; backend install will continue"
+  fi
+}
+
+show_pairing_qr() {
+  local mode="${OPENVSMOBILE_PAIRING_QR:-auto}"
+  [[ "$mode" != "0" ]] || return 0
+  if [[ "$mode" != "1" && ! -t 2 ]]; then
+    return 0
+  fi
+  local node_bin="$BUNDLE_DIR/node/bin/node"
+  local qr_script="$BUNDLE_DIR/bin/openvsmobile-pairing-qr.mjs"
+  if [[ ! -x "$node_bin" || ! -x "$qr_script" ]]; then
+    log "warn: pairing QR generator missing from bundle; skipping QR"
+    return 0
+  fi
+  log "pairing QR follows (scan from Backends > Add backend > Scan QR)"
+  if ! "$node_bin" "$qr_script" --runtime "$POLL_TARGET" --version "$VERSION" >&2; then
+    log "warn: pairing QR generation failed; backend install will continue"
   fi
 }
 
@@ -642,3 +665,4 @@ else
 fi
 
 log "installed successfully (version=$VERSION, linger=$LINGER)"
+show_pairing_qr

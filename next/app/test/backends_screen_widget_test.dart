@@ -59,6 +59,18 @@ void main() {
     expect(find.text('Add your first backend'), findsOneWidget);
   });
 
+  testWidgets('add sheet includes QR pairing', (tester) async {
+    final appState = AppState(client: BackendClient());
+    addTearDown(appState.dispose);
+    await _pump(tester, const AppPersistedState(), appState: appState);
+
+    await tester.tap(find.text('Add your first backend'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Scan QR'), findsOneWidget);
+    expect(find.byIcon(Icons.qr_code_scanner), findsOneWidget);
+  });
+
   testWidgets('renders active backend as the Files/Plugins target', (
     tester,
   ) async {

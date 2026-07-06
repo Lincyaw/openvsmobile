@@ -57,6 +57,13 @@ installer persists that setting into the systemd user unit and includes the
 `iroh` object in its success JSON. The SSH-bootstrap screen defaults this on
 for new installs.
 
+When `install.sh` runs in an interactive terminal it also prints a backend
+pairing QR code to stderr. In the Android app, open Backends, tap Add, then
+Scan QR; the app stores the bearer token plus either the Iroh ticket or the
+WebSocket host/port. The QR contains credentials, so treat it like a password.
+Set `OPENVSMOBILE_PAIRING_QR=0` to suppress it, or
+`OPENVSMOBILE_PAIRING_QR=1` to force it in a non-interactive SSH session.
+
 Useful knobs:
 
 | Env var | Default | Notes |

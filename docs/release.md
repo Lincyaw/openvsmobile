@@ -11,7 +11,7 @@ The workflow detects `-rc` / `-beta` / `-alpha` suffixes in the tag and flips th
 Install or upgrade the backend by passing the desired release version once:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/install.sh | OPENVSMOBILE_IROH=1 bash -s -- 0.4.6
+curl -fsSL https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/install.sh | OPENVSMOBILE_IROH=1 bash -s -- 0.4.7
 ```
 
 The root `install.sh` is a small wrapper that fetches the canonical installer from `next/backend/pkg/install.sh` on `main`, then forwards the arguments unchanged. The installer downloads the matching backend tarball from GitHub Releases based on the version argument.
@@ -21,8 +21,14 @@ variable is set on the `bash` side of the pipe so it is persisted into the
 systemd user unit:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/install.sh | OPENVSMOBILE_IROH=1 bash -s -- 0.4.6
+curl -fsSL https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/install.sh | OPENVSMOBILE_IROH=1 bash -s -- 0.4.7
 ```
+
+Interactive installs print a pairing QR code on stderr after the backend has
+started. The Android app can scan it from Backends -> Add backend -> Scan QR
+and saves the token plus Iroh ticket automatically. The QR is a credential:
+keep terminal scrollback private. Use `OPENVSMOBILE_PAIRING_QR=0` to suppress
+it, or `OPENVSMOBILE_PAIRING_QR=1` to force it in a non-interactive session.
 
 Android release APKs currently target `arm64-v8a` because the bundled
 `libiroh_ffi.so` is arm64-only. Do not publish x86_64 / armeabi-v7a splits

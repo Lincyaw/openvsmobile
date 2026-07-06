@@ -289,9 +289,10 @@ cp -R "$COMPILE_DIR/dist" "$BUNDLE_DIR/dist"
 # Production node_modules
 cp -R "$BUILD_DIR/node_modules" "$BUNDLE_DIR/node_modules"
 
-# CLI tools (mobile-notify et al). Single-file ESM scripts that import only
-# node:* builtins — no dependency on the compiled dist/. Users invoke them
-# directly with the bundled portable Node:
+# CLI tools (mobile-notify et al). Single-file ESM scripts with no dependency
+# on the compiled dist/. Most import only node:* builtins; pairing QR rendering
+# also resolves qrcode-terminal from the production node_modules copied above.
+# Users invoke them directly with the bundled portable Node:
 #   ~/.local/share/openvsmobile/current/node/bin/node \
 #       ~/.local/share/openvsmobile/current/bin/mobile-notify.mjs ...
 # (install.sh symlinks bin/ onto $PATH; see docs/design §4.5.)
