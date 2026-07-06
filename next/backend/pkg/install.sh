@@ -5,6 +5,7 @@
 #
 # stdout contract: on success, exactly ONE line of JSON:
 #   {"port":N,"token":"...","version":"X.Y.Z","linger":true|false}
+# If Iroh was enabled, the JSON also includes `"iroh":{...}` from runtime.json.
 # Everything else (progress, warnings, errors) is on stderr.
 
 set -euo pipefail
@@ -40,7 +41,8 @@ Flags:
                         Refuses to run if the real service is currently
                         active (use --force to override).
   --force               With --dry-run-systemd: proceed even when the real
-                        service is active. Otherwise no effect.
+                        service is active. With a real install: refresh an
+                        existing same-version install directory.
   -h, --help            Show this help.
 
 Env:
@@ -51,6 +53,9 @@ Env:
                         Useful when the GitHub releases CDN
                         (release-assets.githubusercontent.com) is slow or
                         blocked on the target host.
+  OPENVSMOBILE_IROH=1   Persist optional Iroh remote transport into the
+                        systemd unit. Related OPENVSMOBILE_IROH_* variables
+                        present during install are persisted too.
 
 Exit codes:
   0   success
@@ -62,6 +67,7 @@ Exit codes:
 
 On success, stdout is exactly one JSON line:
   {"port":N,"token":"...","version":"X.Y.Z","linger":true|false}
+  {"port":N,"token":"...","version":"X.Y.Z","linger":true,"iroh":{...}}
 EOF
 }
 
@@ -70,6 +76,19 @@ log() { printf '[install] %s\n' "$*" >&2; }
 fatal() { printf '[install] error: %s\n' "${1:-unspecified error}" >&2; exit "${2:-1}"; }
 need() {
   command -v "$1" >/dev/null 2>&1 || fatal "missing dependency: $1 (install it and retry)" 7
+}
+
+append_unit_env_if_set() {
+  local key="$1" value escaped
+  [[ -n "${!key+x}" ]] || return 0
+  value="${!key}"
+  [[ -n "$value" ]] || return 0
+  if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+    fatal "$key contains a newline; refusing to write invalid systemd Environment line" 2
+  fi
+  escaped="${value//\\/\\\\}"
+  escaped="${escaped//\"/\\\"}"
+  UNIT_EXTRA_ENV+=$'\n'"Environment=\"$key=$escaped\""
 }
 
 pid_alive() {
@@ -356,7 +375,16 @@ EXISTING_VERSION_FILE="$INSTALL_DIR/openvsmobile-backend/VERSION"
 if [[ -f "$EXISTING_VERSION_FILE" ]]; then
   EXISTING="$(head -n1 "$EXISTING_VERSION_FILE" || true)"
   if [[ "$EXISTING" == "$VERSION" ]]; then
-    log "already installed at $INSTALL_DIR (VERSION=$EXISTING), skipping extraction"
+    if [[ -n "$TARBALL_OVERRIDE" || "$FORCE" -eq 1 ]]; then
+      # Local tarball installs are commonly used by SSH bootstrap and dev
+      # upgrades before a new release tag exists. In that path, same version
+      # does not imply same contents, so refresh the directory after the
+      # service has stopped.
+      log "refreshing existing install at $INSTALL_DIR (VERSION=$EXISTING)"
+      rm -rf "$INSTALL_DIR"
+    else
+      log "already installed at $INSTALL_DIR (VERSION=$EXISTING), skipping extraction"
+    fi
   else
     # Now safe to wipe: the service is stopped (we did that above) so the
     # node process isn't holding open files in this tree.
@@ -430,6 +458,19 @@ fi
 
 # ----- write systemd unit -----
 mkdir -p "$(dirname "$UNIT_PATH")"
+UNIT_EXTRA_ENV=""
+for env_key in \
+  OPENVSMOBILE_IROH \
+  OPENVSMOBILE_IROH_ALPN \
+  OPENVSMOBILE_IROH_BIND_ADDR \
+  OPENVSMOBILE_IROH_RELAY_MODE \
+  OPENVSMOBILE_IROH_RELAY_URLS \
+  OPENVSMOBILE_IROH_SECRET_KEY \
+  OPENVSMOBILE_IROH_ONLINE_TIMEOUT_MS \
+  OPENVSMOBILE_IROH_MAX_FRAME_BYTES
+do
+  append_unit_env_if_set "$env_key"
+done
 UNIT_CONTENT=$(cat <<UNIT
 [Unit]
 Description=openvsmobile backend
@@ -442,6 +483,7 @@ Type=simple
 ExecStart=%h/.local/share/openvsmobile/current/openvsmobile-backend/launch.sh
 Environment=PORT=0
 Environment=NODE_ENV=production
+$UNIT_EXTRA_ENV
 Restart=on-failure
 RestartSec=3
 
@@ -556,6 +598,9 @@ out = {
     "version": d["version"],
     "linger": linger == "true",
 }
+iroh = d.get("iroh")
+if isinstance(iroh, dict):
+    out["iroh"] = iroh
 print(json.dumps(out, separators=(",", ":")))
 PY
 }
@@ -581,6 +626,9 @@ emit_via_fallback() {
     fatal "OPENVSMOBILE_TOKEN contains characters that the fallback JSON emitter cannot safely quote; install python3 or use a hex/alphanumeric token"
   fi
   if [[ "$LINGER" == "true" ]]; then linger_bool=true; else linger_bool=false; fi
+  if grep -q '"iroh"[[:space:]]*:' "$POLL_TARGET"; then
+    log "warn: python3 not available; omitting optional iroh object from install JSON"
+  fi
   printf '{"port":%s,"token":"%s","version":"%s","linger":%s}\n' \
     "$port" "$token" "$got_version" "$linger_bool"
 }

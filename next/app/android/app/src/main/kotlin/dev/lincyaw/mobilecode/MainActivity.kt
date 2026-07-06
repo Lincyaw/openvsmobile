@@ -22,9 +22,14 @@ class MainActivity : FlutterActivity() {
     private val requestImportBackendBackup = 6202
     private var pendingDocumentResult: MethodChannel.Result? = null
     private var pendingExportContent: String? = null
+    private var irohRpcBridge: IrohRpcBridge? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        irohRpcBridge = IrohRpcBridge(
+            applicationContext,
+            flutterEngine.dartExecutor.binaryMessenger
+        )
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, updaterChannel)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -94,6 +99,8 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        irohRpcBridge?.shutdown()
+        irohRpcBridge = null
         multicastLock?.let {
             if (it.isHeld) {
                 it.release()

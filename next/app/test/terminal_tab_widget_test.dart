@@ -24,6 +24,8 @@ import 'package:mobilecode/app_state.dart';
 import 'package:mobilecode/backend_client.dart';
 import 'package:mobilecode/models.dart';
 import 'package:mobilecode/screens/terminal_tab.dart';
+import 'package:mobilecode/settings_store.dart';
+import 'package:mobilecode/state/terminal_hub.dart';
 import 'package:mobilecode/state/terminals_notifier.dart';
 
 const Workspace _ws = Workspace(
@@ -70,6 +72,64 @@ Widget _wrap(Widget child) => MaterialApp(
   ),
   home: Scaffold(body: child),
 );
+
+BackendTarget _backend({
+  String id = 'backend-1',
+  String name = 'home',
+  String host = 'home.local',
+}) {
+  return BackendTarget(
+    id: id,
+    name: name,
+    host: host,
+    port: 7860,
+    token: 'token',
+    origin: BackendOrigin.manual,
+    addedAt: 0,
+  );
+}
+
+class _FakeTerminalHub extends TerminalHub {
+  _FakeTerminalHub(this._groups);
+
+  List<BackendTerminalGroup> _groups;
+  final ValueNotifier<int> _previewVersion = ValueNotifier<int>(0);
+  String? renamedTitle;
+
+  @override
+  List<BackendTerminalGroup> get groups => _groups;
+
+  @override
+  ValueNotifier<int> get previewVersion => _previewVersion;
+
+  @override
+  Future<void> renameTerminal(
+    String backendId,
+    String sessionId,
+    String? title,
+  ) async {
+    renamedTitle = title;
+    _groups = [
+      for (final group in _groups)
+        if (group.backend.id != backendId)
+          group
+        else
+          BackendTerminalGroup(
+            backend: group.backend,
+            connectionState: group.connectionState,
+            lastError: group.lastError,
+            sessions: [
+              for (final session in group.sessions)
+                if (session.id == sessionId)
+                  session.copyWith(title: title, clearTitle: title == null)
+                else
+                  session,
+            ],
+          ),
+    ];
+    notifyListeners();
+  }
+}
 
 void main() {
   testWidgets('empty state shows the Start terminal CTA', (tester) async {
@@ -222,6 +282,74 @@ void main() {
 
     expect(find.text('(detached)'), findsOneWidget);
     expect(find.text('sh · 1'), findsOneWidget);
+  });
+
+  testWidgets('backend header truncates long status on narrow screens', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final appState = await _appStateWith(workspace: false);
+    addTearDown(appState.dispose);
+    final hub = _FakeTerminalHub([
+      BackendTerminalGroup(
+        backend: _backend(
+          name: 'home server with an intentionally long display name',
+          host: '100.125.63.101',
+        ),
+        connectionState: BackendConnectionState.failed,
+        lastError:
+            'Iroh connection failed because the endpoint ticket expired before '
+            'the relay path could be established',
+        sessions: const [],
+      ),
+    ]);
+    addTearDown(hub.dispose);
+
+    await tester.pumpWidget(
+      _wrap(TerminalTab(appState: appState, terminalHub: hub)),
+    );
+    await tester.pump();
+
+    expect(find.textContaining('Iroh connection failed'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('renaming a hub terminal updates after dialog closes safely', (
+    tester,
+  ) async {
+    final appState = await _appStateWith(workspace: false);
+    addTearDown(appState.dispose);
+    final session = _session('sid-hub-rename');
+    final hub = _FakeTerminalHub([
+      BackendTerminalGroup(
+        backend: _backend(),
+        connectionState: BackendConnectionState.connected,
+        lastError: null,
+        sessions: [session],
+      ),
+    ]);
+    addTearDown(hub.dispose);
+
+    await tester.pumpWidget(
+      _wrap(TerminalTab(appState: appState, terminalHub: hub)),
+    );
+    await tester.pump();
+
+    await tester.longPress(find.text('sh · 1'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Rename'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'prod shell');
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    expect(hub.renamedTitle, 'prod shell');
+    expect(find.text('prod shell'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   test('extractPreviewLine returns null for empty / whitespace-only input', () {

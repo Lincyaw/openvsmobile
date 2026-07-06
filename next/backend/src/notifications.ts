@@ -760,9 +760,9 @@ export interface NotificationNtfySender {
   send: (notification: Notification) => Promise<void>;
 }
 
-/// Glue between the persistence layer and the WebSocket fan-out target. The
+/// Glue between the persistence layer and the client fan-out target. The
 /// HTTP `/notify` endpoint and the `notification.*` RPC handlers both go
-/// through this object; the WS fan-out helper is set by `ProcessState`.
+/// through this object; the fan-out helper is set by `ProcessState`.
 ///
 /// GC is event-driven (conventions §1 — no recurring timers): a sweep runs
 /// at most once per GC_MIN_INTERVAL_MS when `list` is called, and again

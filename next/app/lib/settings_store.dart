@@ -110,6 +110,11 @@ enum BackendOrigin {
   discovery,
 }
 
+/// Transport used to reach a backend. `websocket` is the original host:port
+/// path; `iroh` dials an endpoint ticket and then runs the same JSON-RPC
+/// frames over an Iroh bidirectional stream.
+enum BackendTransport { websocket, iroh }
+
 String _originToString(BackendOrigin o) => switch (o) {
   BackendOrigin.manual => 'manual',
   BackendOrigin.sshInstall => 'sshInstall',
@@ -122,6 +127,16 @@ BackendOrigin _originFromString(String s) => switch (s) {
   _ => BackendOrigin.manual,
 };
 
+String _transportToString(BackendTransport t) => switch (t) {
+  BackendTransport.websocket => 'websocket',
+  BackendTransport.iroh => 'iroh',
+};
+
+BackendTransport _transportFromString(String s) => switch (s) {
+  'iroh' => BackendTransport.iroh,
+  _ => BackendTransport.websocket,
+};
+
 /// One reachable backend instance — host:port + bearer token, plus a
 /// user-editable display name and bookkeeping for the last workspace opened
 /// against it (so a switch back can auto-reopen).
@@ -131,6 +146,10 @@ class BackendTarget {
   final String host;
   final int port;
   final String token;
+  final BackendTransport transport;
+  final String? irohTicket;
+  final String? irohEndpointId;
+  final String? irohAlpn;
   final BackendOrigin origin;
 
   /// Free-form back-pointer to whatever produced this target: for
@@ -151,6 +170,10 @@ class BackendTarget {
     required this.host,
     required this.port,
     required this.token,
+    this.transport = BackendTransport.websocket,
+    this.irohTicket,
+    this.irohEndpointId,
+    this.irohAlpn,
     required this.origin,
     this.originRef,
     this.cluster,
@@ -159,14 +182,25 @@ class BackendTarget {
     this.lastWorkspaceId,
   });
 
-  bool get isComplete =>
-      host.isNotEmpty && port > 0 && port < 65536 && token.isNotEmpty;
+  bool get isComplete {
+    if (token.isEmpty) return false;
+    return switch (transport) {
+      BackendTransport.websocket => host.isNotEmpty && port > 0 && port < 65536,
+      BackendTransport.iroh =>
+        irohTicket != null && irohTicket!.trim().isNotEmpty,
+    };
+  }
 
   BackendTarget copyWith({
     String? name,
     String? host,
     int? port,
     String? token,
+    BackendTransport? transport,
+    String? irohTicket,
+    String? irohEndpointId,
+    String? irohAlpn,
+    bool clearIroh = false,
     BackendOrigin? origin,
     String? originRef,
     String? cluster,
@@ -180,6 +214,12 @@ class BackendTarget {
       host: host ?? this.host,
       port: port ?? this.port,
       token: token ?? this.token,
+      transport: transport ?? this.transport,
+      irohTicket: clearIroh ? null : (irohTicket ?? this.irohTicket),
+      irohEndpointId: clearIroh
+          ? null
+          : (irohEndpointId ?? this.irohEndpointId),
+      irohAlpn: clearIroh ? null : (irohAlpn ?? this.irohAlpn),
       origin: origin ?? this.origin,
       originRef: originRef ?? this.originRef,
       cluster: cluster ?? this.cluster,
@@ -197,6 +237,10 @@ class BackendTarget {
     'host': host,
     'port': port,
     'token': token,
+    'transport': _transportToString(transport),
+    if (irohTicket != null) 'irohTicket': irohTicket,
+    if (irohEndpointId != null) 'irohEndpointId': irohEndpointId,
+    if (irohAlpn != null) 'irohAlpn': irohAlpn,
     'origin': _originToString(origin),
     if (originRef != null) 'originRef': originRef,
     if (cluster != null) 'cluster': cluster,
@@ -211,6 +255,10 @@ class BackendTarget {
     host: (j['host'] as String?) ?? '',
     port: (j['port'] as num?)?.toInt() ?? 0,
     token: (j['token'] as String?) ?? '',
+    transport: _transportFromString((j['transport'] as String?) ?? 'websocket'),
+    irohTicket: j['irohTicket'] as String?,
+    irohEndpointId: j['irohEndpointId'] as String?,
+    irohAlpn: j['irohAlpn'] as String?,
     origin: _originFromString((j['origin'] as String?) ?? 'manual'),
     originRef: j['originRef'] as String?,
     cluster: j['cluster'] as String?,

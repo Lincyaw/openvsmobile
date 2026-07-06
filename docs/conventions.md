@@ -19,13 +19,13 @@ The backend is a **thin, well-typed, transport-uniform mediator** between the Fl
 
 ### Hard rules
 
-**One transport.** A single persistent WebSocket at `/rpc` carries JSON-RPC 2.0 in both directions. `/healthz` is the only other HTTP endpoint. **No REST**, no GraphQL, no separate event channels. Streaming = JSON-RPC notification.
+**One logical RPC stream.** A single persistent JSON-RPC 2.0 stream carries app traffic in both directions. The default physical transport is WebSocket at `/rpc`; an optional Iroh bidirectional stream may carry the same envelopes for NAT-traversed remote access. HTTP endpoints are limited to `/healthz` and explicit sender APIs such as `/notify`. **No REST for core app state**, no GraphQL, no separate event channels. Streaming = JSON-RPC notification.
 
 **Streams are notifications, never polled.** Terminal output, file changes, plugin UI tree updates, git change events — pushed from backend to client. Clients never poll `git.status` on a timer. If a future feature wants polling, that's a design discussion, not an implementation choice.
 
 **Statefulness lives in one place.** `state.ts` (`ProcessState`) owns every long-lived resource: workspaces, PTYs, future plugin processes. Handlers reach into `ProcessState` but never instantiate live resources directly. **Connections come and go; `ProcessState` does not.** A client disconnect detaches a subscriber; it does not dispose any resource. Resources are disposed only by explicit RPC (`terminal.dispose`, `workspace.close`).
 
-**Method dispatch lives in `rpc.ts`, not in the transport.** `connection.ts` is purely the WebSocket lifecycle and frame codec — it accepts an inbound JSON-RPC object and hands it to the dispatcher. `rpc.ts` owns the method table, per-method param shape validation, error code mapping, and the handler bodies. This keeps dispatch transport-agnostic (testable without a WebSocket; trivially reusable if a second transport ever appears) and prevents handlers from drifting into the framing layer.
+**Method dispatch lives in `rpc.ts`, not in the transport.** Transport adapters accept inbound JSON-RPC objects and hand them to `Connection`, which forwards them to the dispatcher. `rpc.ts` owns the method table, per-method param shape validation, error code mapping, and the handler bodies. This keeps dispatch transport-agnostic across WebSocket and Iroh and prevents handlers from drifting into the framing layer.
 
 **Workspace scoping at the gate.** Every `fs.*` and `terminal.*` call carries a `workspaceId`. Path validation (realpath, escape-check) happens before any IO, in one choke point. Per-handler ad-hoc validation is a bug. Out-of-scope vs. not-found errors are intentionally indistinguishable on the wire.
 
@@ -37,7 +37,7 @@ The backend is a **thin, well-typed, transport-uniform mediator** between the Fl
 
 **No background polling, ever.** No **recurring** timers (`setInterval` / `Timer.periodic`) outside the connection keepalive heartbeat. State changes flow through events. The backend reacts; it does not patrol. One-shot `setTimeout` / `Future.delayed` for shutdown deadlines, reconnect backoff, or request timeouts are fine.
 
-**Native modules are constrained.** Currently allowed: `node-pty`. Adding another native dep requires updating `pkg/build-tarball.sh`'s ELF-arch verification and `pnpm-workspace.yaml`'s `allowBuilds:` list. Pure-JS is preferred when feasible.
+**Native modules are constrained.** Currently allowed: `node-pty` and `@number0/iroh`'s platform packages. Adding another native dep requires updating `pkg/build-tarball.sh`'s ELF-arch verification and `pnpm-workspace.yaml`'s `allowBuilds:` list. Pure-JS is preferred when feasible.
 
 **ESM only.** No `require`. `node:` prefix for builtins (`node:fs`, `node:path`, `node:crypto`). Relative imports include `.js` extension.
 
@@ -53,9 +53,9 @@ The backend is a **thin, well-typed, transport-uniform mediator** between the Fl
 index.ts        bootstrap; reads no protocol, sees no PTY
 config.ts       token + recents persistence; no transport
 runtimeInfo.ts  atomic runtime.json write; no transport
-connection.ts   the ONLY file that knows WebSocket framing; thin
-                lifecycle wrapper that forwards parsed RPC objects
-                to rpc.ts
+connection.ts   transport-neutral connection lifecycle wrapper that
+                forwards parsed RPC objects to rpc.ts
+irohTransport.ts optional Iroh frame adapter; no method dispatch
 rpc.ts          method table + per-method param validation + error
                 code mapping + handler bodies. Speaks JSON-RPC
                 objects, knows nothing about the transport.
@@ -226,7 +226,7 @@ These were judgment calls. Recording them so they don't get re-debated every PR.
 
 | § | Decision | Reasoning |
 |---|---|---|
-| 1 | Dispatch lives in `rpc.ts`, not in `connection.ts` | Transport-agnostic dispatcher; testable without a WebSocket; framing and method routing are different concerns |
+| 1 | Dispatch lives in `rpc.ts`, not in transport adapters | Transport-agnostic dispatcher; testable without a socket; framing and method routing are different concerns |
 | 2 | No state-management framework (`ChangeNotifier` only) | Smaller surface, fewer rebuild-trap landmines; can adopt Riverpod later if it ever hurts |
 | 2 | All server-derived state is in `AppState`, not in widgets | One subscription surface; survives screen rebuilds; the "is it server-side?" check is unambiguous |
 | 2 | Material 3, seed color allowed, deeper theming deferred | Mild chrome identity has no cost; full theming waits for a designer |

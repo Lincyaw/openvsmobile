@@ -30,6 +30,7 @@ Future<void> _pump(
   AppState? appState,
   Future<bool> Function()? onExport,
   Future<int?> Function()? onImport,
+  Future<void> Function(String)? onSwitch,
 }) async {
   appState ??= AppState(client: BackendClient());
   await tester.pumpWidget(
@@ -40,7 +41,7 @@ Future<void> _pump(
         onAdd: (_, {required bool makeActive}) async {},
         onUpdate: (_) async {},
         onDelete: (_) async {},
-        onSwitch: (_) async {},
+        onSwitch: onSwitch ?? (_) async {},
         onExport: onExport ?? () async => true,
         onImport: onImport ?? () async => 1,
       ),
@@ -58,7 +59,7 @@ void main() {
     expect(find.text('Add your first backend'), findsOneWidget);
   });
 
-  testWidgets('renders a single backend with host:port subtitle and menu', (
+  testWidgets('renders active backend as the Files/Plugins target', (
     tester,
   ) async {
     final appState = AppState(client: BackendClient());
@@ -70,10 +71,43 @@ void main() {
     await _pump(tester, state, appState: appState);
     expect(find.text('home'), findsOneWidget);
     expect(find.textContaining('h.local:7860'), findsOneWidget);
-    // Active marker (filled circle) renders.
-    expect(find.byIcon(Icons.circle), findsOneWidget);
+    expect(find.textContaining('Files/Plugins target'), findsOneWidget);
+    expect(find.text('Files'), findsOneWidget);
+    expect(find.byIcon(Icons.dns_outlined), findsOneWidget);
     // PopupMenuButton is present.
     expect(find.byType(PopupMenuButton<String>), findsOneWidget);
+  });
+
+  testWidgets('switching workspace target is explicit in the row menu', (
+    tester,
+  ) async {
+    final appState = AppState(client: BackendClient());
+    addTearDown(appState.dispose);
+    String? switched;
+    final state = AppPersistedState(
+      backends: [
+        _target(id: 'b1', name: 'home'),
+        _target(id: 'b2', name: 'work', host: 'work.local'),
+      ],
+      activeBackendId: 'b1',
+    );
+    await _pump(
+      tester,
+      state,
+      appState: appState,
+      onSwitch: (id) async => switched = id,
+    );
+
+    await tester.tap(find.text('work'));
+    await tester.pump();
+    expect(switched, isNull);
+
+    await tester.tap(find.byType(PopupMenuButton<String>).last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Use for Files/Plugins'));
+    await tester.pumpAndSettle();
+
+    expect(switched, 'b2');
   });
 
   testWidgets('exports backend backup from the overflow menu', (tester) async {

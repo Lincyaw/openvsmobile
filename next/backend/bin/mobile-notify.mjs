@@ -36,6 +36,7 @@ const EXIT_FORBIDDEN = 6;
 const EXIT_RATE_LIMITED = 7;
 
 const REQUEST_TIMEOUT_MS = 10_000;
+const RPC_LOOKUP_TIMEOUT_MS = 1_500;
 const VALID_LEVELS = new Set(["info", "success", "warning", "error"]);
 const MANAGED_ZELLIJ_PREFIX = "ovsm-";
 
@@ -265,7 +266,7 @@ function zellijSessionNameFromEnv(env = process.env) {
   return undefined;
 }
 
-function terminalActionFromHook(event, env = process.env) {
+function terminalContextFromHook(event, env = process.env) {
   const explicitSessionId =
     stringField(event, "openvsmobile_terminal_session_id") ??
     stringField(event, "terminal_session_id");
@@ -273,33 +274,183 @@ function terminalActionFromHook(event, env = process.env) {
     stringField(event, "openvsmobile_external_session_id") ??
     zellijSessionNameFromEnv(env);
 
-  if (explicitSessionId !== undefined) {
-    const action = { kind: "open-terminal", sessionId: explicitSessionId };
-    if (externalSessionId !== undefined) action.externalSessionId = externalSessionId;
+  if (explicitSessionId === undefined && externalSessionId === undefined) {
+    return undefined;
+  }
+  return {
+    sessionId: explicitSessionId,
+    externalSessionId,
+  };
+}
+
+function terminalActionFromContext(context) {
+  if (context?.sessionId !== undefined) {
+    const action = { kind: "open-terminal", sessionId: context.sessionId };
+    if (context.externalSessionId !== undefined) {
+      action.externalSessionId = context.externalSessionId;
+    }
     return action;
   }
 
   if (
-    externalSessionId !== undefined &&
-    externalSessionId.startsWith(MANAGED_ZELLIJ_PREFIX)
+    context?.externalSessionId !== undefined &&
+    context.externalSessionId.startsWith(MANAGED_ZELLIJ_PREFIX)
   ) {
-    const sessionId = externalSessionId.slice(MANAGED_ZELLIJ_PREFIX.length);
+    const sessionId = context.externalSessionId.slice(MANAGED_ZELLIJ_PREFIX.length);
     if (/^[A-Za-z0-9_-]+$/.test(sessionId)) {
       return {
         kind: "open-terminal",
         sessionId,
-        externalSessionId,
+        externalSessionId: context.externalSessionId,
       };
     }
   }
   return undefined;
 }
 
+function terminalActionFromHook(event, env = process.env) {
+  return terminalActionFromContext(terminalContextFromHook(event, env));
+}
+
+function rpcUrlForServer(serverUrl) {
+  const url = new URL("/rpc", serverUrl.endsWith("/") ? serverUrl : `${serverUrl}/`);
+  if (url.protocol === "http:") url.protocol = "ws:";
+  else if (url.protocol === "https:") url.protocol = "wss:";
+  else throw new Error(`unsupported server protocol: ${url.protocol}`);
+  return url.toString();
+}
+
+function websocketWait(ws, eventName, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      clearTimeout(timer);
+      ws.removeEventListener(eventName, onEvent);
+      ws.removeEventListener("error", onError);
+    };
+    const onEvent = (ev) => {
+      cleanup();
+      resolve(ev);
+    };
+    const onError = (ev) => {
+      cleanup();
+      reject(ev?.error ?? new Error("websocket error"));
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`${eventName} timed out`));
+    }, timeoutMs);
+    ws.addEventListener(eventName, onEvent, { once: true });
+    ws.addEventListener("error", onError, { once: true });
+  });
+}
+
+function websocketCall(ws, id, method, params, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      clearTimeout(timer);
+      ws.removeEventListener("message", onMessage);
+      ws.removeEventListener("error", onError);
+      ws.removeEventListener("close", onClose);
+    };
+    const onMessage = (ev) => {
+      let msg;
+      try {
+        msg = JSON.parse(String(ev.data));
+      } catch {
+        return;
+      }
+      if (msg.id !== id) return;
+      cleanup();
+      if (msg.error !== undefined) reject(new Error(msg.error.message ?? "rpc error"));
+      else resolve(msg.result);
+    };
+    const onError = (ev) => {
+      cleanup();
+      reject(ev?.error ?? new Error("websocket error"));
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new Error("websocket closed"));
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`${method} timed out`));
+    }, timeoutMs);
+    ws.addEventListener("message", onMessage);
+    ws.addEventListener("error", onError, { once: true });
+    ws.addEventListener("close", onClose, { once: true });
+    ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+  });
+}
+
+async function lookupTerminalActionByExternalSession(
+  serverUrl,
+  token,
+  externalSessionId,
+) {
+  if (
+    typeof globalThis.WebSocket !== "function" ||
+    typeof externalSessionId !== "string" ||
+    externalSessionId.length === 0
+  ) {
+    return undefined;
+  }
+
+  let ws;
+  try {
+    ws = new WebSocket(rpcUrlForServer(serverUrl));
+    await websocketWait(ws, "open", RPC_LOOKUP_TIMEOUT_MS);
+    await websocketCall(
+      ws,
+      1,
+      "auth.handshake",
+      {
+        token,
+        client: { deviceId: "mobile-notify" },
+      },
+      RPC_LOOKUP_TIMEOUT_MS,
+    );
+    const result = await websocketCall(
+      ws,
+      2,
+      "terminal.list",
+      {},
+      RPC_LOOKUP_TIMEOUT_MS,
+    );
+    const sessions = Array.isArray(result?.sessions) ? result.sessions : [];
+    const match = sessions.find(
+      (session) =>
+        session &&
+        typeof session === "object" &&
+        session.externalSessionId === externalSessionId &&
+        typeof session.id === "string" &&
+        session.id.length > 0,
+    );
+    if (match === undefined) return undefined;
+    return {
+      kind: "open-terminal",
+      sessionId: match.id,
+      externalSessionId,
+    };
+  } catch {
+    return undefined;
+  } finally {
+    try {
+      ws?.close();
+    } catch {
+      // Best effort cleanup only; notification delivery must not depend on it.
+    }
+  }
+}
+
 /// Translate an agent hook envelope to a Notification payload. Claude Code
 /// and Codex hooks both send JSON envelopes; fields vary by version, so this
 /// parser prefers explicit "last message" fields and falls back to the JSONL
 /// transcript when present.
-function agentHookToNotification(ev, { source = "claude-code" } = {}) {
+function agentHookToNotification(
+  ev,
+  { source = "claude-code", terminalContext, terminalAction } = {},
+) {
   const event = typeof ev === "object" && ev !== null ? ev : {};
   const eventName =
     typeof event.hook_event_name === "string"
@@ -354,7 +505,8 @@ function agentHookToNotification(ev, { source = "claude-code" } = {}) {
   };
   if (body !== undefined) out.body = truncateUtf8(body, 16_000);
   if (groupKey !== undefined) out.groupKey = groupKey;
-  const action = terminalActionFromHook(event);
+  const context = terminalContext ?? terminalContextFromHook(event);
+  const action = terminalAction ?? terminalActionFromContext(context);
   if (action !== undefined) out.action = action;
   const fields = [];
   if (typeof event.cwd === "string") fields.push({ key: "cwd", value: event.cwd });
@@ -364,8 +516,9 @@ function agentHookToNotification(ev, { source = "claude-code" } = {}) {
   if (transcriptPath !== undefined) {
     fields.push({ key: "transcript", value: transcriptPath });
   }
-  if (action?.externalSessionId !== undefined) {
-    fields.push({ key: "zellij", value: action.externalSessionId });
+  const externalSessionId = action?.externalSessionId ?? context?.externalSessionId;
+  if (externalSessionId !== undefined) {
+    fields.push({ key: "zellij", value: externalSessionId });
   }
   if (fields.length > 0) out.fields = fields;
   return out;
@@ -462,7 +615,23 @@ async function main() {
       die(EXIT_ARGS, `--from-claude-hook: invalid JSON on stdin: ${err.message}`);
     }
     const source = values.source || "claude-code";
-    payload = agentHookToNotification(hookEvent, { source });
+    const terminalContext = terminalContextFromHook(hookEvent);
+    let terminalAction = terminalActionFromContext(terminalContext);
+    if (
+      terminalAction === undefined &&
+      terminalContext?.externalSessionId !== undefined
+    ) {
+      terminalAction = await lookupTerminalActionByExternalSession(
+        serverUrl,
+        token,
+        terminalContext.externalSessionId,
+      );
+    }
+    payload = agentHookToNotification(hookEvent, {
+      source,
+      terminalContext,
+      terminalAction,
+    });
     // Optional flag overrides on top of the derived payload (same as
     // --from-json).
     if (values.level) payload.level = values.level;

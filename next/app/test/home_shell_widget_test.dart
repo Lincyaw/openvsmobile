@@ -163,6 +163,35 @@ void main() {
     expect(find.byIcon(Icons.folder_off_outlined), findsOneWidget);
   });
 
+  testWidgets('Terminal tab suppresses active-backend connection banner', (
+    tester,
+  ) async {
+    final client = BackendClient();
+    final appState = AppState(client: client);
+    addTearDown(appState.dispose);
+    await _pumpHomeShell(tester, appState: appState);
+
+    client.state.value = BackendConnectionState.connecting;
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pump();
+
+    expect(find.text('Connecting to home…'), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.terminal_outlined));
+    await tester.pump();
+
+    expect(find.text('Connecting to home…'), findsNothing);
+    expect(find.text('Terminal'), findsWidgets);
+
+    await tester.tap(find.byIcon(Icons.extension_outlined));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pump();
+
+    expect(find.text('Connecting to home…'), findsOneWidget);
+  });
+
   testWidgets(
     'About entry pushes AboutScreen; back returns to Settings (not Files)',
     (tester) async {

@@ -5,7 +5,8 @@
 #
 # One tag, one GitHub Release, both halves of the product shipped together:
 #   - Backend linux tarballs (x64 + arm64), native runners per arch.
-#   - Android APKs (per-ABI splits + universal), single host build.
+#   - Android APK (arm64-v8a), single host build. Iroh's Android FFI is
+#     currently bundled for arm64 only; do not publish unsupported ABI splits.
 #
 # The APK's `kBackendVersion` is substituted from the tag right before
 # `flutter build`, so a released APK always points at the matching backend
@@ -131,6 +132,19 @@ jobs:
         working-directory: next/app
         run: flutter pub get
 
+      - name: Verify Android Iroh FFI payload
+        working-directory: next/app
+        run: |
+          set -euo pipefail
+          lib=android/app/src/main/jniLibs/arm64-v8a/libiroh_ffi.so
+          test -f "$lib"
+          desc="$(file -b "$lib")"
+          echo "$desc"
+          if ! grep -qi 'aarch64' <<<"$desc"; then
+            echo "::error::Expected Android arm64 Iroh FFI library at $lib, got: $desc"
+            exit 1
+          fi
+
       - name: Analyze (fail fast before building APKs)
         working-directory: next/app
         run: flutter analyze
@@ -207,17 +221,11 @@ jobs:
             echo "signed=debug" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build split-per-ABI release APKs
+      - name: Build arm64 release APK
         working-directory: next/app
         run: >
           flutter build apk --release --split-per-abi
-          --build-name '${{ steps.android-meta.outputs.build_name }}'
-          --build-number '${{ steps.android-meta.outputs.build_number }}'
-
-      - name: Build universal release APK
-        working-directory: next/app
-        run: >
-          flutter build apk --release
+          --target-platform android-arm64
           --build-name '${{ steps.android-meta.outputs.build_name }}'
           --build-number '${{ steps.android-meta.outputs.build_number }}'
 
@@ -229,16 +237,14 @@ jobs:
           out="${RUNNER_TEMP}/release-assets"
           mkdir -p "$out"
           tag="${GITHUB_REF_NAME:-vlocal}"
-          # Flutter emits these filenames verbatim with --split-per-abi and
-          # without; we rename to include the tag for unambiguous downloads.
+          # Flutter emits this filename verbatim with --split-per-abi and
+          # --target-platform android-arm64; rename to include the tag for
+          # unambiguous downloads.
           # Output filenames look like `openvsmobile-app-v0.2.0-arm64-v8a.apk`:
           # the literal `app-` keeps the APK assets visually distinct from the
           # backend tarballs that share the same Release page.
           declare -A map=(
             ["app-arm64-v8a-release.apk"]="openvsmobile-app-${tag}-arm64-v8a.apk"
-            ["app-armeabi-v7a-release.apk"]="openvsmobile-app-${tag}-armeabi-v7a.apk"
-            ["app-x86_64-release.apk"]="openvsmobile-app-${tag}-x86_64.apk"
-            ["app-release.apk"]="openvsmobile-app-${tag}-universal.apk"
           )
           for src_name in "${!map[@]}"; do
             dst_name="${map[$src_name]}"
@@ -335,16 +341,18 @@ jobs:
               echo "| \`${base}\` | \`${sum}\` |"
             done
             echo
+            echo "Android release APKs currently target \`arm64-v8a\` because the bundled Iroh FFI library is arm64-only."
+            echo
             echo '### Install'
             echo
             version="${GITHUB_REF_NAME#v}"
-            echo 'Direct install:'
+            echo 'Direct install with Iroh remote transport enabled:'
             echo
             echo '```bash'
-            echo "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/install.sh | bash -s -- ${version}"
+            echo "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/install.sh | OPENVSMOBILE_IROH=1 bash -s -- ${version}"
             echo '```'
             echo
-            echo "SSH-bootstrap from the app's Settings screen → SSH bootstrap."
+            echo "SSH-bootstrap from the app's Settings screen → SSH bootstrap. Iroh is enabled by default."
             echo "The attached \`install.sh\` asset is still published for pinned, release-local installs."
             if [[ "${SIGNING_MODE}" != "release" ]]; then
               echo

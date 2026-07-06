@@ -1,5 +1,5 @@
 // SSH-bootstrap UI: collect credentials, stream install.sh, surface stderr
-// live, hand the parsed {host, port, token} off to the settings store.
+// live, hand the parsed backend target off to the settings store.
 //
 // The final BootstrapSuccess/BootstrapFailure is stored on AppState so it
 // survives a screen rebuild — see docs/conventions.md §2 (Single source of
@@ -49,6 +49,7 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
 
   _AuthMode _authMode = _AuthMode.password;
   bool _showAdvanced = false;
+  bool _enableIroh = true;
   bool _running = false;
   String _status = '';
   final List<String> _log = [];
@@ -93,8 +94,9 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
         ? SshPasswordAuth(_passwordCtrl.text)
         : SshKeyAuth(
             privateKeyPem: _keyCtrl.text,
-            passphrase:
-                _passphraseCtrl.text.isEmpty ? null : _passphraseCtrl.text,
+            passphrase: _passphraseCtrl.text.isEmpty
+                ? null
+                : _passphraseCtrl.text,
           );
 
     final stream = SshBootstrapService().run(
@@ -108,33 +110,37 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
       githubMirror: _mirrorCtrl.text.trim().isEmpty
           ? null
           : _mirrorCtrl.text.trim(),
+      enableIroh: _enableIroh,
     );
 
-    _sub = stream.listen((event) {
-      if (!mounted) return;
-      switch (event) {
-        case BootstrapStatus(:final message):
-          setState(() => _status = message);
-        case BootstrapLog(:final line):
-          setState(() => _log.add(line));
-        case BootstrapSuccess():
-          widget.appState.setBootstrapResult(success: event);
-          setState(() {
-            _status = 'Success';
-            _running = false;
-          });
-        case BootstrapFailure():
-          widget.appState.setBootstrapResult(failure: event);
-          setState(() {
-            _status = 'Failed';
-            _running = false;
-          });
-      }
-      _autoScroll();
-    }, onDone: () {
-      if (!mounted) return;
-      setState(() => _running = false);
-    });
+    _sub = stream.listen(
+      (event) {
+        if (!mounted) return;
+        switch (event) {
+          case BootstrapStatus(:final message):
+            setState(() => _status = message);
+          case BootstrapLog(:final line):
+            setState(() => _log.add(line));
+          case BootstrapSuccess():
+            widget.appState.setBootstrapResult(success: event);
+            setState(() {
+              _status = 'Success';
+              _running = false;
+            });
+          case BootstrapFailure():
+            widget.appState.setBootstrapResult(failure: event);
+            setState(() {
+              _status = 'Failed';
+              _running = false;
+            });
+        }
+        _autoScroll();
+      },
+      onDone: () {
+        if (!mounted) return;
+        setState(() => _running = false);
+      },
+    );
   }
 
   void _autoScroll() {
@@ -149,12 +155,19 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
     if (s == null) return;
     final host = _hostCtrl.text.trim();
     final user = _userCtrl.text.trim();
+    final iroh = s.iroh;
     final target = BackendTarget(
       id: generateUuidV4(),
       name: user.isEmpty ? host : '$user@$host',
-      host: host,
-      port: s.port,
+      host: iroh == null ? host : '',
+      port: iroh == null ? s.port : 0,
       token: s.token,
+      transport: iroh == null
+          ? BackendTransport.websocket
+          : BackendTransport.iroh,
+      irohTicket: iroh?.ticket,
+      irohEndpointId: iroh?.endpointId,
+      irohAlpn: iroh?.alpn,
       origin: BackendOrigin.sshInstall,
       originRef: user.isEmpty ? host : '$user@$host',
       addedAt: DateTime.now().millisecondsSinceEpoch,
@@ -175,9 +188,9 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
       ..._log,
     ];
     Clipboard.setData(ClipboardData(text: lines.join('\n')));
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Log copied to clipboard')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Log copied to clipboard')));
   }
 
   @override
@@ -228,8 +241,7 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
             labelText: 'Host',
             hintText: 'e.g. 192.168.1.10',
           ),
-          validator: (v) =>
-              (v == null || v.trim().isEmpty) ? 'required' : null,
+          validator: (v) => (v == null || v.trim().isEmpty) ? 'required' : null,
         ),
         const SizedBox(height: AppSpacing.md),
         TextFormField(
@@ -248,8 +260,7 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
           controller: _userCtrl,
           enabled: !_running,
           decoration: const InputDecoration(labelText: 'Username'),
-          validator: (v) =>
-              (v == null || v.trim().isEmpty) ? 'required' : null,
+          validator: (v) => (v == null || v.trim().isEmpty) ? 'required' : null,
         ),
         const SizedBox(height: AppSpacing.md),
         SegmentedButton<_AuthMode>(
@@ -270,8 +281,7 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
             obscureText: true,
             decoration: const InputDecoration(labelText: 'Password'),
             validator: (v) {
-              if (_authMode == _AuthMode.password &&
-                  (v == null || v.isEmpty)) {
+              if (_authMode == _AuthMode.password && (v == null || v.isEmpty)) {
                 return 'required';
               }
               return null;
@@ -318,8 +328,7 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
               enabled: !_running,
               decoration: const InputDecoration(
                 labelText: 'Tarball path on remote (optional)',
-                hintText:
-                    '/home/you/openvsmobile-backend-linux-x64.tar.gz',
+                hintText: '/home/you/openvsmobile-backend-linux-x64.tar.gz',
                 helperText:
                     'If set, install.sh skips the GitHub download and uses this local file.',
               ),
@@ -333,6 +342,18 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
                 hintText: 'https://ghproxy.com/https://github.com',
                 helperText:
                     'Override github.com when the releases CDN is slow or blocked. Exported as GITHUB_MIRROR.',
+              ),
+            ),
+            const SizedBox(height: AppSpacing.sm),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _enableIroh,
+              onChanged: _running
+                  ? null
+                  : (v) => setState(() => _enableIroh = v),
+              title: const Text('Enable Iroh remote transport'),
+              subtitle: const Text(
+                'Persists OPENVSMOBILE_IROH=1 into the systemd unit and saves the returned ticket.',
               ),
             ),
           ],
@@ -358,8 +379,10 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
                   ),
                 if (_running) const SizedBox(width: AppSpacing.sm),
                 Expanded(
-                  child: Text(_status,
-                      style: const TextStyle(fontWeight: FontWeight.bold)),
+                  child: Text(
+                    _status,
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
                 ),
               ],
             ),
@@ -393,9 +416,18 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text('Backend ${s.version} is running on port ${s.port}.',
-                style: Theme.of(context).textTheme.titleMedium),
+            Text(
+              'Backend ${s.version} is running on port ${s.port}.',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
             const SizedBox(height: AppSpacing.xs),
+            if (s.iroh != null) ...[
+              Text(
+                'Iroh endpoint ${_shortEndpoint(s.iroh!.endpointId)} is ready.',
+                style: const TextStyle(fontSize: 12),
+              ),
+              const SizedBox(height: AppSpacing.xs),
+            ],
             if (!s.linger)
               const Text(
                 'Note: user lingering is disabled — the service stops when '
@@ -432,8 +464,10 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
             Text(f.reason),
             if (f.lastStderr.isNotEmpty) ...[
               const SizedBox(height: AppSpacing.sm),
-              const Text('Last stderr:',
-                  style: TextStyle(fontWeight: FontWeight.bold)),
+              const Text(
+                'Last stderr:',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
               const SizedBox(height: AppSpacing.xs),
               Container(
                 width: double.infinity,
@@ -465,4 +499,7 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
       ),
     );
   }
+
+  String _shortEndpoint(String endpointId) =>
+      endpointId.substring(0, endpointId.length < 12 ? endpointId.length : 12);
 }

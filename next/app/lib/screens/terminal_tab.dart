@@ -224,39 +224,10 @@ class _TerminalTabState extends State<TerminalTab> {
   }
 
   Future<String?> _promptRename(TerminalSession session) async {
-    final controller = TextEditingController(text: session.title ?? '');
     final result = await showDialog<String?>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Rename terminal'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          maxLength: 80,
-          decoration: const InputDecoration(
-            labelText: 'Name',
-            hintText: 'Leave empty to use the default label',
-          ),
-          textInputAction: TextInputAction.done,
-          onSubmitted: (_) => Navigator.of(ctx).pop(controller.text.trim()),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(_renameCancelled),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(''),
-            child: const Text('Clear'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
-            child: const Text('Save'),
-          ),
-        ],
-      ),
+      builder: (_) => _RenameTerminalDialog(initialTitle: session.title ?? ''),
     );
-    controller.dispose();
     if (result == _renameCancelled) return _renameCancelled;
     return result == null || result.isEmpty ? null : result;
   }
@@ -571,6 +542,67 @@ int _hubItemCount(
 }
 
 const String _renameCancelled = '__openvsmobile_rename_cancelled__';
+
+class _RenameTerminalDialog extends StatefulWidget {
+  final String initialTitle;
+
+  const _RenameTerminalDialog({required this.initialTitle});
+
+  @override
+  State<_RenameTerminalDialog> createState() => _RenameTerminalDialogState();
+}
+
+class _RenameTerminalDialogState extends State<_RenameTerminalDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialTitle);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit(String value) {
+    Navigator.of(context).pop(value.trim());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Rename terminal'),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        maxLength: 80,
+        decoration: const InputDecoration(
+          labelText: 'Name',
+          hintText: 'Leave empty to use the default label',
+        ),
+        textInputAction: TextInputAction.done,
+        onSubmitted: _submit,
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(_renameCancelled),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(''),
+          child: const Text('Clear'),
+        ),
+        FilledButton(
+          onPressed: () => _submit(_controller.text),
+          child: const Text('Save'),
+        ),
+      ],
+    );
+  }
+}
 
 /// Auto-generated session label, "sh · N" — the brief's example shape.
 /// Sessions don't carry their shell binary on the wire today; once the
@@ -900,7 +932,7 @@ class _BackendGroupHeader extends StatelessWidget {
                                 ),
                               ),
                               const SizedBox(width: AppSpacing.sm),
-                              _StatusPill(group: group),
+                              Flexible(child: _StatusPill(group: group)),
                             ],
                           ),
                           const SizedBox(height: 2),
@@ -960,11 +992,13 @@ class _StatusPill extends StatelessWidget {
           decoration: BoxDecoration(color: color, shape: BoxShape.circle),
         ),
         const SizedBox(width: AppSpacing.xs),
-        Text(
-          _connectionLabel(group),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: theme.textTheme.labelSmall?.copyWith(color: color),
+        Flexible(
+          child: Text(
+            _connectionLabel(group),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.labelSmall?.copyWith(color: color),
+          ),
         ),
       ],
     );

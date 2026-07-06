@@ -1,6 +1,6 @@
 // Token and recents persistence. Config dir is
 // ~/.config/openvsmobile-next/ with two files:
-//   - config.json: { token: string }
+//   - config.json: { token: string, irohSecretKey?: string }
 //   - state.json:  { recents: string[] }
 // Anything missing/corrupt is re-initialized.
 
@@ -22,6 +22,23 @@ function generateToken(): string {
   return randomBytes(24).toString("hex");
 }
 
+interface ConfigFile {
+  token?: unknown;
+  irohSecretKey?: unknown;
+}
+
+function readConfigFile(): ConfigFile {
+  if (!existsSync(CONFIG_FILE)) return {};
+  const raw = readFileSync(CONFIG_FILE, "utf8");
+  return JSON.parse(raw) as ConfigFile;
+}
+
+function writeConfigFile(config: ConfigFile): void {
+  writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2) + "\n", {
+    mode: 0o600,
+  });
+}
+
 export interface ResolvedToken {
   token: string;
   source: "env" | "config" | "generated";
@@ -33,24 +50,49 @@ export function resolveToken(): ResolvedToken {
     return { token: fromEnv.trim(), source: "env" };
   }
   ensureDir();
+  let existingConfig: ConfigFile = {};
   if (existsSync(CONFIG_FILE)) {
     try {
-      const raw = readFileSync(CONFIG_FILE, "utf8");
-      const parsed = JSON.parse(raw) as { token?: unknown };
-      if (typeof parsed.token === "string" && parsed.token.length > 0) {
-        return { token: parsed.token, source: "config" };
+      existingConfig = readConfigFile();
+      if (
+        typeof existingConfig.token === "string" &&
+        existingConfig.token.length > 0
+      ) {
+        return { token: existingConfig.token, source: "config" };
       }
     } catch {
+      existingConfig = {};
       // fall through to regenerate
     }
   }
   const token = generateToken();
-  writeFileSync(
-    CONFIG_FILE,
-    JSON.stringify({ token }, null, 2) + "\n",
-    { mode: 0o600 },
-  );
+  writeConfigFile({ ...existingConfig, token });
   return { token, source: "generated" };
+}
+
+export function loadIrohSecretKey(): string | null {
+  ensureDir();
+  try {
+    const parsed = readConfigFile();
+    return typeof parsed.irohSecretKey === "string" &&
+      parsed.irohSecretKey.length > 0
+      ? parsed.irohSecretKey
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveIrohSecretKey(secretKey: string): void {
+  ensureDir();
+  let parsed: ConfigFile = {};
+  try {
+    parsed = readConfigFile();
+  } catch {
+    parsed = {};
+  }
+  parsed.irohSecretKey = secretKey;
+  writeConfigFile(parsed);
 }
 
 export function loadRecents(): string[] {

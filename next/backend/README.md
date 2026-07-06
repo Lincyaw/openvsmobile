@@ -1,9 +1,12 @@
 # openvsmobile-next backend
 
 Node / TypeScript backend for the mobile code workbench. One persistent
-WebSocket at `/rpc` carries JSON-RPC 2.0; everything that streams (terminal
-output, workspace deltas) is a notification, never a polled request. See
-`docs/design/mobile-code-platform.md` §4.1 for the full wire contract.
+JSON-RPC stream carries the app protocol; the default transport is a
+WebSocket at `/rpc`, and an optional Iroh bidirectional stream can expose
+the same protocol for NAT-traversed remote access. Everything that streams
+(terminal output, workspace deltas) is a notification, never a polled
+request. See `docs/design/mobile-code-platform.md` §4.1 for the full wire
+contract.
 
 ## Local development
 
@@ -16,7 +19,9 @@ pnpm dev            # tsx — picks up source edits live
 
 `pnpm dev` writes a runtime file at
 `~/.local/state/openvsmobile-next/runtime.json` (mode 0600) with the bound
-port + bearer token. The smoke script reads it automatically.
+port + bearer token. When `OPENVSMOBILE_IROH=1` is set it also includes an
+`iroh` object with `endpointId`, `ticket`, `alpn`, relay URL, and direct
+addresses. The smoke script reads the WebSocket fields automatically.
 
 ## Node version
 

@@ -23,6 +23,7 @@ const VERSION = "1.0.0";
 const MARKETPLACE = "openvsmobile-local";
 const PLUGIN = "openvsmobile-notify";
 const PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
+const HOOK_SCRIPT = "openvsmobile-agent-hook-notify.mjs";
 
 function log(line) {
   process.stderr.write(`[agent-hooks] ${line}\n`);
@@ -39,6 +40,12 @@ function atomicWrite(path, content, mode) {
   renameSync(tmp, path);
 }
 
+function atomicWriteIfChanged(path, content, mode) {
+  if (existsSync(path) && readText(path) === content) return false;
+  atomicWrite(path, content, mode);
+  return true;
+}
+
 function readText(path) {
   return readFileSync(path, "utf8");
 }
@@ -53,8 +60,35 @@ function modeOf(path, fallback) {
 
 function hookCommand(agent) {
   const nodePath = join(BUNDLE_ROOT, "node", "bin", "node");
-  const hookPath = join(HERE, "openvsmobile-agent-hook-notify.mjs");
+  const hookPath = join(HERE, HOOK_SCRIPT);
   return `${shellQuote(nodePath)} ${shellQuote(hookPath)} --agent ${shellQuote(agent)}`;
+}
+
+function containsOpenvsmobileHook(value) {
+  return JSON.stringify(value).includes(HOOK_SCRIPT);
+}
+
+function rewriteOpenvsmobileHookCommands(value, command) {
+  let changed = false;
+  const visit = (node) => {
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item);
+      return;
+    }
+    if (!node || typeof node !== "object") return;
+    if (
+      typeof node.command === "string" &&
+      node.command.includes(HOOK_SCRIPT)
+    ) {
+      if (node.command !== command) {
+        node.command = command;
+        changed = true;
+      }
+    }
+    for (const child of Object.values(node)) visit(child);
+  };
+  visit(value);
+  return changed;
 }
 
 function ensureClaudeSettings(home) {
@@ -91,26 +125,37 @@ function ensureClaudeSettings(home) {
   }
 
   const command = hookCommand("claude-code");
-  const alreadyInstalled = stop.some((entry) =>
-    JSON.stringify(entry).includes("openvsmobile-agent-hook-notify.mjs"),
-  );
-  if (alreadyInstalled) {
-    log("Claude Code Stop hook already installed");
-    return false;
+  let found = false;
+  let changed = false;
+  for (const entry of stop) {
+    if (!containsOpenvsmobileHook(entry)) continue;
+    found = true;
+    changed = rewriteOpenvsmobileHookCommands(entry, command) || changed;
   }
 
-  stop.push({
-    hooks: [{ type: "command", command }],
-  });
+  if (!found) {
+    stop.push({
+      hooks: [{ type: "command", command }],
+    });
+    changed = true;
+  }
   hooks.Stop = stop;
   settings.hooks = hooks;
 
+  if (!changed) {
+    log("Claude Code Stop hook already current");
+    return false;
+  }
   if (existsSync(settingsPath)) {
     const backupPath = `${settingsPath}.bak.openvsmobile`;
     if (!existsSync(backupPath)) copyFileSync(settingsPath, backupPath);
   }
   atomicWrite(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, modeOf(settingsPath, 0o600));
-  log(`installed Claude Code Stop hook in ${settingsPath}`);
+  log(
+    found
+      ? `updated Claude Code Stop hook in ${settingsPath}`
+      : `installed Claude Code Stop hook in ${settingsPath}`,
+  );
   return true;
 }
 
@@ -138,24 +183,25 @@ function writePluginRoot(pluginRoot, command) {
   const { hooksJson, pluginJson } = pluginFiles(command);
   mkdirSync(join(pluginRoot, ".claude-plugin"), { recursive: true });
   mkdirSync(join(pluginRoot, "hooks"), { recursive: true });
-  atomicWrite(
+  const pluginChanged = atomicWriteIfChanged(
     join(pluginRoot, ".claude-plugin", "plugin.json"),
     `${JSON.stringify(pluginJson, null, 2)}\n`,
     0o644,
   );
-  atomicWrite(
+  const hooksChanged = atomicWriteIfChanged(
     join(pluginRoot, "hooks", "hooks.json"),
     `${JSON.stringify(hooksJson, null, 2)}\n`,
     0o644,
   );
+  return pluginChanged || hooksChanged;
 }
 
 function writeCodexMarketplacePlugin(root, command) {
-  writePluginRoot(join(root, "plugins", PLUGIN), command);
+  return writePluginRoot(join(root, "plugins", PLUGIN), command);
 }
 
 function writeCodexCachePlugin(root, command) {
-  writePluginRoot(join(root, MARKETPLACE, PLUGIN, VERSION), command);
+  return writePluginRoot(join(root, MARKETPLACE, PLUGIN, VERSION), command);
 }
 
 function ensureTomlTable(text, tableName, desiredLines) {
@@ -208,8 +254,15 @@ function ensureCodexConfig(home) {
 
   const command = hookCommand("codex");
   const marketplaceRoot = join(codexDir, ".tmp", "marketplaces", MARKETPLACE);
-  writeCodexMarketplacePlugin(marketplaceRoot, command);
-  writeCodexCachePlugin(join(codexDir, "plugins", "cache"), command);
+  const marketplacePluginChanged = writeCodexMarketplacePlugin(
+    marketplaceRoot,
+    command,
+  );
+  const cachePluginChanged = writeCodexCachePlugin(
+    join(codexDir, "plugins", "cache"),
+    command,
+  );
+  const pluginChanged = marketplacePluginChanged || cachePluginChanged;
 
   let text = existsSync(configPath) ? readText(configPath) : "";
   const before = text;
@@ -229,7 +282,11 @@ function ensureCodexConfig(home) {
     log(`enabled Codex Stop hook plugin in ${configPath}`);
     return true;
   }
-  log("Codex Stop hook plugin already enabled");
+  if (pluginChanged) {
+    log("refreshed Codex Stop hook plugin files");
+    return true;
+  }
+  log("Codex Stop hook plugin already current");
   return false;
 }
 

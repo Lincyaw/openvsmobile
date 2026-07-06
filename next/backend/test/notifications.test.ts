@@ -1056,6 +1056,69 @@ describe("CLI smoke: mobile-notify --from-json -", () => {
       rmSync(transcriptDir, { recursive: true, force: true });
     }
   });
+
+  it("--from-claude-hook resolves adopted zellij sessions to terminal actions", async () => {
+    const terminalId = "22222222-3333-4444-5555-666666666666";
+    h.state.terminals.hydrate({
+      id: terminalId,
+      workspaceRoot: null,
+      cwd: "/home/u/proj",
+      cols: 80,
+      rows: 24,
+      externalSessionId: "aoy-test",
+      createdAt: Date.now(),
+    });
+    const hookEvent = {
+      hook_event_name: "Stop",
+      session_id: "session-with-adopted-terminal",
+      cwd: "/home/u/proj",
+      last_message: "Adopted terminal run finished.",
+    };
+
+    const child = spawn(
+      process.execPath,
+      [
+        CLI_PATH,
+        "--server",
+        `127.0.0.1:${h.port}`,
+        "--token",
+        TOKEN,
+        "--from-claude-hook",
+      ],
+      {
+        stdio: ["pipe", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          ZELLIJ_SESSION_NAME: "aoy-test",
+        },
+      },
+    );
+    child.stdin.write(JSON.stringify(hookEvent));
+    child.stdin.end();
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    child.stdout.on("data", (c) => stdoutChunks.push(c));
+    child.stderr.on("data", (c) => stderrChunks.push(c));
+    const exitCode: number = await new Promise((resolve) =>
+      child.on("close", (code) => resolve(code ?? -1)),
+    );
+    const stdout = Buffer.concat(stdoutChunks).toString("utf8").trim();
+    const stderr = Buffer.concat(stderrChunks).toString("utf8");
+    expect(exitCode, `stderr: ${stderr}`).toBe(0);
+
+    const stored = h.state.notificationHub
+      .list({ limit: 5 })
+      .items.find((n) => n.id === stdout);
+    expect(stored).toBeDefined();
+    expect(stored!.action).toEqual({
+      kind: "open-terminal",
+      sessionId: terminalId,
+      externalSessionId: "aoy-test",
+    });
+    expect(stored!.fields?.find((f) => f.key === "zellij")?.value).toBe(
+      "aoy-test",
+    );
+  });
 });
 
 describe("hub fan-out gating", () => {

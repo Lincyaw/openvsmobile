@@ -75,6 +75,53 @@ describe("install-agent-hooks", () => {
     });
   });
 
+  it("updates an existing Claude Code Stop hook from an older bundle path", () => {
+    withTmpHome((home) => {
+      const settingsPath = join(home, ".claude", "settings.json");
+      mkdirSync(dirname(settingsPath), { recursive: true });
+      writeFileSync(
+        settingsPath,
+        JSON.stringify(
+          {
+            hooks: {
+              Stop: [
+                {
+                  hooks: [
+                    {
+                      type: "command",
+                      command:
+                        "'/home/u/.local/share/openvsmobile/v0.4.0/openvsmobile-backend/node/bin/node' " +
+                        "'/home/u/.local/share/openvsmobile/v0.4.0/openvsmobile-backend/bin/openvsmobile-agent-hook-notify.mjs' " +
+                        "--agent 'claude-code'",
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+          null,
+          2,
+        ),
+        { mode: 0o600 },
+      );
+
+      const first = runInstaller(home);
+      expect(first.status).toBe(0);
+      const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+      expect(settings.hooks.Stop).toHaveLength(1);
+      const command = settings.hooks.Stop[0].hooks[0].command as string;
+      expect(command).toContain("openvsmobile-agent-hook-notify.mjs");
+      expect(command).toContain("claude-code");
+      expect(command).not.toContain("v0.4.0");
+      expect(command).toContain(BACKEND_DIR);
+
+      const second = runInstaller(home);
+      expect(second.status).toBe(0);
+      const after = JSON.parse(readFileSync(settingsPath, "utf8"));
+      expect(after.hooks.Stop).toHaveLength(1);
+    });
+  });
+
   it("creates and enables a local Codex Stop hook plugin", () => {
     withTmpHome((home) => {
       const codexDir = join(home, ".codex");
@@ -126,6 +173,84 @@ describe("install-agent-hooks", () => {
       expect(
         after.match(/\[plugins\."openvsmobile-notify@openvsmobile-local"\]/g),
       ).toHaveLength(1);
+    });
+  });
+
+  it("refreshes Codex Stop hook plugin files from an older bundle path", () => {
+    withTmpHome((home) => {
+      const codexDir = join(home, ".codex");
+      const configPath = join(codexDir, "config.toml");
+      mkdirSync(codexDir, { recursive: true });
+      writeFileSync(
+        configPath,
+        [
+          "[marketplaces.openvsmobile-local]",
+          `source = "${join(codexDir, ".tmp", "marketplaces", "openvsmobile-local")}"`,
+          'source_type = "local"',
+          'last_updated = "1970-01-01T00:00:00.000Z"',
+          "",
+          '[plugins."openvsmobile-notify@openvsmobile-local"]',
+          "enabled = true",
+          "",
+        ].join("\n"),
+        { mode: 0o600 },
+      );
+      const oldHooks = JSON.stringify(
+        {
+          hooks: {
+            Stop: [
+              {
+                hooks: [
+                  {
+                    type: "command",
+                    command:
+                      "'/home/u/.local/share/openvsmobile/v0.4.3/openvsmobile-backend/node/bin/node' " +
+                      "'/home/u/.local/share/openvsmobile/v0.4.3/openvsmobile-backend/bin/openvsmobile-agent-hook-notify.mjs' " +
+                      "--agent 'codex'",
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        null,
+        2,
+      );
+      const marketplaceHookPath = join(
+        codexDir,
+        ".tmp",
+        "marketplaces",
+        "openvsmobile-local",
+        "plugins",
+        "openvsmobile-notify",
+        "hooks",
+        "hooks.json",
+      );
+      const cacheHookPath = join(
+        codexDir,
+        "plugins",
+        "cache",
+        "openvsmobile-local",
+        "openvsmobile-notify",
+        "1.0.0",
+        "hooks",
+        "hooks.json",
+      );
+      mkdirSync(dirname(marketplaceHookPath), { recursive: true });
+      mkdirSync(dirname(cacheHookPath), { recursive: true });
+      writeFileSync(marketplaceHookPath, oldHooks);
+      writeFileSync(cacheHookPath, oldHooks);
+
+      const first = runInstaller(home);
+      expect(first.status).toBe(0);
+      for (const hookPath of [marketplaceHookPath, cacheHookPath]) {
+        const hooks = JSON.parse(readFileSync(hookPath, "utf8"));
+        const command = hooks.hooks.Stop[0].hooks[0].command as string;
+        expect(command).toContain("openvsmobile-agent-hook-notify.mjs");
+        expect(command).toContain("codex");
+        expect(command).not.toContain("v0.4.3");
+        expect(command).toContain(BACKEND_DIR);
+      }
     });
   });
 

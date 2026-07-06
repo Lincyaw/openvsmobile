@@ -27,6 +27,13 @@ export interface RuntimeInfo {
   token: string;
   startedAt: string;
   version: string;
+  iroh?: {
+    endpointId: string;
+    ticket: string;
+    alpn: string;
+    relayUrl: string | null;
+    directAddresses: string[];
+  };
 }
 
 export function runtimeInfoPath(): string {

@@ -172,6 +172,9 @@ class _MobileCodeAppState extends State<MobileCodeApp>
         host: active.host,
         port: active.port,
         token: active.token,
+        transport: active.transport,
+        irohTicket: active.irohTicket,
+        irohAlpn: active.irohAlpn,
         deviceId: did,
       );
       _scheduleOpenLastWorkspaceWhenConnected(active, sessionOrdinal);
@@ -532,6 +535,9 @@ class _MobileCodeAppState extends State<MobileCodeApp>
       host: active.host,
       port: active.port,
       token: active.token,
+      transport: active.transport,
+      irohTicket: active.irohTicket,
+      irohAlpn: active.irohAlpn,
       deviceId: _deviceId,
     );
     _scheduleOpenLastWorkspaceWhenConnected(active, sessionOrdinal);

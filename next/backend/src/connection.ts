@@ -1,11 +1,11 @@
-// A Connection is an authenticated subscriber over a single WebSocket.
+// A Connection is an authenticated subscriber over a single app transport.
 // It does NOT own workspaces or terminals — those live in the shared
-// ProcessState. Closing the socket removes this subscriber but leaves all
+// ProcessState. Closing the transport removes this subscriber but leaves all
 // workspaces and PTYs running so the client can reattach on reconnect.
 //
-// This file is the ONLY one that knows WebSocket framing. The JSON-RPC
-// method table + handler bodies live in rpc.ts; we just shuttle parsed
-// requests into `dispatch()` and write the response back. See
+// Transport adapters own frame parsing. The JSON-RPC method table + handler
+// bodies live in rpc.ts; we just shuttle parsed requests into `dispatch()`
+// and write the response back. See
 // docs/conventions.md §1 "Method dispatch lives in rpc.ts".
 //
 // See docs/design/mobile-code-platform.md §5.1 (Session persistence).

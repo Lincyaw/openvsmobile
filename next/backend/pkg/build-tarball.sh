@@ -147,7 +147,9 @@ if [[ -d "$BACKEND_DIR/packages/sdk" ]]; then
   log "building @openvsmobile/sdk"
   (
     cd "$BACKEND_DIR/packages/sdk"
-    npm install --no-audit --no-fund --no-package-lock --no-save typescript@5 >/dev/null
+    export PATH="$NODE_HOME/bin:$PATH"
+    npm install --no-audit --no-fund --no-package-lock --no-save \
+      typescript@5 @types/node@20 >/dev/null
     npx --no-install tsc
   )
   mkdir -p "$BUILD_DIR/packages"
@@ -263,6 +265,7 @@ node -e "
 # the compile step only (small, doesn't end up in the tarball).
 (
   cd "$COMPILE_DIR"
+  export PATH="$NODE_HOME/bin:$PATH"
   npm install --no-audit --no-fund --no-package-lock --no-save typescript@5 >/dev/null
   npx --no-install tsc
 )

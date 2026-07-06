@@ -74,6 +74,50 @@ void main() {
     expect(find.text('Terminal session ended.'), findsOneWidget);
   });
 
+  testWidgets('compact terminal detail truncates long app bar title', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    const session = TerminalSession(
+      id: 'term-long-title',
+      title: 'deploy shell with a very long title that must not overflow',
+      workspaceId: 'ws-1',
+      workspaceRoot: '/tmp/ws-1',
+      cols: 80,
+      rows: 24,
+      cwd: '/tmp/ws-1',
+      createdAt: 0,
+      externalSessionId:
+          'very-long-zellij-session-name-that-also-needs-ellipsis',
+    );
+    final appState = AppState(client: BackendClient());
+    addTearDown(appState.dispose);
+    appState.debugSetActiveWorkspace(_workspace);
+    appState.debugSeedTerminals(_workspace.id, const [session]);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TerminalDetailScreen(
+          appState: appState,
+          sessionId: session.id,
+          title: session.title!,
+          onOpenFiles: () async {},
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text(session.title!), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(milliseconds: 250));
+  });
+
   testWidgets('companion key taps emit selection haptic feedback', (
     tester,
   ) async {

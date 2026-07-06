@@ -401,9 +401,12 @@ class _BackendTerminalController {
       _client.defaultCwd.isNotEmpty ? _client.defaultCwd : '/';
 
   bool hasSameEndpoint(BackendTarget next) =>
+      _target.transport == next.transport &&
       _target.host == next.host &&
       _target.port == next.port &&
-      _target.token == next.token;
+      _target.token == next.token &&
+      _target.irohTicket == next.irohTicket &&
+      _target.irohAlpn == next.irohAlpn;
 
   void updateTarget(BackendTarget next, {String? deviceId}) {
     _target = next;
@@ -597,6 +600,9 @@ class _BackendTerminalController {
       host: _target.host,
       port: _target.port,
       token: _target.token,
+      transport: _target.transport,
+      irohTicket: _target.irohTicket,
+      irohAlpn: _target.irohAlpn,
       deviceId: _deviceId,
     );
   }

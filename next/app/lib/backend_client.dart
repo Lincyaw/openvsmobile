@@ -23,9 +23,11 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as ws_status;
 
+import 'settings_store.dart';
 import 'version.dart';
 
 /// Notification method names the backend pushes. Listed as constants so flow
@@ -175,9 +177,12 @@ class BackendClient {
   int? _port;
   String? _token;
   String? _deviceId;
+  BackendTransport _transport = BackendTransport.websocket;
+  String? _irohTicket;
+  String? _irohAlpn;
 
   // --- Socket / RPC plumbing ---
-  WebSocketChannel? _channel;
+  _RpcSocket? _channel;
   StreamSubscription<dynamic>? _sub;
   int _nextId = 1;
   final Map<int, Completer<dynamic>> _pending = {};
@@ -206,11 +211,17 @@ class BackendClient {
     required String host,
     required int port,
     required String token,
+    BackendTransport transport = BackendTransport.websocket,
+    String? irohTicket,
+    String? irohAlpn,
     String? deviceId,
   }) {
     _host = host;
     _port = port;
     _token = token;
+    _transport = transport;
+    _irohTicket = irohTicket;
+    _irohAlpn = irohAlpn;
     _deviceId = deviceId;
   }
 
@@ -316,7 +327,7 @@ class BackendClient {
   Future<void> _attemptConnect({required bool reset}) async {
     if (_userStop) return;
     final host = _host, port = _port, token = _token;
-    if (host == null || port == null || token == null) {
+    if (token == null) {
       state.value = BackendConnectionState.failed;
       lastError.value = 'no settings configured';
       return;
@@ -332,10 +343,9 @@ class BackendClient {
                 : state.value);
     }
 
-    final uri = Uri.parse('ws://$host:$port/rpc');
-    WebSocketChannel ch;
+    _RpcSocket ch;
     try {
-      ch = WebSocketChannel.connect(uri);
+      ch = await _openSocket(host: host, port: port);
       await ch.ready;
     } catch (e) {
       lastError.value = 'connect failed: $e';
@@ -405,6 +415,28 @@ class BackendClient {
     state.value = BackendConnectionState.connected;
     _startHeartbeat();
     _flushQueue();
+  }
+
+  Future<_RpcSocket> _openSocket({String? host, int? port}) async {
+    switch (_transport) {
+      case BackendTransport.websocket:
+        if (host == null || port == null) {
+          throw StateError('missing WebSocket host/port');
+        }
+        final uri = Uri.parse('ws://$host:$port/rpc');
+        return _WebSocketRpcSocket(WebSocketChannel.connect(uri));
+      case BackendTransport.iroh:
+        final ticket = _irohTicket;
+        if (ticket == null || ticket.trim().isEmpty) {
+          throw StateError('missing Iroh ticket');
+        }
+        return _IrohRpcSocket.connect(
+          ticket: ticket.trim(),
+          alpn: (_irohAlpn == null || _irohAlpn!.trim().isEmpty)
+              ? 'openvsmobile.rpc.v1'
+              : _irohAlpn!.trim(),
+        );
+    }
   }
 
   void _onSocketGone() {
@@ -675,4 +707,153 @@ class _QueuedCall {
     required this.params,
     required this.completer,
   });
+}
+
+abstract class _RpcSocket {
+  Future<void> get ready;
+  Stream<dynamic> get stream;
+  _RpcSink get sink;
+}
+
+abstract class _RpcSink {
+  void add(Object? data);
+  Future<void> close([int? closeCode, String? closeReason]);
+}
+
+class _WebSocketRpcSocket implements _RpcSocket {
+  final WebSocketChannel _channel;
+  _WebSocketRpcSocket(this._channel);
+
+  @override
+  Future<void> get ready => _channel.ready;
+
+  @override
+  Stream<dynamic> get stream => _channel.stream;
+
+  @override
+  _RpcSink get sink => _WebSocketRpcSink(_channel.sink);
+}
+
+class _WebSocketRpcSink implements _RpcSink {
+  final WebSocketSink _sink;
+  _WebSocketRpcSink(this._sink);
+
+  @override
+  void add(Object? data) => _sink.add(data);
+
+  @override
+  Future<void> close([int? closeCode, String? closeReason]) async {
+    await _sink.close(closeCode, closeReason);
+  }
+}
+
+class _IrohRpcSocket implements _RpcSocket {
+  static const MethodChannel _methods = MethodChannel(
+    'dev.lincyaw.mobilecode/iroh_rpc',
+  );
+  static const EventChannel _events = EventChannel(
+    'dev.lincyaw.mobilecode/iroh_rpc_events',
+  );
+  static Stream<dynamic>? _sharedEvents;
+
+  final int _id;
+  final StreamController<dynamic> _controller = StreamController.broadcast();
+  late final StreamSubscription<dynamic> _sub;
+  bool _closed = false;
+
+  _IrohRpcSocket._(this._id) {
+    _sharedEvents ??= _events.receiveBroadcastStream().asBroadcastStream();
+    _sub = _sharedEvents!.listen(
+      _onEvent,
+      onError: _controller.addError,
+      cancelOnError: false,
+    );
+  }
+
+  static Future<_IrohRpcSocket> connect({
+    required String ticket,
+    required String alpn,
+  }) async {
+    final id = await _methods.invokeMethod<int>('connect', {
+      'ticket': ticket,
+      'alpn': alpn,
+    });
+    if (id == null) {
+      throw StateError('Iroh connect returned no connection id');
+    }
+    return _IrohRpcSocket._(id);
+  }
+
+  @override
+  Future<void> get ready => Future<void>.value();
+
+  @override
+  Stream<dynamic> get stream => _controller.stream;
+
+  @override
+  _RpcSink get sink => _IrohRpcSink(this);
+
+  void _onEvent(dynamic raw) {
+    if (_closed || raw is! Map) return;
+    final id = raw['id'];
+    if (id is! int || id != _id) return;
+    final type = raw['type'];
+    switch (type) {
+      case 'message':
+        final text = raw['text'];
+        if (text is String) _controller.add(text);
+      case 'closed':
+        unawaited(_finishClosed());
+      case 'error':
+        _controller.addError(
+          PlatformException(
+            code: 'IROH_ERROR',
+            message: raw['message'] as String? ?? 'Iroh transport error',
+          ),
+        );
+        unawaited(_finishClosed());
+    }
+  }
+
+  Future<void> send(String text) async {
+    await _methods.invokeMethod<void>('send', {'id': _id, 'text': text});
+  }
+
+  Future<void> close([int? closeCode, String? closeReason]) async {
+    if (_closed) return;
+    try {
+      await _methods.invokeMethod<void>('close', {
+        'id': _id,
+        'code': ?closeCode,
+        'reason': ?closeReason,
+      });
+    } finally {
+      await _finishClosed();
+    }
+  }
+
+  Future<void> _finishClosed() async {
+    if (_closed) return;
+    _closed = true;
+    await _sub.cancel();
+    await _controller.close();
+  }
+}
+
+class _IrohRpcSink implements _RpcSink {
+  final _IrohRpcSocket _socket;
+  _IrohRpcSink(this._socket);
+
+  @override
+  void add(Object? data) {
+    unawaited(
+      _socket.send(data.toString()).catchError((Object e) {
+        _socket._controller.addError(e);
+      }),
+    );
+  }
+
+  @override
+  Future<void> close([int? closeCode, String? closeReason]) =>
+      _socket.close(closeCode, closeReason);
 }

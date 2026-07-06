@@ -34,6 +34,39 @@ comes from the environment it is NOT printed to the log.
 
 To override the port: `PORT=8123 pnpm run dev`.
 
+### Optional Iroh remote transport
+
+WebSocket remains the default local/LAN path. If the backend is on a
+home server behind NAT, you can also expose the same JSON-RPC stream over
+Iroh:
+
+```bash
+cd next/backend
+OPENVSMOBILE_IROH=1 pnpm run dev
+```
+
+On startup the backend logs an Iroh endpoint id and ticket, and writes
+the same fields into `~/.local/state/openvsmobile-next/runtime.json`.
+The bearer token is still required; Iroh only replaces the network path,
+not authentication. The generated Iroh secret key is persisted in
+`~/.config/openvsmobile-next/config.json` so the endpoint id stays stable
+across restarts.
+
+For release installs, run `install.sh` with `OPENVSMOBILE_IROH=1`; the
+installer persists that setting into the systemd user unit and includes the
+`iroh` object in its success JSON. The SSH-bootstrap screen defaults this on
+for new installs.
+
+Useful knobs:
+
+| Env var | Default | Notes |
+|---------|---------|-------|
+| `OPENVSMOBILE_IROH` | unset | Set to `1` / `true` to enable the Iroh listener. |
+| `OPENVSMOBILE_IROH_ALPN` | `openvsmobile.rpc.v1` | Must match the app-side backend entry. |
+| `OPENVSMOBILE_IROH_RELAY_MODE` | `default` | `default` / `n0`, `staging`, or `disabled`. |
+| `OPENVSMOBILE_IROH_RELAY_URLS` | unset | Comma-separated custom relay URLs. |
+| `OPENVSMOBILE_IROH_SECRET_KEY` | persisted config key | Optional fixed key, base64url or 64-char hex. |
+
 The backend persists recents (per-user, not per-connection) to
 `~/.config/openvsmobile-next/state.json`. Missing/corrupt files are
 silently reinitialized.
@@ -41,10 +74,13 @@ silently reinitialized.
 ### Health and protocol
 
 - `GET /healthz` — plain `ok` for liveness probes.
-- `GET ws://host:port/rpc` — the single WebSocket carrying JSON-RPC 2.0
+- `GET ws://host:port/rpc` — the default WebSocket carrying JSON-RPC 2.0
   in both directions, exactly as described in §4.1 of the design doc.
   Handshake (`auth.handshake`) must be the first message; the
   connection is closed with code 1008 on a bad token.
+- Iroh bi-stream — optional transport for the same JSON-RPC frame stream
+  when `OPENVSMOBILE_IROH=1` is set. The first frame is still
+  `auth.handshake`; bad tokens close the stream.
 - `POST /notify` — Bearer-token-authed sender API for the notification
   system (§4.5). Same token as the WebSocket; mounted on the same HTTP
   server. Body is a `Notification` minus server-assigned fields. See
@@ -93,6 +129,11 @@ screen. Add the network-reachable address of the machine running the
 backend (e.g. `192.168.1.10`, or `10.0.2.2` if you're on the Android
 emulator talking to a backend on the host), the port, and the token
 printed by the backend.
+
+For the Iroh path, choose **Iroh** in the manual backend editor, paste
+the ticket from the backend log or `runtime.json`, keep the ALPN at
+`openvsmobile.rpc.v1` unless you changed it on the server, and enter the
+same bearer token.
 
 You can manage backends later from the top-level Settings tab. The
 Backends screen can also export/import the backend list as JSON through
@@ -297,7 +338,7 @@ screen.
   drift correction).
 - **Session persistence (process-level state).** Backend state is
   process-global. Workspaces and PTYs survive client disconnects;
-  closing the WebSocket detaches the subscriber but disposes nothing.
+  closing the transport detaches the subscriber but disposes nothing.
   On reconnect the client calls `workspace.list` → `terminal.list` →
   `terminal.history` for each session before writing live data, so the
   terminal view picks up exactly where the user left off. Scrollback is

@@ -1,6 +1,7 @@
 // Backends management screen: list of saved backends, add / rename / delete,
-// and switch the active backend (which triggers a backend client reconnect
-// in main.dart).
+// and choose which backend powers Files / Plugins / workspace state. Terminal
+// sessions are aggregated separately by TerminalHub, which auto-connects every
+// complete saved backend.
 //
 // First-run empty state lives here too — if `backends` is empty we show the
 // "Add your first backend" prompt instead of pushing the user into a form
@@ -34,7 +35,7 @@ class BackendsScreen extends StatelessWidget {
   /// (first remaining backend) or land on the empty state.
   final Future<void> Function(String id) onDelete;
 
-  /// Switch the active backend to [id].
+  /// Make [id] the Files / Plugins / workspace backend.
   final Future<void> Function(String id) onSwitch;
 
   /// Save the current backend list to a user-chosen document.
@@ -76,13 +77,22 @@ class BackendsScreen extends StatelessWidget {
             ),
             ListTile(
               leading: const Icon(Icons.edit_outlined),
-              title: const Text('Manual entry'),
+              title: const Text('WebSocket backend'),
               subtitle: const Text(
                 'Type host, port, and bearer token yourself.',
               ),
               onTap: () {
                 Navigator.of(ctx).pop();
                 _startManualEntry(context);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.hub_outlined),
+              title: const Text('Iroh ticket'),
+              subtitle: const Text('Paste endpoint ticket and bearer token.'),
+              onTap: () {
+                Navigator.of(ctx).pop();
+                _startIrohEntry(context);
               },
             ),
             ListTile(
@@ -129,6 +139,33 @@ class BackendsScreen extends StatelessWidget {
       host: '',
       port: kDefaultBackendPort,
       token: '',
+      origin: BackendOrigin.manual,
+      addedAt: now,
+    );
+    final navigator = Navigator.of(context);
+    await navigator.push<void>(
+      MaterialPageRoute(
+        builder: (_) => BackendEditorScreen(
+          initial: draft,
+          isFirstRun: true,
+          onSave: (saved) async {
+            await onAdd(saved, makeActive: state.backends.isEmpty);
+          },
+        ),
+      ),
+    );
+  }
+
+  Future<void> _startIrohEntry(BuildContext context) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final draft = BackendTarget(
+      id: generateUuidV4(),
+      name: '',
+      host: '',
+      port: 0,
+      token: '',
+      transport: BackendTransport.iroh,
+      irohAlpn: 'openvsmobile.rpc.v1',
       origin: BackendOrigin.manual,
       addedAt: now,
     );
@@ -196,8 +233,8 @@ class BackendsScreen extends StatelessWidget {
       builder: (ctx) => AlertDialog(
         title: Text('Remove ${t.name}?'),
         content: Text(
-          'This forgets ${t.host}:${t.port} on this device. The backend '
-          'itself keeps running.',
+          'This forgets ${_backendEndpointLabel(t)} on this device. The '
+          'backend itself keeps running.',
         ),
         actions: [
           TextButton(
@@ -351,7 +388,7 @@ class BackendsScreen extends StatelessWidget {
                 return _BackendTile(
                   target: b,
                   isActive: isActive,
-                  onTap: isActive ? null : () => onSwitch(b.id),
+                  onUseForWorkspace: isActive ? null : () => onSwitch(b.id),
                   onRename: () => _renameBackend(context, b),
                   onEdit: () => _editBackend(context, b),
                   onDelete: () => _confirmDelete(context, b),
@@ -363,6 +400,18 @@ class BackendsScreen extends StatelessWidget {
 }
 
 enum _BackendsAction { export, import }
+
+String _backendEndpointLabel(BackendTarget target) =>
+    switch (target.transport) {
+      BackendTransport.websocket => '${target.host}:${target.port}',
+      BackendTransport.iroh => 'iroh:${_shortIrohLabel(target)}',
+    };
+
+String _shortIrohLabel(BackendTarget target) {
+  final raw = (target.irohEndpointId ?? target.irohTicket ?? '').trim();
+  if (raw.isEmpty) return 'ticket';
+  return raw.substring(0, raw.length < 12 ? raw.length : 12);
+}
 
 class _EmptyState extends StatelessWidget {
   final VoidCallback onAdd;
@@ -407,7 +456,7 @@ class _EmptyState extends StatelessWidget {
 class _BackendTile extends StatelessWidget {
   final BackendTarget target;
   final bool isActive;
-  final VoidCallback? onTap;
+  final VoidCallback? onUseForWorkspace;
   final VoidCallback onRename;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
@@ -415,7 +464,7 @@ class _BackendTile extends StatelessWidget {
   const _BackendTile({
     required this.target,
     required this.isActive,
-    required this.onTap,
+    required this.onUseForWorkspace,
     required this.onRename,
     required this.onEdit,
     required this.onDelete,
@@ -428,40 +477,44 @@ class _BackendTile extends StatelessWidget {
   };
 
   String _statusLabel() {
-    if (isActive) return 'active';
-    final ts = target.lastConnectedAt;
-    if (ts == null) return 'not yet connected';
-    final delta = DateTime.now().millisecondsSinceEpoch - ts;
-    return 'last used ${_humanizeDuration(delta)} ago';
-  }
-
-  String _humanizeDuration(int millis) {
-    final s = millis ~/ 1000;
-    if (s < 60) return '${s}s';
-    final m = s ~/ 60;
-    if (m < 60) return '${m}m';
-    final h = m ~/ 60;
-    if (h < 24) return '${h}h';
-    final d = h ~/ 24;
-    return '${d}d';
+    if (isActive) return 'Files/Plugins target · Terminal auto-connects';
+    return 'Terminal auto-connects';
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
     final subtitle =
-        '${target.host}:${target.port}  ·  ${_originLabel()}  ·  ${_statusLabel()}';
+        '${_backendEndpointLabel(target)} · ${_originLabel()}\n'
+        '${_statusLabel()}';
     return ListTile(
-      leading: Icon(
-        isActive ? Icons.circle : Icons.circle_outlined,
-        size: 14,
-        color: isActive ? theme.colorScheme.primary : theme.colorScheme.outline,
+      leading: Icon(switch (target.transport) {
+        BackendTransport.websocket => Icons.dns_outlined,
+        BackendTransport.iroh => Icons.hub_outlined,
+      }, color: isActive ? scheme.primary : scheme.onSurfaceVariant),
+      title: Row(
+        children: [
+          Expanded(
+            child: Text(
+              target.name.isEmpty ? '(unnamed)' : target.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          if (isActive) ...[
+            const SizedBox(width: 8),
+            _ScopeChip(color: scheme.primary),
+          ],
+        ],
       ),
-      title: Text(target.name.isEmpty ? '(unnamed)' : target.name),
-      subtitle: Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(subtitle, maxLines: 2, overflow: TextOverflow.ellipsis),
+      isThreeLine: true,
       trailing: PopupMenuButton<String>(
         onSelected: (v) {
           switch (v) {
+            case 'use':
+              onUseForWorkspace?.call();
             case 'rename':
               onRename();
             case 'edit':
@@ -470,13 +523,40 @@ class _BackendTile extends StatelessWidget {
               onDelete();
           }
         },
-        itemBuilder: (_) => const [
-          PopupMenuItem(value: 'rename', child: Text('Rename')),
-          PopupMenuItem(value: 'edit', child: Text('Edit details')),
-          PopupMenuItem(value: 'delete', child: Text('Remove')),
+        itemBuilder: (_) => [
+          if (onUseForWorkspace != null)
+            const PopupMenuItem(
+              value: 'use',
+              child: Text('Use for Files/Plugins'),
+            ),
+          const PopupMenuItem(value: 'rename', child: Text('Rename')),
+          const PopupMenuItem(value: 'edit', child: Text('Edit details')),
+          const PopupMenuItem(value: 'delete', child: Text('Remove')),
         ],
       ),
-      onTap: onTap,
+    );
+  }
+}
+
+class _ScopeChip extends StatelessWidget {
+  final Color color;
+
+  const _ScopeChip({required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        border: Border.all(color: color),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+        child: Text(
+          'Files',
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(color: color),
+        ),
+      ),
     );
   }
 }

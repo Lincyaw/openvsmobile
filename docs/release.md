@@ -1,6 +1,6 @@
 # Releases
 
-Both halves of the product ship together on `v<semver>` tags (e.g. `v0.2.0`, `v0.2.0-rc1`) driven by `.github/workflows/release.yml`. A single tag push produces one GitHub Release with the backend tarballs (linux x64 + arm64), `install.sh`, and the Android APKs (per-ABI splits + a universal APK) all attached side by side.
+Both halves of the product ship together on `v<semver>` tags (e.g. `v0.2.0`, `v0.2.0-rc1`) driven by `.github/workflows/release.yml`. A single tag push produces one GitHub Release with the backend tarballs (linux x64 + arm64), `install.sh`, and an Android arm64-v8a APK side by side.
 
 The APK's `kBackendVersion` is substituted from the tag at build time, so a released APK always knows the matching backend version. SSH bootstrap uses this to fetch the right tarball.
 
@@ -11,10 +11,22 @@ The workflow detects `-rc` / `-beta` / `-alpha` suffixes in the tag and flips th
 Install or upgrade the backend by passing the desired release version once:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/install.sh | bash -s -- 0.4.5
+curl -fsSL https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/install.sh | OPENVSMOBILE_IROH=1 bash -s -- 0.4.6
 ```
 
 The root `install.sh` is a small wrapper that fetches the canonical installer from `next/backend/pkg/install.sh` on `main`, then forwards the arguments unchanged. The installer downloads the matching backend tarball from GitHub Releases based on the version argument.
+
+Iroh remote transport is the default release-install path. The environment
+variable is set on the `bash` side of the pipe so it is persisted into the
+systemd user unit:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/install.sh | OPENVSMOBILE_IROH=1 bash -s -- 0.4.6
+```
+
+Android release APKs currently target `arm64-v8a` because the bundled
+`libiroh_ffi.so` is arm64-only. Do not publish x86_64 / armeabi-v7a splits
+until matching Iroh FFI libraries are checked in and validated by CI.
 
 ## Setting up release signing (optional)
 

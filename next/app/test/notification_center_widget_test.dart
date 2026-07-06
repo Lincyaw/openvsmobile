@@ -28,6 +28,7 @@ AppNotification _n({
   NotificationLevel level = NotificationLevel.info,
   int? ts,
   String? body,
+  NotificationAction? action,
 }) =>
     AppNotification(
       id: id,
@@ -35,6 +36,7 @@ AppNotification _n({
       level: level,
       title: title,
       body: body,
+      action: action,
       timestamp: ts ?? DateTime.now().millisecondsSinceEpoch,
     );
 
@@ -135,6 +137,56 @@ void main() {
     );
     expect(find.byType(Badge), findsOneWidget);
     expect(find.text('2'), findsOneWidget);
+  });
+
+  testWidgets('highlighted open-terminal notification runs terminal opener', (
+    tester,
+  ) async {
+    final appState = AppState(client: BackendClient(), deviceId: 'me');
+    addTearDown(appState.dispose);
+    appState.notifications.onShow(_n(
+      id: 'term-ready',
+      title: 'Terminal finished',
+      action: const OpenTerminalAction(
+        sessionId: 'session-1',
+        externalSessionId: 'aoy',
+      ),
+    ));
+
+    final opened = <OpenTerminalAction>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(
+          colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
+          useMaterial3: true,
+        ),
+        home: Builder(
+          builder: (context) => TextButton(
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => NotificationCenterScreen(
+                    appState: appState,
+                    highlightId: 'term-ready',
+                    onOpenTerminal: (action) async {
+                      opened.add(action);
+                    },
+                  ),
+                ),
+              );
+            },
+            child: const Text('Open center'),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open center'));
+    await tester.pumpAndSettle();
+
+    expect(opened, hasLength(1));
+    expect(opened.single.sessionId, 'session-1');
+    expect(opened.single.externalSessionId, 'aoy');
   });
 
   testWidgets('opening the center only marks rendered visible cards as read', (

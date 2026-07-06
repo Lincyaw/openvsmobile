@@ -100,10 +100,10 @@ it is either deferred or assigned to a plugin.
    machine, webhook from CI, plugin running in the host, or the
    backend itself) reach the user even when the app is not in the
    foreground. Senders post over a single HTTP endpoint; the backend
-   persists, fans out to connected clients over the existing WS, and
-   the Flutter app's foreground service posts to the Android system
+   persists, fans out to connected clients over the existing RPC stream,
+   and the Flutter app's foreground service posts to the Android system
    tray. No third-party push provider (FCM, ntfy, UnifiedPush) — the
-   transport is the same WS we already operate. Detail in §4.5.
+   transport is the same app stream we already operate. Detail in §4.5.
 
 The Flutter bottom navigation is **Files / Terminal / Plugins /
 Settings** (4 tabs). Git lives inside Files — there is no standalone
@@ -268,7 +268,7 @@ plugin.run();
 - `renderPanel(panelId, tree)` → `ui.render` (gated by `capabilities.ui`).
 - `invokeCommand(targetPluginId, commandId, args)` → `plugin.invokeCommand` (cross-plugin call; gated by the host).
 - `currentWorkspace()` → `workspace.current` (gated by `capabilities.fs`; returns `WorkspaceRef | null`). Pair with `PluginConfig.onWorkspaceActivated` for switch notifications; the callback does not fire on startup, so a plugin's first read must come through this RPC.
-- `showNotification(input)` → `notify.show` (gated by `capabilities.ui`; returns `{ id }`). Fires a user-facing notification through the §4.5 store + WS fan-out. The host overrides `input.source` to the plugin's manifest id before persistence — plugins cannot impersonate `"system"` or another plugin's id. Pair with `supersedes` to update a previously-fired notification by its returned id.
+- `showNotification(input)` → `notify.show` (gated by `capabilities.ui`; returns `{ id }`). Fires a user-facing notification through the §4.5 store + RPC fan-out. The host overrides `input.source` to the plugin's manifest id before persistence — plugins cannot impersonate `"system"` or another plugin's id. Pair with `supersedes` to update a previously-fired notification by its returned id.
 
 Each SDK call is a thin wrapper that:
 1. Checks the plugin's declared capabilities (fail-fast `Error: capability "X" not declared`). *Reserved for richer capabilities; today the SDK trusts the manifest and lets the host's gate produce the error, since v0 only has `ui`.*
@@ -288,7 +288,7 @@ Declared capabilities resolve to host-enforced RPC gates:
 | `fs`           | `"read"` \| `"write"`                       | `workspace.readFile`, `workspace.listDir`, `workspace.findFiles`, `workspace.findText`; `write` additionally unlocks `workspace.writeFile` (v1) | Always workspace-scoped — plugins cannot traverse outside the active workspace's root, even with `write`. |
 | `terminal`     | `"spawn"`                                   | `terminal.spawn`, `terminal.write`, `terminal.dispose`, `terminal.onData`    | Plugins get **their own** PTY; cannot read or write the user's terminal sessions. |
 | `network`      | `string[]` — domain allowlist               | Plugin-side `fetch` is intercepted via SDK helper that checks host policy; `entry.kind: "binary"` plugins must use the host's network proxy RPC to make outbound HTTP. | Strict host-prefix match (no wildcards in v0 except `"*"` which means "no restriction"). |
-| `secrets`      | `string[]` — secret-key allowlist           | `secrets.get(key)`, `secrets.set(key, value)`                                | Keys outside the allowlist → `capabilityNotDeclared`. v0 stores in plain JSON at `~/.config/openvsmobile-next/plugin-secrets.json` (0600); v1 moves to an OS keystore via Android Keystore over the WS. |
+| `secrets`      | `string[]` — secret-key allowlist           | `secrets.get(key)`, `secrets.set(key, value)`                                | Keys outside the allowlist → `capabilityNotDeclared`. v0 stores in plain JSON at `~/.config/openvsmobile-next/plugin-secrets.json` (0600); v1 moves to an OS keystore via Android Keystore over the app RPC stream. |
 | `ui`           | `string[]` — surface types                  | Each surface gates a contribution: `"panel"` → `definePanel`/`ui.render`; `"command"` → `defineCommand`/`contributes.commands`; `"statusItem"` → `defineStatusItem`/`contributes.statusItems`; `"notification"` → `notify()` to the §4.5 notification system | UI contributions appear in the client only if the matching capability is declared. |
 
 Capabilities declared but unused are fine. Capabilities used but not declared → `-32011` and the call fails. The plugin process keeps running — capability errors are programming bugs surfaced like type errors, not crashes.
@@ -305,7 +305,7 @@ Capabilities declared but unused are fine. Capabilities used but not declared �
 | `git.`       | `diff`, `log` (read-only). Write ops are out of scope (first principle #6).    |
 | `ui.`        | `render(panelId, tree)`, `setStatusItem(itemId, props)`, `showMessage`, `showQuickPick`. Incremental `update` reserved for v1; v0 re-renders full panels. |
 | `secrets.`   | `get(key)`, `set(key, value)`                                                  |
-| `notify.`    | `show({ input })` (Phase 6A) — fires a user-facing notification through the §4.5 store + WS fan-out. The host overrides `input.source = pluginId` before persistence; returns `{ id }` (the store-assigned notification id). `post(notification)` (planned alias for the HTTP `POST /notify` surface) lands later. |
+| `notify.`    | `show({ input })` (Phase 6A) — fires a user-facing notification through the §4.5 store + RPC fan-out. The host overrides `input.source = pluginId` before persistence; returns `{ id }` (the store-assigned notification id). `post(notification)` (planned alias for the HTTP `POST /notify` surface) lands later. |
 
 Notifications from the plugin to the client (host pushes back to plugin):
 
@@ -329,7 +329,7 @@ to keep things debuggable; a binary streaming side-channel is reserved
 for v1 if terminal/file throughput becomes a problem.
 
 ```
- ┌──────────┐  WS JSON-RPC   ┌──────────┐  stdio JSON-RPC  ┌─────────┐
+ ┌──────────┐ WS/Iroh JSON-RPC ┌──────────┐  stdio JSON-RPC  ┌─────────┐
  │ Flutter  │ ─────────────▶ │ Backend  │ ───────────────▶ │ Plugin  │
  │ client   │ ◀───────────── │ (Node)   │ ◀─────────────── │ proc    │
  └──────────┘   ui.tree /    └──────────┘   ui.render /    └─────────┘
@@ -338,9 +338,12 @@ for v1 if terminal/file throughput becomes a problem.
 
 ### 4.1 Frontend ↔ Backend (Flutter ↔ Node)
 
-Transport: **single persistent WebSocket** carrying JSON-RPC 2.0 in
-both directions. No separate REST endpoints in v0 — keeps the auth
-story and the eventing story unified.
+Transport: **single persistent JSON-RPC stream** carrying JSON-RPC 2.0
+in both directions. The default physical transport is a WebSocket at
+`/rpc`; an optional Iroh bidirectional stream can carry the same frames
+for NAT-traversed remote access. The auth story and eventing story stay
+unified: the same `auth.handshake` is the first message on either
+transport, and request/stream semantics do not change.
 
 Envelope (TypeScript-style for readability):
 
@@ -353,7 +356,7 @@ type ClientMessage =
 type RpcError = { code: number; message: string; data?: unknown };
 ```
 
-Handshake (first message after WebSocket open):
+Handshake (first message after the transport opens):
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "auth.handshake",
@@ -467,7 +470,7 @@ on demand. Backend-side throttling of non-focused workspaces is a
 performance optimization reserved for v1 if profiling shows it
 matters; v0 keeps the protocol simple.
 
-**Multi-client semantics — a workspace is a shared backend object, not a per-client view.** Several WebSocket clients may subscribe to the same workspace simultaneously (phone + tablet, multiple browser tabs in the future). The backend treats them symmetrically:
+**Multi-client semantics — a workspace is a shared backend object, not a per-client view.** Several clients may subscribe to the same workspace simultaneously (phone + tablet, multiple browser tabs in the future). The backend treats them symmetrically:
 
 - **Terminal streams are shared.** Each terminal session has one underlying PTY in the backend. Every connected client that has the workspace subscribed receives the same `terminal.data` notifications; any client can `terminal.write` and the bytes flow into the shared PTY. There is no concept of a "terminal owner" or "primary client" — the model is `tmux`-style multi-attach, not Mosh-style single-owner. Cursor position, scroll offset, soft-keyboard state, and `focusedTerminalId` are client-local.
 - **`terminal.history` replay is per-connection.** A client joining mid-stream gets its own history payload on subscribe; the underlying scrollback lives on the backend.
@@ -943,9 +946,9 @@ grow the vocabulary, not punt to a WebView.
 
 ### 4.5 Notification system
 
-A multi-source, mobile-delivered status surface. Any sender (CLI tool, webhook, plugin, the backend itself) posts to one endpoint; the backend persists, fans out to connected clients over the same WebSocket already used for everything else, and the Flutter client's Android foreground service posts entries to the system tray so notifications arrive even when the app is not on screen.
+A multi-source, mobile-delivered status surface. Any sender (CLI tool, webhook, plugin, the backend itself) posts to one endpoint; the backend persists, fans out to connected clients over the same frontend-backend RPC stream already used for everything else, and the Flutter client's Android foreground service posts entries to the system tray so notifications arrive even when the app is not on screen.
 
-**No third-party push provider.** FCM, ntfy, and UnifiedPush were considered and rejected for v0. The transport is the same WS we operate; the foreground service holds the connection open. Future addition of an external transport (FCM/UnifiedPush) is a backend-side adapter at the fan-out layer — wire schema and sender surface do not change.
+**No third-party push provider.** FCM, ntfy, and UnifiedPush were considered and rejected for v0. The notification transport is the same RPC stream the app already holds open. Future addition of an external transport (FCM/UnifiedPush) is a backend-side adapter at the fan-out layer — wire schema and sender surface do not change.
 
 **Sender API (HTTP).**
 
@@ -1054,7 +1057,7 @@ transcript exposes it. When the hook runs inside a backend-managed zellij
 session (`ovsm-*`), the notification action deep-links back to that terminal
 session.
 
-**Foreground service (Flutter / Android).** App starts a `flutter_foreground_task`-backed service on launch (gated by a Settings toggle, default on). The service holds the WebSocket, calls `notification.subscribe`, and on `notification.show` posts to the Android system tray via a channel chosen from the `level` field:
+**Foreground service (Flutter / Android).** App starts a `flutter_foreground_task`-backed service on launch (gated by a Settings toggle, default on). The service holds the configured backend RPC stream, calls `notification.subscribe`, and on `notification.show` posts to the Android system tray via a channel chosen from the `level` field:
 
 | level     | Android channel importance | Sound  |
 |-----------|----------------------------|--------|
@@ -1082,8 +1085,8 @@ The backend has exactly two token *classes*:
 
 | Class     | Scope                                                              | How issued                            |
 |-----------|--------------------------------------------------------------------|---------------------------------------|
-| `auth`    | Everything: `/rpc`, `/notify`, `/hook`, future endpoints           | One per backend; in `config.json`     |
-| `publish` | `/notify` and `/hook` only — never `/rpc`, never any read RPC      | Many; minted from Settings UI         |
+| `auth`    | Everything: frontend RPC stream, `/notify`, `/hook`, future endpoints | One per backend; in `config.json`  |
+| `publish` | `/notify` and `/hook` only — never frontend RPC, never any read RPC | Many; minted from Settings UI         |
 
 The single bearer in `config.json` is the `auth` token (existing behavior — unchanged). `publish` tokens are layered on top: they exist so URLs can be pasted into third-party systems (GitHub Actions, Grafana, Uptime Kuma, shortcuts) without handing those systems the keys to the whole backend.
 
@@ -1115,7 +1118,7 @@ Both forms accept either token class. Endpoints decide what they require:
 
 | Endpoint     | Accepts                        | Notes                                                       |
 |--------------|--------------------------------|-------------------------------------------------------------|
-| `/rpc`       | `auth` only                    | Per first principle: no read access via publish tokens.     |
+| Frontend RPC | `auth` only                    | WebSocket `/rpc` or Iroh stream; no read access via publish tokens. |
 | `/notify`    | `auth` or `publish`            | Strict schema; backwards-compatible with today's senders.   |
 | `/hook/...`  | `auth` or `publish`            | Permissive schema (separate patch). URL form available.     |
 
@@ -1234,14 +1237,17 @@ A transformer is a backend-side pure function `(headers, rawBody) → Partial<No
 - Language: **Node.js / TypeScript** for the backend and plugin host.
   Rationale: aligns with the JSON-RPC + node-pty + LSP ecosystem;
   removes language seam between core and plugins; single binary surface.
-- Backend exposes a single WebSocket endpoint to the Flutter client
-  (auth, workspace ops, terminal, git, plugin events all multiplexed).
+- Backend exposes a single frontend-backend RPC stream to the Flutter
+  client (auth, workspace ops, terminal, git, plugin events all
+  multiplexed). WebSocket at `/rpc` is the default transport; Iroh is an
+  optional transport for remote access without a VPN.
 - Where the backend runs:
   - **Primary target**: paired developer machine (laptop, workbuddy
     node, etc.). The phone is a thin client over network.
   - **Secondary target**: on-device under Termux (advanced users only).
-- Pairing: QR code emits `{ host, port, token }`; Flutter stores it.
-  Token is rotatable. No multi-user / multi-tenant story in v0.
+- Pairing: QR code emits either `{ host, port, token }` for WebSocket or
+  `{ irohTicket, irohEndpointId, alpn, token }` for Iroh. Flutter stores
+  it. Token is rotatable. No multi-user / multi-tenant story in v0.
 
 ### 5.1 Session persistence (process-level state)
 
@@ -1249,7 +1255,7 @@ Backend state is **process-global**, not per-connection. A `Connection`
 object is an authenticated subscriber to the shared registries; it does
 not own them. Implications:
 
-- **Workspaces survive client disconnects.** Closing the WebSocket does
+- **Workspaces survive client disconnects.** Closing the client transport does
   not implicitly close any workspace. Workspaces only end on explicit
   `workspace.close` or on backend process exit.
 - **PTYs survive client disconnects.** Each terminal session is owned

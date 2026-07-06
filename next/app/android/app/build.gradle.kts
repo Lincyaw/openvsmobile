@@ -66,11 +66,26 @@ android {
             }
         }
     }
+
+    packaging {
+        resources {
+            excludes += setOf(
+                "/META-INF/{AL2.0,LGPL2.1}",
+                // The published JVM jar also carries desktop native libraries.
+                // Android loads libiroh_ffi.so from jniLibs instead.
+                "darwin-aarch64/**",
+                "linux-aarch64/**",
+                "linux-x86-64/**",
+                "win32-x86-64/**",
+            )
+        }
+    }
 }
 
 kotlin {
     compilerOptions {
         jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+        freeCompilerArgs.add("-opt-in=kotlin.ExperimentalUnsignedTypes")
     }
 }
 
@@ -83,4 +98,9 @@ dependencies {
     // the java.time backport that flutter_local_notifications needs on
     // pre-API-26 devices.
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+    implementation("computer.iroh:iroh:1.0.0") {
+        exclude(group = "net.java.dev.jna", module = "jna")
+    }
+    implementation("net.java.dev.jna:jna:5.15.0@aar")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 }

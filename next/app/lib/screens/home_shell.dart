@@ -286,6 +286,9 @@ class _HomeShellState extends State<HomeShell> {
   Widget build(BuildContext context) {
     final cur = widget.appState.currentWorkspace;
     final connState = widget.appState.connectionState;
+    final activeBackend = widget.state.activeBackend;
+    final showActiveBackendConnectionBanner =
+        _tab == _kFilesTabIndex || _tab == _kPluginsTabIndex;
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
@@ -300,11 +303,15 @@ class _HomeShellState extends State<HomeShell> {
       ),
       body: Column(
         children: [
-          _ConnectionBanner(
-            state: connState,
-            lastError: widget.appState.lastConnectionError,
-            onOpenSettings: _openSettings,
-          ),
+          if (showActiveBackendConnectionBanner)
+            _ConnectionBanner(
+              state: connState,
+              backendName: activeBackend == null
+                  ? null
+                  : _backendDisplayName(activeBackend),
+              lastError: widget.appState.lastConnectionError,
+              onOpenSettings: _openSettings,
+            ),
           Expanded(
             child: IndexedStack(
               index: _tab,
@@ -426,6 +433,12 @@ class _StaticAppBarTitle extends StatelessWidget {
   }
 }
 
+String _backendDisplayName(BackendTarget backend) {
+  final name = backend.name.trim();
+  if (name.isNotEmpty) return name;
+  return '${backend.host}:${backend.port}';
+}
+
 /// Connection banner. The brief calls out "WeChat-style":
 ///   * Hide entirely when connected.
 ///   * Short pre-show delay on connecting/reconnecting to avoid flicker on
@@ -435,10 +448,12 @@ class _StaticAppBarTitle extends StatelessWidget {
 ///     shortcut so the user can fix the only thing that actually broke.
 class _ConnectionBanner extends StatefulWidget {
   final BackendConnectionState state;
+  final String? backendName;
   final String? lastError;
   final VoidCallback onOpenSettings;
   const _ConnectionBanner({
     required this.state,
+    required this.backendName,
     required this.lastError,
     required this.onOpenSettings,
   });
@@ -527,14 +542,24 @@ class _ConnectionBannerState extends State<_ConnectionBanner> {
         ),
       );
     }
+    final target = widget.backendName == null || widget.backendName!.isEmpty
+        ? ''
+        : ' to ${widget.backendName}';
     final (msg, withSpinner) = switch (s) {
-      BackendConnectionState.connecting => ('Connecting…', true),
-      BackendConnectionState.reconnecting => ('Connecting…', true),
+      BackendConnectionState.connecting => ('Connecting$target…', true),
+      BackendConnectionState.reconnecting => ('Connecting$target…', true),
       BackendConnectionState.waitingForNetwork => (
-        'Waiting for network.',
+        widget.backendName == null || widget.backendName!.isEmpty
+            ? 'Waiting for network.'
+            : 'Waiting for network · ${widget.backendName}.',
         true,
       ),
-      BackendConnectionState.disconnected => ('Disconnected.', false),
+      BackendConnectionState.disconnected => (
+        widget.backendName == null || widget.backendName!.isEmpty
+            ? 'Disconnected.'
+            : '${widget.backendName} disconnected.',
+        false,
+      ),
       BackendConnectionState.connected => ('', false),
       BackendConnectionState.failed => ('', false), // handled above
     };

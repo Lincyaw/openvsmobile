@@ -43,16 +43,33 @@ class BootstrapLog extends BootstrapEvent {
   const BootstrapLog(this.line);
 }
 
+class BootstrapIrohInfo {
+  final String endpointId;
+  final String ticket;
+  final String alpn;
+  final String? relayUrl;
+  final List<String> directAddresses;
+  const BootstrapIrohInfo({
+    required this.endpointId,
+    required this.ticket,
+    required this.alpn,
+    required this.relayUrl,
+    required this.directAddresses,
+  });
+}
+
 class BootstrapSuccess extends BootstrapEvent {
   final int port;
   final String token;
   final String version;
   final bool linger;
+  final BootstrapIrohInfo? iroh;
   const BootstrapSuccess({
     required this.port,
     required this.token,
     required this.version,
     required this.linger,
+    this.iroh,
   });
 }
 
@@ -78,17 +95,21 @@ class SshBootstrapService {
     required SshAuth auth,
     String? tarballPath,
     String? githubMirror,
+    bool enableIroh = false,
   }) async* {
     final controller = StreamController<BootstrapEvent>();
-    unawaited(_drive(
-      controller: controller,
-      host: host,
-      port: port,
-      username: username,
-      auth: auth,
-      tarballPath: tarballPath,
-      githubMirror: githubMirror,
-    ));
+    unawaited(
+      _drive(
+        controller: controller,
+        host: host,
+        port: port,
+        username: username,
+        auth: auth,
+        tarballPath: tarballPath,
+        githubMirror: githubMirror,
+        enableIroh: enableIroh,
+      ),
+    );
     yield* controller.stream;
   }
 
@@ -100,6 +121,7 @@ class SshBootstrapService {
     required SshAuth auth,
     String? tarballPath,
     String? githubMirror,
+    required bool enableIroh,
   }) async {
     SSHClient? client;
     SSHSession? session;
@@ -108,8 +130,11 @@ class SshBootstrapService {
       final scriptBody = await rootBundle.loadString('assets/install.sh');
 
       controller.add(BootstrapStatus('Connecting to $username@$host:$port…'));
-      final socket = await SSHSocket.connect(host, port,
-          timeout: const Duration(seconds: 15));
+      final socket = await SSHSocket.connect(
+        host,
+        port,
+        timeout: const Duration(seconds: 15),
+      );
 
       client = SSHClient(
         socket,
@@ -121,16 +146,20 @@ class SshBootstrapService {
       );
 
       await client.authenticated;
-      controller.add(const BootstrapStatus('Authenticated. Starting install.sh…'));
+      controller.add(
+        const BootstrapStatus('Authenticated. Starting install.sh…'),
+      );
 
-      final tarballArg =
-          tarballPath != null && tarballPath.trim().isNotEmpty
-              ? " --tarball '${_shellSingleQuote(tarballPath.trim())}'"
-              : '';
-      final mirror = githubMirror?.trim();
-      final envPrefix = (mirror != null && mirror.isNotEmpty)
-          ? "GITHUB_MIRROR='${_shellSingleQuote(mirror)}' "
+      final tarballArg = tarballPath != null && tarballPath.trim().isNotEmpty
+          ? " --tarball '${_shellSingleQuote(tarballPath.trim())}'"
           : '';
+      final mirror = githubMirror?.trim();
+      final envParts = <String>[
+        if (mirror != null && mirror.isNotEmpty)
+          "GITHUB_MIRROR='${_shellSingleQuote(mirror)}'",
+        if (enableIroh) 'OPENVSMOBILE_IROH=1',
+      ];
+      final envPrefix = envParts.isEmpty ? '' : '${envParts.join(' ')} ';
       final command =
           "${envPrefix}bash -s -- '${_shellSingleQuote(kBackendVersion)}'$tarballArg";
 
@@ -150,19 +179,21 @@ class SshBootstrapService {
           .transform(const Utf8Decoder(allowMalformed: true))
           .transform(const LineSplitter())
           .listen((line) {
-        stderrLines.add(line);
-        stderrTail.add(line);
-        if (stderrTail.length > _stderrTailMax) {
-          stderrTail.removeAt(0);
-        }
-        controller.add(BootstrapLog(line));
-      });
+            stderrLines.add(line);
+            stderrTail.add(line);
+            if (stderrTail.length > _stderrTailMax) {
+              stderrTail.removeAt(0);
+            }
+            controller.add(BootstrapLog(line));
+          });
 
       controller.add(const BootstrapStatus('Streaming install.sh over stdin…'));
       session.stdin.add(Uint8List.fromList(utf8.encode(scriptBody)));
       await session.stdin.close();
 
-      controller.add(const BootstrapStatus('Running on remote — this may take a minute…'));
+      controller.add(
+        const BootstrapStatus('Running on remote — this may take a minute…'),
+      );
 
       await session.done;
       await stdoutSub.cancel();
@@ -173,44 +204,56 @@ class SshBootstrapService {
       if (exit == 0) {
         final jsonLine = _lastNonEmptyLine(stdoutBuf.toString());
         if (jsonLine == null) {
-          controller.add(BootstrapFailure(
-            exitCode: 0,
-            lastStderr: List.unmodifiable(stderrTail),
-            reason: 'install.sh exited 0 but emitted no JSON on stdout.',
-          ));
+          controller.add(
+            BootstrapFailure(
+              exitCode: 0,
+              lastStderr: List.unmodifiable(stderrTail),
+              reason: 'install.sh exited 0 but emitted no JSON on stdout.',
+            ),
+          );
         } else {
           try {
             final parsed = jsonDecode(jsonLine) as Map<String, dynamic>;
-            controller.add(BootstrapSuccess(
-              port: (parsed['port'] as num).toInt(),
-              token: parsed['token'] as String,
-              version: parsed['version'] as String,
-              linger: (parsed['linger'] as bool?) ?? false,
-            ));
+            controller.add(
+              BootstrapSuccess(
+                port: (parsed['port'] as num).toInt(),
+                token: parsed['token'] as String,
+                version: parsed['version'] as String,
+                linger: (parsed['linger'] as bool?) ?? false,
+                iroh: _parseIrohInfo(parsed['iroh']),
+              ),
+            );
           } catch (e) {
-            controller.add(BootstrapFailure(
-              exitCode: 0,
-              lastStderr: List.unmodifiable(stderrTail),
-              reason: 'Could not parse install.sh JSON output: $e\nLine was: $jsonLine',
-            ));
+            controller.add(
+              BootstrapFailure(
+                exitCode: 0,
+                lastStderr: List.unmodifiable(stderrTail),
+                reason:
+                    'Could not parse install.sh JSON output: $e\nLine was: $jsonLine',
+              ),
+            );
           }
         }
       } else {
         final hint = exit == 127
             ? 'bash not found on remote — install.sh requires bash 4+.'
             : _hintForExit(exit);
-        controller.add(BootstrapFailure(
-          exitCode: exit,
-          lastStderr: List.unmodifiable(stderrTail),
-          reason: hint,
-        ));
+        controller.add(
+          BootstrapFailure(
+            exitCode: exit,
+            lastStderr: List.unmodifiable(stderrTail),
+            reason: hint,
+          ),
+        );
       }
     } catch (e) {
-      controller.add(BootstrapFailure(
-        exitCode: null,
-        lastStderr: const [],
-        reason: 'SSH error: $e',
-      ));
+      controller.add(
+        BootstrapFailure(
+          exitCode: null,
+          lastStderr: const [],
+          reason: 'SSH error: $e',
+        ),
+      );
     } finally {
       try {
         session?.close();
@@ -227,6 +270,25 @@ class SshBootstrapService {
   }
 
   static String _shellSingleQuote(String s) => s.replaceAll("'", r"'\''");
+
+  static BootstrapIrohInfo? _parseIrohInfo(Object? raw) {
+    if (raw is! Map<String, dynamic>) return null;
+    final endpointId = raw['endpointId'];
+    final ticket = raw['ticket'];
+    final alpn = raw['alpn'];
+    if (endpointId is! String || ticket is! String || alpn is! String) {
+      return null;
+    }
+    return BootstrapIrohInfo(
+      endpointId: endpointId,
+      ticket: ticket,
+      alpn: alpn,
+      relayUrl: raw['relayUrl'] as String?,
+      directAddresses: ((raw['directAddresses'] as List?) ?? const [])
+          .whereType<String>()
+          .toList(growable: false),
+    );
+  }
 
   static String? _lastNonEmptyLine(String s) {
     for (final line in s.split('\n').reversed) {

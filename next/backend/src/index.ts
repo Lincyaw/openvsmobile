@@ -23,6 +23,10 @@ import {
 import { readPackageVersion } from "./version.js";
 import { initNtfySender } from "./ntfy.js";
 import { MdnsAdvertiser } from "./mdnsAdvertiser.js";
+import {
+  startIrohRpcServer,
+  type IrohRpcServer,
+} from "./irohTransport.js";
 
 const DEFAULT_PORT = 7860;
 // Plugin shutdown uses a SIGTERM -> grace -> SIGKILL path with a 10s default
@@ -74,7 +78,7 @@ async function main(): Promise<void> {
 
   // ntfy is the notification transport for background delivery. Gated by
   // $NTFY_URL + $NTFY_TOPIC. Backends without ntfy configured still
-  // deliver via the in-process WS fan-out while the app is connected.
+  // deliver via the in-process client fan-out while the app is connected.
   const ntfySender = initNtfySender();
   if (ntfySender !== null) {
     state.notificationHub.attachNtfySender(ntfySender);
@@ -105,7 +109,7 @@ async function main(): Promise<void> {
       return { id: ws.id, root: ws.root, label: ws.label };
     },
     // Phase-6A `notify.show`: plugins fire user-facing notifications
-    // through the existing §4.5 store + WS fan-out. The host has
+    // through the existing §4.5 store + client fan-out. The host has
     // already overridden `input.source` to the plugin id before
     // calling us, so `publish` runs unchanged.
     notificationPublisher: (input) => state.notificationHub.publish(input),
@@ -180,6 +184,12 @@ async function main(): Promise<void> {
     });
   });
 
+  let irohServer: IrohRpcServer | null = await startIrohRpcServer({
+    expectedToken: token,
+    serverVersion: version,
+    state,
+  });
+
   let runtimeFile: string | null = null;
   let mdnsAdvertiser: MdnsAdvertiser | null = null;
   httpServer.listen(port, () => {
@@ -199,6 +209,7 @@ async function main(): Promise<void> {
         token,
         startedAt: new Date().toISOString(),
         version,
+        ...(irohServer === null ? {} : { iroh: irohServer.info }),
       });
       console.error(`[openvsmobile-next] runtime info: ${runtimeFile}`);
     } catch (err) {
@@ -208,6 +219,14 @@ async function main(): Promise<void> {
       console.error(
         `[openvsmobile-next] WARN: failed to write runtime info at ${runtimeInfoPath()}:`,
         err,
+      );
+    }
+    if (irohServer !== null) {
+      console.error(
+        `[openvsmobile-next] Iroh endpoint: ${irohServer.info.endpointId}`,
+      );
+      console.error(
+        `[openvsmobile-next] Iroh ticket: ${irohServer.info.ticket}`,
       );
     }
     // Start mDNS advertisement so LAN clients can discover us.
@@ -245,6 +264,12 @@ async function main(): Promise<void> {
     }
     if (mdnsAdvertiser) {
       await mdnsAdvertiser.stop().catch(() => {});
+    }
+    if (irohServer !== null) {
+      await irohServer.close().catch((err) => {
+        console.error("[openvsmobile-next] Iroh shutdown error:", err);
+      });
+      irohServer = null;
     }
     unlinkRuntimeInfo();
     for (const client of wss.clients) {

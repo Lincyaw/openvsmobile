@@ -68,7 +68,12 @@ class TerminalDetailScreen extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(title, style: Theme.of(context).textTheme.titleMedium),
+                Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
                 if (externalName != null)
                   Text(
                     'zellij attach $externalName',
