@@ -308,15 +308,16 @@ fi
 # first install so a fresh environment isn't a blank Plugins tab. The
 # settled "filesystem-only install" decision still holds: the source of
 # truth is the user's plugins dir; this just gives them a starter set
-# they can delete. Bundle clock / notes / sysinfo — small, no npm deps,
-# each exercises a different slice of the host (timer, fs read+write,
-# os introspection). We never ship a plugin's node_modules even if one
-# accidentally appears in-tree; the host SDK is injected at runtime.
+# they can delete. Bundle clock / notes / sysinfo / agentm-gateway —
+# small, no npm deps, and enough to prove timers, fs read+write, host
+# introspection, and native AI gateway integration. We never ship a
+# plugin's node_modules even if one accidentally appears in-tree; the
+# host SDK is injected at runtime.
 EXAMPLES_SRC="$BACKEND_DIR/../examples/plugins"
 EXAMPLES_DEST="$BUNDLE_DIR/share/example-plugins"
 if [[ -d "$EXAMPLES_SRC" ]]; then
   mkdir -p "$EXAMPLES_DEST"
-  for plugin in clock notes sysinfo; do
+  for plugin in clock notes sysinfo agentm-gateway; do
     src="$EXAMPLES_SRC/$plugin"
     if [[ ! -d "$src" ]]; then
       echo "error: example plugin '$plugin' missing at $src" >&2
@@ -328,7 +329,7 @@ if [[ -d "$EXAMPLES_SRC" ]]; then
     cp -R "$src" "$EXAMPLES_DEST/$plugin"
     find "$EXAMPLES_DEST/$plugin" -type d -name node_modules -prune -exec rm -rf {} +
   done
-  log "bundled example plugins: clock notes sysinfo"
+  log "bundled example plugins: clock notes sysinfo agentm-gateway"
 fi
 
 # A "production-mode" package.json — same content, but stripped of

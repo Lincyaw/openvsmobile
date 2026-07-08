@@ -434,7 +434,7 @@ log "current -> $INSTALL_DIR"
 
 # ----- seed example plugins on first install -----
 # A fresh environment otherwise lands on an empty Plugins tab. We bundle
-# clock / notes / sysinfo in the tarball under share/example-plugins/ and
+# clock / notes / sysinfo / agentm-gateway in the tarball under share/example-plugins/ and
 # copy them into the user's plugins dir the FIRST time install.sh runs,
 # but never on subsequent runs — so removing a plugin sticks across
 # upgrades. The settled "filesystem-only install" decision (CLAUDE.md)
@@ -462,7 +462,7 @@ if [[ -d "$EXAMPLES_DIR" ]]; then
     # cp each top-level dir individually so a future addition to
     # share/example-plugins doesn't silently propagate to existing users.
     seeded=()
-    for plugin in clock notes sysinfo; do
+    for plugin in clock notes sysinfo agentm-gateway; do
       if [[ -d "$EXAMPLES_DIR/$plugin" ]]; then
         cp -R "$EXAMPLES_DIR/$plugin" "$PLUGINS_DIR/"
         seeded+=("$plugin")

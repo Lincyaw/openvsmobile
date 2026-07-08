@@ -288,11 +288,12 @@ scope until install is.
 
 ### Bundled example plugins (first-install seed)
 
-The release tarball carries three small example plugins under
+The release tarball carries four small example plugins under
 `share/example-plugins/`: **clock** (timer-driven re-render),
-**notes** (TextField + filesystem read/write), and **sysinfo**
-(`node:os` snapshot). On a host that has never seen `install.sh`
-before, the installer copies these into
+**notes** (TextField + filesystem read/write), **sysinfo**
+(`node:os` snapshot), and **agentm-gateway** (a mobile-native AgentM
+gateway peer). On a host that has never seen `install.sh` before, the
+installer copies these into
 `~/.local/share/openvsmobile-next/plugins/` (or
 `$OPENVSMOBILE_PLUGINS_DIR` if set) so the Plugins tab isn't blank on
 first boot.
@@ -307,6 +308,13 @@ need to be preserved if you want a clean re-seed; remove it together
 with everything else in the plugins dir and the next install will
 re-bootstrap. The seed is filesystem-only — no network fetch — and
 honours the "Plugin install is filesystem-only" settled decision.
+
+`agentm-gateway` connects to AgentM's v2 gateway wire protocol as a normal
+chat-client peer. Configure it through plugin-safe environment variables such
+as `OPENVSMOBILE_PLUGIN_AGENTM_CONNECT=unix:///tmp/agentm-gw-$(id -u).sock`
+or `OPENVSMOBILE_PLUGIN_AGENTM_CONNECT=ws://host:port`, plus optional
+`OPENVSMOBILE_PLUGIN_AGENTM_TOKEN`. It renders the transcript as native
+plugin UI and turns final AgentM replies into replyable notifications.
 
 ### UI descriptor protocol (`ui.*`)
 

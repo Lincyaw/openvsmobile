@@ -1,0 +1,11 @@
+{
+  "id": "agentm-gateway",
+  "name": "AgentM Gateway",
+  "version": "0.1.0",
+  "entry": { "kind": "node", "path": "index.js" },
+  "activation": ["onStartup"],
+  "capabilities": { "ui": true, "network": true, "fs": "read" },
+  "contributes": {
+    "panels": [{ "id": "chat", "title": "AgentM" }]
+  }
+}
