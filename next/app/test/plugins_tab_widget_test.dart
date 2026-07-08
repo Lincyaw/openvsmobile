@@ -26,6 +26,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:mobilecode/app_state.dart';
 import 'package:mobilecode/backend_client.dart';
+import 'package:mobilecode/screens/eyes_free_tab.dart';
 import 'package:mobilecode/screens/plugin_eyes_free_screen.dart';
 import 'package:mobilecode/screens/plugins_tab.dart';
 import 'package:mobilecode/services/voice_interaction.dart';
@@ -893,6 +894,166 @@ void main() {
       contains('Speech recognition is not available on this device'),
     );
   });
+
+  testWidgets('Voice tab swipes plugin actions and dispatches to the panel', (
+    tester,
+  ) async {
+    final panel = const PluginPanelStub(id: 'chat', title: 'Chat');
+    final appState = await _appStateWithSeed([
+      _info(id: 'agentm', name: 'AgentM', panels: [panel]),
+    ]);
+    addTearDown(appState.dispose);
+
+    appState.uiPanels.debugInjectPush(<String, dynamic>{
+      'pluginId': 'agentm',
+      'panelId': 'chat',
+      'version': 1,
+      'tree': <String, dynamic>{
+        'kind': 'Column',
+        'id': 'root',
+        'children': <Map<String, dynamic>>[
+          <String, dynamic>{
+            'kind': 'Text',
+            'id': 'status',
+            'text': 'Ready',
+            'focusRole': 'status',
+            'spokenValue': 'AgentM ready',
+          },
+          <String, dynamic>{
+            'kind': 'TextField',
+            'id': 'reply',
+            'label': 'Reply',
+            'placeholder': 'Speak a reply',
+            'accessibilityLabel': 'Dictate and send reply',
+            'accessibilityHint': 'Sends speech to AgentM.',
+            'focusRole': 'action',
+            'focusOrder': 1,
+            'voiceInputEvent': 'send',
+          },
+          <String, dynamic>{
+            'kind': 'ListTile',
+            'id': 'read-last',
+            'title': 'Read last reply',
+            'onTapEvent': 'tap',
+            'focusRole': 'action',
+            'focusOrder': 2,
+          },
+        ],
+      },
+    });
+
+    final dispatched = <UiNodeEvent>[];
+    appState.uiPanels.debugDispatchOverride =
+        ({required pluginId, required panelId, required event}) async {
+          expect(pluginId, 'agentm');
+          expect(panelId, 'chat');
+          dispatched.add(event);
+        };
+
+    var exited = false;
+    final voice = _FakeVoiceInteraction(recognizedText: 'reply by voice');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: EyesFreeTab(
+          appState: appState,
+          isActive: true,
+          onExit: () => exited = true,
+          voice: voice,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final surface = find.byKey(
+      const ValueKey<String>('eyes-free-tab-gesture-surface'),
+    );
+    expect(find.text('AgentM'), findsOneWidget);
+    expect(find.text('Dictate and send reply'), findsOneWidget);
+    expect(voice.spoken.join('\n'), contains('Voice control'));
+
+    await _doubleTap(tester, surface);
+    expect(dispatched, hasLength(2));
+    expect(dispatched[0].nodeId, 'reply');
+    expect(dispatched[0].type, 'changed');
+    expect(dispatched[0].payload, {'value': 'reply by voice'});
+    expect(dispatched[1].nodeId, 'reply');
+    expect(dispatched[1].type, 'send');
+    expect(dispatched[1].payload, {
+      'value': 'reply by voice',
+      'source': 'voice',
+    });
+
+    dispatched.clear();
+    await tester.fling(surface, const Offset(-500, 0), 1000);
+    await tester.pumpAndSettle();
+    expect(find.text('Read last reply'), findsOneWidget);
+
+    await _doubleTap(tester, surface);
+    expect(dispatched, hasLength(1));
+    expect(dispatched.single.nodeId, 'read-last');
+    expect(dispatched.single.type, 'tap');
+
+    await tester.longPress(surface);
+    await tester.pumpAndSettle();
+    expect(exited, isTrue);
+  });
+
+  testWidgets(
+    'Voice tab does not pin selection during initial panel hydration',
+    (tester) async {
+      final agentPanel = const PluginPanelStub(id: 'chat', title: 'AgentM');
+      final sysPanel = const PluginPanelStub(id: 'main', title: 'System Info');
+      final appState = await _appStateWithSeed([
+        _info(id: 'agentm', name: 'AgentM Gateway', panels: [agentPanel]),
+        _info(id: 'sysinfo', name: 'System Info', panels: [sysPanel]),
+      ]);
+      addTearDown(appState.dispose);
+
+      appState.uiPanels.debugInjectPush(<String, dynamic>{
+        'pluginId': 'sysinfo',
+        'panelId': 'main',
+        'version': 1,
+        'tree': <String, dynamic>{
+          'kind': 'Button',
+          'id': 'refresh',
+          'label': 'Refresh interval... (current: 5s)',
+          'focusRole': 'action',
+        },
+      });
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: EyesFreeTab(
+            appState: appState,
+            isActive: true,
+            onExit: () {},
+            voice: _FakeVoiceInteraction(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Refresh interval... (current: 5s)'), findsOneWidget);
+
+      appState.uiPanels.debugInjectPush(<String, dynamic>{
+        'pluginId': 'agentm',
+        'panelId': 'chat',
+        'version': 1,
+        'tree': <String, dynamic>{
+          'kind': 'TextField',
+          'id': 'reply',
+          'label': 'Reply',
+          'accessibilityLabel': 'Dictate and send reply',
+          'focusRole': 'action',
+          'focusOrder': 1,
+          'voiceInputEvent': 'send',
+        },
+      });
+      await tester.pumpAndSettle();
+
+      expect(find.text('Dictate and send reply'), findsOneWidget);
+      expect(find.text('Refresh interval... (current: 5s)'), findsNothing);
+    },
+  );
 
   test('PluginInfo.fromJson reads contributes.panels + commands', () {
     final info = PluginInfo.fromJson(<String, dynamic>{

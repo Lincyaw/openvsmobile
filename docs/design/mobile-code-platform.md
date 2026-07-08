@@ -95,7 +95,11 @@ it is either deferred or assigned to a plugin.
    backend; QR-code first-run flow.
 6. **Plugin loader and IPC** — discover installed plugins, spawn their
    processes, route messages, surface their declared UI contributions.
-7. **Notification system** — a multi-source, mobile-delivered surface
+7. **Voice / eyes-free control** — a host-rendered, gesture-first
+   projection over plugin-exposed UI accessibility metadata and
+   `ui.event` actions. The host owns TTS / one-shot speech input /
+   haptics; plugins own the assistant or workflow protocol.
+8. **Notification system** — a multi-source, mobile-delivered surface
    where structured messages from any sender (CLI tool from a dev
    machine, webhook from CI, plugin running in the host, or the
    backend itself) reach the user even when the app is not in the
@@ -105,12 +109,17 @@ it is either deferred or assigned to a plugin.
    tray. No third-party push provider (FCM, ntfy, UnifiedPush) — the
    transport is the same app stream we already operate. Detail in §4.5.
 
-The Flutter bottom navigation is **Files / Terminal / Plugins /
-Settings** (4 tabs). Git lives inside Files — there is no standalone
-Git tab. The "Plugins" tab is the entry point for every plugin
-panel: it lists active panels and drills into the panel renderer
-defined in §4.3. Pinning a heavily-used panel to its own bottom-nav
-slot is a future enhancement, not v0.
+The Flutter bottom navigation is **Files / Terminal / Voice / Plugins /
+Settings** (5 tabs). Git lives inside Files — there is no standalone
+Git tab. The "Voice" tab is a host-rendered eyes-free projection of
+plugin actions: it scans plugin-owned `ui.tree` panels for accessibility
+metadata (`focusRole`, `focusOrder`, `spokenValue`, `voiceInputEvent`)
+and exposes those actions through swipe / double-tap / long-press
+gestures plus TTS. It is not a core chat surface and does not know about
+Claude, Codex, AgentM, or any other assistant protocol. The "Plugins"
+tab remains the entry point for plugin management and visual plugin
+panels: it lists active panels and drills into the panel renderer
+defined in §4.3.
 
 Anything not in this list — Claude integration, LSP, code review UI,
 GitHub PRs, search-across-files, debugger — is a plugin.

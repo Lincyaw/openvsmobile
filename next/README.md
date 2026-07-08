@@ -11,7 +11,7 @@ artifacts is P6 and not part of this iteration.
 ```
 next/
 ├── backend/   # Node 25+ / TypeScript backend (auth + workspace + fs + terminal)
-└── app/       # Flutter Android client (Files / Terminal / Plugins / Settings)
+└── app/       # Flutter Android client (Files / Terminal / Voice / Plugins / Settings)
 ```
 
 ## Running the backend
@@ -165,7 +165,7 @@ Flutter preferences file that stores this list.
   3. **Browse new…** — drills through directories step-by-step.
      Workspaces are opened via this picker; **there is no raw path
      text input anywhere in the UI**.
-- **Bottom navigation.** Four tabs: **Files**, **Terminal**,
+- **Bottom navigation.** Five tabs: **Files**, **Terminal**, **Voice**,
   **Plugins**, and **Settings**.
 - **Files.** Lazy-expand tree of the current workspace. Tap a text
   file to open a read-only viewer with syntax highlighting, line
@@ -179,6 +179,9 @@ Flutter preferences file that stores this list.
   Tap a row to open the full-screen terminal; long-press for close /
   detach actions. The detail view includes a companion key bar and
   persists the terminal font size preference.
+- **Voice.** Eyes-free control surface over plugin-exposed actions.
+  Plugins remain the protocol owners; the app only scans typed `ui.tree`
+  accessibility metadata and routes gestures back through `ui.event`.
 - **Plugins.** Installed plugin launcher plus native rendering for
   plugin-owned `ui.tree` panels. Plugin commands can be invoked from
   the detail surface; crashed plugins keep their last rendered panel

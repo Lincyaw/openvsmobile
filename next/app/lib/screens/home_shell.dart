@@ -16,6 +16,7 @@ import '../services/system_tray.dart';
 import '../settings_store.dart';
 import '../state/terminal_hub.dart';
 import '../ui/app_tokens.dart';
+import 'eyes_free_tab.dart';
 import 'files_tab.dart';
 import 'notification_center.dart';
 import 'plugins_tab.dart';
@@ -79,11 +80,13 @@ class HomeShell extends StatefulWidget {
 /// name, extend this block — don't reintroduce raw `0` / `1` / `2`.
 const int _kFilesTabIndex = 0;
 const int _kTerminalTabIndex = 1;
-const int _kPluginsTabIndex = 2;
-const int _kSettingsTabIndex = 3;
+const int _kVoiceTabIndex = 2;
+const int _kPluginsTabIndex = 3;
+const int _kSettingsTabIndex = 4;
 
 class _HomeShellState extends State<HomeShell> {
   int _tab = _kFilesTabIndex;
+  int _lastNonVoiceTab = _kFilesTabIndex;
   bool _appStateFrameScheduled = false;
 
   @override
@@ -162,7 +165,23 @@ class _HomeShellState extends State<HomeShell> {
   void _openSettings() {
     // The failed-connection banner's "Settings" button: jump to the
     // Settings tab so the user can fix auth / backend issues from there.
-    setState(() => _tab = _kSettingsTabIndex);
+    setState(() {
+      _tab = _kSettingsTabIndex;
+      _lastNonVoiceTab = _kSettingsTabIndex;
+    });
+  }
+
+  void _selectTab(int index) {
+    setState(() {
+      _tab = index;
+      if (index != _kVoiceTabIndex) {
+        _lastNonVoiceTab = index;
+      }
+    });
+  }
+
+  void _exitVoiceTab() {
+    setState(() => _tab = _lastNonVoiceTab);
   }
 
   Future<void> _openFilesForTerminalSession(TerminalSession session) async {
@@ -178,7 +197,10 @@ class _HomeShellState extends State<HomeShell> {
       if (opened == null) return;
     }
     if (!mounted) return;
-    setState(() => _tab = _kFilesTabIndex);
+    setState(() {
+      _tab = _kFilesTabIndex;
+      _lastNonVoiceTab = _kFilesTabIndex;
+    });
   }
 
   Future<void> _openFilesForBackendTerminalSession(
@@ -200,7 +222,10 @@ class _HomeShellState extends State<HomeShell> {
       if (opened == null) return;
     }
     if (!mounted) return;
-    setState(() => _tab = _kFilesTabIndex);
+    setState(() {
+      _tab = _kFilesTabIndex;
+      _lastNonVoiceTab = _kFilesTabIndex;
+    });
   }
 
   Future<void> _openTerminalFromNotification(OpenTerminalAction action) async {
@@ -227,7 +252,10 @@ class _HomeShellState extends State<HomeShell> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Terminal session not found$suffix')),
       );
-      setState(() => _tab = _kTerminalTabIndex);
+      setState(() {
+        _tab = _kTerminalTabIndex;
+        _lastNonVoiceTab = _kTerminalTabIndex;
+      });
       return;
     }
 
@@ -236,7 +264,10 @@ class _HomeShellState extends State<HomeShell> {
     final sessions = widget.terminalHub.sessionsForBackend(target.backendId);
     final index = sessions.indexWhere((s) => s.sessionId == target.sessionId);
     if (!mounted) return;
-    setState(() => _tab = _kTerminalTabIndex);
+    setState(() {
+      _tab = _kTerminalTabIndex;
+      _lastNonVoiceTab = _kTerminalTabIndex;
+    });
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => TerminalDetailScreen(
@@ -264,6 +295,10 @@ class _HomeShellState extends State<HomeShell> {
         icon: Icons.terminal_outlined,
         label: 'Terminal',
       ),
+      _kVoiceTabIndex => const _StaticAppBarTitle(
+        icon: Icons.record_voice_over_outlined,
+        label: 'Voice',
+      ),
       _kPluginsTabIndex => const _StaticAppBarTitle(
         icon: Icons.extension_outlined,
         label: 'Plugins',
@@ -285,7 +320,9 @@ class _HomeShellState extends State<HomeShell> {
     final connState = widget.appState.connectionState;
     final activeBackend = widget.state.activeBackend;
     final showActiveBackendConnectionBanner =
-        _tab == _kFilesTabIndex || _tab == _kPluginsTabIndex;
+        _tab == _kFilesTabIndex ||
+        _tab == _kVoiceTabIndex ||
+        _tab == _kPluginsTabIndex;
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
@@ -323,6 +360,11 @@ class _HomeShellState extends State<HomeShell> {
                   onOpenFilesForBackendSession:
                       _openFilesForBackendTerminalSession,
                 ),
+                EyesFreeTab(
+                  appState: widget.appState,
+                  isActive: _tab == _kVoiceTabIndex,
+                  onExit: _exitVoiceTab,
+                ),
                 PluginsTab(appState: widget.appState),
                 SettingsTab(
                   appState: widget.appState,
@@ -342,7 +384,7 @@ class _HomeShellState extends State<HomeShell> {
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tab,
-        onDestinationSelected: (i) => setState(() => _tab = i),
+        onDestinationSelected: _selectTab,
         destinations: const [
           NavigationDestination(
             icon: Icon(Icons.folder_outlined),
@@ -353,6 +395,11 @@ class _HomeShellState extends State<HomeShell> {
             icon: Icon(Icons.terminal_outlined),
             selectedIcon: Icon(Icons.terminal),
             label: 'Terminal',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.record_voice_over_outlined),
+            selectedIcon: Icon(Icons.record_voice_over),
+            label: 'Voice',
           ),
           NavigationDestination(
             icon: Icon(Icons.extension_outlined),
