@@ -163,7 +163,15 @@ class _MobileCodeAppState extends State<MobileCodeApp>
       spoken.body,
       if (spoken.detail != null) spoken.detail!,
     ];
-    unawaited(_voice.speak(parts.join('\n')));
+    unawaited(_speakBestEffort(parts.join('\n')));
+  }
+
+  Future<void> _speakBestEffort(String text) async {
+    try {
+      await _voice.speak(text);
+    } catch (e) {
+      debugPrint('notification speech failed: $e');
+    }
   }
 
   Future<void> _bootstrap() async {

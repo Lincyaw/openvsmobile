@@ -10,6 +10,8 @@ import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -23,6 +25,11 @@ import java.io.File
 import java.util.Locale
 
 class MainActivity : FlutterActivity() {
+    private data class PendingTtsRequest(
+        val text: String,
+        val result: MethodChannel.Result
+    )
+
     private var multicastLock: WifiManager.MulticastLock? = null
     private val updaterChannel = "dev.lincyaw.mobilecode/updater"
     private val backendBackupChannel = "dev.lincyaw.mobilecode/backend_backup"
@@ -38,8 +45,9 @@ class MainActivity : FlutterActivity() {
     private var textToSpeech: TextToSpeech? = null
     private var textToSpeechReady = false
     private var textToSpeechInitError: String? = null
-    private var pendingTtsResult: MethodChannel.Result? = null
-    private var pendingTtsText: String? = null
+    private val pendingTtsRequests = mutableListOf<PendingTtsRequest>()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var ttsInitTimeoutPosted = false
     private var irohRpcBridge: IrohRpcBridge? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -146,6 +154,7 @@ class MainActivity : FlutterActivity() {
         finishPendingSpeechWithError("ACTIVITY_DESTROYED", "Activity was destroyed")
         activeSpeechRecognizer?.destroy()
         activeSpeechRecognizer = null
+        finishPendingTtsWithError("ACTIVITY_DESTROYED", "Activity was destroyed")
         textToSpeech?.stop()
         textToSpeech?.shutdown()
         textToSpeech = null
@@ -362,45 +371,60 @@ class MainActivity : FlutterActivity() {
             return
         }
         if (textToSpeechReady) {
-            queueSpeech(trimmed, result)
+            queueSpeech(trimmed, result, TextToSpeech.QUEUE_FLUSH)
             return
         }
-        if (pendingTtsResult != null) {
-            result.error("BUSY", "Text to speech is still initializing", null)
-            return
-        }
-        pendingTtsResult = result
-        pendingTtsText = trimmed
+        pendingTtsRequests.add(PendingTtsRequest(trimmed, result))
         if (textToSpeech == null) {
             textToSpeech = TextToSpeech(applicationContext) { status ->
                 runOnUiThread {
+                    if (textToSpeechInitError != null) return@runOnUiThread
                     if (status == TextToSpeech.SUCCESS) {
                         textToSpeechReady = true
                         textToSpeech?.language = Locale.getDefault()
-                        val pendingResult = pendingTtsResult
-                        val pendingText = pendingTtsText
-                        pendingTtsResult = null
-                        pendingTtsText = null
-                        if (pendingResult != null && pendingText != null) {
-                            queueSpeech(pendingText, pendingResult)
-                        }
+                        drainPendingTts()
                     } else {
-                        textToSpeechInitError = "Text to speech initialization failed"
-                        val pendingResult = pendingTtsResult
-                        pendingTtsResult = null
-                        pendingTtsText = null
-                        pendingResult?.error(
+                        finishPendingTtsWithError(
                             "TTS_INIT_FAILED",
-                            textToSpeechInitError,
-                            null
+                            "Text to speech initialization failed"
                         )
                     }
                 }
             }
+            scheduleTtsInitTimeout()
         }
     }
 
-    private fun queueSpeech(text: String, result: MethodChannel.Result) {
+    private fun scheduleTtsInitTimeout() {
+        if (ttsInitTimeoutPosted) return
+        ttsInitTimeoutPosted = true
+        mainHandler.postDelayed({
+            if (textToSpeechReady || textToSpeechInitError != null) return@postDelayed
+            if (pendingTtsRequests.isEmpty()) return@postDelayed
+            finishPendingTtsWithError(
+                "TTS_INIT_TIMEOUT",
+                "Text to speech initialization timed out"
+            )
+        }, 5_000)
+    }
+
+    private fun drainPendingTts() {
+        val pending = pendingTtsRequests.toList()
+        pendingTtsRequests.clear()
+        pending.forEachIndexed { index, request ->
+            val queueMode = if (index == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+            queueSpeech(request.text, request.result, queueMode)
+        }
+    }
+
+    private fun finishPendingTtsWithError(code: String, message: String) {
+        textToSpeechInitError = message
+        val pending = pendingTtsRequests.toList()
+        pendingTtsRequests.clear()
+        pending.forEach { it.result.error(code, message, null) }
+    }
+
+    private fun queueSpeech(text: String, result: MethodChannel.Result, queueMode: Int) {
         val tts = textToSpeech
         if (tts == null || !textToSpeechReady) {
             result.error("TTS_NOT_READY", "Text to speech is not ready", null)
@@ -408,7 +432,7 @@ class MainActivity : FlutterActivity() {
         }
         val status = tts.speak(
             text,
-            TextToSpeech.QUEUE_FLUSH,
+            queueMode,
             null,
             "openvsmobile-${System.currentTimeMillis()}"
         )

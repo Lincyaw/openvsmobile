@@ -19,6 +19,7 @@
 // we can record + assert the call order.
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:mobilecode/app_state.dart';
@@ -57,12 +58,17 @@ Widget _wrap(Widget child) => MaterialApp(home: Scaffold(body: child));
 
 class _FakeVoiceInteraction extends VoiceInteraction {
   final String? recognizedText;
+  final Object? recognitionError;
   final List<String> spoken = <String>[];
 
-  _FakeVoiceInteraction({this.recognizedText});
+  _FakeVoiceInteraction({this.recognizedText, this.recognitionError});
 
   @override
-  Future<String?> recognizeOnce({String? prompt}) async => recognizedText;
+  Future<String?> recognizeOnce({String? prompt}) async {
+    final error = recognitionError;
+    if (error != null) throw error;
+    return recognizedText;
+  }
 
   @override
   Future<bool> speak(String text) async {
@@ -508,6 +514,65 @@ void main() {
     expect(dispatched.single.nodeId, 'read-last');
     expect(dispatched.single.type, 'tap');
   });
+
+  testWidgets(
+    'eyes-free mode reports voice input failures without dispatching',
+    (tester) async {
+      final panel = const PluginPanelStub(id: 'chat', title: 'Chat');
+      final appState = await _appStateWithSeed([
+        _info(id: 'agentm', name: 'AgentM', panels: [panel]),
+      ]);
+      addTearDown(appState.dispose);
+
+      appState.uiPanels.debugInjectPush(<String, dynamic>{
+        'pluginId': 'agentm',
+        'panelId': 'chat',
+        'version': 1,
+        'tree': <String, dynamic>{
+          'kind': 'TextField',
+          'id': 'reply',
+          'label': 'Reply',
+          'accessibilityLabel': 'Dictate and send reply',
+          'focusRole': 'action',
+          'focusOrder': 1,
+          'voiceInputEvent': 'send',
+        },
+      });
+
+      final dispatched = <UiNodeEvent>[];
+      appState.uiPanels.debugDispatchOverride =
+          ({required pluginId, required panelId, required event}) async {
+            dispatched.add(event);
+          };
+
+      final voice = _FakeVoiceInteraction(
+        recognitionError: PlatformException(
+          code: 'NO_MATCH',
+          message: 'No speech was recognized',
+        ),
+      );
+      final info = appState.plugins.plugin('agentm')!;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PluginEyesFreeScreen(
+            appState: appState,
+            info: info,
+            panel: panel,
+            voice: voice,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await _doubleTap(
+        tester,
+        find.byKey(const ValueKey<String>('eyes-free-gesture-surface')),
+      );
+
+      expect(dispatched, isEmpty);
+      expect(voice.spoken.join('\n'), contains('No speech was recognized'));
+    },
+  );
 
   test('PluginInfo.fromJson reads contributes.panels + commands', () {
     final info = PluginInfo.fromJson(<String, dynamic>{

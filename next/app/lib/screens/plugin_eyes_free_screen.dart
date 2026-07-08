@@ -60,7 +60,7 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
     setState(() {});
     if (nextStatus != null && nextStatus != _lastSpokenStatus) {
       _lastSpokenStatus = nextStatus;
-      unawaited(widget.voice.speak(nextStatus));
+      _speakLater(nextStatus);
     }
   }
 
@@ -74,7 +74,7 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
       _currentAnnouncement(state.actions),
       'Swipe left or right to choose. Double tap to confirm. Long press to exit.',
     ];
-    unawaited(widget.voice.speak(parts.join('. ')));
+    _speakLater(parts.join('. '));
   }
 
   String _currentAnnouncement(List<_EyesFreeAction> actions) {
@@ -92,7 +92,7 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
   void _move(int delta) {
     final actions = _collectEyesFreeState(_tree).actions;
     if (actions.isEmpty) {
-      unawaited(widget.voice.speak('No actions available'));
+      _speakLater('No actions available');
       return;
     }
     setState(() {
@@ -100,7 +100,7 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
       if (_index < 0) _index += actions.length;
     });
     HapticFeedback.selectionClick();
-    unawaited(widget.voice.speak(_currentAnnouncement(actions)));
+    _speakLater(_currentAnnouncement(actions));
   }
 
   void _onHorizontalDragEnd(DragEndDetails details) {
@@ -113,11 +113,11 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
     if (_executing) return;
     final state = _collectEyesFreeState(_tree);
     if (state.actions.isEmpty) {
-      unawaited(widget.voice.speak('No actions available'));
+      _speakLater('No actions available');
       return;
     }
     if (widget.frozen) {
-      unawaited(widget.voice.speak('${widget.info.name} is frozen'));
+      _speakLater('${widget.info.name} is frozen');
       return;
     }
     final action = state.actions[_safeIndex(state.actions.length)];
@@ -127,7 +127,7 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
       switch (action.kind) {
         case _EyesFreeActionKind.event:
           await _dispatch(action.event);
-          await widget.voice.speak('Confirmed. ${action.label}');
+          await _speak('Confirmed. ${action.label}');
           break;
         case _EyesFreeActionKind.voiceInput:
           await _executeVoiceInput(action);
@@ -139,10 +139,19 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
   }
 
   Future<void> _executeVoiceInput(_EyesFreeAction action) async {
-    await widget.voice.speak('Listening. ${action.label}');
-    final text = await widget.voice.recognizeOnce(prompt: action.prompt);
+    await _speak('Listening. ${action.label}');
+    final String? text;
+    try {
+      text = await widget.voice.recognizeOnce(prompt: action.prompt);
+    } on PlatformException catch (e) {
+      await _speak(e.message ?? 'Voice input failed');
+      return;
+    } catch (_) {
+      await _speak('Voice input failed');
+      return;
+    }
     if (text == null || text.isEmpty) {
-      await widget.voice.speak('No speech recognized');
+      await _speak('No speech recognized');
       return;
     }
     await _dispatch(
@@ -159,7 +168,23 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
         payload: {'value': text, 'source': 'voice'},
       ),
     );
-    await widget.voice.speak('Sent');
+    await _speak('Sent');
+  }
+
+  Future<void> _speak(String text) async {
+    try {
+      await widget.voice.speak(text);
+    } on PlatformException {
+      // Eyes-free speech is a feedback channel, not a control-flow
+      // dependency. Keep gestures working even if the device TTS service is
+      // missing, busy, or denied.
+    } catch (_) {
+      // Best-effort only.
+    }
+  }
+
+  void _speakLater(String text) {
+    unawaited(_speak(text));
   }
 
   Future<void> _dispatch(UiNodeEvent event) {
