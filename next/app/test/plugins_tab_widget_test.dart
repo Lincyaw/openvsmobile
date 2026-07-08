@@ -546,7 +546,15 @@ void main() {
           dispatched.add(event);
         };
 
-    final voice = _FakeVoiceInteraction(recognizedText: 'reply by voice');
+    bool? activeDuringEntry;
+    final voice = _FakeVoiceInteraction(
+      recognizedText: 'reply by voice',
+      onSpeakAndWait: (text) {
+        if (text.contains('Eyes-free mode')) {
+          activeDuringEntry = VoiceActivity.instance.isActive;
+        }
+      },
+    );
     final info = appState.plugins.plugin('agentm')!;
     await tester.pumpWidget(
       MaterialApp(
@@ -565,6 +573,7 @@ void main() {
     );
     expect(find.text('Dictate and send reply'), findsOneWidget);
     expect(voice.spoken.join('\n'), contains('Eyes-free mode'));
+    expect(activeDuringEntry, isTrue);
 
     await _doubleTap(tester, surface, gap: const Duration(milliseconds: 500));
     expect(dispatched, hasLength(2));
@@ -1243,7 +1252,15 @@ void main() {
         };
 
     var exited = false;
-    final voice = _FakeVoiceInteraction(recognizedText: 'reply by voice');
+    bool? activeDuringEntry;
+    final voice = _FakeVoiceInteraction(
+      recognizedText: 'reply by voice',
+      onSpeakAndWait: (text) {
+        if (text.contains('Voice control')) {
+          activeDuringEntry = VoiceActivity.instance.isActive;
+        }
+      },
+    );
     await tester.pumpWidget(
       MaterialApp(
         home: EyesFreeTab(
@@ -1262,6 +1279,7 @@ void main() {
     expect(find.text('AgentM'), findsOneWidget);
     expect(find.text('Dictate and send reply'), findsOneWidget);
     expect(voice.spoken.join('\n'), contains('Voice control'));
+    expect(activeDuringEntry, isTrue);
     final semanticsData = tester
         .getSemantics(
           find.byKey(const ValueKey<String>('eyes-free-tab-semantics')),

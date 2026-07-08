@@ -525,12 +525,15 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
   }
 
   Future<void> _speak(String text) async {
+    final voiceSession = VoiceActivity.instance.begin();
     try {
-      await widget.voice.speak(text);
+      await widget.voice.speakAndWait(text);
     } on PlatformException {
       // Best-effort speech feedback.
     } catch (_) {
       // Best-effort only.
+    } finally {
+      voiceSession.end();
     }
   }
 

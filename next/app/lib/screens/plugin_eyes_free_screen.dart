@@ -450,14 +450,17 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
   }
 
   Future<void> _speak(String text) async {
+    final voiceSession = VoiceActivity.instance.begin();
     try {
-      await widget.voice.speak(text);
+      await widget.voice.speakAndWait(text);
     } on PlatformException {
       // Eyes-free speech is a feedback channel, not a control-flow
       // dependency. Keep gestures working even if the device TTS service is
       // missing, busy, or denied.
     } catch (_) {
       // Best-effort only.
+    } finally {
+      voiceSession.end();
     }
   }
 
