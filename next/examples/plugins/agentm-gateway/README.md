@@ -1,9 +1,14 @@
 # AgentM Gateway
 
 Mobile-native AgentM gateway peer. The plugin connects to an AgentM gateway,
-renders a compact transcript panel, forwards in-app messages as AgentM
+renders an eyes-free control panel, forwards in-app messages as AgentM
 `inbound` envelopes, and turns final AgentM replies into replyable
 openvsmobile notifications.
+
+The panel is intentionally not a traditional chat UI. Its first focus stops
+are status, last visible AgentM reply, message input, Send message, Stop
+current turn, and Read last reply. Recent activity is capped to the latest few
+events, while socket/cwd diagnostics stay behind Show details.
 
 Configuration is via plugin-safe environment variables. The plugin host only
 passes `OPENVSMOBILE_PLUGIN_*` variables through to plugin processes.

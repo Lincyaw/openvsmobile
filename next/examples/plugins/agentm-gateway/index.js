@@ -16,6 +16,7 @@ const PANEL_ID = "chat";
 const WIRE_VERSION = 2;
 const PEER_VERSION = "0.1.0";
 const MAX_TRANSCRIPT_ITEMS = 80;
+const MAX_VISIBLE_ACTIVITY_ITEMS = 5;
 const RECONNECT_DELAY_MS = 2000;
 
 const DURABLE_NOTIFICATION_KINDS = new Set([
@@ -63,6 +64,13 @@ const state = {
   welcome: null,
   cwd: "",
   workspaceLabel: "",
+  lastStatus: "Not connected",
+  lastReply: "",
+  lastReplyKind: "",
+  currentReply: "",
+  turnHadVisibleReply: false,
+  turnStartedAt: 0,
+  showDetails: false,
   transcript: [],
   activeTurn: false,
   reconnectTimer: null,
@@ -259,6 +267,56 @@ function appendTranscript(role, text, meta = {}) {
   }
 }
 
+function setLastReply(text, kind = "assistant_text") {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return;
+  state.lastReply = trimmed;
+  state.lastReplyKind = kind;
+}
+
+function resetTurnReply() {
+  state.currentReply = "";
+  state.turnHadVisibleReply = false;
+}
+
+function appendCurrentReply(text, kind = "stream_text") {
+  const chunk = String(text || "");
+  if (!chunk) return;
+  state.currentReply += chunk;
+  state.turnHadVisibleReply = true;
+  setLastReply(state.currentReply, kind);
+}
+
+function setVisibleReply(text, kind) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return;
+  state.currentReply = trimmed;
+  state.turnHadVisibleReply = true;
+  setLastReply(trimmed, kind);
+}
+
+function currentStatusText() {
+  if (state.status === "connecting") return "Connecting to AgentM gateway.";
+  if (state.status !== "connected") {
+    return state.error
+      ? `Disconnected. ${state.error}`
+      : "Disconnected from AgentM gateway.";
+  }
+  if (state.lastStatus) return state.lastStatus;
+  if (state.activeTurn) return "AgentM is working. Wait for the reply or stop this turn.";
+  return "Connected. Ready for your next message.";
+}
+
+function latestReplyText() {
+  if (state.lastReply) return state.lastReply;
+  if (state.activeTurn) return "No reply yet. AgentM is still working.";
+  return "No AgentM reply yet.";
+}
+
+function visibleActivity() {
+  return state.transcript.slice(-MAX_VISIBLE_ACTIVITY_ITEMS);
+}
+
 function outboundKind(env) {
   const meta = env?.body?.metadata;
   return meta && typeof meta.kind === "string" ? meta.kind : "";
@@ -328,32 +386,58 @@ function handleOutbound(env) {
   switch (kind) {
     case "turn_start":
       state.activeTurn = true;
+      resetTurnReply();
+      state.turnStartedAt = Date.now();
+      state.lastStatus = "Message accepted. AgentM is working.";
       appendTranscript("system", "Turn started", { kind });
       break;
     case "stream_text":
     case "stream_thinking":
+      if (kind === "stream_text") {
+        appendCurrentReply(content, kind);
+        state.lastStatus = "AgentM is replying.";
+      }
       appendTranscript(kind === "stream_thinking" ? "thinking" : "assistant", content, { kind });
       break;
     case "assistant_text":
+      state.activeTurn = false;
+      state.lastStatus = "AgentM replied.";
+      setVisibleReply(content, kind);
       appendTranscript("assistant", content, { kind });
       break;
     case "command_result":
+      state.activeTurn = false;
+      state.lastStatus = "Command result received.";
+      setVisibleReply(content, kind);
       appendTranscript("system", content, { kind });
       break;
     case "approval_request":
+      state.activeTurn = false;
+      state.lastStatus = "AgentM needs input.";
+      setVisibleReply(content || "Approval requested", kind);
       appendTranscript("system", content || "Approval requested", { kind });
       break;
     case "diagnostic_warning":
+      state.lastStatus = "AgentM warning.";
+      setVisibleReply(content, kind);
       appendTranscript("warning", content, { kind });
       break;
     case "diagnostic_error":
+      state.activeTurn = false;
+      state.lastStatus = "AgentM error.";
+      setVisibleReply(content, kind);
       appendTranscript("error", content, { kind });
       break;
     case "agent_end":
       state.activeTurn = false;
+      state.turnStartedAt = 0;
+      if (!state.turnHadVisibleReply) {
+        state.lastStatus = "Turn finished without a visible reply.";
+      }
       appendTranscript("system", "Turn finished", { kind });
       break;
     case "request_ack":
+      state.lastStatus = "Message accepted. Waiting for AgentM.";
       appendTranscript("system", "Message accepted", { kind });
       break;
     default:
@@ -368,6 +452,8 @@ function handleGatewayError(env) {
   const msg =
     typeof env?.body?.message === "string" ? env.body.message : "AgentM gateway error";
   state.error = msg;
+  state.activeTurn = false;
+  state.lastStatus = "AgentM gateway error.";
   appendTranscript("error", msg, { kind: "error" });
   render();
 }
@@ -406,6 +492,10 @@ function submitText(text) {
   });
   if (ok) {
     appendTranscript("user", content, { kind: "submit" });
+    state.activeTurn = true;
+    resetTurnReply();
+    state.lastStatus = "Sent. Waiting for AgentM.";
+    state.turnStartedAt = Date.now();
     state.draft = "";
     render();
   }
@@ -413,7 +503,42 @@ function submitText(text) {
 }
 
 function interrupt() {
-  sendInbound({ control: "interrupt", request_id: randomUUID() });
+  const ok = sendInbound({ control: "interrupt", request_id: randomUUID() });
+  if (ok) {
+    state.activeTurn = false;
+    state.turnStartedAt = 0;
+    state.lastStatus = "Stop requested.";
+    appendTranscript("system", "Stop requested", { kind: "interrupt" });
+    render();
+  }
+}
+
+async function announceLast() {
+  if (!state.ctx) return;
+  const body = latestReplyText();
+  try {
+    await state.ctx.showNotification({
+      level: state.lastReplyKind === "diagnostic_error" ? "error" : "info",
+      title: state.lastReply ? "AgentM last message" : "AgentM status",
+      body,
+      spoken: {
+        title: state.lastReply ? "AgentM last message" : "AgentM status",
+        body,
+      },
+      reply: {
+        event: "agentm.reply",
+        context: {
+          sessionKey: config.sessionKey,
+          channel: config.channel,
+          chatId: config.chatId,
+        },
+        placeholder: "Reply to AgentM",
+      },
+      groupKey: `agentm:${config.sessionKey}:read-last`,
+    });
+  } catch (err) {
+    state.ctx.log("warn", `AgentM read-last notification failed: ${err.message ?? String(err)}`);
+  }
 }
 
 function scheduleReconnect() {
@@ -436,6 +561,7 @@ function connect() {
     }
   }
   state.status = "connecting";
+  state.lastStatus = "Connecting to AgentM gateway.";
   state.error = "";
   render();
   const client = new AgentMWireClient(config);
@@ -444,6 +570,7 @@ function connect() {
     state.status = "connected";
     state.error = "";
     state.welcome = env.body || {};
+    state.lastStatus = "Connected. Ready for your next message.";
     appendTranscript("system", "Connected to AgentM gateway", { kind: "welcome" });
     render();
   });
@@ -454,11 +581,15 @@ function connect() {
   client.on("error", (err) => {
     state.status = "disconnected";
     state.error = err.message || String(err);
+    state.activeTurn = false;
+    state.lastStatus = "Disconnected from AgentM gateway.";
     render();
   });
   client.on("close", () => {
     state.status = "disconnected";
     if (!state.error) state.error = "AgentM gateway connection closed";
+    state.activeTurn = false;
+    state.lastStatus = "Disconnected from AgentM gateway.";
     render();
     scheduleReconnect();
   });
@@ -467,6 +598,8 @@ function connect() {
   } catch (err) {
     state.status = "disconnected";
     state.error = err.message || String(err);
+    state.activeTurn = false;
+    state.lastStatus = "Disconnected from AgentM gateway.";
     render();
     scheduleReconnect();
   }
@@ -536,92 +669,170 @@ function transcriptNode(item, index) {
   );
 }
 
+function actionButton({ id, label, style, order, hint }) {
+  return ui.withMetadata(
+    ui.button({ id, label, style }),
+    {
+      accessibilityLabel: label,
+      accessibilityHint: hint,
+      focusRole: style === "danger" ? "danger" : "action",
+      focusOrder: order,
+    },
+  );
+}
+
 function buildTree() {
+  const statusText = currentStatusText();
+  const replyText = latestReplyText();
+  const activity = visibleActivity();
   const children = [
-    ui.banner({
-      id: "agentm-status",
-      title: state.status === "connected" ? "Connected" : state.status === "connecting" ? "Connecting" : "Disconnected",
-      body: state.error || config.connect,
-      accent: statusAccent(),
-      action: state.status === "connected" ? undefined : { label: "Retry", eventId: "reconnect" },
-    }),
+    ui.withMetadata(
+      ui.banner({
+        id: "agentm-status",
+        title: state.status === "connected" ? "Connected" : state.status === "connecting" ? "Connecting" : "Disconnected",
+        body: statusText,
+        accent: statusAccent(),
+        action: state.status === "connected" ? undefined : { label: "Retry", eventId: "reconnect" },
+      }),
+      {
+        accessibilityLabel: "AgentM status",
+        spokenValue: statusText,
+        focusRole: "status",
+        focusOrder: 0,
+      },
+    ),
     ui.section({
-      id: "agentm-compose",
-      title: "Message",
+      id: "agentm-blind-controls",
+      title: "Blind controls",
       variant: "inset",
       children: [
+        ui.withMetadata(
+          ui.text({
+            id: "agentm-live-status",
+            text: statusText,
+            style: "title",
+          }),
+          {
+            accessibilityLabel: "Current AgentM state",
+            spokenValue: statusText,
+            focusRole: "status",
+            focusOrder: 1,
+          },
+        ),
+        ...(state.activeTurn
+          ? [
+              ui.progress({
+                id: "agentm-active-turn",
+                label: "Waiting for AgentM",
+                variant: "linear",
+                accent: "info",
+              }),
+            ]
+          : []),
+        ui.withMetadata(
+          ui.text({
+            id: "agentm-last-reply",
+            text: replyText,
+            style: state.lastReply ? "body" : "caption",
+          }),
+          {
+            accessibilityLabel: state.lastReply ? "Last AgentM message" : "Last AgentM message is empty",
+            spokenValue: replyText,
+            focusRole: "status",
+            focusOrder: 2,
+          },
+        ),
         ui.withMetadata(
           ui.textField({
             id: "agentm-input",
             label: "Message",
             value: state.draft,
-            placeholder: "Ask AgentM…",
+            placeholder: "Type or dictate",
           }),
           {
             accessibilityLabel: "Message to AgentM",
             accessibilityHint: "Type or dictate a message",
             focusRole: "input",
-            focusOrder: 1,
+            focusOrder: 3,
             voiceInputEvent: "send",
           },
         ),
-        ui.row({
-          id: "agentm-actions",
+        ui.column({
+          id: "agentm-action-buttons",
           gap: "sm",
           children: [
-            ui.button({ id: "agentm-send", label: "Send", style: "primary" }),
-            ui.button({ id: "agentm-interrupt", label: "Interrupt", style: "secondary" }),
+            actionButton({
+              id: "agentm-send",
+              label: "Send message",
+              style: "primary",
+              order: 4,
+              hint: "Sends the message to AgentM",
+            }),
+            actionButton({
+              id: "agentm-interrupt",
+              label: "Stop current turn",
+              style: "danger",
+              order: 5,
+              hint: "Stops the current AgentM turn",
+            }),
+            actionButton({
+              id: "agentm-read-last",
+              label: "Read last reply",
+              style: "secondary",
+              order: 6,
+              hint: "Reads the latest AgentM reply through a notification",
+            }),
           ],
         }),
       ],
     }),
   ];
 
-  if (state.activeTurn) {
-    children.push(
-      ui.progress({
-        id: "agentm-active-turn",
-        label: "AgentM is working…",
-        variant: "linear",
-        accent: "info",
-      }),
-    );
-  }
-
   children.push(
     ui.section({
-      id: "agentm-transcript",
-      title: "Transcript",
+      id: "agentm-activity",
+      title: "Recent activity",
       children:
-        state.transcript.length === 0
+        activity.length === 0
           ? [
               ui.text({
                 id: "agentm-empty",
-                text: "No messages yet.",
+                text: "No activity yet.",
                 style: "caption",
               }),
             ]
-          : state.transcript.map(transcriptNode),
+          : activity.map(transcriptNode),
     }),
   );
 
   children.push(
-    ui.section({
-      id: "agentm-details",
-      title: "Connection",
-      collapsible: true,
-      children: [
-        ui.text({ id: "agentm-connect-url", text: config.connect, style: "mono" }),
-        ui.text({ id: "agentm-cwd", text: `cwd ${state.cwd || "(unset)"}`, style: "mono" }),
-        ui.text({ id: "agentm-session-key", text: config.sessionKey, style: "mono" }),
-        ui.text({
-          id: "agentm-server-version",
-          text: `server ${state.welcome?.server_version ?? "unknown"}`,
-          style: "caption",
-        }),
-      ],
+    actionButton({
+      id: "agentm-toggle-details",
+      label: state.showDetails ? "Hide details" : "Show details",
+      style: "secondary",
+      order: 30,
+      hint: "Shows or hides connection diagnostics",
     }),
   );
+
+  if (state.showDetails) {
+    children.push(
+      ui.section({
+        id: "agentm-details",
+        title: "Connection",
+        children: [
+          ui.text({ id: "agentm-connect-url", text: config.connect, style: "mono" }),
+          ui.text({ id: "agentm-cwd", text: `cwd ${state.cwd || "(unset)"}`, style: "mono" }),
+          ui.text({ id: "agentm-session-key", text: config.sessionKey, style: "mono" }),
+          ui.text({
+            id: "agentm-server-version",
+            text: `server ${state.welcome?.server_version ?? "unknown"}`,
+            style: "caption",
+          }),
+        ],
+      }),
+    );
+  }
 
   return ui.column({ id: "agentm-root", gap: "md", children });
 }
@@ -652,6 +863,15 @@ const plugin = createPlugin({
     }
     if (eventId === "reconnect") {
       connect();
+      return;
+    }
+    if (event.nodeId === "agentm-read-last") {
+      void announceLast();
+      return;
+    }
+    if (event.nodeId === "agentm-toggle-details") {
+      state.showDetails = !state.showDetails;
+      render();
       return;
     }
     if (event.nodeId === "agentm-interrupt") {

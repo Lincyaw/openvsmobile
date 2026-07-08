@@ -201,6 +201,21 @@ async function call<T = unknown>(
   })) as T;
 }
 
+function findNodeById(node: unknown, id: string): Record<string, unknown> | undefined {
+  if (node === null || typeof node !== "object") return undefined;
+  const current = node as Record<string, unknown>;
+  if (current.id === id) return current;
+  for (const key of ["children", "items"]) {
+    const children = current[key];
+    if (!Array.isArray(children)) continue;
+    for (const child of children) {
+      const found = findNodeById(child, id);
+      if (found !== undefined) return found;
+    }
+  }
+  return undefined;
+}
+
 async function buildHarness(socketPath: string): Promise<{
   gateway: FakeAgentMGateway;
   host: PluginHost;
@@ -277,6 +292,18 @@ describe("examples/plugins/agentm-gateway", () => {
       const hello = await harness.gateway.waitForFrame((f) => f.kind === "hello");
       expect(hello.body.peer_name).toBe("openvsmobile");
 
+      const initialPanel = await waitFor(() => {
+        const panel = harness.host.ui
+          .activePanels()
+          .find((p) => p.pluginId === "agentm-gateway" && p.panelId === "chat");
+        return panel?.tree === undefined ? undefined : panel;
+      }, 5000);
+      expect(findNodeById(initialPanel.tree, "agentm-blind-controls")).toBeDefined();
+      expect(findNodeById(initialPanel.tree, "agentm-read-last")?.label).toBe(
+        "Read last reply",
+      );
+      expect(findNodeById(initialPanel.tree, "agentm-details")).toBeUndefined();
+
       await call(harness.ctx, "ui.event", {
         pluginId: "agentm-gateway",
         panelId: "chat",
@@ -310,6 +337,23 @@ describe("examples/plugins/agentm-gateway", () => {
       expect(notification.body).toBe("mobile bridge works");
       expect(notification.spoken?.body).toBe("mobile bridge works");
       expect(notification.reply?.target).toEqual({
+        kind: "plugin",
+        pluginId: "agentm-gateway",
+      });
+
+      await call(harness.ctx, "ui.event", {
+        pluginId: "agentm-gateway",
+        panelId: "chat",
+        nodeId: "agentm-read-last",
+        type: "tap",
+      });
+      const readLastNotification = await waitFor(
+        () => harness.notifications.find((n) => n.title === "AgentM last message"),
+        5000,
+      );
+      expect(readLastNotification.body).toBe("mobile bridge works");
+      expect(readLastNotification.spoken?.body).toBe("mobile bridge works");
+      expect(readLastNotification.reply?.target).toEqual({
         kind: "plugin",
         pluginId: "agentm-gateway",
       });
