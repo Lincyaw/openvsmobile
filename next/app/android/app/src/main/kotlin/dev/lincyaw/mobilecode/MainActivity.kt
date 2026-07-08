@@ -42,6 +42,7 @@ class MainActivity : FlutterActivity() {
     private val requestImportBackendBackup = 6202
     private val requestRecordAudio = 6203
     private val requestSpeechRecognition = 6204
+    private val speechRecognitionTimeoutMs = 20_000L
     private var pendingDocumentResult: MethodChannel.Result? = null
     private var pendingExportContent: String? = null
     private var pendingSpeechResult: MethodChannel.Result? = null
@@ -49,6 +50,7 @@ class MainActivity : FlutterActivity() {
     private var pendingSpeechFallbackReason: String? = null
     private var pendingSpeechPreferOffline = false
     private var activeSpeechRecognizer: SpeechRecognizer? = null
+    private var speechRecognitionTimeout: Runnable? = null
     private var textToSpeech: TextToSpeech? = null
     private var textToSpeechReady = false
     private var textToSpeechInitError: String? = null
@@ -372,6 +374,7 @@ class MainActivity : FlutterActivity() {
         try {
             Log.d(voiceLogTag, "startListening")
             recognizer.startListening(intent)
+            scheduleSpeechRecognitionTimeout()
         } catch (e: Exception) {
             Log.d(voiceLogTag, "startListening failed: ${e.message}")
             result.error("START_FAILED", e.message, null)
@@ -465,8 +468,29 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun destroyActiveSpeechRecognizer() {
+        cancelSpeechRecognitionTimeout()
         activeSpeechRecognizer?.destroy()
         activeSpeechRecognizer = null
+    }
+
+    private fun scheduleSpeechRecognitionTimeout() {
+        cancelSpeechRecognitionTimeout()
+        val runnable = Runnable {
+            if (pendingSpeechResult == null || activeSpeechRecognizer == null) {
+                speechRecognitionTimeout = null
+                return@Runnable
+            }
+            Log.d(voiceLogTag, "speech recognition timed out")
+            speechRecognitionTimeout = null
+            finishPendingSpeechWithError("SPEECH_TIMEOUT", "No speech was heard")
+        }
+        speechRecognitionTimeout = runnable
+        mainHandler.postDelayed(runnable, speechRecognitionTimeoutMs)
+    }
+
+    private fun cancelSpeechRecognitionTimeout() {
+        speechRecognitionTimeout?.let { mainHandler.removeCallbacks(it) }
+        speechRecognitionTimeout = null
     }
 
     private fun speechErrorCode(error: Int): String =
