@@ -46,6 +46,7 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
   String? _lastSpokenStatusKey;
   String? _pendingSpokenStatusKey;
   String? _pendingSpokenStatus;
+  String? _lastDebugStateSignature;
 
   void _debugLog(String message) {
     EyesFreeTrace.log('tab', message);
@@ -110,11 +111,17 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
     if (!mounted) return;
     final actions = _actions;
     setState(() => _syncSelection(actions));
-    _debugLog(
-      'state changed actions=${actions.length} '
-      'selected=${_selected(actions)?.action.key ?? "-"} '
-      'active=${widget.isActive} executing=$_executing',
-    );
+    final selectedKey = _selected(actions)?.action.key ?? '-';
+    final signature =
+        '${actions.length}|$selectedKey|${widget.isActive}|$_executing';
+    if (_lastDebugStateSignature != signature) {
+      _lastDebugStateSignature = signature;
+      _debugLog(
+        'state changed actions=${actions.length} '
+        'selected=$selectedKey active=${widget.isActive} '
+        'executing=$_executing',
+      );
+    }
     if (!widget.isActive) return;
     _speakStatusIfChanged(_selected(actions));
   }

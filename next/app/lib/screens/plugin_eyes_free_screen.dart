@@ -46,6 +46,7 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
   Offset? _lastTapPosition;
   String? _lastSpokenStatus;
   String? _pendingSpokenStatus;
+  String? _lastDebugStateSignature;
 
   void _debugLog(String message) {
     EyesFreeTrace.log('${widget.info.id}/${widget.panel.id}', message);
@@ -76,11 +77,19 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
     final state = collectEyesFreeState(_tree);
     final nextStatus = state.statusText;
     setState(() => _syncSelection(state.actions));
-    _debugLog(
-      'state changed actions=${state.actions.length} '
-      'selected=${state.actions.isEmpty ? "-" : state.actions[_safeIndex(state.actions.length)].key} '
-      'frozen=${widget.frozen} executing=$_executing',
-    );
+    final selectedKey = state.actions.isEmpty
+        ? '-'
+        : state.actions[_safeIndex(state.actions.length)].key;
+    final signature =
+        '${state.actions.length}|$selectedKey|${widget.frozen}|$_executing';
+    if (_lastDebugStateSignature != signature) {
+      _lastDebugStateSignature = signature;
+      _debugLog(
+        'state changed actions=${state.actions.length} '
+        'selected=$selectedKey frozen=${widget.frozen} '
+        'executing=$_executing',
+      );
+    }
     if (nextStatus != null && nextStatus != _lastSpokenStatus) {
       if (_executing) {
         _pendingSpokenStatus = nextStatus;

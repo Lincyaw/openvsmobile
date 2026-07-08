@@ -11,7 +11,9 @@ class NotificationSpeechQueue {
   final int maxDeferred;
 
   final List<String> _deferred = <String>[];
+  final List<String> _pendingSpeech = <String>[];
   bool _disposed = false;
+  Future<void>? _drainFuture;
 
   NotificationSpeechQueue({
     required this.voice,
@@ -28,12 +30,15 @@ class NotificationSpeechQueue {
       _defer(trimmed);
       return;
     }
-    await _speakBestEffort(trimmed);
+    _pendingSpeech.add(trimmed);
+    _drainFuture ??= _drain();
+    await _drainFuture;
   }
 
   void dispose() {
     _disposed = true;
     _deferred.clear();
+    _pendingSpeech.clear();
     activity.removeListener(_flushIfIdle);
   }
 
@@ -46,10 +51,29 @@ class NotificationSpeechQueue {
   }
 
   void _flushIfIdle() {
-    if (_disposed || activity.isActive || _deferred.isEmpty) return;
-    final pending = _deferred.join('\n\n');
-    _deferred.clear();
-    unawaited(_speakBestEffort(pending));
+    if (_disposed || activity.isActive) return;
+    if (_deferred.isNotEmpty) {
+      final pending = _deferred.join('\n\n');
+      _deferred.clear();
+      _pendingSpeech.add(pending);
+    }
+    if (_pendingSpeech.isNotEmpty) {
+      _drainFuture ??= _drain();
+    }
+  }
+
+  Future<void> _drain() async {
+    try {
+      while (!_disposed && !activity.isActive && _pendingSpeech.isNotEmpty) {
+        final text = _pendingSpeech.removeAt(0);
+        await _speakBestEffort(text);
+      }
+    } finally {
+      _drainFuture = null;
+      if (!_disposed && !activity.isActive && _pendingSpeech.isNotEmpty) {
+        _drainFuture = _drain();
+      }
+    }
   }
 
   Future<void> _speakBestEffort(String text) async {
@@ -58,7 +82,7 @@ class NotificationSpeechQueue {
       return;
     }
     try {
-      await voice.speak(text);
+      await voice.speakAndWait(text);
     } catch (e) {
       debugPrint('notification speech failed: $e');
     }

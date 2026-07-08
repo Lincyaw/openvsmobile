@@ -11,6 +11,7 @@ import '../backend_client.dart';
 import '../models.dart';
 import '../notification.dart';
 import '../services/connection_diagnostics.dart';
+import '../services/eyes_free_trace.dart';
 import '../services/terminal_notification_resolver.dart';
 import '../services/system_tray.dart';
 import '../settings_store.dart';
@@ -165,6 +166,7 @@ class _HomeShellState extends State<HomeShell> {
   void _openSettings() {
     // The failed-connection banner's "Settings" button: jump to the
     // Settings tab so the user can fix auth / backend issues from there.
+    EyesFreeTrace.log('home', 'open settings tab from=$_tab');
     setState(() {
       _tab = _kSettingsTabIndex;
       _lastNonVoiceTab = _kSettingsTabIndex;
@@ -172,6 +174,7 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   void _selectTab(int index) {
+    EyesFreeTrace.log('home', 'select tab from=$_tab to=$index');
     setState(() {
       _tab = index;
       if (index != _kVoiceTabIndex) {
@@ -181,6 +184,7 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   void _exitVoiceTab() {
+    EyesFreeTrace.log('home', 'exit voice tab to=$_lastNonVoiceTab');
     setState(() => _tab = _lastNonVoiceTab);
   }
 
