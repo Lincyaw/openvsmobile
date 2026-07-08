@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../app_state.dart';
+import '../services/voice_activity.dart';
 import '../services/voice_interaction.dart';
 import '../state/plugins_model.dart';
 import '../ui/app_tokens.dart';
@@ -169,42 +170,47 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
   }
 
   Future<void> _executeVoiceInput(_EyesFreeAction action) async {
-    final available = await _speechRecognitionAvailable();
-    if (!available) {
-      await _speak('Speech recognition is not available on this device');
-      return;
-    }
-    await _speakAndWait('Listening. ${action.label}');
-    await _stopSpeaking();
-    final String? text;
+    final voiceSession = VoiceActivity.instance.begin();
     try {
-      text = await widget.voice.recognizeOnce(prompt: action.prompt);
-    } on PlatformException catch (e) {
-      await _speak(e.message ?? 'Voice input failed');
-      return;
-    } catch (_) {
-      await _speak('Voice input failed');
-      return;
+      final available = await _speechRecognitionAvailable();
+      if (!available) {
+        await _speak('Speech recognition is not available on this device');
+        return;
+      }
+      await _speakAndWait('Listening. ${action.label}');
+      await _stopSpeaking();
+      final String? text;
+      try {
+        text = await widget.voice.recognizeOnce(prompt: action.prompt);
+      } on PlatformException catch (e) {
+        await _speak(e.message ?? 'Voice input failed');
+        return;
+      } catch (_) {
+        await _speak('Voice input failed');
+        return;
+      }
+      if (text == null || text.isEmpty) {
+        await _speak('No speech recognized');
+        return;
+      }
+      await _dispatch(
+        UiNodeEvent(
+          nodeId: action.event.nodeId,
+          type: 'changed',
+          payload: {'value': text},
+        ),
+      );
+      await _dispatch(
+        UiNodeEvent(
+          nodeId: action.event.nodeId,
+          type: action.event.type,
+          payload: {'value': text, 'source': 'voice'},
+        ),
+      );
+      await _speakAndWait('Sent');
+    } finally {
+      voiceSession.end();
     }
-    if (text == null || text.isEmpty) {
-      await _speak('No speech recognized');
-      return;
-    }
-    await _dispatch(
-      UiNodeEvent(
-        nodeId: action.event.nodeId,
-        type: 'changed',
-        payload: {'value': text},
-      ),
-    );
-    await _dispatch(
-      UiNodeEvent(
-        nodeId: action.event.nodeId,
-        type: action.event.type,
-        payload: {'value': text, 'source': 'voice'},
-      ),
-    );
-    await _speakAndWait('Sent');
   }
 
   void _flushPendingStatus() {

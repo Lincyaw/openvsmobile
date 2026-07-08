@@ -17,6 +17,7 @@ import '../app_state.dart';
 import '../ui/app_tokens.dart';
 import '../backend_client.dart';
 import '../notification.dart';
+import '../services/voice_activity.dart';
 import '../services/voice_interaction.dart';
 import '../settings_store.dart';
 import 'agent_hooks_screen.dart';
@@ -1051,6 +1052,7 @@ class _NotificationReplySheetState extends State<_NotificationReplySheet> {
   Future<void> _speakReply() async {
     if (_listening) return;
     setState(() => _listening = true);
+    final voiceSession = VoiceActivity.instance.begin();
     try {
       final available = await widget.voice.isSpeechRecognitionAvailable();
       if (!mounted) return;
@@ -1080,6 +1082,7 @@ class _NotificationReplySheetState extends State<_NotificationReplySheet> {
       if (!mounted) return;
       _showVoiceMessage('Voice input failed');
     } finally {
+      voiceSession.end();
       if (mounted) setState(() => _listening = false);
     }
   }

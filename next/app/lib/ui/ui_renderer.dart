@@ -23,6 +23,7 @@ import 'package:flutter_slidable/flutter_slidable.dart';
 import 'package:markdown/markdown.dart' as md;
 
 import '../services/voice_interaction.dart';
+import '../services/voice_activity.dart';
 import 'app_tokens.dart';
 import 'highlight_theme.dart';
 import 'icon_catalog.dart';
@@ -1519,6 +1520,7 @@ class _UiTextFieldRendererState extends State<_UiTextFieldRenderer> {
     final eventId = widget.voiceInputEvent;
     if (eventId == null || _listening) return;
     setState(() => _listening = true);
+    final voiceSession = VoiceActivity.instance.begin();
     try {
       final available = await widget.voice.isSpeechRecognitionAvailable();
       if (!mounted) return;
@@ -1561,6 +1563,7 @@ class _UiTextFieldRendererState extends State<_UiTextFieldRenderer> {
         context,
       )?.showSnackBar(const SnackBar(content: Text('Voice input failed')));
     } finally {
+      voiceSession.end();
       if (mounted) setState(() => _listening = false);
     }
   }

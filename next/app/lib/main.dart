@@ -23,6 +23,7 @@ import 'services/connectivity_probe.dart';
 import 'services/deep_link_service.dart';
 import 'services/diag_log.dart';
 import 'services/notification_foreground_service.dart';
+import 'services/notification_speech_queue.dart';
 import 'services/system_tray.dart';
 import 'services/terminal_notification_resolver.dart';
 import 'services/voice_interaction.dart';
@@ -65,6 +66,8 @@ class _MobileCodeAppState extends State<MobileCodeApp>
   final DeepLinkService _deepLinks = DeepLinkService();
   final SystemTrayController _tray = SystemTrayController();
   final VoiceInteraction _voice = const PlatformVoiceInteraction();
+  late final NotificationSpeechQueue _notificationSpeech =
+      NotificationSpeechQueue(voice: _voice);
   StreamSubscription<BackendNotification>? _trayNotifSub;
   VoidCallback? _deepLinkRemover;
   final GlobalKey<NavigatorState> _navKey = GlobalKey<NavigatorState>();
@@ -163,15 +166,7 @@ class _MobileCodeAppState extends State<MobileCodeApp>
       spoken.body,
       if (spoken.detail != null) spoken.detail!,
     ];
-    unawaited(_speakBestEffort(parts.join('\n')));
-  }
-
-  Future<void> _speakBestEffort(String text) async {
-    try {
-      await _voice.speak(text);
-    } catch (e) {
-      debugPrint('notification speech failed: $e');
-    }
+    unawaited(_notificationSpeech.speak(parts.join('\n')));
   }
 
   Future<void> _bootstrap() async {
@@ -627,6 +622,7 @@ class _MobileCodeAppState extends State<MobileCodeApp>
     _appState?.removeListener(_onAppStateForWorkspaceTracking);
     _appState?.dispose();
     _terminalHub.dispose();
+    _notificationSpeech.dispose();
     _client.state.removeListener(_logConnectionState);
     _client.lastError.removeListener(_logConnectionError);
     _client.dispose();
