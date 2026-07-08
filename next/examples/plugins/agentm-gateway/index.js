@@ -676,7 +676,7 @@ const plugin = createPlugin({
 
 plugin.run();
 
-function shutdown() {
+function shutdown({ exit = false } = {}) {
   if (state.reconnectTimer !== null) {
     clearTimeout(state.reconnectTimer);
     state.reconnectTimer = null;
@@ -685,8 +685,11 @@ function shutdown() {
     state.client.close();
     state.client = null;
   }
+  if (exit) {
+    setImmediate(() => process.exit(0));
+  }
 }
 
-process.on("SIGTERM", shutdown);
-process.on("SIGINT", shutdown);
-process.on("beforeExit", shutdown);
+process.once("SIGTERM", () => shutdown({ exit: true }));
+process.once("SIGINT", () => shutdown({ exit: true }));
+process.on("beforeExit", () => shutdown());

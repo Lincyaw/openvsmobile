@@ -204,6 +204,7 @@ async function call<T = unknown>(
 async function buildHarness(socketPath: string): Promise<{
   gateway: FakeAgentMGateway;
   host: PluginHost;
+  hostLogs: string[];
   ctx: RpcContext;
   notifications: NotificationInput[];
   restoreEnv: () => void;
@@ -237,10 +238,12 @@ async function buildHarness(socketPath: string): Promise<{
 
   let nextNotification = 1;
   const notifications: NotificationInput[] = [];
+  const hostLogs: string[] = [];
   const host = new PluginHost({
     pluginsDir,
     logDir,
-    logger: () => {},
+    killGraceMs: 500,
+    logger: (line) => hostLogs.push(line),
     onHostLog: () => {},
     notificationPublisher: (input) => {
       notifications.push(input);
@@ -261,7 +264,7 @@ async function buildHarness(socketPath: string): Promise<{
     markAuthenticated: () => {},
   };
   await host.start();
-  return { gateway, host, ctx, notifications, restoreEnv };
+  return { gateway, host, hostLogs, ctx, notifications, restoreEnv };
 }
 
 describe("examples/plugins/agentm-gateway", () => {
@@ -269,6 +272,7 @@ describe("examples/plugins/agentm-gateway", () => {
     if (staging === null) throw new Error("staging dir not set up");
     const socketPath = join(staging, "agentm.sock");
     const harness = await buildHarness(socketPath);
+    let hostShutdown = false;
     try {
       const hello = await harness.gateway.waitForFrame((f) => f.kind === "hello");
       expect(hello.body.peer_name).toBe("openvsmobile");
@@ -323,8 +327,14 @@ describe("examples/plugins/agentm-gateway", () => {
       );
       expect(replyInbound.session_key).toBe("openvsmobile:phone");
       expect(replyInbound.body.action).toBe("submit");
+
+      await harness.host.shutdown();
+      hostShutdown = true;
+      expect(
+        harness.hostLogs.some((line) => line.includes("escalating to SIGKILL")),
+      ).toBe(false);
     } finally {
-      harness.host.shutdown();
+      if (!hostShutdown) await harness.host.shutdown();
       await harness.gateway.close();
       harness.restoreEnv();
       await rm(dirname(socketPath), { recursive: true, force: true }).catch(() => {});
