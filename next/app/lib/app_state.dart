@@ -374,11 +374,15 @@ class AppState extends ChangeNotifier {
       // "empty until manual Refresh" state after app restart.
       unawaited(_notifications.subscribeAndBackfillIfEmpty());
       // Plugin surface + UI-descriptor fan-out follow the same shape —
-      // subscribe on every successful connect; failures self-log. We do
-      // NOT call subscribeAndRefresh()'s refresh leg or uiPanels.refresh —
-      // the subscribe leg alone is sufficient and `plugin.list` would
-      // briefly wipe cached entries.
-      unawaited(_plugins.subscribe());
+      // subscribe on every successful connect; failures self-log. On a
+      // cold start there is no cached plugin list yet, so pull exactly one
+      // initial snapshot; reconnects keep the last-known list visible and
+      // only resubscribe to pushes.
+      if (!_plugins.isLoaded && _plugins.plugins.isEmpty) {
+        unawaited(_plugins.subscribeAndRefresh());
+      } else {
+        unawaited(_plugins.subscribe());
+      }
       unawaited(_uiPanels.subscribe());
       // Pin this connection's terminal fan-out scope to our known session
       // set (empty → unsubscribe) so a peer client's PTY data does not
