@@ -1545,7 +1545,33 @@ class _UiTextFieldRendererState extends State<_UiTextFieldRenderer> {
       } catch (_) {
         // Best-effort: stale TTS should not block visible text input.
       }
-      final text = await widget.voice.recognizeOnce(prompt: prompt);
+      final text = await recognizeOnceWithOfflineRetry(
+        voice: widget.voice,
+        prompt: prompt,
+        beforeRetry: (_) async {
+          if (mounted) {
+            ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+              const SnackBar(
+                content: Text(
+                  'Speech recognition had a network problem. Listening again.',
+                ),
+              ),
+            );
+          }
+          try {
+            await widget.voice.speakAndWait(
+              'Speech recognition had a network problem. Listening again.',
+            );
+          } catch (_) {
+            // Best-effort retry cue.
+          }
+          try {
+            await widget.voice.stopSpeaking();
+          } catch (_) {
+            // Best-effort: stale TTS should not block the retry.
+          }
+        },
+      );
       if (!mounted) return;
       if (text == null || text.isEmpty) return;
       _controller.text = text;

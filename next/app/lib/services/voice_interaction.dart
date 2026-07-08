@@ -12,6 +12,22 @@ bool shouldRetrySpeechRecognitionOffline(PlatformException error) {
   return retryableSpeechRecognitionErrorCodes.contains(error.code);
 }
 
+Future<String?> recognizeOnceWithOfflineRetry({
+  required VoiceInteraction voice,
+  String? prompt,
+  Future<void> Function(PlatformException error)? beforeRetry,
+  void Function(PlatformException error)? onRetry,
+}) async {
+  try {
+    return await voice.recognizeOnce(prompt: prompt);
+  } on PlatformException catch (error) {
+    if (!shouldRetrySpeechRecognitionOffline(error)) rethrow;
+    onRetry?.call(error);
+    await beforeRetry?.call(error);
+    return voice.recognizeOnce(prompt: prompt, preferOffline: true);
+  }
+}
+
 abstract class VoiceInteraction {
   const VoiceInteraction();
 

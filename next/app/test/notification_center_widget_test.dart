@@ -25,13 +25,15 @@ class _RecordingBackendClient extends BackendClient {
 
 class _FakeVoiceInteraction extends VoiceInteraction {
   final String? recognizedText;
+  final List<Object?> recognitionResponses;
   final bool speechRecognitionAvailable;
   final List<String> calls = <String>[];
 
   _FakeVoiceInteraction({
     this.recognizedText,
+    List<Object?> recognitionResponses = const [],
     this.speechRecognitionAvailable = true,
-  });
+  }) : recognitionResponses = List<Object?>.from(recognitionResponses);
 
   @override
   Future<bool> isSpeechRecognitionAvailable() async {
@@ -44,7 +46,13 @@ class _FakeVoiceInteraction extends VoiceInteraction {
     String? prompt,
     bool preferOffline = false,
   }) async {
-    calls.add('recognizeOnce:${prompt ?? ""}');
+    calls.add('recognizeOnce:${prompt ?? ""}:offline=$preferOffline');
+    if (recognitionResponses.isNotEmpty) {
+      final response = recognitionResponses.removeAt(0);
+      if (response is PlatformException) throw response;
+      if (response is Exception) throw response;
+      return response as String?;
+    }
     return recognizedText;
   }
 
@@ -302,6 +310,56 @@ void main() {
     expect(cueIndex, isNonNegative);
     expect(stopIndex, greaterThan(cueIndex));
     expect(recognizeIndex, greaterThan(stopIndex));
+  });
+
+  testWidgets('dictated notification reply retries network failures offline', (
+    tester,
+  ) async {
+    final client = _RecordingBackendClient();
+    final appState = AppState(client: client, deviceId: 'me');
+    addTearDown(appState.dispose);
+    appState.notifications.onShow(
+      _n(
+        id: 'agent-waiting',
+        title: 'Agent waiting',
+        reply: const NotificationReply(
+          target: PluginNotificationReplyTarget(pluginId: 'agent'),
+          placeholder: 'Reply to agent',
+        ),
+      ),
+    );
+    final voice = _FakeVoiceInteraction(
+      recognitionResponses: <Object?>[
+        PlatformException(
+          code: 'NETWORK_TIMEOUT',
+          message: 'Speech recognition network error',
+        ),
+        'continue after retry',
+      ],
+    );
+
+    await _pumpCenter(tester, appState, voice: voice);
+
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Reply'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Speak and send'));
+    await tester.pumpAndSettle();
+
+    expect(
+      voice.calls.where((call) => call.startsWith('recognizeOnce:')).toList(),
+      <String>[
+        'recognizeOnce:Reply to agent:offline=false',
+        'recognizeOnce:Reply to agent:offline=true',
+      ],
+    );
+    final calls = client.calls
+        .where((c) => c.method == 'notification.reply')
+        .toList();
+    expect(calls, hasLength(1));
+    expect(calls.single.params, {
+      'id': 'agent-waiting',
+      'text': 'continue after retry',
+    });
   });
 
   testWidgets('confirm-required dictated reply fills text before sending', (

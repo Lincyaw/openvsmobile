@@ -426,20 +426,17 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
   }
 
   Future<String?> _recognizeOnceWithOfflineRetry(EyesFreeAction action) async {
-    try {
-      return await widget.voice.recognizeOnce(prompt: action.prompt);
-    } on PlatformException catch (e) {
-      if (!shouldRetrySpeechRecognitionOffline(e)) rethrow;
-      _debugLog('voice input retry offline after ${e.code}');
-      await _speakAndWait(
-        'Speech recognition had a network problem. Listening again.',
-      );
-      await _stopSpeaking();
-      return widget.voice.recognizeOnce(
-        prompt: action.prompt,
-        preferOffline: true,
-      );
-    }
+    return recognizeOnceWithOfflineRetry(
+      voice: widget.voice,
+      prompt: action.prompt,
+      onRetry: (e) => _debugLog('voice input retry offline after ${e.code}'),
+      beforeRetry: (_) async {
+        await _speakAndWait(
+          'Speech recognition had a network problem. Listening again.',
+        );
+        await _stopSpeaking();
+      },
+    );
   }
 
   void _speakStatusIfChanged(_EyesFreeTargetAction? selected) {

@@ -265,8 +265,27 @@ class _SystemTrayDebugScreenState extends State<SystemTrayDebugScreen> {
       await widget.voice.stopSpeaking();
       if (!mounted) return;
       setState(() => _voiceStatus = 'Listening');
-      final text = await widget.voice.recognizeOnce(
+      final text = await recognizeOnceWithOfflineRetry(
+        voice: widget.voice,
         prompt: 'Say a short test phrase',
+        beforeRetry: (_) async {
+          if (!mounted) return;
+          setState(() => _voiceStatus = 'Network problem. Listening again');
+          try {
+            await widget.voice.speakAndWait(
+              'Speech recognition had a network problem. Listening again.',
+            );
+          } catch (_) {
+            // Best-effort retry cue.
+          }
+          try {
+            await widget.voice.stopSpeaking();
+          } catch (_) {
+            // Best-effort only.
+          }
+          if (!mounted) return;
+          setState(() => _voiceStatus = 'Listening');
+        },
       );
       if (!mounted) return;
       final trimmed = text?.trim();

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -10,13 +11,15 @@ import 'package:mobilecode/settings_store.dart';
 
 class _FakeVoiceInteraction extends VoiceInteraction {
   final String? recognizedText;
+  final List<Object?> recognitionResponses;
   final bool speechRecognitionAvailable;
   final List<String> calls = <String>[];
 
   _FakeVoiceInteraction({
     this.recognizedText,
+    List<Object?> recognitionResponses = const [],
     this.speechRecognitionAvailable = true,
-  });
+  }) : recognitionResponses = List<Object?>.from(recognitionResponses);
 
   @override
   Future<bool> isSpeechRecognitionAvailable() async {
@@ -29,7 +32,13 @@ class _FakeVoiceInteraction extends VoiceInteraction {
     String? prompt,
     bool preferOffline = false,
   }) async {
-    calls.add('recognizeOnce:${prompt ?? ""}');
+    calls.add('recognizeOnce:${prompt ?? ""}:offline=$preferOffline');
+    if (recognitionResponses.isNotEmpty) {
+      final response = recognitionResponses.removeAt(0);
+      if (response is PlatformException) throw response;
+      if (response is Exception) throw response;
+      return response as String?;
+    }
     return recognizedText;
   }
 
@@ -113,6 +122,40 @@ void main() {
     expect(stopIndex, greaterThan(cueIndex));
     expect(recognizeIndex, greaterThan(stopIndex));
     expect(repeatIndex, greaterThan(recognizeIndex));
+  });
+
+  testWidgets('voice input diagnostic retries network failures offline', (
+    tester,
+  ) async {
+    final voice = _FakeVoiceInteraction(
+      recognitionResponses: <Object?>[
+        PlatformException(
+          code: 'NETWORK_TIMEOUT',
+          message: 'Speech recognition network error',
+        ),
+        'hello after retry',
+      ],
+    );
+    await _pumpDiagnostics(tester, voice: voice);
+
+    await _tapDiagnosticTile(tester, 'diagnostics-voice-input');
+    await tester.pumpAndSettle();
+
+    expect(find.text('Heard: hello after retry'), findsOneWidget);
+    expect(
+      voice.calls.where((call) => call.startsWith('recognizeOnce:')).toList(),
+      <String>[
+        'recognizeOnce:Say a short test phrase:offline=false',
+        'recognizeOnce:Say a short test phrase:offline=true',
+      ],
+    );
+    expect(
+      voice.calls,
+      contains(
+        'speakAndWait:Speech recognition had a network problem. Listening again.',
+      ),
+    );
+    expect(VoiceActivity.instance.isActive, isFalse);
   });
 
   testWidgets('speech recognition diagnostic reports unavailable service', (

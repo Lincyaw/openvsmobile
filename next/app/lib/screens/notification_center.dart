@@ -1062,7 +1062,19 @@ class _NotificationReplySheetState extends State<_NotificationReplySheet> {
       }
       await _speakAndWait('Listening. ${widget.placeholder}');
       await _stopSpeaking();
-      final text = await widget.voice.recognizeOnce(prompt: widget.placeholder);
+      final text = await recognizeOnceWithOfflineRetry(
+        voice: widget.voice,
+        prompt: widget.placeholder,
+        beforeRetry: (_) async {
+          _showVoiceMessage(
+            'Speech recognition had a network problem. Listening again.',
+          );
+          await _speakAndWait(
+            'Speech recognition had a network problem. Listening again.',
+          );
+          await _stopSpeaking();
+        },
+      );
       if (!mounted) return;
       if (text == null || text.trim().isEmpty) {
         _showVoiceMessage('No speech recognized');
