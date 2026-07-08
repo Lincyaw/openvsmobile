@@ -268,7 +268,7 @@ plugin.run();
 - `renderPanel(panelId, tree)` → `ui.render` (gated by `capabilities.ui`).
 - `invokeCommand(targetPluginId, commandId, args)` → `plugin.invokeCommand` (cross-plugin call; gated by the host).
 - `currentWorkspace()` → `workspace.current` (gated by `capabilities.fs`; returns `WorkspaceRef | null`). Pair with `PluginConfig.onWorkspaceActivated` for switch notifications; the callback does not fire on startup, so a plugin's first read must come through this RPC.
-- `showNotification(input)` → `notify.show` (gated by `capabilities.ui`; returns `{ id }`). Fires a user-facing notification through the §4.5 store + RPC fan-out. The host overrides `input.source` to the plugin's manifest id before persistence — plugins cannot impersonate `"system"` or another plugin's id. Pair with `supersedes` to update a previously-fired notification by its returned id.
+- `showNotification(input)` → `notify.show` (gated by `capabilities.ui`; returns `{ id }`). Fires a user-facing notification through the §4.5 store + RPC fan-out. The host overrides `input.source` to the plugin's manifest id before persistence — plugins cannot impersonate `"system"` or another plugin's id. Pair with `supersedes` to update a previously-fired notification by its returned id. If `input.reply` is present, the host also injects the plugin reply target before persistence.
 
 Each SDK call is a thin wrapper that:
 1. Checks the plugin's declared capabilities (fail-fast `Error: capability "X" not declared`). *Reserved for richer capabilities; today the SDK trusts the manifest and lets the host's gate produce the error, since v0 only has `ui`.*
@@ -515,6 +515,7 @@ Notifications (backend → plugin):
 | `command.invoke`  | User triggered a command the plugin contributed             |
 | `ui.event`        | User interacted with a UI node owned by this plugin         |
 | `activation.event`| One of the manifest's activation events fired               |
+| `notification.reply` | User sent an inline reply to a notification owned by this plugin |
 | `workspace.change`| Workspace switched / closed (plugin should reset state)     |
 | `shutdown`        | Plugin is about to be deactivated; clean up                 |
 
@@ -982,6 +983,18 @@ type Notification = {
         backendId?: string;         // client-local backend id; absent means active backend
         externalSessionId?: string; // e.g. zellij session name; enough for adopt/reattach
       };
+  spoken?: {                       // preferred text for eyes-free announcement
+    title?: string;
+    body: string;
+    detail?: string;
+  };
+  reply?: {                        // inline reply; target is persisted server-side
+    target: { kind: "plugin"; pluginId: string; panelId?: string };
+    event?: string;
+    context?: unknown;
+    placeholder?: string;
+    confirmRequired?: boolean;
+  };
   groupKey?: string;                 // consecutive notifs with same key collapse in UI
   supersedes?: string;               // id of an earlier notif this replaces
                                      //   (progress updates → final result)
@@ -1003,6 +1016,7 @@ type Notification = {
 | `notification.markRead`       | client → backend | `{ ids }` → broadcasts `notification.readChanged` |
 | `notification.delete`         | client → backend | `{ ids }` → broadcasts `notification.deleted` |
 | `notification.markImportant`  | client → backend | `{ id, important }` — pins / unpins from TTL GC |
+| `notification.reply`          | client → backend → plugin | `{ id, text }` — backend routes via persisted `reply.target` |
 | `notification.agentHookStatus` | client → backend | read-only Claude Code / Codex Stop-hook status check |
 | `notification.installAgentHooks` | client → backend | idempotently install or repair Claude Code / Codex Stop hooks |
 
@@ -1017,7 +1031,7 @@ CREATE TABLE notifications (
   level         TEXT NOT NULL,
   title         TEXT NOT NULL,
   body          TEXT,
-  payload       TEXT,        -- JSON blob: fields, links, action, widget
+  payload       TEXT,        -- JSON blob: fields, links, action, spoken, reply, widget
   group_key     TEXT,
   supersedes    TEXT,        -- id of notif this replaced (history pointer)
   superseded_by TEXT,        -- non-null = this notif was superseded (history entry)

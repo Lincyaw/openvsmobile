@@ -225,6 +225,7 @@ Frontend → Backend:
 | `notification.markRead`      | `{ ids }` → `{ ok: true }`. Writes the connection's `deviceId` (from handshake) into each row's `read_by` array; broadcasts `notification.readChanged` to subscribed peers. Same id from the same device twice is a no-op (the array stays length-1). |
 | `notification.delete`        | `{ ids }` → `{ ok: true }`. Broadcasts `notification.deleted`. Unknown ids are silently swallowed. |
 | `notification.markImportant` | `{ id, important }` → `{ ok: true }`. Promote clears `ttl_until`. Demote always re-anchors at `now + 7d` (the original window is not preserved — promote wipes it). Unknown ids are silently swallowed. |
+| `notification.reply`         | `{ id, text }` → `{ ok: true }`. Sends an inline reply for a replyable notification. The client supplies only the notification id; the backend loads the persisted `reply.target` and forwards a host→plugin `notification.reply` frame to that plugin, so replies cannot drift to the currently-visible terminal/session. |
 | `notification.agentHookStatus` | `{}` → `{ ok, exitCode, statuses, stdout, stderr }`. Read-only Claude Code / Codex Stop-hook status check; never writes agent config. |
 | `notification.installAgentHooks` | `{}` → `{ ok, exitCode, statuses, stdout, stderr }`. Idempotently installs or repairs Claude Code / Codex Stop hooks. |
 | `plugin.subscribe`           | `{}` → `{ ok: true }`. Per-connection toggle for the `plugin.stateChanged` push surface; off until called so older clients don't receive the frames. |
@@ -255,6 +256,11 @@ Backend → Frontend (notifications):
 
 Notification storage notes:
 
+- Optional notification payload fields include `spoken: { title?, body,
+  detail? }` for eyes-free announcement text and `reply` for inline
+  replies. Plugin-authored notifications may omit `reply.target`; the
+  host injects `{ kind: "plugin", pluginId }` before validation and
+  persistence.
 - v0 has no hard upper bound on rows; misbehaving senders with
   `important: true` indefinitely accumulate. Watch
   `~/.local/state/openvsmobile-next/notifications.db` size. A row-count
@@ -322,6 +328,12 @@ state survive a full re-render even when leaf values mutate. The
 [panel cache](app/lib/ui/ui_panels_model.dart) tracks `lastVersion` per
 (pluginId, panelId) and drops any push whose `version <= lastVersion`,
 so reordered or duplicate pushes never roll the UI back.
+
+Any `UiNode` may also carry eyes-free metadata:
+`accessibilityLabel`, `accessibilityHint`, `spokenValue`, `focusRole`,
+`focusOrder`, and `voiceInputEvent`. Flutter renders the accessibility
+fields as native semantics; `voiceInputEvent` is reserved for a voice
+input layer that can turn dictated text into a normal `ui.event`.
 
 A panel's lifetime ends when its plugin's process exits or is disabled
 — the host emits one final `ui.tree { tree: null, version: ++ }` per
