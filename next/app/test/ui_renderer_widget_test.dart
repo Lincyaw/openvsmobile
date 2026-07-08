@@ -196,6 +196,7 @@ void main() {
       'focusRole': 'status',
       'focusOrder': 2,
       'voiceInputEvent': 'voice.reply',
+      'voiceOutputText': 'Agent finished with 3 changed files',
       'voiceShortcut': true,
     });
 
@@ -208,6 +209,10 @@ void main() {
     expect(node.accessibility.focusRole, UiFocusRole.status);
     expect(node.accessibility.focusOrder, 2);
     expect(node.accessibility.voiceInputEvent, 'voice.reply');
+    expect(
+      node.accessibility.voiceOutputText,
+      'Agent finished with 3 changed files',
+    );
     expect(node.accessibility.voiceShortcut, isTrue);
   });
 

@@ -96,9 +96,10 @@ it is either deferred or assigned to a plugin.
 6. **Plugin loader and IPC** — discover installed plugins, spawn their
    processes, route messages, surface their declared UI contributions.
 7. **Voice / eyes-free control** — a host-rendered, gesture-first
-   projection over plugin-exposed `voiceShortcut` actions and `ui.event`
-   routing. The host owns TTS / one-shot speech input / haptics; plugins
-   own the assistant or workflow protocol.
+   projection over plugin-exposed `voiceShortcut` actions, one-shot
+   `voiceInputEvent` dictation, direct `voiceOutputText` playback, and
+   `ui.event` routing. The host owns TTS / one-shot speech input /
+   haptics; plugins own the assistant or workflow protocol.
 8. **Notification system** — a multi-source, mobile-delivered surface
    where structured messages from any sender (CLI tool from a dev
    machine, webhook from CI, plugin running in the host, or the
@@ -114,10 +115,12 @@ Settings** (5 tabs). Git lives inside Files — there is no standalone
 Git tab. The "Voice" tab is a host-rendered eyes-free projection of
 plugin shortcuts: it scans plugin-owned `ui.tree` panels for actions
 explicitly marked `voiceShortcut: true` and exposes those actions
-through swipe / double-tap / long-press gestures plus TTS. It is not a
-core chat surface and does not know about Claude, Codex, AgentM, or any
-other assistant protocol. The "Plugins" tab remains the entry point for
-plugin management and visual plugin
+through swipe / double-tap / long-press gestures plus TTS. Actions may
+dispatch a normal `ui.event`, dictate text into a plugin-declared
+`voiceInputEvent`, or speak plugin-declared `voiceOutputText` directly.
+It is not a core chat surface and does not know about Claude, Codex,
+AgentM, or any other assistant protocol. The "Plugins" tab remains the
+entry point for plugin management and visual plugin
 panels: it lists active panels and drills into the panel renderer
 defined in §4.3.
 

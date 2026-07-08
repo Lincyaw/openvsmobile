@@ -138,6 +138,7 @@ describe("ui.* constructors", () => {
       focusRole: "status",
       focusOrder: 1,
       voiceInputEvent: "voice.reply",
+      voiceOutputText: "Agent finished",
       voiceShortcut: true,
     });
     expect(node).toMatchObject({
@@ -149,6 +150,7 @@ describe("ui.* constructors", () => {
       focusRole: "status",
       focusOrder: 1,
       voiceInputEvent: "voice.reply",
+      voiceOutputText: "Agent finished",
       voiceShortcut: true,
     });
   });

@@ -256,11 +256,26 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
         case EyesFreeActionKind.voiceInput:
           await _executeVoiceInput(action);
           break;
+        case EyesFreeActionKind.voiceOutput:
+          await _executeVoiceOutput(action);
+          break;
       }
     } finally {
       if (mounted) setState(() => _executing = false);
       _flushPendingStatus();
     }
+  }
+
+  Future<void> _executeVoiceOutput(EyesFreeAction action) async {
+    final text = action.voiceOutputText?.trim() ?? '';
+    if (text.isEmpty) {
+      _debugLog('voice output ignored: empty text');
+      await _speak('Nothing to read');
+      return;
+    }
+    _debugLog('voice output begin length=${text.length}');
+    await _stopSpeaking();
+    await _speakAndWait(text);
   }
 
   Future<void> _executeVoiceInput(EyesFreeAction action) async {

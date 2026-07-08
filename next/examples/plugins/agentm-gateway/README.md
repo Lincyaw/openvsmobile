@@ -3,12 +3,14 @@
 Mobile-native AgentM gateway peer. The plugin connects to an AgentM gateway,
 renders an eyes-free control panel, forwards in-app messages as AgentM
 `inbound` envelopes, and turns final AgentM replies into replyable
-openvsmobile notifications.
+openvsmobile notifications. The eyes-free Read last reply shortcut also
+uses `voiceOutputText` so the app can speak the latest reply directly.
 
 The panel is intentionally not a traditional chat UI. Its first focus stops
 are status, last visible AgentM reply, message input, Send message, Stop
-current turn, and Read last reply. Recent activity is capped to the latest few
-events, while socket/cwd diagnostics stay behind Show details.
+current turn, and Read last reply. The top-level Voice tab exposes only
+Dictate, Read last reply, and Stop current turn. Recent activity is capped to
+the latest few events, while socket/cwd diagnostics stay behind Show details.
 
 Configuration is via plugin-safe environment variables. The plugin host only
 passes `OPENVSMOBILE_PLUGIN_*` variables through to plugin processes.

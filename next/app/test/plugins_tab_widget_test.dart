@@ -493,6 +493,8 @@ void main() {
             'id': 'read-last',
             'title': 'Read last reply',
             'onTapEvent': 'tap',
+            'spokenValue': 'Read the latest AgentM message',
+            'voiceOutputText': 'AgentM finished the task',
             'focusRole': 'action',
             'focusOrder': 2,
             'voiceShortcut': true,
@@ -557,9 +559,9 @@ void main() {
     expect(find.text('Read last reply'), findsOneWidget);
 
     await _doubleTap(tester, surface);
-    expect(dispatched, hasLength(1));
-    expect(dispatched.single.nodeId, 'read-last');
-    expect(dispatched.single.type, 'tap');
+    expect(dispatched, isEmpty);
+    expect(voice.calls, contains('stopSpeaking'));
+    expect(voice.calls, contains('speakAndWait:AgentM finished the task'));
   });
 
   testWidgets(
@@ -946,6 +948,8 @@ void main() {
             'id': 'read-last',
             'title': 'Read last reply',
             'onTapEvent': 'tap',
+            'spokenValue': 'Read the latest AgentM message',
+            'voiceOutputText': 'AgentM finished the task',
             'focusRole': 'action',
             'focusOrder': 2,
             'voiceShortcut': true,
@@ -1010,9 +1014,9 @@ void main() {
     expect(find.text('Read last reply'), findsOneWidget);
 
     await _doubleTap(tester, surface);
-    expect(dispatched, hasLength(1));
-    expect(dispatched.single.nodeId, 'read-last');
-    expect(dispatched.single.type, 'tap');
+    expect(dispatched, isEmpty);
+    expect(voice.calls, contains('stopSpeaking'));
+    expect(voice.calls, contains('speakAndWait:AgentM finished the task'));
 
     await tester.longPress(surface);
     await tester.pumpAndSettle();

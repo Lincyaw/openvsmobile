@@ -181,7 +181,8 @@ Flutter preferences file that stores this list.
   persists the terminal font size preference.
 - **Voice.** Eyes-free control surface over plugin-exposed actions.
   Plugins remain the protocol owners; the app only scans typed `ui.tree`
-  accessibility metadata and routes gestures back through `ui.event`.
+  accessibility metadata, routes gesture events through `ui.event`, and
+  handles declared one-shot voice input / output locally.
 - **Plugins.** Installed plugin launcher plus native rendering for
   plugin-owned `ui.tree` panels. Plugin commands can be invoked from
   the detail surface; crashed plugins keep their last rendered panel
@@ -343,10 +344,12 @@ so reordered or duplicate pushes never roll the UI back.
 
 Any `UiNode` may also carry eyes-free metadata:
 `accessibilityLabel`, `accessibilityHint`, `spokenValue`, `focusRole`,
-`focusOrder`, `voiceInputEvent`, and `voiceShortcut`. Flutter renders
-the accessibility fields as native semantics; `voiceInputEvent` lets a
-voice input layer turn dictated text into a normal `ui.event`. The
-top-level Voice tab only includes actions explicitly marked
+`focusOrder`, `voiceInputEvent`, `voiceOutputText`, and `voiceShortcut`.
+Flutter renders the accessibility fields as native semantics;
+`voiceInputEvent` lets a voice input layer turn dictated text into a
+normal `ui.event`; `voiceOutputText` lets a double-tap speak plugin-owned
+content directly without routing through notifications. The top-level
+Voice tab only includes actions explicitly marked
 `voiceShortcut: true`, so dense plugin panels do not become oversized
 blind command menus.
 

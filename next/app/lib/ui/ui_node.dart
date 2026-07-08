@@ -109,6 +109,7 @@ class UiNodeAccessibility {
   final UiFocusRole? focusRole;
   final int? focusOrder;
   final String? voiceInputEvent;
+  final String? voiceOutputText;
   final bool voiceShortcut;
 
   const UiNodeAccessibility({
@@ -118,6 +119,7 @@ class UiNodeAccessibility {
     this.focusRole,
     this.focusOrder,
     this.voiceInputEvent,
+    this.voiceOutputText,
     this.voiceShortcut = false,
   });
 
@@ -128,6 +130,7 @@ class UiNodeAccessibility {
       focusRole == null &&
       focusOrder == null &&
       voiceInputEvent == null &&
+      voiceOutputText == null &&
       !voiceShortcut;
 
   factory UiNodeAccessibility.fromJson(Map<String, dynamic> json) {
@@ -138,6 +141,7 @@ class UiNodeAccessibility {
       focusRole: _focusRole(json['focusRole']),
       focusOrder: _focusOrder(json['focusOrder']),
       voiceInputEvent: _nonEmptyString(json['voiceInputEvent']),
+      voiceOutputText: _nonEmptyString(json['voiceOutputText']),
       voiceShortcut: json['voiceShortcut'] == true,
     );
   }

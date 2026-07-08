@@ -2,7 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../ui/ui_node.dart';
 
-enum EyesFreeActionKind { event, voiceInput }
+enum EyesFreeActionKind { event, voiceInput, voiceOutput }
 
 @immutable
 class EyesFreeAction {
@@ -11,6 +11,7 @@ class EyesFreeAction {
   final String spoken;
   final String? hint;
   final String? prompt;
+  final String? voiceOutputText;
   final EyesFreeActionKind kind;
   final UiNodeEvent event;
   final bool voiceShortcut;
@@ -23,6 +24,7 @@ class EyesFreeAction {
     required this.event,
     this.hint,
     this.prompt,
+    this.voiceOutputText,
     this.voiceShortcut = false,
   });
 }
@@ -82,8 +84,24 @@ class _EyesFreeCollector {
       }
     }
 
+    final voiceOutputText = meta.voiceOutputText;
     final voiceInputEvent = meta.voiceInputEvent;
-    if (node is UiTextField && voiceInputEvent != null) {
+    if (voiceOutputText != null) {
+      final label = _labelFor(node) ?? 'Read aloud';
+      _add(
+        node,
+        EyesFreeAction(
+          key: '${node.id}:voice-output',
+          label: label,
+          spoken: _composeSpoken(node, fallback: label),
+          hint: meta.accessibilityHint,
+          voiceOutputText: voiceOutputText,
+          kind: EyesFreeActionKind.voiceOutput,
+          event: UiNodeEvent(nodeId: node.id, type: 'voiceOutput'),
+          voiceShortcut: meta.voiceShortcut,
+        ),
+      );
+    } else if (node is UiTextField && voiceInputEvent != null) {
       _add(
         node,
         EyesFreeAction(

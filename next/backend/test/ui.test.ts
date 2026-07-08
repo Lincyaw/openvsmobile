@@ -197,6 +197,7 @@ describe("validateUiTree", () => {
       focusRole: "status",
       focusOrder: 2,
       voiceInputEvent: "voice.reply",
+      voiceOutputText: "Agent finished with 3 changed files",
       voiceShortcut: true,
     });
     expect(tree.accessibilityLabel).toBe("Agent status");
@@ -205,6 +206,7 @@ describe("validateUiTree", () => {
     expect(tree.focusRole).toBe("status");
     expect(tree.focusOrder).toBe(2);
     expect(tree.voiceInputEvent).toBe("voice.reply");
+    expect(tree.voiceOutputText).toBe("Agent finished with 3 changed files");
     expect(tree.voiceShortcut).toBe(true);
   });
 
@@ -225,6 +227,14 @@ describe("validateUiTree", () => {
         focusOrder: -1,
       }),
     ).toThrow(/focusOrder/);
+    expect(() =>
+      validateUiTree({
+        kind: "Text",
+        id: "status",
+        text: "Done",
+        voiceOutputText: "",
+      }),
+    ).toThrow(/voiceOutputText/);
     expect(() =>
       validateUiTree({
         kind: "Text",

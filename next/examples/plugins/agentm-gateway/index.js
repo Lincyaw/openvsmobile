@@ -692,6 +692,7 @@ function actionTile({
   role = "action",
   eventId = "tap",
   voiceShortcut = false,
+  voiceOutputText = undefined,
 }) {
   return ui.withMetadata(
     ui.listTile({
@@ -708,6 +709,7 @@ function actionTile({
       focusRole: role,
       focusOrder: order,
       voiceShortcut,
+      voiceOutputText,
     },
   );
 }
@@ -807,6 +809,7 @@ function buildTree() {
           order: 4,
           hint: "Reads the latest AgentM reply through speech.",
           voiceShortcut: true,
+          voiceOutputText: replyText,
         }),
         actionTile({
           id: "agentm-interrupt",

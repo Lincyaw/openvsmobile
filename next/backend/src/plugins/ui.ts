@@ -59,6 +59,7 @@ export interface UiNodeMetadata {
   focusRole?: UiFocusRole;
   focusOrder?: number;
   voiceInputEvent?: string;
+  voiceOutputText?: string;
   voiceShortcut?: boolean;
 }
 
@@ -843,6 +844,15 @@ function parseNodeMetadata(
       );
     }
     out.voiceInputEvent = voiceInputEvent;
+  }
+  const voiceOutputText = optString(r.voiceOutputText, path, "voiceOutputText");
+  if (voiceOutputText !== undefined) {
+    if (voiceOutputText.length === 0) {
+      throw new UiValidationError(
+        `${path}.voiceOutputText: must be a non-empty string when provided`,
+      );
+    }
+    out.voiceOutputText = voiceOutputText;
   }
   if (r.voiceShortcut !== undefined && r.voiceShortcut !== null) {
     if (typeof r.voiceShortcut !== "boolean") {
