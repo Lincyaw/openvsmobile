@@ -549,6 +549,115 @@ void main() {
   });
 
   testWidgets(
+    'eyes-free mode keeps selected action stable across tree updates',
+    (tester) async {
+      final panel = const PluginPanelStub(id: 'chat', title: 'Chat');
+      final appState = await _appStateWithSeed([
+        _info(id: 'agentm', name: 'AgentM', panels: [panel]),
+      ]);
+      addTearDown(appState.dispose);
+
+      appState.uiPanels.debugInjectPush(<String, dynamic>{
+        'pluginId': 'agentm',
+        'panelId': 'chat',
+        'version': 1,
+        'tree': <String, dynamic>{
+          'kind': 'Column',
+          'id': 'root',
+          'children': <Map<String, dynamic>>[
+            <String, dynamic>{
+              'kind': 'ListTile',
+              'id': 'send-typed',
+              'title': 'Send typed reply',
+              'onTapEvent': 'tap',
+              'focusRole': 'action',
+              'focusOrder': 1,
+            },
+            <String, dynamic>{
+              'kind': 'ListTile',
+              'id': 'read-last',
+              'title': 'Read last reply',
+              'onTapEvent': 'tap',
+              'focusRole': 'action',
+              'focusOrder': 2,
+            },
+          ],
+        },
+      });
+
+      final dispatched = <UiNodeEvent>[];
+      appState.uiPanels.debugDispatchOverride =
+          ({required pluginId, required panelId, required event}) async {
+            dispatched.add(event);
+          };
+
+      final info = appState.plugins.plugin('agentm')!;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PluginEyesFreeScreen(
+            appState: appState,
+            info: info,
+            panel: panel,
+            voice: _FakeVoiceInteraction(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final surface = find.byKey(
+        const ValueKey<String>('eyes-free-gesture-surface'),
+      );
+      await tester.fling(surface, const Offset(-500, 0), 1000);
+      await tester.pumpAndSettle();
+      expect(find.text('Read last reply'), findsOneWidget);
+
+      appState.uiPanels.debugInjectPush(<String, dynamic>{
+        'pluginId': 'agentm',
+        'panelId': 'chat',
+        'version': 2,
+        'tree': <String, dynamic>{
+          'kind': 'Column',
+          'id': 'root',
+          'children': <Map<String, dynamic>>[
+            <String, dynamic>{
+              'kind': 'ListTile',
+              'id': 'stop-turn',
+              'title': 'Stop current turn',
+              'onTapEvent': 'tap',
+              'focusRole': 'danger',
+              'focusOrder': 1,
+            },
+            <String, dynamic>{
+              'kind': 'ListTile',
+              'id': 'send-typed',
+              'title': 'Send typed reply',
+              'onTapEvent': 'tap',
+              'focusRole': 'action',
+              'focusOrder': 2,
+            },
+            <String, dynamic>{
+              'kind': 'ListTile',
+              'id': 'read-last',
+              'title': 'Read last reply',
+              'onTapEvent': 'tap',
+              'focusRole': 'action',
+              'focusOrder': 3,
+            },
+          ],
+        },
+      });
+      await tester.pumpAndSettle();
+
+      expect(find.text('Read last reply'), findsOneWidget);
+      await _doubleTap(tester, surface);
+
+      expect(dispatched, hasLength(1));
+      expect(dispatched.single.nodeId, 'read-last');
+      expect(dispatched.single.type, 'tap');
+    },
+  );
+
+  testWidgets(
     'eyes-free mode reports voice input failures without dispatching',
     (tester) async {
       final panel = const PluginPanelStub(id: 'chat', title: 'Chat');

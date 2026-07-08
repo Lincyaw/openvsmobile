@@ -31,6 +31,7 @@ class PluginEyesFreeScreen extends StatefulWidget {
 
 class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
   int _index = 0;
+  String? _selectedActionKey;
   bool _executing = false;
   String? _lastSpokenStatus;
 
@@ -56,8 +57,9 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
 
   void _onPanelsChanged() {
     if (!mounted) return;
-    final nextStatus = _collectEyesFreeState(_tree).statusText;
-    setState(() {});
+    final state = _collectEyesFreeState(_tree);
+    final nextStatus = state.statusText;
+    setState(() => _syncSelection(state.actions));
     if (nextStatus != null && nextStatus != _lastSpokenStatus) {
       _lastSpokenStatus = nextStatus;
       _speakLater(nextStatus);
@@ -66,6 +68,7 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
 
   void _announceEntry() {
     final state = _collectEyesFreeState(_tree);
+    _syncSelection(state.actions);
     _lastSpokenStatus = state.statusText;
     final parts = <String>[
       'Eyes-free mode',
@@ -89,6 +92,24 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
     return _index.clamp(0, count - 1).toInt();
   }
 
+  void _syncSelection(List<_EyesFreeAction> actions) {
+    if (actions.isEmpty) {
+      _index = 0;
+      _selectedActionKey = null;
+      return;
+    }
+    final key = _selectedActionKey;
+    if (key != null) {
+      final existing = actions.indexWhere((action) => action.key == key);
+      if (existing >= 0) {
+        _index = existing;
+        return;
+      }
+    }
+    _index = _safeIndex(actions.length);
+    _selectedActionKey = actions[_index].key;
+  }
+
   void _move(int delta) {
     final actions = _collectEyesFreeState(_tree).actions;
     if (actions.isEmpty) {
@@ -98,6 +119,7 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
     setState(() {
       _index = (_safeIndex(actions.length) + delta) % actions.length;
       if (_index < 0) _index += actions.length;
+      _selectedActionKey = actions[_index].key;
     });
     HapticFeedback.selectionClick();
     _speakLater(_currentAnnouncement(actions));
@@ -120,6 +142,7 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
       _speakLater('${widget.info.name} is frozen');
       return;
     }
+    _syncSelection(state.actions);
     final action = state.actions[_safeIndex(state.actions.length)];
     setState(() => _executing = true);
     HapticFeedback.mediumImpact();
