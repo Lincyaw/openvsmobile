@@ -34,6 +34,7 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
   String? _selectedActionKey;
   bool _executing = false;
   String? _lastSpokenStatus;
+  String? _pendingSpokenStatus;
 
   @override
   void initState() {
@@ -61,8 +62,12 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
     final nextStatus = state.statusText;
     setState(() => _syncSelection(state.actions));
     if (nextStatus != null && nextStatus != _lastSpokenStatus) {
-      _lastSpokenStatus = nextStatus;
-      _speakLater(nextStatus);
+      if (_executing) {
+        _pendingSpokenStatus = nextStatus;
+      } else {
+        _lastSpokenStatus = nextStatus;
+        _speakLater(nextStatus);
+      }
     }
   }
 
@@ -111,6 +116,7 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
   }
 
   void _move(int delta) {
+    if (_executing) return;
     final actions = _collectEyesFreeState(_tree).actions;
     if (actions.isEmpty) {
       _speakLater('No actions available');
@@ -150,7 +156,7 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
       switch (action.kind) {
         case _EyesFreeActionKind.event:
           await _dispatch(action.event);
-          await _speak('Confirmed. ${action.label}');
+          await _speakAndWait('Confirmed. ${action.label}');
           break;
         case _EyesFreeActionKind.voiceInput:
           await _executeVoiceInput(action);
@@ -158,6 +164,7 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
       }
     } finally {
       if (mounted) setState(() => _executing = false);
+      _flushPendingStatus();
     }
   }
 
@@ -197,7 +204,16 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
         payload: {'value': text, 'source': 'voice'},
       ),
     );
-    await _speak('Sent');
+    await _speakAndWait('Sent');
+  }
+
+  void _flushPendingStatus() {
+    if (!mounted || _pendingSpokenStatus == null) return;
+    _pendingSpokenStatus = null;
+    final currentStatus = _collectEyesFreeState(_tree).statusText;
+    if (currentStatus == null || currentStatus == _lastSpokenStatus) return;
+    _lastSpokenStatus = currentStatus;
+    _speakLater(currentStatus);
   }
 
   Future<bool> _speechRecognitionAvailable() async {

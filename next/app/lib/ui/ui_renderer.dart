@@ -1530,14 +1530,20 @@ class _UiTextFieldRendererState extends State<_UiTextFieldRenderer> {
         );
         return;
       }
+      final prompt = widget.placeholder ?? widget.label;
+      try {
+        await widget.voice.speakAndWait(
+          'Listening. ${prompt ?? 'Voice input'}',
+        );
+      } catch (_) {
+        // Best-effort cue before opening the microphone.
+      }
       try {
         await widget.voice.stopSpeaking();
       } catch (_) {
         // Best-effort: stale TTS should not block visible text input.
       }
-      final text = await widget.voice.recognizeOnce(
-        prompt: widget.placeholder ?? widget.label,
-      );
+      final text = await widget.voice.recognizeOnce(prompt: prompt);
       if (!mounted) return;
       if (text == null || text.isEmpty) return;
       _controller.text = text;

@@ -353,11 +353,16 @@ void main() {
       'source': 'voice',
     });
     expect(voice.calls, contains('isSpeechRecognitionAvailable'));
+    final cueIndex = voice.calls.indexWhere(
+      (call) => call.startsWith('speakAndWait:Listening.'),
+    );
     final stopIndex = voice.calls.indexOf('stopSpeaking');
     final recognizeIndex = voice.calls.indexWhere(
       (call) => call.startsWith('recognizeOnce:'),
     );
+    expect(cueIndex, isNonNegative);
     expect(stopIndex, isNonNegative);
+    expect(stopIndex, greaterThan(cueIndex));
     expect(recognizeIndex, greaterThan(stopIndex));
   });
 

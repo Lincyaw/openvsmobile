@@ -18,6 +18,8 @@
 // install a stub via the new `pluginRpcStub` test seam on PluginsModel so
 // we can record + assert the call order.
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -59,6 +61,7 @@ Widget _wrap(Widget child) => MaterialApp(home: Scaffold(body: child));
 class _FakeVoiceInteraction extends VoiceInteraction {
   final String? recognizedText;
   final Object? recognitionError;
+  final Completer<String?>? recognitionCompleter;
   final bool speechRecognitionAvailable;
   final List<String> spoken = <String>[];
   final List<String> calls = <String>[];
@@ -66,6 +69,7 @@ class _FakeVoiceInteraction extends VoiceInteraction {
   _FakeVoiceInteraction({
     this.recognizedText,
     this.recognitionError,
+    this.recognitionCompleter,
     this.speechRecognitionAvailable = true,
   });
 
@@ -80,6 +84,8 @@ class _FakeVoiceInteraction extends VoiceInteraction {
     calls.add('recognizeOnce:${prompt ?? ""}');
     final error = recognitionError;
     if (error != null) throw error;
+    final completer = recognitionCompleter;
+    if (completer != null) return completer.future;
     return recognizedText;
   }
 
@@ -656,6 +662,122 @@ void main() {
       expect(dispatched.single.type, 'tap');
     },
   );
+
+  testWidgets('eyes-free mode defers status speech during voice input', (
+    tester,
+  ) async {
+    final panel = const PluginPanelStub(id: 'chat', title: 'Chat');
+    final appState = await _appStateWithSeed([
+      _info(id: 'agentm', name: 'AgentM', panels: [panel]),
+    ]);
+    addTearDown(appState.dispose);
+
+    appState.uiPanels.debugInjectPush(<String, dynamic>{
+      'pluginId': 'agentm',
+      'panelId': 'chat',
+      'version': 1,
+      'tree': <String, dynamic>{
+        'kind': 'Column',
+        'id': 'root',
+        'children': <Map<String, dynamic>>[
+          <String, dynamic>{
+            'kind': 'Text',
+            'id': 'status',
+            'text': 'Ready',
+            'focusRole': 'status',
+            'spokenValue': 'AgentM ready',
+          },
+          <String, dynamic>{
+            'kind': 'TextField',
+            'id': 'reply',
+            'label': 'Reply',
+            'placeholder': 'Speak a reply',
+            'accessibilityLabel': 'Dictate and send reply',
+            'focusRole': 'action',
+            'focusOrder': 1,
+            'voiceInputEvent': 'send',
+          },
+        ],
+      },
+    });
+
+    final dispatched = <UiNodeEvent>[];
+    appState.uiPanels.debugDispatchOverride =
+        ({required pluginId, required panelId, required event}) async {
+          dispatched.add(event);
+        };
+
+    final recognition = Completer<String?>();
+    final voice = _FakeVoiceInteraction(recognitionCompleter: recognition);
+    final info = appState.plugins.plugin('agentm')!;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PluginEyesFreeScreen(
+          appState: appState,
+          info: info,
+          panel: panel,
+          voice: voice,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    voice.spoken.clear();
+
+    final surface = find.byKey(
+      const ValueKey<String>('eyes-free-gesture-surface'),
+    );
+    await tester.tap(surface);
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tap(surface);
+    await tester.pump();
+    for (var i = 0; i < 5; i += 1) {
+      if (voice.calls.any((call) => call.startsWith('recognizeOnce:'))) {
+        break;
+      }
+      await tester.pump(const Duration(milliseconds: 10));
+    }
+
+    appState.uiPanels.debugInjectPush(<String, dynamic>{
+      'pluginId': 'agentm',
+      'panelId': 'chat',
+      'version': 2,
+      'tree': <String, dynamic>{
+        'kind': 'Column',
+        'id': 'root',
+        'children': <Map<String, dynamic>>[
+          <String, dynamic>{
+            'kind': 'Text',
+            'id': 'status',
+            'text': 'Working',
+            'focusRole': 'status',
+            'spokenValue': 'AgentM working',
+          },
+          <String, dynamic>{
+            'kind': 'TextField',
+            'id': 'reply',
+            'label': 'Reply',
+            'placeholder': 'Speak a reply',
+            'accessibilityLabel': 'Dictate and send reply',
+            'focusRole': 'action',
+            'focusOrder': 1,
+            'voiceInputEvent': 'send',
+          },
+        ],
+      },
+    });
+    await tester.pump();
+
+    expect(voice.spoken, isNot(contains('AgentM working')));
+
+    recognition.complete('reply by voice');
+    await tester.pumpAndSettle();
+
+    expect(dispatched, hasLength(2));
+    final sentIndex = voice.spoken.indexOf('Sent');
+    final statusIndex = voice.spoken.indexOf('AgentM working');
+    expect(sentIndex, isNonNegative);
+    expect(statusIndex, greaterThan(sentIndex));
+  });
 
   testWidgets(
     'eyes-free mode reports voice input failures without dispatching',
