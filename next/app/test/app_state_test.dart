@@ -4,6 +4,7 @@ import 'package:mobilecode/app_state.dart';
 import 'package:mobilecode/backend_client.dart';
 import 'package:mobilecode/models.dart';
 import 'package:mobilecode/selection_context.dart';
+import 'package:mobilecode/state/terminals_notifier.dart';
 
 const _workspace = Workspace(
   id: 'ws-1',
@@ -21,6 +22,49 @@ const _session = TerminalSession(
   cwd: '/tmp/ws-1',
   createdAt: 0,
 );
+
+class _RecordedRpcCall {
+  final String method;
+  final Map<String, dynamic>? params;
+
+  const _RecordedRpcCall(this.method, this.params);
+}
+
+class _TerminalHistoryClient extends BackendClient {
+  final List<_RecordedRpcCall> calls = [];
+
+  @override
+  Future<dynamic> call(String method, [Map<String, dynamic>? params]) async {
+    calls.add(_RecordedRpcCall(method, params));
+    switch (method) {
+      case 'terminal.list':
+        return {
+          'sessions': [
+            {
+              'id': _session.id,
+              'workspaceId': _session.workspaceId,
+              'workspaceRoot': _session.workspaceRoot,
+              'cols': _session.cols,
+              'rows': _session.rows,
+              'cwd': _session.cwd,
+              'createdAt': _session.createdAt,
+            },
+          ],
+        };
+      case 'terminal.history':
+        return {
+          'scrollbackBase64': '',
+          'scrollbackOffsetEnd': 0,
+          'bytesDropped': 0,
+          'lengthBytes': 0,
+        };
+      case 'terminal.subscribe':
+        return <String, dynamic>{};
+      default:
+        throw BackendRpcException(-32601, 'method not found');
+    }
+  }
+}
 
 void main() {
   test('resetForBackendSession clears server-derived state', () {
@@ -97,4 +141,20 @@ void main() {
       expect(appState.selectionContext, isNull);
     },
   );
+
+  test('refreshTerminals caps terminal history replay size', () async {
+    final client = _TerminalHistoryClient();
+    final appState = AppState(client: client);
+    addTearDown(appState.dispose);
+
+    await appState.refreshTerminals();
+
+    final historyCall = client.calls.singleWhere(
+      (call) => call.method == 'terminal.history',
+    );
+    expect(historyCall.params, {
+      'sessionId': _session.id,
+      'maxBytes': kTerminalHistoryReplayMaxBytes,
+    });
+  });
 }

@@ -24,6 +24,7 @@ import 'services/deep_link_service.dart';
 import 'services/diag_log.dart';
 import 'services/notification_foreground_service.dart';
 import 'services/system_tray.dart';
+import 'services/terminal_notification_resolver.dart';
 import 'settings_store.dart';
 import 'state/terminal_hub.dart';
 import 'ui/app_theme.dart';
@@ -89,16 +90,26 @@ class _MobileCodeAppState extends State<MobileCodeApp>
       );
     }
     _client.state.addListener(_logConnectionState);
+    _client.lastError.addListener(_logConnectionError);
     _bootstrap();
   }
 
   /// Feed backend connection transitions into the debug overlay so a trace
   /// shows reconnect windows alongside any dropped writes.
   void _logConnectionState() {
+    final err = _client.lastError.value;
     DiagLog.instance.log(
       DiagCat.net,
-      'connection → ${_client.state.value.name}',
+      err == null || err.isEmpty
+          ? 'connection → ${_client.state.value.name}'
+          : 'connection → ${_client.state.value.name} ($err)',
     );
+  }
+
+  void _logConnectionError() {
+    final err = _client.lastError.value;
+    if (err == null || err.isEmpty) return;
+    DiagLog.instance.log(DiagCat.error, 'connection error → $err');
   }
 
   /// Fan `notification.show` / `.deleted` / `.superseded` pushes to
@@ -348,17 +359,19 @@ class _MobileCodeAppState extends State<MobileCodeApp>
   }
 
   Future<void> _openTerminalFromNotification(OpenTerminalAction action) async {
-    final backendId = action.backendId ?? _state.activeBackendId;
-    if (backendId == null || backendId.isEmpty) {
-      _showRootSnack('No backend is active for this terminal');
-      return;
-    }
-    var ref = _terminalHub.sessionFor(backendId, action.sessionId);
+    final ref = await resolveTerminalForNotification(
+      terminalHub: _terminalHub,
+      action: action,
+      activeBackendId: _state.activeBackendId,
+      isMounted: () => mounted,
+    );
+    if (!mounted) return;
     if (ref == null) {
-      await _terminalHub.refreshAll();
-      ref = _terminalHub.sessionFor(backendId, action.sessionId);
-    }
-    if (ref == null) {
+      final backendId = action.backendId ?? _state.activeBackendId;
+      if (backendId == null || backendId.isEmpty) {
+        _showRootSnack('No backend is active for this terminal');
+        return;
+      }
       final suffix = action.externalSessionId == null
           ? ''
           : ' (${action.externalSessionId})';
@@ -592,6 +605,7 @@ class _MobileCodeAppState extends State<MobileCodeApp>
     _appState?.dispose();
     _terminalHub.dispose();
     _client.state.removeListener(_logConnectionState);
+    _client.lastError.removeListener(_logConnectionError);
     _client.dispose();
     super.dispose();
   }
@@ -646,7 +660,6 @@ class _MobileCodeAppState extends State<MobileCodeApp>
                 );
               },
               onSwitchBackend: _switchBackend,
-              onBackendInstalled: _addBackend,
               onNotificationPrefsChanged: _onNotificationPrefsChanged,
             ),
     );

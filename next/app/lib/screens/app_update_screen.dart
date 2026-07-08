@@ -65,10 +65,9 @@ class _AppUpdateScreenState extends State<AppUpdateScreen> {
       _total = _assetSize;
       _error = '';
     });
-    _sub = _service.download(_downloadUrl, _assetSize).listen(
-      _onEvent,
-      onDone: _onDone,
-    );
+    _sub = _service
+        .download(_downloadUrl, _assetSize)
+        .listen(_onEvent, onDone: _onDone);
   }
 
   void _onEvent(UpdateEvent event) {
@@ -128,7 +127,8 @@ class _AppUpdateScreenState extends State<AppUpdateScreen> {
   }
 
   void _openReleasePage() {
-    final url = 'https://github.com/Lincyaw/openvsmobile/releases/tag/$_tagName';
+    final url =
+        'https://github.com/Lincyaw/openvsmobile/releases/tag/$_tagName';
     launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
   }
 
@@ -219,14 +219,13 @@ class _AppUpdateScreenState extends State<AppUpdateScreen> {
           children: [
             Row(
               children: [
-                Icon(Icons.new_releases_outlined,
-                    color: theme.colorScheme.primary),
+                Icon(
+                  Icons.new_releases_outlined,
+                  color: theme.colorScheme.primary,
+                ),
                 const SizedBox(width: AppSpacing.sm),
                 Expanded(
-                  child: Text(
-                    _releaseName,
-                    style: theme.textTheme.titleMedium,
-                  ),
+                  child: Text(_releaseName, style: theme.textTheme.titleMedium),
                 ),
               ],
             ),
@@ -278,7 +277,10 @@ class _AppUpdateScreenState extends State<AppUpdateScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text('Downloading $_tagName...', style: theme.textTheme.titleMedium),
+            Text(
+              'Downloading $_tagName...',
+              style: theme.textTheme.titleMedium,
+            ),
             const SizedBox(height: AppSpacing.md),
             LinearProgressIndicator(value: progress),
             const SizedBox(height: AppSpacing.sm),
@@ -303,10 +305,7 @@ class _AppUpdateScreenState extends State<AppUpdateScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text(
-              'Download complete',
-              style: theme.textTheme.titleMedium,
-            ),
+            Text('Download complete', style: theme.textTheme.titleMedium),
             const SizedBox(height: AppSpacing.xs),
             Text(
               '$_tagName is ready to install.',
@@ -339,10 +338,7 @@ class _AppUpdateScreenState extends State<AppUpdateScreen> {
           children: [
             Text('Update failed', style: theme.textTheme.titleMedium),
             const SizedBox(height: AppSpacing.xs),
-            SelectableText(
-              _error,
-              style: theme.textTheme.bodySmall,
-            ),
+            SelectableText(_error, style: theme.textTheme.bodySmall),
             const SizedBox(height: AppSpacing.lg),
             Row(
               children: [

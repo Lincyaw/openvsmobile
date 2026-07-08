@@ -13,16 +13,19 @@ import 'package:mobilecode/settings_store.dart';
 
 void main() {
   group('NotificationPrefs persistence', () {
-    test('default load: backgroundEnabled is true, TTL is 7d, no mute', () async {
-      SharedPreferences.setMockInitialValues(const <String, Object>{});
-      final store = SettingsStore();
-      final p = await store.loadNotificationPrefs();
-      expect(p.backgroundEnabled, isTrue);
-      expect(p.mutedSources, isEmpty);
-      expect(p.defaultTtlDays, 7);
-      expect(p.quietHoursStartMinutes, isNull);
-      expect(p.quietHoursEndMinutes, isNull);
-    });
+    test(
+      'default load: backgroundEnabled is true, TTL is 7d, no mute',
+      () async {
+        SharedPreferences.setMockInitialValues(const <String, Object>{});
+        final store = SettingsStore();
+        final p = await store.loadNotificationPrefs();
+        expect(p.backgroundEnabled, isTrue);
+        expect(p.mutedSources, isEmpty);
+        expect(p.defaultTtlDays, 7);
+        expect(p.quietHoursStartMinutes, isNull);
+        expect(p.quietHoursEndMinutes, isNull);
+      },
+    );
 
     test('toggle off survives a round-trip', () async {
       SharedPreferences.setMockInitialValues(const <String, Object>{});
@@ -39,11 +42,13 @@ void main() {
       SharedPreferences.setMockInitialValues(const <String, Object>{});
       final store = SettingsStore();
       final initial = await store.loadNotificationPrefs();
-      await store.saveNotificationPrefs(initial.copyWith(
-        mutedSources: ['ci', 'demo:test'],
-        quietHoursStartMinutes: 22 * 60,
-        quietHoursEndMinutes: 7 * 60,
-      ));
+      await store.saveNotificationPrefs(
+        initial.copyWith(
+          mutedSources: ['ci', 'demo:test'],
+          quietHoursStartMinutes: 22 * 60,
+          quietHoursEndMinutes: 7 * 60,
+        ),
+      );
       final reloaded = await store.loadNotificationPrefs();
       expect(reloaded.mutedSources, ['ci', 'demo:test']);
       expect(reloaded.quietHoursStartMinutes, 22 * 60);
@@ -54,10 +59,9 @@ void main() {
       SharedPreferences.setMockInitialValues(const <String, Object>{});
       final store = SettingsStore();
       final initial = await store.loadNotificationPrefs();
-      await store.saveNotificationPrefs(initial.copyWith(
-        quietHoursStartMinutes: 60,
-        quietHoursEndMinutes: 120,
-      ));
+      await store.saveNotificationPrefs(
+        initial.copyWith(quietHoursStartMinutes: 60, quietHoursEndMinutes: 120),
+      );
       final mid = await store.loadNotificationPrefs();
       await store.saveNotificationPrefs(mid.copyWith(clearQuietHours: true));
       final reloaded = await store.loadNotificationPrefs();
@@ -76,14 +80,19 @@ void main() {
 
   group('channel routing', () {
     test('info / success → low; warning → default; error → high', () {
-      expect(channelForLevel(NotificationLevel.info),
-          NotificationChannels.low);
-      expect(channelForLevel(NotificationLevel.success),
-          NotificationChannels.low);
-      expect(channelForLevel(NotificationLevel.warning),
-          NotificationChannels.defaultImp);
-      expect(channelForLevel(NotificationLevel.error),
-          NotificationChannels.high);
+      expect(channelForLevel(NotificationLevel.info), NotificationChannels.low);
+      expect(
+        channelForLevel(NotificationLevel.success),
+        NotificationChannels.low,
+      );
+      expect(
+        channelForLevel(NotificationLevel.warning),
+        NotificationChannels.defaultImp,
+      );
+      expect(
+        channelForLevel(NotificationLevel.error),
+        NotificationChannels.high,
+      );
     });
 
     test('trayIdForNotification is deterministic and positive', () {

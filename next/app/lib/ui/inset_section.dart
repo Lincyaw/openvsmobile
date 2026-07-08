@@ -93,10 +93,10 @@ class InsetSection extends StatelessWidget {
               child: Text(
                 title!.toUpperCase(),
                 style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                      letterSpacing: 0.6,
-                      fontWeight: FontWeight.w600,
-                    ),
+                  color: scheme.onSurfaceVariant,
+                  letterSpacing: 0.6,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
           Material(

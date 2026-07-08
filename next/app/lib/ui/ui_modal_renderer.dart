@@ -232,10 +232,7 @@ Future<void> _showBottomSheet(
                   child: SingleChildScrollView(
                     controller: scrollController,
                     padding: const EdgeInsets.all(AppSpacing.md),
-                    child: UiRenderer(
-                      tree: sheet.child,
-                      onEvent: onEvent,
-                    ),
+                    child: UiRenderer(tree: sheet.child, onEvent: onEvent),
                   ),
                 ),
               ],

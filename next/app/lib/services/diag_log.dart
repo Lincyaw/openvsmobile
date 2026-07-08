@@ -24,6 +24,7 @@ class DiagCat {
   static const String resize = 'size'; // PTY resize
   static const String net = 'net'; // connection state transitions
   static const String rpc = 'rpc'; // JSON-RPC calls / failures
+  static const String iroh = 'iroh'; // native Iroh transport events
   static const String error = 'err'; // something went wrong
   static const String marker = 'mark'; // user-dropped marker
   static const String info = 'info';
@@ -169,9 +170,11 @@ class DiagLog extends ChangeNotifier {
     for (var i = 0; i < _segments.length; i++) {
       final s = _segments[i];
       b.writeln();
-      b.writeln('== segment ${i + 1} · ${s.label} · '
-          '${(s.durationMs / 1000).toStringAsFixed(1)}s · '
-          '${s.entries.length} events ==');
+      b.writeln(
+        '== segment ${i + 1} · ${s.label} · '
+        '${(s.durationMs / 1000).toStringAsFixed(1)}s · '
+        '${s.entries.length} events ==',
+      );
       for (final e in s.entries) {
         final rel = ((e.tMs - s.startMs) / 1000).toStringAsFixed(2);
         b.writeln('+${rel.padLeft(6)}s ${e.category.padRight(5)} ${e.text}');

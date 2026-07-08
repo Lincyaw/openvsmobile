@@ -10,7 +10,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { WebSocket } from "ws";
-import { cp, mkdir, readFile } from "node:fs/promises";
+import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PluginHost } from "../src/plugins/host.js";
@@ -30,6 +30,7 @@ interface Harness {
   state: ProcessState;
   staging: string;
   pluginsDir: string;
+  logDir: string;
   stateFile: string;
 }
 
@@ -78,7 +79,7 @@ async function buildHarness(
   });
   state.pluginHost = host;
   await host.start();
-  return { host, state, staging, pluginsDir, stateFile };
+  return { host, state, staging, pluginsDir, logDir, stateFile };
 }
 
 function makeContext(state: ProcessState, sock: FakeWebSocket): RpcContext {
@@ -222,6 +223,51 @@ describe("plugin.* RPCs", () => {
       );
       expect(result).toEqual({
         result: { echoed: "hello world", commandId: "cmd.echo" },
+      });
+    } finally {
+      harness.host.shutdown();
+    }
+  });
+
+  it("plugin.log returns a bounded stderr tail for a known plugin", async () => {
+    const harness = await buildHarness(["hello"]);
+    try {
+      const logPath = join(harness.logDir, "hello.stderr.log");
+      await writeFile(logPath, "first line\nsecond line\nthird line\n");
+      const sock = new FakeWebSocket();
+      const ctx = makeContext(harness.state, sock);
+
+      const result = await call<{
+        id: string;
+        path: string;
+        text: string;
+        bytes: number;
+        truncated: boolean;
+      }>(ctx, "plugin.log", {
+        id: "hello",
+        maxBytes: 18,
+      });
+
+      expect(result.id).toBe("hello");
+      expect(result.path).toBe(logPath);
+      expect(result.text).toBe("d line\nthird line\n");
+      expect(result.bytes).toBe(34);
+      expect(result.truncated).toBe(true);
+    } finally {
+      harness.host.shutdown();
+    }
+  });
+
+  it("plugin.log rejects unknown plugin ids", async () => {
+    const harness = await buildHarness(["hello"]);
+    try {
+      const sock = new FakeWebSocket();
+      const ctx = makeContext(harness.state, sock);
+      await expect(
+        call(ctx, "plugin.log", { id: "missing" }),
+      ).rejects.toMatchObject({
+        code: -32602,
+        message: "no such plugin: missing",
       });
     } finally {
       harness.host.shutdown();

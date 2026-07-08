@@ -132,13 +132,11 @@ class _DiagPanelState extends State<_DiagPanel> {
   }
 
   Future<void> _copyAll() async {
-    await Clipboard.setData(
-      ClipboardData(text: DiagLog.instance.exportText()),
-    );
+    await Clipboard.setData(ClipboardData(text: DiagLog.instance.exportText()));
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Trace copied to clipboard')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Trace copied to clipboard')));
   }
 
   @override
@@ -162,8 +160,7 @@ class _DiagPanelState extends State<_DiagPanel> {
               elevation: 8,
               color: theme.colorScheme.surface,
               shape: const RoundedRectangleBorder(
-                borderRadius:
-                    BorderRadius.vertical(top: Radius.circular(16)),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
               ),
               child: SafeArea(
                 top: false,
@@ -188,10 +185,7 @@ class _DiagPanelState extends State<_DiagPanel> {
                           _SegmentsBar(diag: diag, onCopyAll: _copyAll),
                           const Divider(height: AppSpacing.md),
                           Expanded(
-                            child: _LogList(
-                              diag: diag,
-                              controller: _logScroll,
-                            ),
+                            child: _LogList(diag: diag, controller: _logScroll),
                           ),
                         ],
                       ),
@@ -349,6 +343,7 @@ class _LogRow extends StatelessWidget {
     DiagCat.resize => s.primary,
     DiagCat.net => s.primary,
     DiagCat.rpc => s.secondary,
+    DiagCat.iroh => s.tertiary,
     DiagCat.marker => s.secondary,
     DiagCat.terminal => s.onSurface,
     _ => s.onSurfaceVariant,
@@ -369,10 +364,7 @@ class _LogRow extends StatelessWidget {
           children: [
             TextSpan(
               text: '$hh:$mm:$ss.$ms ',
-              style: AppText.mono(
-                fontSize: 11,
-                color: scheme.onSurfaceVariant,
-              ),
+              style: AppText.mono(fontSize: 11, color: scheme.onSurfaceVariant),
             ),
             TextSpan(
               text: '${entry.category.padRight(5)} ',

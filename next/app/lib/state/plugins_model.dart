@@ -46,6 +46,31 @@ class PluginCommandStub {
   const PluginCommandStub({required this.id, required this.title});
 }
 
+@immutable
+class PluginLogTail {
+  final String id;
+  final String path;
+  final String text;
+  final int bytes;
+  final bool truncated;
+
+  const PluginLogTail({
+    required this.id,
+    required this.path,
+    required this.text,
+    required this.bytes,
+    required this.truncated,
+  });
+
+  factory PluginLogTail.fromJson(Map<String, dynamic> json) => PluginLogTail(
+    id: json['id'] as String? ?? '',
+    path: json['path'] as String? ?? '',
+    text: json['text'] as String? ?? '',
+    bytes: (json['bytes'] as num?)?.toInt() ?? 0,
+    truncated: json['truncated'] == true,
+  );
+}
+
 /// Mirror of the backend's `PluginInfo` shape returned by `plugin.list`.
 /// `contributes` lists the panels we should render; we read them out of
 /// the `contributes.panels` key when present, otherwise treat the plugin
@@ -337,6 +362,19 @@ class PluginsModel extends ChangeNotifier {
     final params = <String, dynamic>{'id': pluginId, 'commandId': commandId};
     if (args != null) params['args'] = args;
     return _call('plugin.invokeCommand', params);
+  }
+
+  Future<PluginLogTail> fetchLog(
+    String pluginId, {
+    int maxBytes = 32 * 1024,
+  }) async {
+    final result =
+        await _call('plugin.log', <String, dynamic>{
+              'id': pluginId,
+              'maxBytes': maxBytes,
+            })
+            as Map<String, dynamic>;
+    return PluginLogTail.fromJson(result);
   }
 
   /// Reload a crashed plugin: disable then enable. The interleaving of

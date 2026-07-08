@@ -33,8 +33,8 @@ class NotificationSettingsScreen extends StatefulWidget {
       _NotificationSettingsScreenState();
 }
 
-class _NotificationSettingsScreenState
-    extends State<NotificationSettingsScreen> with WidgetsBindingObserver {
+class _NotificationSettingsScreenState extends State<NotificationSettingsScreen>
+    with WidgetsBindingObserver {
   static const String _kBackgroundOnboardedKey = 'background-onboarded';
 
   NotificationPrefs? _prefs;
@@ -127,10 +127,7 @@ class _NotificationSettingsScreenState
             'Notification permission denied. Enable it in system settings '
             'to turn on background notifications.',
           ),
-          action: SnackBarAction(
-            label: 'Open',
-            onPressed: openAppSettings,
-          ),
+          action: SnackBarAction(label: 'Open', onPressed: openAppSettings),
         ),
       );
       // Persist the off state so future loads see truth.
@@ -192,9 +189,11 @@ class _NotificationSettingsScreenState
     );
     if (result == null) return;
     final mins = result.hour * 60 + result.minute;
-    await _save(isStart
-        ? cur.copyWith(quietHoursStartMinutes: mins)
-        : cur.copyWith(quietHoursEndMinutes: mins));
+    await _save(
+      isStart
+          ? cur.copyWith(quietHoursStartMinutes: mins)
+          : cur.copyWith(quietHoursEndMinutes: mins),
+    );
   }
 
   String _fmtMinutes(int? m) {
@@ -230,12 +229,16 @@ class _NotificationSettingsScreenState
     final sources = widget.appState.notifications.knownSources;
     final permGranted = _permission.isGranted;
     final permPermanentlyDenied = _permission.isPermanentlyDenied;
-    final toggleEnabled = !_saving && (permGranted || !p.backgroundEnabled
-        // Allow turning ON when not granted — the toggle handler runs the
-        // permission request flow and reflects the result. We only disable
-        // the toggle when permanently denied AND currently off, because
-        // there's no path to make it work without leaving the app.
-        || !permPermanentlyDenied);
+    final toggleEnabled =
+        !_saving &&
+        (permGranted ||
+            !p.backgroundEnabled
+            // Allow turning ON when not granted — the toggle handler runs the
+            // permission request flow and reflects the result. We only disable
+            // the toggle when permanently denied AND currently off, because
+            // there's no path to make it work without leaving the app.
+            ||
+            !permPermanentlyDenied);
     return Scaffold(
       appBar: AppBar(title: const Text('Notifications')),
       body: ListView(
@@ -246,10 +249,10 @@ class _NotificationSettingsScreenState
             subtitle: Text(
               permPermanentlyDenied
                   ? 'Notification permission permanently denied. Enable '
-                      'it in system settings before turning this on.'
+                        'it in system settings before turning this on.'
                   : 'Keep an always-on connection so notifications reach '
-                      'the system tray when the app is closed. Requires a '
-                      'small persistent indicator in the status bar.',
+                        'the system tray when the app is closed. Requires a '
+                        'small persistent indicator in the status bar.',
               style: permPermanentlyDenied
                   ? TextStyle(color: theme.colorScheme.error)
                   : null,
@@ -295,13 +298,13 @@ class _NotificationSettingsScreenState
             leading: const Icon(Icons.bedtime_outlined),
             title: const Text('Quiet hours'),
             subtitle: Text(
-              p.quietHoursStartMinutes == null &&
-                      p.quietHoursEndMinutes == null
+              p.quietHoursStartMinutes == null && p.quietHoursEndMinutes == null
                   ? 'Off'
                   : '${_fmtMinutes(p.quietHoursStartMinutes)} → '
-                      '${_fmtMinutes(p.quietHoursEndMinutes)}',
+                        '${_fmtMinutes(p.quietHoursEndMinutes)}',
             ),
-            trailing: p.quietHoursStartMinutes != null ||
+            trailing:
+                p.quietHoursStartMinutes != null ||
                     p.quietHoursEndMinutes != null
                 ? IconButton(
                     icon: const Icon(Icons.clear),
@@ -318,16 +321,16 @@ class _NotificationSettingsScreenState
               children: [
                 Expanded(
                   child: OutlinedButton(
-                    onPressed:
-                        _saving ? null : () => _pickTime(isStart: true),
-                    child: Text('Start: ${_fmtMinutes(p.quietHoursStartMinutes)}'),
+                    onPressed: _saving ? null : () => _pickTime(isStart: true),
+                    child: Text(
+                      'Start: ${_fmtMinutes(p.quietHoursStartMinutes)}',
+                    ),
                   ),
                 ),
                 const SizedBox(width: AppSpacing.sm),
                 Expanded(
                   child: OutlinedButton(
-                    onPressed:
-                        _saving ? null : () => _pickTime(isStart: false),
+                    onPressed: _saving ? null : () => _pickTime(isStart: false),
                     child: Text('End: ${_fmtMinutes(p.quietHoursEndMinutes)}'),
                   ),
                 ),
@@ -350,8 +353,7 @@ class _NotificationSettingsScreenState
                 value: p.defaultTtlDays.toDouble(),
                 onChanged: _saving
                     ? null
-                    : (v) =>
-                        _save(p.copyWith(defaultTtlDays: v.round())),
+                    : (v) => _save(p.copyWith(defaultTtlDays: v.round())),
               ),
             ),
           ),
@@ -363,10 +365,7 @@ class _NotificationSettingsScreenState
               AppSpacing.lg,
               AppSpacing.xs,
             ),
-            child: Text(
-              'Per-source mute',
-              style: theme.textTheme.titleSmall,
-            ),
+            child: Text('Per-source mute', style: theme.textTheme.titleSmall),
           ),
           if (sources.isEmpty)
             const Padding(
@@ -407,4 +406,3 @@ class _NotificationSettingsScreenState
     );
   }
 }
-

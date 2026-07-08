@@ -180,6 +180,16 @@ class TerminalHub extends ChangeNotifier {
     return BackendTerminalSession(backend: controller.target, session: session);
   }
 
+  BackendTerminalSession? sessionForExternalSessionId(
+    String backendId,
+    String externalSessionId,
+  ) {
+    final controller = _controllers[backendId];
+    final session = controller?.sessionForExternalSessionId(externalSessionId);
+    if (controller == null || session == null) return null;
+    return BackendTerminalSession(backend: controller.target, session: session);
+  }
+
   void focusTerminal(String backendId, String sessionId) {
     _controllers[backendId]?.focusTerminal(sessionId);
   }
@@ -449,6 +459,13 @@ class _BackendTerminalController {
 
   TerminalSession? sessionFor(String sessionId) =>
       _terminals.sessionFor(sessionId);
+
+  TerminalSession? sessionForExternalSessionId(String externalSessionId) {
+    for (final session in _terminals.currentTerminals) {
+      if (session.externalSessionId == externalSessionId) return session;
+    }
+    return null;
+  }
 
   void focusTerminal(String sessionId) => _terminals.focusTerminal(sessionId);
 

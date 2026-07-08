@@ -15,12 +15,12 @@
 // check runs first, per the conventions doc.
 //
 // Surface exposed to the frontend (via `rpc.ts`): `plugin.list`,
-// `plugin.enable`, `plugin.disable`, `plugin.invokeCommand`. Each
+// `plugin.enable`, `plugin.disable`, `plugin.invokeCommand`, `plugin.log`. Each
 // frontend-visible state transition fans a `plugin.stateChanged`
 // notification out through the host's onStateChanged callback.
 
 import { existsSync } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import { open, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { WebSocket } from "ws";
@@ -110,6 +110,14 @@ export interface PluginInfo {
   /// AccentToken resolves to this color inside the panel only.
   themeColor?: ManifestThemeColor;
   crashReason?: string;
+}
+
+export interface PluginLogTail {
+  id: string;
+  path: string;
+  text: string;
+  bytes: number;
+  truncated: boolean;
 }
 
 /// Payload emitted to subscribers on every state transition.
@@ -371,6 +379,47 @@ export class PluginHost {
 
   public get(id: string): PluginRegistryEntry | undefined {
     return this.plugins.get(id);
+  }
+
+  /// Read the tail of a plugin's stderr log. The caller must name a
+  /// registered plugin id; this keeps the file read pinned to the host's
+  /// own log directory instead of accepting arbitrary paths from the
+  /// client. Missing log files are normal for never-started plugins and
+  /// return an empty tail.
+  public async readLogTail(id: string, maxBytes: number): Promise<PluginLogTail> {
+    if (!this.plugins.has(id)) {
+      throw new PluginHostError(RPC_ERR.invalidParams, `no such plugin: ${id}`);
+    }
+    const cap = Math.max(1, Math.min(Math.floor(maxBytes), 256 * 1024));
+    const path = join(this.logDir, `${id}.stderr.log`);
+    try {
+      const info = await stat(path);
+      const bytes = info.size;
+      const start = Math.max(0, bytes - cap);
+      const length = bytes - start;
+      if (length === 0) {
+        return { id, path, text: "", bytes, truncated: false };
+      }
+      const handle = await open(path, "r");
+      try {
+        const buffer = Buffer.alloc(length);
+        await handle.read(buffer, 0, length, start);
+        return {
+          id,
+          path,
+          text: buffer.toString("utf8"),
+          bytes,
+          truncated: start > 0,
+        };
+      } finally {
+        await handle.close();
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        return { id, path, text: "", bytes: 0, truncated: false };
+      }
+      throw err;
+    }
   }
 
   /// Plugins directory the host is configured to scan. Lets tests

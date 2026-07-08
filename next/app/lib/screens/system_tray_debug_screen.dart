@@ -4,12 +4,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../services/diag_log.dart';
 import '../services/system_tray.dart';
+import '../settings_store.dart';
 import '../ui/app_tokens.dart';
 
 class SystemTrayDebugScreen extends StatefulWidget {
   final SystemTrayController controller;
-  const SystemTrayDebugScreen({super.key, required this.controller});
+  final SettingsStore settingsStore;
+
+  const SystemTrayDebugScreen({
+    super.key,
+    required this.controller,
+    required this.settingsStore,
+  });
 
   @override
   State<SystemTrayDebugScreen> createState() => _SystemTrayDebugScreenState();
@@ -78,8 +86,11 @@ class _SystemTrayDebugScreenState extends State<SystemTrayDebugScreen> {
         children: [
           _Section('State', [
             _kv('Initialized', c.isInitialized ? 'yes' : 'no'),
-            _kv('Last error', c.lastError.value ?? '—',
-                error: c.lastError.value),
+            _kv(
+              'Last error',
+              c.lastError.value ?? '—',
+              error: c.lastError.value,
+            ),
             _kv('Last show at', _fmtTime(c.lastShowAt.value)),
             _kv('Last show result', c.lastShowResult.value ?? '—'),
             _kv('Icon', c.currentIcon),
@@ -110,8 +121,7 @@ class _SystemTrayDebugScreenState extends State<SystemTrayDebugScreen> {
               c.useFallbackIcon();
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
-                  content:
-                      Text('Switched to launcher icon — send a test'),
+                  content: Text('Switched to launcher icon — send a test'),
                 ),
               );
             },
@@ -122,11 +132,15 @@ class _SystemTrayDebugScreenState extends State<SystemTrayDebugScreen> {
             subtitle: const Text('Back to ic_notification'),
             onTap: () {
               c.resetIcon();
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Icon reset')),
-              );
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(const SnackBar(content: Text('Icon reset')));
             },
           ),
+          const Divider(),
+          _Section('Trace', [
+            _DebugOverlayToggle(settingsStore: widget.settingsStore),
+          ]),
           const Divider(),
           const Padding(
             padding: EdgeInsets.fromLTRB(
@@ -140,10 +154,7 @@ class _SystemTrayDebugScreenState extends State<SystemTrayDebugScreen> {
           if (c.logs.value.isEmpty)
             const Padding(
               padding: EdgeInsets.all(AppSpacing.lg),
-              child: Text(
-                'No activity yet. Send a test notification.',
-                style: TextStyle(color: Colors.grey),
-              ),
+              child: Text('No activity yet. Send a test notification.'),
             )
           else
             Padding(
@@ -176,20 +187,50 @@ class _SystemTrayDebugScreenState extends State<SystemTrayDebugScreen> {
         children: [
           SizedBox(
             width: 140,
-            child: Text(label,
-                style: const TextStyle(fontWeight: FontWeight.w500)),
+            child: Text(
+              label,
+              style: const TextStyle(fontWeight: FontWeight.w500),
+            ),
           ),
           Expanded(
             child: Text(
               value,
               style: TextStyle(
-                color: isError ? Colors.red : null,
+                color: isError ? Theme.of(context).colorScheme.error : null,
                 fontFamily: value.contains(':') ? null : 'monospace',
               ),
             ),
           ),
         ],
       ),
+    );
+  }
+}
+
+class _DebugOverlayToggle extends StatefulWidget {
+  final SettingsStore settingsStore;
+
+  const _DebugOverlayToggle({required this.settingsStore});
+
+  @override
+  State<_DebugOverlayToggle> createState() => _DebugOverlayToggleState();
+}
+
+class _DebugOverlayToggleState extends State<_DebugOverlayToggle> {
+  Future<void> _set(bool value) async {
+    setState(() => DiagLog.instance.enabled = value);
+    await widget.settingsStore.setBool(kDiagLogPrefKey, value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SwitchListTile(
+      key: const ValueKey<String>('diagnostics-debug-overlay'),
+      secondary: const Icon(Icons.bug_report_outlined),
+      title: const Text('Debug overlay'),
+      subtitle: const Text('Floating event log for connection debugging'),
+      value: DiagLog.instance.enabled,
+      onChanged: _set,
     );
   }
 }
@@ -211,8 +252,10 @@ class _Section extends StatelessWidget {
             AppSpacing.lg,
             AppSpacing.xs,
           ),
-          child: Text(title,
-              style: const TextStyle(fontWeight: FontWeight.bold)),
+          child: Text(
+            title,
+            style: const TextStyle(fontWeight: FontWeight.bold),
+          ),
         ),
         ...children,
       ],

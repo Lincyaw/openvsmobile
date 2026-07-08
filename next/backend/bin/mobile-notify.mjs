@@ -39,6 +39,7 @@ const REQUEST_TIMEOUT_MS = 10_000;
 const RPC_LOOKUP_TIMEOUT_MS = 1_500;
 const VALID_LEVELS = new Set(["info", "success", "warning", "error"]);
 const MANAGED_ZELLIJ_PREFIX = "ovsm-";
+const PUBLISH_TOKEN_PATTERN = /^[a-f0-9]{12}\.[a-f0-9]{64}$/;
 
 function die(code, message) {
   process.stderr.write(`mobile-notify: ${message}\n`);
@@ -95,6 +96,10 @@ function parseKv(raw, flag) {
     die(EXIT_ARGS, `--${flag} expects key=value, got: ${raw}`);
   }
   return { key: raw.slice(0, eq), value: raw.slice(eq + 1) };
+}
+
+function isPublishTokenWireForm(token) {
+  return typeof token === "string" && PUBLISH_TOKEN_PATTERN.test(token);
 }
 
 function parseAction(raw) {
@@ -254,6 +259,32 @@ function lastAgentMessageFromHook(event) {
   );
 }
 
+const AGENT_NEEDS_ATTENTION_PATTERNS = [
+  /\bdo you want to (?:proceed|continue|run|apply)\b/i,
+  /\bwould you like to (?:proceed|continue|run|apply)\b/i,
+  /\ballow (?:this )?(?:command|edit|change|operation)\b/i,
+  /\ballow .+ to (?:run|execute|modify|edit|write|read)\b/i,
+  /\bapprove (?:this )?(?:command|edit|change|operation)\b/i,
+  /\bconfirm .*\b(?:proceed|continue|run|apply)\b/i,
+  /\b(?:proceed|continue)\?\s*\[?[yn]\/[yn]\]?/i,
+  /\bpress (?:enter|return) to continue\b/i,
+  /\bpress (?:y|n) to (?:continue|proceed|approve)\b/i,
+  /\bwaiting for (?:your )?(?:input|response)\b/i,
+  /\bwaiting for user input\b/i,
+  /\bselect an option\b/i,
+  /\bchoose an option\b/i,
+  /\bapproval required\b/i,
+  /\brequires approval\b/i,
+];
+
+function agentMessageNeedsAttention(text) {
+  if (typeof text !== "string" || text.trim().length === 0) return false;
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return AGENT_NEEDS_ATTENTION_PATTERNS.some((pattern) =>
+    pattern.test(normalized),
+  );
+}
+
 function zellijSessionNameFromEnv(env = process.env) {
   const keys = [
     "OPENVSMOBILE_ZELLIJ_SESSION_NAME",
@@ -304,6 +335,12 @@ function terminalActionFromContext(context) {
         externalSessionId: context.externalSessionId,
       };
     }
+  }
+  if (context?.externalSessionId !== undefined) {
+    return {
+      kind: "open-terminal",
+      externalSessionId: context.externalSessionId,
+    };
   }
   return undefined;
 }
@@ -466,6 +503,7 @@ function agentHookToNotification(
   let title = eventName;
   let body;
   let level = "info";
+  let important = false;
   if (eventName === "Notification" && typeof event.message === "string") {
     title = truncate(event.message.split(/\r?\n/)[0] ?? eventName, 80);
     body = event.message;
@@ -490,6 +528,10 @@ function agentHookToNotification(
         eventName === "Stop" ? agentLabelForSource(source) : "Subagent";
       title = truncate(`${prefix}: ${firstLine}`, 80);
       body = truncateUtf8(lastMessage, 16_000);
+      if (agentMessageNeedsAttention(lastMessage)) {
+        level = "warning";
+        important = true;
+      }
     } else {
       title =
         eventName === "Stop" ? stopTitleForSource(source) : "Subagent finished";
@@ -503,6 +545,7 @@ function agentHookToNotification(
     level,
     title,
   };
+  if (important) out.important = true;
   if (body !== undefined) out.body = truncateUtf8(body, 16_000);
   if (groupKey !== undefined) out.groupKey = groupKey;
   const context = terminalContext ?? terminalContextFromHook(event);
@@ -540,6 +583,7 @@ async function main() {
     important: { type: "boolean" },
     ttl: { type: "string" },
     "from-json": { type: "string" },
+    "from-agent-hook": { type: "boolean" },
     "from-claude-hook": { type: "boolean" },
     quiet: { type: "boolean" },
     help: { type: "boolean", short: "h" },
@@ -594,14 +638,18 @@ async function main() {
 
   // --- assemble payload ---
   let payload;
-  if (values["from-claude-hook"] === true) {
-    // Claude Code fires hook scripts with a JSON envelope on stdin (see
-    // https://docs.claude.com/en/docs/claude-code/hooks). We translate
+  const fromAgentHook =
+    values["from-agent-hook"] === true || values["from-claude-hook"] === true;
+  if (fromAgentHook) {
+    // Agent CLIs fire hook scripts with a JSON envelope on stdin. We translate
     // that envelope into our Notification shape so a user's hook config
     // is a one-liner like:
     //
     //     "Stop": [{ "hooks": [{ "type": "command",
-    //                            "command": "mobile-notify --from-claude-hook" }] }]
+    //                            "command": "mobile-notify --from-agent-hook" }] }]
+    //
+    // `--from-claude-hook` remains accepted for compatibility with older
+    // hook configs and docs.
     let rawText;
     try {
       rawText = await readStdin();
@@ -612,20 +660,24 @@ async function main() {
     try {
       hookEvent = JSON.parse(rawText);
     } catch (err) {
-      die(EXIT_ARGS, `--from-claude-hook: invalid JSON on stdin: ${err.message}`);
+      const flag = values["from-agent-hook"] === true
+        ? "--from-agent-hook"
+        : "--from-claude-hook";
+      die(EXIT_ARGS, `${flag}: invalid JSON on stdin: ${err.message}`);
     }
     const source = values.source || "claude-code";
     const terminalContext = terminalContextFromHook(hookEvent);
     let terminalAction = terminalActionFromContext(terminalContext);
     if (
-      terminalAction === undefined &&
+      !isPublishTokenWireForm(token) &&
+      (terminalAction === undefined || terminalAction.sessionId === undefined) &&
       terminalContext?.externalSessionId !== undefined
     ) {
-      terminalAction = await lookupTerminalActionByExternalSession(
+      terminalAction = (await lookupTerminalActionByExternalSession(
         serverUrl,
         token,
         terminalContext.externalSessionId,
-      );
+      )) ?? terminalAction;
     }
     payload = agentHookToNotification(hookEvent, {
       source,
@@ -794,6 +846,7 @@ mobile-notify — post one notification to an openvsmobile-next backend
 Usage:
   mobile-notify --source <s> --title <t> [options]
   mobile-notify --from-json -                (read full payload from stdin)
+  mobile-notify --from-agent-hook            (read agent hook envelope from stdin)
 
 Connection:
   --server host:port           (else $OPENVSMOBILE_SERVER, runtime.json, config.json)
@@ -812,9 +865,12 @@ Payload:
   --important
   --ttl <seconds>
   --from-json -                read full payload from stdin (overrides above)
+  --from-agent-hook            read a Claude/Codex-style agent hook envelope
+                               from stdin and translate it.
   --from-claude-hook           read an agent hook envelope from stdin
-                               and translate it; --source/--level/etc.
-                               still apply as overrides.
+                               and translate it; compatibility alias for
+                               --from-agent-hook.
+  --source/--level/etc.        still apply as overrides with either hook flag.
   --quiet                      suppress success output (id still returned via exit 0)
 
 Tokens:

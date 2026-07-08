@@ -978,9 +978,9 @@ type Notification = {
     | { kind: "open-workspace"; workspaceId: string }
     | {
         kind: "open-terminal";
-        sessionId: string;
+        sessionId?: string;         // app terminal id, when known
         backendId?: string;         // client-local backend id; absent means active backend
-        externalSessionId?: string; // e.g. managed zellij session name
+        externalSessionId?: string; // e.g. zellij session name; enough for adopt/reattach
       };
   groupKey?: string;                 // consecutive notifs with same key collapse in UI
   supersedes?: string;               // id of an earlier notif this replaces
@@ -1003,6 +1003,8 @@ type Notification = {
 | `notification.markRead`       | client → backend | `{ ids }` → broadcasts `notification.readChanged` |
 | `notification.delete`         | client → backend | `{ ids }` → broadcasts `notification.deleted` |
 | `notification.markImportant`  | client → backend | `{ id, important }` — pins / unpins from TTL GC |
+| `notification.agentHookStatus` | client → backend | read-only Claude Code / Codex Stop-hook status check |
+| `notification.installAgentHooks` | client → backend | idempotently install or repair Claude Code / Codex Stop hooks |
 
 Push notifications already listed in §4.1: `notification.show`, `notification.readChanged`, `notification.deleted`, `notification.superseded`.
 
@@ -1044,18 +1046,24 @@ Garbage collection runs opportunistically — at most once per hour on `notifica
 - Remote: `--server host:port --token $TOKEN`, or env `OPENVSMOBILE_SERVER` / `OPENVSMOBILE_TOKEN`.
 - Args: `--source`, `--level`, `--title`, `--body`, `--field k=v` (repeatable), `--link title=url` (repeatable), `--action open-url:URL` or `copy:TEXT` or `open-workspace:ID` or `open-terminal:ID`, `--group-key`, `--supersedes`, `--important`, `--ttl`.
 - `--from-json -` reads the full payload from stdin (for scripts that already have JSON ready).
+- `--from-agent-hook` reads a Claude/Codex-style hook envelope from stdin and translates it; if only a zellij session name is known, the generated `open-terminal` action may carry `externalSessionId` without `sessionId` so the app can adopt/reattach lazily. `--from-claude-hook` remains a compatibility alias.
 - Exit codes: 0 success, 2 args, 3 network, 4 auth, 5 server error.
 
 **Agent Stop hooks.** The backend tarball also bundles a tiny hook bridge for
 Claude Code / Codex. `install.sh` runs it after the backend has started and
 `runtime.json` exists. It scans the user's global Claude Code / Codex configs,
 adds an idempotent `Stop` hook when those configs are present, and posts through
-`mobile-notify --from-claude-hook`. This is best-effort: malformed or absent
-agent configs are logged to stderr and never fail backend installation. Stop
-notifications include the last assistant message when the hook envelope or
+`mobile-notify --from-agent-hook`. The older `--from-claude-hook` spelling is a
+compatibility alias for existing installs. This is best-effort: malformed or
+absent agent configs are logged to stderr and never fail backend installation.
+Stop notifications include the last assistant message when the hook envelope or
 transcript exposes it. When the hook runs inside a backend-managed zellij
 session (`ovsm-*`), the notification action deep-links back to that terminal
-session.
+session. The authenticated admin RPC `notification.agentHookStatus` runs the
+same scanner in read-only mode so Settings can show status without touching the
+user's agent config. `notification.installAgentHooks` re-runs the installer and
+returns structured per-agent statuses so Settings can repair hooks after the
+user installs or reconfigures Claude Code / Codex.
 
 **Foreground service (Flutter / Android).** App starts a `flutter_foreground_task`-backed service on launch (gated by a Settings toggle, default on). The service holds the configured backend RPC stream, calls `notification.subscribe`, and on `notification.show` posts to the Android system tray via a channel chosen from the `level` field:
 
@@ -1484,7 +1492,7 @@ The first slice of the plugin host (issue C1) ships in `next/backend/src/plugins
 
 ### Deferred — C2 (`plugin.*` RPC surface to the Flutter client)
 
-- §3.1 client-side surface — `plugin.list`, `plugin.enable`, `plugin.disable`, `plugin.reload`, `plugin.invokeCommand`, log-tailing.
+- §3.1 client-side surface — `plugin.reload`, richer install/uninstall ergonomics. `plugin.list`, `plugin.enable`, `plugin.disable`, `plugin.invokeCommand`, and `plugin.log` are implemented.
 - `initialize` handshake (backend → plugin) and `protocolVersion` negotiation.
 - `onCommand:*` activation triggered by `plugin.invokeCommand`.
 - `RpcError -32012 pluginCrashed` for in-flight RPCs at crash time (no host-initiated RPC channel until C2 needs one).

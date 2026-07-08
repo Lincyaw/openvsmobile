@@ -22,7 +22,9 @@ import 'notification.dart';
 import 'selection_context.dart';
 import 'services/ssh_bootstrap.dart';
 import 'state/notifications_model.dart';
+import 'state/agent_hooks_model.dart';
 import 'state/plugins_model.dart';
+import 'state/publish_tokens_model.dart';
 import 'state/terminals_notifier.dart';
 import 'state/workspace_model.dart';
 import 'ui/ui_panels_model.dart';
@@ -48,7 +50,9 @@ class AppState extends ChangeNotifier {
   late final TerminalsNotifier _terminals;
   late final WorkspacesModel _workspacesModel;
   late final NotificationsModel _notifications;
+  late final AgentHooksModel _agentHooks;
   late final PluginsModel _plugins;
+  late final PublishTokensModel _publishTokens;
   late final UiPanelsModel _uiPanels;
   StreamSubscription<BackendNotification>? _notifSub;
   int _backendSessionEpoch = 0;
@@ -128,8 +132,18 @@ class AppState extends ChangeNotifier {
       reportError: _reportOperationError,
     );
     _notifications.addListener(notifyListeners);
+    _agentHooks = AgentHooksModel(
+      client: client,
+      reportError: _reportOperationError,
+    );
+    _agentHooks.addListener(notifyListeners);
     _plugins = PluginsModel(client: client, reportError: _reportOperationError);
     _plugins.addListener(notifyListeners);
+    _publishTokens = PublishTokensModel(
+      client: client,
+      reportError: _reportOperationError,
+    );
+    _publishTokens.addListener(notifyListeners);
     _uiPanels = UiPanelsModel(client: client);
     _uiPanels.addListener(notifyListeners);
     client.state.addListener(_onConnState);
@@ -152,6 +166,14 @@ class AppState extends ChangeNotifier {
   String get backendDefaultCwd {
     final cwd = client.defaultCwd;
     return cwd.isEmpty ? '/' : cwd;
+  }
+
+  /// Backend version reported by the active RPC connection. Null means the
+  /// app is not currently connected, so UI should avoid showing stale data.
+  String? get connectedBackendVersion {
+    if (_connectionState != BackendConnectionState.connected) return null;
+    final version = client.serverVersion;
+    return version.isEmpty ? null : version;
   }
 
   /// Terminal sessions known on the active backend. Sessions carry an
@@ -216,9 +238,19 @@ class AppState extends ChangeNotifier {
   /// icon, badge count, and notification center read from a single source.
   NotificationsModel get notifications => _notifications;
 
+  /// Agent completion hook admin surface. Re-runs the backend-bundled
+  /// Claude/Codex Stop-hook installer so terminal-launched agents can post
+  /// notifications when they finish.
+  AgentHooksModel get agentHooks => _agentHooks;
+
   /// Plugin registry (design §3 / issue C4). Backs the Plugins tab —
   /// AppState forwards notifyListeners so widgets only listen here.
   PluginsModel get plugins => _plugins;
+
+  /// Publish-token admin surface (design section 4.5). Used by Settings ->
+  /// Webhook tokens so agent/CI notification credentials stay in AppState
+  /// instead of a screen-local backend cache.
+  PublishTokensModel get publishTokens => _publishTokens;
 
   /// Plugin-owned UI panels (design §4.3 / issue C3). The Plugins-tab
   /// detail view subscribes via `subscribe()` once on connect and
@@ -315,7 +347,9 @@ class AppState extends ChangeNotifier {
     _terminals.clearAll();
     _workspacesModel.clearAll();
     _notifications.resetLocal();
+    _agentHooks.resetLocal();
     _plugins.resetLocal();
+    _publishTokens.resetLocal();
     _uiPanels.resetLocal();
     notifyListeners();
   }
@@ -334,14 +368,11 @@ class AppState extends ChangeNotifier {
       // a journal replay reconciles the existing decoration map instead of
       // discarding it.
       unawaited(refreshWorkspaces());
-      // (Re)subscribe to notifications. We do NOT call _notifications.refresh()
-      // here — refresh() clears _items on a full reload, which would wipe the
-      // last-known feed during the reconnect window (first principle #4).
-      // The subscribe path is the source of truth; the backend pushes any
-      // missed rows on subscribe. We pass `sinceTs` forward-compatibly so a
-      // future backend can deliver the incremental tail. (Backend support
-      // for `sinceTs` on `notification.subscribe` is pending.)
-      unawaited(_notifications.subscribe(sinceTs: _notifications.lastSeenTs));
+      // (Re)subscribe to notifications and pull exactly one cold-start
+      // snapshot when the local model is empty. This keeps reconnects from
+      // wiping the last-known feed (first principle #4), while avoiding the
+      // "empty until manual Refresh" state after app restart.
+      unawaited(_notifications.subscribeAndBackfillIfEmpty());
       // Plugin surface + UI-descriptor fan-out follow the same shape —
       // subscribe on every successful connect; failures self-log. We do
       // NOT call subscribeAndRefresh()'s refresh leg or uiPanels.refresh —
@@ -1126,8 +1157,12 @@ class AppState extends ChangeNotifier {
     _workspacesModel.dispose();
     _notifications.removeListener(notifyListeners);
     _notifications.dispose();
+    _agentHooks.removeListener(notifyListeners);
+    _agentHooks.dispose();
     _plugins.removeListener(notifyListeners);
     _plugins.dispose();
+    _publishTokens.removeListener(notifyListeners);
+    _publishTokens.dispose();
     _uiPanels.removeListener(notifyListeners);
     _uiPanels.dispose();
     _notifSub?.cancel();

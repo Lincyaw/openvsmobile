@@ -3,7 +3,7 @@
 //
 // Hook commands receive the agent's JSON envelope on stdin. This wrapper
 // keeps the hook cheap and non-fatal: it forwards the envelope to
-// mobile-notify's existing Claude-hook translator, but exits 0 even if the
+// mobile-notify's existing agent-hook translator, but exits 0 even if the
 // notification backend is unavailable. Agent work should never fail because
 // the user's phone notification could not be posted.
 
@@ -81,7 +81,7 @@ async function main() {
   const source = sourceFor(agent);
   const args = [
     mobileNotify,
-    "--from-claude-hook",
+    "--from-agent-hook",
     "--source",
     source,
     "--quiet",

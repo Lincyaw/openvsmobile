@@ -31,6 +31,11 @@ import '../models.dart';
 import '../services/diag_log.dart';
 import '../services/terminal_diag.dart';
 
+/// Keep `terminal.history` responses under the 1 MiB Iroh text-frame cap after
+/// base64 and JSON overhead. The backend scrollback buffer defaults to 1 MiB,
+/// which expands past that cap if requested whole.
+const int kTerminalHistoryReplayMaxBytes = 512 * 1024;
+
 /// Reports a user-facing operation error upward. AppState surfaces it via
 /// SnackBar in the standard way.
 typedef ReportOperationError = void Function(String message);
@@ -143,9 +148,10 @@ class TerminalsNotifier extends ChangeNotifier {
   }
 
   /// Last-line preview for [sessionId]'s session-list row. Returns null when
-  /// the session has produced no output yet. The shape is intentionally
-  /// minimal: the widget formats `text` (already ANSI-stripped and
-  /// truncated) and `lastDataAt` (epoch ms, last byte arrival) for display.
+  /// the session has produced no output yet. The widget formats `text`
+  /// (already ANSI-stripped and truncated) and `lastDataAt` (epoch ms,
+  /// last byte arrival) for display. `recentText` is non-display context
+  /// for lightweight status detection such as agent approval prompts.
   TerminalPreview previewFor(String sessionId) {
     final ts = _previewLastDataAt[sessionId];
     // Prefer the live xterm screen buffer when we have one — full-screen
@@ -157,7 +163,11 @@ class TerminalsNotifier extends ChangeNotifier {
     if (term != null) {
       final fromBuffer = extractPreviewFromTerminal(term);
       if (fromBuffer != null) {
-        return TerminalPreview(text: fromBuffer, lastDataAt: ts);
+        return TerminalPreview(
+          text: fromBuffer,
+          lastDataAt: ts,
+          recentText: extractRecentTextFromTerminal(term),
+        );
       }
     }
     // Fallback for sessions that haven't materialised a Terminal yet
@@ -165,7 +175,11 @@ class TerminalsNotifier extends ChangeNotifier {
     // session). Byte-stream stripping is best-effort.
     final buffer = _previewBuffer[sessionId];
     final text = buffer == null ? null : extractPreviewLine(buffer);
-    return TerminalPreview(text: text, lastDataAt: ts);
+    return TerminalPreview(
+      text: text,
+      lastDataAt: ts,
+      recentText: buffer == null ? null : extractRecentText(buffer),
+    );
   }
 
   // ---- Snapshot installation (called from AppState.refreshWorkspaces) ----
@@ -193,7 +207,10 @@ class TerminalsNotifier extends ChangeNotifier {
     Map<String, dynamic> hist;
     try {
       hist =
-          await _client.call('terminal.history', {'sessionId': sessionId})
+          await _client.call('terminal.history', {
+                'sessionId': sessionId,
+                'maxBytes': kTerminalHistoryReplayMaxBytes,
+              })
               as Map<String, dynamic>;
     } catch (_) {
       // Older backends won't implement terminal.history. Fall back to live-
@@ -729,7 +746,15 @@ class TerminalPreview {
   /// Epoch ms of the most recent byte that fed the preview buffer.
   final int? lastDataAt;
 
-  const TerminalPreview({required this.text, required this.lastDataAt});
+  /// ANSI-stripped recent output context. Not rendered directly; used by
+  /// session-list heuristics that need more than the final display line.
+  final String? recentText;
+
+  const TerminalPreview({
+    required this.text,
+    required this.lastDataAt,
+    this.recentText,
+  });
 }
 
 /// Scan [terminal]'s interpreted screen buffer for the most recent line
@@ -769,6 +794,30 @@ String? extractPreviewFromTerminal(Terminal terminal, {int maxLen = 60}) {
   return null;
 }
 
+/// Recent visible terminal text, stripped of decorative TUI chrome. This is
+/// intentionally separate from [extractPreviewFromTerminal]: the preview row
+/// should still display one concise line, while status detection can inspect
+/// nearby prompt context that may span multiple rows.
+String? extractRecentTextFromTerminal(Terminal terminal, {int maxLen = 512}) {
+  final buffer = terminal.buffer;
+  final cursorAbsY = buffer.absoluteCursorY;
+  final viewportTop = (buffer.lines.length - terminal.viewHeight).clamp(
+    0,
+    buffer.lines.length,
+  );
+  final lines = <String>[];
+  for (var row = viewportTop; row <= cursorAbsY; row++) {
+    if (row < 0 || row >= buffer.lines.length) continue;
+    final raw = buffer.lines[row].getText().trimRight();
+    if (raw.isEmpty) continue;
+    final stripped = _stripDecorativeChars(raw).trim();
+    if (stripped.length < 2) continue;
+    lines.add(stripped);
+  }
+  if (lines.isEmpty) return null;
+  return _tail(lines.join('\n'), maxLen);
+}
+
 /// Remove decorative-only Unicode ranges that frame TUIs use to draw
 /// chrome (box drawing, block elements, geometric shapes, arrows,
 /// Private Use Area glyphs from nerdfont/powerline). Anything left is
@@ -800,16 +849,7 @@ String _stripDecorativeChars(String s) {
 /// stripping behavior without instantiating a TerminalsNotifier.
 String? extractPreviewLine(Uint8List bytes, {int maxLen = 60}) {
   if (bytes.isEmpty) return null;
-  final raw = utf8.decode(bytes, allowMalformed: true);
-  // Order matters: OSC first (it embeds CSI-like chars), then CSI, then
-  // single-byte ESC introducers. Carriage returns inside a line collapse to
-  // empty so a `progress…\r` doesn't leave the cursor return as the
-  // "preview".
-  final stripped = raw
-      .replaceAll(RegExp(r'\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)'), '')
-      .replaceAll(RegExp(r'\x1B\[[0-9;?]*[ -/]*[@-~]'), '')
-      .replaceAll(RegExp(r'\x1B[@-Z\\-_]'), '')
-      .replaceAll(RegExp(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]'), '');
+  final stripped = _stripAnsiAndControls(bytes);
   final lines = stripped.split('\n');
   for (var i = lines.length - 1; i >= 0; i--) {
     final line = lines[i].replaceAll('\r', '').trimRight();
@@ -820,6 +860,35 @@ String? extractPreviewLine(Uint8List bytes, {int maxLen = 60}) {
     return '${line.substring(0, maxLen - 1)}…';
   }
   return null;
+}
+
+String? extractRecentText(Uint8List bytes, {int maxLen = 512}) {
+  if (bytes.isEmpty) return null;
+  final stripped = _stripAnsiAndControls(bytes);
+  final lines = [
+    for (final line in stripped.split('\n'))
+      if (line.replaceAll('\r', '').trim().isNotEmpty)
+        line.replaceAll('\r', '').trimRight(),
+  ];
+  if (lines.isEmpty) return null;
+  return _tail(lines.join('\n'), maxLen);
+}
+
+String _stripAnsiAndControls(Uint8List bytes) {
+  final raw = utf8.decode(bytes, allowMalformed: true);
+  // Order matters: OSC first (it embeds CSI-like chars), then CSI, then
+  // single-byte ESC introducers. Carriage returns inside a line collapse to
+  // empty so a `progress…\r` doesn't leave the cursor return as preview text.
+  return raw
+      .replaceAll(RegExp(r'\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)'), '')
+      .replaceAll(RegExp(r'\x1B\[[0-9;?]*[ -/]*[@-~]'), '')
+      .replaceAll(RegExp(r'\x1B[@-Z\\-_]'), '')
+      .replaceAll(RegExp(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]'), '');
+}
+
+String _tail(String text, int maxLen) {
+  if (text.length <= maxLen) return text;
+  return text.substring(text.length - maxLen);
 }
 
 class _BacklogChunk {

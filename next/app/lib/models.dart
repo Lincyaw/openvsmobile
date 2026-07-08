@@ -90,6 +90,122 @@ class FindFilesResult {
   }
 }
 
+class PublishTokenRecord {
+  final String id;
+  final String label;
+  final String? sourcePrefix;
+  final int rateLimitPerMin;
+  final int rateLimitPerHour;
+  final int createdAt;
+  final int? lastUsedAt;
+  final int? revokedAt;
+
+  const PublishTokenRecord({
+    required this.id,
+    required this.label,
+    required this.sourcePrefix,
+    required this.rateLimitPerMin,
+    required this.rateLimitPerHour,
+    required this.createdAt,
+    required this.lastUsedAt,
+    required this.revokedAt,
+  });
+
+  factory PublishTokenRecord.fromJson(Map<String, dynamic> json) =>
+      PublishTokenRecord(
+        id: json['id'] as String,
+        label: json['label'] as String,
+        sourcePrefix: json['sourcePrefix'] as String?,
+        rateLimitPerMin: (json['rateLimitPerMin'] as num).toInt(),
+        rateLimitPerHour: (json['rateLimitPerHour'] as num).toInt(),
+        createdAt: (json['createdAt'] as num).toInt(),
+        lastUsedAt: (json['lastUsedAt'] as num?)?.toInt(),
+        revokedAt: (json['revokedAt'] as num?)?.toInt(),
+      );
+
+  PublishTokenRecord copyWith({String? label}) => PublishTokenRecord(
+    id: id,
+    label: label ?? this.label,
+    sourcePrefix: sourcePrefix,
+    rateLimitPerMin: rateLimitPerMin,
+    rateLimitPerHour: rateLimitPerHour,
+    createdAt: createdAt,
+    lastUsedAt: lastUsedAt,
+    revokedAt: revokedAt,
+  );
+}
+
+class CreatedPublishToken {
+  final PublishTokenRecord record;
+  final String secret;
+
+  const CreatedPublishToken({required this.record, required this.secret});
+}
+
+class AgentHookStatus {
+  final String agent;
+  final String state;
+  final String message;
+  final bool available;
+  final bool changed;
+
+  const AgentHookStatus({
+    required this.agent,
+    required this.state,
+    required this.message,
+    required this.available,
+    required this.changed,
+  });
+
+  factory AgentHookStatus.fromJson(Map<String, dynamic> json) =>
+      AgentHookStatus(
+        agent: json['agent'] as String? ?? 'agent',
+        state: json['state'] as String? ?? 'unknown',
+        message: json['message'] as String? ?? '',
+        available: json['available'] == true,
+        changed: json['changed'] == true,
+      );
+}
+
+class AgentHookInstallResult {
+  final bool ok;
+  final int? exitCode;
+  final List<AgentHookStatus> statuses;
+  final String stdout;
+  final String stderr;
+
+  const AgentHookInstallResult({
+    required this.ok,
+    required this.exitCode,
+    required this.statuses,
+    required this.stdout,
+    required this.stderr,
+  });
+
+  factory AgentHookInstallResult.fromJson(Map<String, dynamic> json) {
+    final rawStatuses = json['statuses'];
+    return AgentHookInstallResult(
+      ok: json['ok'] == true,
+      exitCode: (json['exitCode'] as num?)?.toInt(),
+      statuses: rawStatuses is List
+          ? rawStatuses
+                .whereType<Map<String, dynamic>>()
+                .map(AgentHookStatus.fromJson)
+                .toList(growable: false)
+          : const [],
+      stdout: json['stdout'] as String? ?? '',
+      stderr: json['stderr'] as String? ?? '',
+    );
+  }
+
+  AgentHookStatus? statusFor(String agent) {
+    for (final status in statuses) {
+      if (status.agent == agent) return status;
+    }
+    return null;
+  }
+}
+
 /// A node in the per-workspace file tree. Lives in AppState rather than
 /// widget state so the tree (expansion + cached children) survives a tab
 /// switch or a screen rebuild — see docs/conventions.md §2 "Single source

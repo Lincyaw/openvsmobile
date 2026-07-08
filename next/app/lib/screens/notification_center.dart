@@ -18,6 +18,7 @@ import '../ui/app_tokens.dart';
 import '../backend_client.dart';
 import '../notification.dart';
 import '../settings_store.dart';
+import 'agent_hooks_screen.dart';
 
 class NotificationCenterScreen extends StatefulWidget {
   final AppState appState;
@@ -47,6 +48,7 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
   /// notifyListeners on AppState but not a screen rebuild, which is fine:
   /// reopening the screen starts with everything collapsed.
   final Set<String> _expanded = {};
+  final Set<String> _expandedGroups = {};
 
   final ScrollController _scrollController = ScrollController();
   final Map<String, GlobalKey> _visibilityKeys = {};
@@ -134,21 +136,38 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
 
   String _entryKeyFor(List<AppNotification> group) {
     if (group.length == 1) return 'n:${group.first.id}';
-    final key = group.first.groupKey ?? group.first.id;
+    final keys = _notificationGroupKeys(group.first);
+    final key = keys.isEmpty ? group.first.id : keys.first;
     return 'g:$key:${group.first.id}:${group.length}';
   }
 
   GlobalKey _visibilityKeyFor(String key) =>
       _visibilityKeys.putIfAbsent(key, GlobalKey.new);
 
+  String _memberEntryKey(String groupEntryKey, String id) =>
+      '$groupEntryKey/member:$id';
+
   void _syncVisibilityEntries(List<List<AppNotification>> groups) {
     final live = <String>{};
     for (final group in groups) {
       final key = _entryKeyFor(group);
       live.add(key);
-      _entryIdsByKey[key] = [for (final n in group) n.id];
+      // A collapsed group renders only its newest row. Seeing the aggregate
+      // card should not implicitly mark every hidden member as read. Expanded
+      // history rows get their own keys so large groups only mark rows that
+      // actually intersect the viewport.
+      _entryIdsByKey[key] = [group.first.id];
       _visibilityKeyFor(key);
+      if (_expandedGroups.contains(key)) {
+        for (final member in group.skip(1)) {
+          final memberKey = _memberEntryKey(key, member.id);
+          live.add(memberKey);
+          _entryIdsByKey[memberKey] = [member.id];
+          _visibilityKeyFor(memberKey);
+        }
+      }
     }
+    _expandedGroups.removeWhere((key) => !live.contains(key));
     _visibilityKeys.removeWhere((key, _) => !live.contains(key));
     _entryIdsByKey.removeWhere((key, _) => !live.contains(key));
   }
@@ -179,6 +198,14 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
     await widget.appState.notifications.refresh();
   }
 
+  void _openAgentHooks() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => AgentHooksScreen(appState: widget.appState),
+      ),
+    );
+  }
+
   Future<void> _runHighlightedActionIfAny() async {
     if (_highlightActionHandled) return;
     final id = widget.highlightId;
@@ -191,7 +218,7 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
       notification = widget.appState.notifications.byId(id);
     }
     final action = notification?.action;
-    if (action == null) return;
+    if (action is! OpenTerminalAction) return;
     await _onAction(action);
   }
 
@@ -262,6 +289,10 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
     final theme = Theme.of(context);
     final sources = notifs.knownSources;
     final items = notifs.filteredItems;
+    final agentSessions = _agentSessionSummaries(
+      items,
+      widget.appState.deviceId,
+    );
     final groups = _groupConsecutive(items);
     _syncVisibilityEntries(groups);
     final connState = widget.appState.connectionState;
@@ -330,9 +361,11 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
                 ],
               ),
             ),
+          if (agentSessions.isNotEmpty)
+            _AgentSessionStrip(summaries: agentSessions, onAction: _onAction),
           Expanded(
             child: items.isEmpty
-                ? _EmptyState()
+                ? _EmptyState(onSetUpAgentAlerts: _openAgentHooks)
                 // No pull-to-refresh: per first principle #1 the feed is
                 // push-driven via `notification.show` / `.readChanged` /
                 // `.deleted`. The "Refresh" menu item still pulls a full
@@ -365,13 +398,25 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
                         );
                       }
                       // Grouped: render as collapsible card.
+                      final expanded = _expandedGroups.contains(entryKey);
                       return KeyedSubtree(
                         key: _visibilityKeyFor(entryKey),
                         child: _GroupCard(
                           members: g,
                           deviceId: widget.appState.deviceId,
+                          expanded: expanded,
                           onAction: _onAction,
-                          onExpandedChanged: _scheduleMarkVisible,
+                          visibilityKeyForMember: (member) => _visibilityKeyFor(
+                            _memberEntryKey(entryKey, member.id),
+                          ),
+                          onToggleExpand: () {
+                            setState(() {
+                              if (!_expandedGroups.add(entryKey)) {
+                                _expandedGroups.remove(entryKey);
+                              }
+                            });
+                            _scheduleMarkVisible();
+                          },
                         ),
                       );
                     },
@@ -448,9 +493,10 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
     }
   }
 
-  /// Group consecutive items by `groupKey`. Already-sorted list goes in;
-  /// list-of-lists comes out where each inner list is one group (always
-  /// length >= 1).
+  /// Group consecutive items by their rendered workflow key. Agent terminal
+  /// actions use the terminal target so repeated Claude/Codex runs in one
+  /// zellij/session collapse even when the agent emits a new session id per
+  /// run; other senders keep the protocol-level `groupKey` behavior.
   List<List<AppNotification>> _groupConsecutive(List<AppNotification> sorted) {
     final out = <List<AppNotification>>[];
     for (final n in sorted) {
@@ -459,8 +505,7 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
         continue;
       }
       final last = out.last;
-      final lastKey = last.first.groupKey;
-      if (lastKey != null && lastKey == n.groupKey) {
+      if (_shareNotificationGroupKey(last.first, n)) {
         last.add(n);
       } else {
         out.add([n]);
@@ -468,34 +513,288 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
     }
     return out;
   }
+
+  List<_AgentSessionSummary> _agentSessionSummaries(
+    List<AppNotification> sorted,
+    String deviceId,
+  ) {
+    final byKey = <String, _AgentSessionSummary>{};
+    for (final n in sorted) {
+      final action = n.action;
+      if (action is! OpenTerminalAction) continue;
+      final key = _terminalActionKey(action);
+      final existing = byKey[key];
+      if (existing == null) {
+        byKey[key] = _AgentSessionSummary(
+          key: key,
+          latest: n,
+          action: action,
+          totalCount: 1,
+          unreadCount: n.readByDevice(deviceId) ? 0 : 1,
+        );
+        continue;
+      }
+      byKey[key] = existing.add(n, deviceId);
+    }
+    final summaries = byKey.values.toList(growable: false)
+      ..sort((a, b) => b.latest.timestamp.compareTo(a.latest.timestamp));
+    return summaries.take(6).toList(growable: false);
+  }
 }
 
-class _EmptyState extends StatelessWidget {
+bool _shareNotificationGroupKey(AppNotification a, AppNotification b) {
+  final aKeys = _notificationGroupKeys(a);
+  if (aKeys.isEmpty) return false;
+  final bKeys = _notificationGroupKeys(b);
+  if (bKeys.isEmpty) return false;
+  for (final key in aKeys) {
+    if (bKeys.contains(key)) return true;
+  }
+  return false;
+}
+
+List<String> _notificationGroupKeys(AppNotification n) {
+  final keys = <String>[];
+  final action = n.action;
+  if (action is OpenTerminalAction) {
+    keys.add('terminal:${_terminalActionKey(action)}');
+  }
+  final groupKey = n.groupKey;
+  if (groupKey != null && groupKey.isNotEmpty) {
+    keys.add('group:$groupKey');
+  }
+  return keys;
+}
+
+String _terminalActionKey(OpenTerminalAction action) {
+  final backend = action.backendId ?? '';
+  final session = action.sessionId ?? '';
+  final external = action.externalSessionId ?? '';
+  return '$backend|$session|$external';
+}
+
+@immutable
+class _AgentSessionSummary {
+  final String key;
+  final AppNotification latest;
+  final OpenTerminalAction action;
+  final int totalCount;
+  final int unreadCount;
+
+  const _AgentSessionSummary({
+    required this.key,
+    required this.latest,
+    required this.action,
+    required this.totalCount,
+    required this.unreadCount,
+  });
+
+  _AgentSessionSummary add(AppNotification n, String deviceId) {
+    final nextLatest = n.timestamp > latest.timestamp ? n : latest;
+    return _AgentSessionSummary(
+      key: key,
+      latest: nextLatest,
+      action: action,
+      totalCount: totalCount + 1,
+      unreadCount: unreadCount + (n.readByDevice(deviceId) ? 0 : 1),
+    );
+  }
+}
+
+class _AgentSessionStrip extends StatelessWidget {
+  final List<_AgentSessionSummary> summaries;
+  final Future<void> Function(NotificationAction) onAction;
+
+  const _AgentSessionStrip({required this.summaries, required this.onAction});
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    return Material(
+      color: theme.colorScheme.surface,
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
+                AppSpacing.lg,
+                AppSpacing.xs,
+                AppSpacing.lg,
+                AppSpacing.sm,
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.smart_toy_outlined,
+                    size: AppIconSize.sm,
+                    color: theme.colorScheme.primary,
+                  ),
+                  const SizedBox(width: AppSpacing.sm),
+                  Text('Agent sessions', style: theme.textTheme.labelLarge),
+                ],
+              ),
+            ),
+            SizedBox(
+              height: 132,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
+                itemCount: summaries.length,
+                separatorBuilder: (_, _) =>
+                    const SizedBox(width: AppSpacing.sm),
+                itemBuilder: (context, index) => _AgentSessionCard(
+                  summary: summaries[index],
+                  onTap: () => onAction(summaries[index].action),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AgentSessionCard extends StatelessWidget {
+  final _AgentSessionSummary summary;
+  final VoidCallback onTap;
+
+  const _AgentSessionCard({required this.summary, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final n = summary.latest;
+    final target = _agentTargetLabel(summary.action);
+    final unread = summary.unreadCount;
+    return SizedBox(
+      key: ValueKey<String>('agent-session:${summary.key}'),
+      width: 246,
+      child: Material(
+        color: unread > 0
+            ? cs.primaryContainer.withValues(alpha: 0.34)
+            : cs.surfaceContainer,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadius.md),
+          side: BorderSide(color: unread > 0 ? cs.primary : cs.outlineVariant),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(AppSpacing.md),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    _SourcePill(source: n.source),
+                    const Spacer(),
+                    if (unread > 0)
+                      Badge.count(
+                        count: unread,
+                        backgroundColor: cs.primary,
+                        textColor: cs.onPrimary,
+                      ),
+                  ],
+                ),
+                const SizedBox(height: AppSpacing.sm),
+                Expanded(
+                  child: Align(
+                    alignment: Alignment.topLeft,
+                    child: Text(
+                      n.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleSmall,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: AppSpacing.sm),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        target,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppText.monoCaption(
+                          context,
+                        ).copyWith(color: cs.onSurfaceVariant),
+                      ),
+                    ),
+                    const SizedBox(width: AppSpacing.sm),
+                    Icon(
+                      Icons.arrow_forward,
+                      size: AppIconSize.sm,
+                      color: cs.primary,
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+String _agentTargetLabel(OpenTerminalAction action) {
+  final external = action.externalSessionId;
+  if (external != null && external.isNotEmpty) return external;
+  final sessionId = action.sessionId;
+  if (sessionId == null || sessionId.isEmpty) return 'terminal';
+  return sessionId.length <= 12 ? sessionId : sessionId.substring(0, 12);
+}
+
+class _EmptyState extends StatelessWidget {
+  final VoidCallback onSetUpAgentAlerts;
+
+  const _EmptyState({required this.onSetUpAgentAlerts});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
     return Center(
       child: Padding(
-        padding: const EdgeInsets.all(24),
+        padding: const EdgeInsets.all(AppSpacing.xl),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.notifications_off_outlined,
-              size: 48,
-              color: theme.colorScheme.outline,
-            ),
-            const SizedBox(height: 12),
+            Icon(Icons.smart_toy_outlined, size: 48, color: cs.primary),
+            const SizedBox(height: AppSpacing.md),
             const Text(
-              'No notifications yet',
+              'No agent alerts yet',
+              textAlign: TextAlign.center,
               style: TextStyle(fontWeight: FontWeight.bold),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: AppSpacing.sm),
             Text(
-              'Send one from the CLI: mobile-notify --source demo '
+              'Install Claude/Codex hooks so terminal-launched agents can '
+              'notify this phone when they stop or need attention.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: cs.onSurfaceVariant),
+            ),
+            const SizedBox(height: AppSpacing.lg),
+            FilledButton.icon(
+              key: const ValueKey<String>('notifications-empty-agent-hooks'),
+              onPressed: onSetUpAgentAlerts,
+              icon: const Icon(Icons.notifications_active_outlined),
+              label: const Text('Set up agent alerts'),
+            ),
+            const SizedBox(height: AppSpacing.md),
+            Text(
+              'For scripts and CI: mobile-notify --source demo '
               '--level info --title "Hello"',
               textAlign: TextAlign.center,
-              style: TextStyle(color: theme.colorScheme.outline),
+              style: AppText.monoCaption(
+                context,
+              ).copyWith(color: cs.onSurfaceVariant),
             ),
           ],
         ),
@@ -551,6 +850,7 @@ class _NotificationCard extends StatelessWidget {
     final cs = theme.colorScheme;
     final n = notification;
     final hasBody = n.body != null && n.body!.isNotEmpty;
+    final hasExpandableDetails = hasBody || n.fields.isNotEmpty;
     final stripeColor = _levelColor(cs, n.level);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -559,11 +859,11 @@ class _NotificationCard extends StatelessWidget {
         clipBehavior: Clip.antiAlias,
         child: InkWell(
           onTap: () async {
-            if (n.action != null) {
-              await onAction(n.action!);
+            if (hasExpandableDetails) {
+              onToggleExpand();
               return;
             }
-            if (hasBody) onToggleExpand();
+            if (n.action != null) await onAction(n.action!);
           },
           onLongPress: onLongPressMenu,
           child: IntrinsicHeight(
@@ -593,6 +893,17 @@ class _NotificationCard extends StatelessWidget {
                                   color: cs.tertiary,
                                 ),
                               ),
+                            if (hasExpandableDetails)
+                              Padding(
+                                padding: const EdgeInsets.only(right: 4),
+                                child: Icon(
+                                  expanded
+                                      ? Icons.expand_less
+                                      : Icons.expand_more,
+                                  size: 18,
+                                  color: cs.outline,
+                                ),
+                              ),
                             Text(
                               _relativeTime(n.timestamp),
                               style: TextStyle(fontSize: 12, color: cs.outline),
@@ -606,6 +917,29 @@ class _NotificationCard extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
+                        if (n.links.isNotEmpty || n.action != null) ...[
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 4,
+                            children: [
+                              for (final link in n.links)
+                                OutlinedButton.icon(
+                                  icon: const Icon(Icons.open_in_new, size: 16),
+                                  label: Text(
+                                    link.title.isEmpty ? link.url : link.title,
+                                  ),
+                                  onPressed: () =>
+                                      onAction(OpenUrlAction(link.url)),
+                                ),
+                              if (n.action != null)
+                                _ActionButton(
+                                  action: n.action!,
+                                  onPressed: () => onAction(n.action!),
+                                ),
+                            ],
+                          ),
+                        ],
                         if (hasBody && expanded) ...[
                           const SizedBox(height: 6),
                           // Plain text (no markdown in v0 — punted to plugin
@@ -634,29 +968,6 @@ class _NotificationCard extends StatelessWidget {
                                 ],
                               ),
                             ),
-                        ],
-                        if (n.links.isNotEmpty || n.action != null) ...[
-                          const SizedBox(height: 8),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 4,
-                            children: [
-                              for (final link in n.links)
-                                OutlinedButton.icon(
-                                  icon: const Icon(Icons.open_in_new, size: 16),
-                                  label: Text(
-                                    link.title.isEmpty ? link.url : link.title,
-                                  ),
-                                  onPressed: () =>
-                                      onAction(OpenUrlAction(link.url)),
-                                ),
-                              if (n.action != null)
-                                _ActionButton(
-                                  action: n.action!,
-                                  onPressed: () => onAction(n.action!),
-                                ),
-                            ],
-                          ),
                         ],
                       ],
                     ),
@@ -713,40 +1024,35 @@ class _SourcePill extends StatelessWidget {
   }
 }
 
-class _GroupCard extends StatefulWidget {
+class _GroupCard extends StatelessWidget {
   final List<AppNotification> members;
   final String deviceId;
+  final bool expanded;
   final Future<void> Function(NotificationAction) onAction;
-  final VoidCallback onExpandedChanged;
+  final GlobalKey Function(AppNotification member) visibilityKeyForMember;
+  final VoidCallback onToggleExpand;
   const _GroupCard({
     required this.members,
     required this.deviceId,
+    required this.expanded,
     required this.onAction,
-    required this.onExpandedChanged,
+    required this.visibilityKeyForMember,
+    required this.onToggleExpand,
   });
-
-  @override
-  State<_GroupCard> createState() => _GroupCardState();
-}
-
-class _GroupCardState extends State<_GroupCard> {
-  bool _expanded = false;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
-    final newest = widget.members.first;
+    final newest = members.first;
     final stripe = _levelColor(cs, newest.level);
+    final hasLatestActions = newest.links.isNotEmpty || newest.action != null;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       child: Card(
         clipBehavior: Clip.antiAlias,
         child: InkWell(
-          onTap: () {
-            setState(() => _expanded = !_expanded);
-            widget.onExpandedChanged();
-          },
+          onTap: onToggleExpand,
           child: IntrinsicHeight(
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -775,7 +1081,7 @@ class _GroupCardState extends State<_GroupCard> {
                                 borderRadius: BorderRadius.circular(4),
                               ),
                               child: Text(
-                                'x${widget.members.length}',
+                                'x${members.length}',
                                 style: TextStyle(
                                   fontSize: 11,
                                   color: cs.onTertiaryContainer,
@@ -796,26 +1102,55 @@ class _GroupCardState extends State<_GroupCard> {
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
-                        if (_expanded) ...[
+                        if (hasLatestActions) ...[
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 4,
+                            children: [
+                              for (final link in newest.links)
+                                OutlinedButton.icon(
+                                  icon: const Icon(Icons.open_in_new, size: 16),
+                                  label: Text(
+                                    link.title.isEmpty ? link.url : link.title,
+                                  ),
+                                  onPressed: () =>
+                                      onAction(OpenUrlAction(link.url)),
+                                ),
+                              if (newest.action != null)
+                                _ActionButton(
+                                  action: newest.action!,
+                                  onPressed: () => onAction(newest.action!),
+                                ),
+                            ],
+                          ),
+                        ],
+                        if (expanded) ...[
                           const Divider(height: 16),
-                          for (final m in widget.members.skip(1))
-                            Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 4),
-                              child: Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  SizedBox(
-                                    width: 64,
-                                    child: Text(
-                                      _relativeTime(m.timestamp),
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        color: cs.outline,
+                          for (final m in members.skip(1))
+                            SizedBox(
+                              key: visibilityKeyForMember(m),
+                              width: double.infinity,
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 4,
+                                ),
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    SizedBox(
+                                      width: 64,
+                                      child: Text(
+                                        _relativeTime(m.timestamp),
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          color: cs.outline,
+                                        ),
                                       ),
                                     ),
-                                  ),
-                                  Expanded(child: Text(m.title)),
-                                ],
+                                    Expanded(child: Text(m.title)),
+                                  ],
+                                ),
                               ),
                             ),
                         ],

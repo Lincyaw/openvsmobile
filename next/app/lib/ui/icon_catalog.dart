@@ -123,7 +123,10 @@ final Map<String, IconData> _catalog = <String, IconData>{
   'rotate-ccw': const IconData(0xe9c7, fontFamily: _ff),
   'play': const IconData(0xe9bb, fontFamily: _ff),
   'pause': const IconData(0xe9af, fontFamily: _ff),
-  'square-stop': const IconData(0xe9e0, fontFamily: _ff), // alias for "stop" — Feather has no stop glyph
+  'square-stop': const IconData(
+    0xe9e0,
+    fontFamily: _ff,
+  ), // alias for "stop" — Feather has no stop glyph
   'skip-back': const IconData(0xe9d8, fontFamily: _ff),
   'skip-forward': const IconData(0xe9d9, fontFamily: _ff),
   'send': const IconData(0xe9cd, fontFamily: _ff),
@@ -189,7 +192,6 @@ final Map<String, IconData> _catalog = <String, IconData>{
   'cloud-off': const IconData(0xe93c, fontFamily: _ff),
   'cloud-download': const IconData(0xe93a, fontFamily: _ff), // closest match
   'cloud-upload': const IconData(0xe93d, fontFamily: _ff), // closest match
-
   // Bookmark / tag
   'bookmark': const IconData(0xe924, fontFamily: _ff),
   'star': const IconData(0xe9e1, fontFamily: _ff),

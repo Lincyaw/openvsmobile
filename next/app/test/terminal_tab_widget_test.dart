@@ -23,6 +23,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mobilecode/app_state.dart';
 import 'package:mobilecode/backend_client.dart';
 import 'package:mobilecode/models.dart';
+import 'package:mobilecode/screens/terminal_detail.dart';
 import 'package:mobilecode/screens/terminal_tab.dart';
 import 'package:mobilecode/settings_store.dart';
 import 'package:mobilecode/state/terminal_hub.dart';
@@ -39,15 +40,19 @@ TerminalSession _session(
   String id, {
   String cwd = '/tmp/ws-1/src',
   String? title,
+  String? externalSessionId,
+  String? workspaceRoot,
 }) {
   return TerminalSession(
     id: id,
     title: title,
     workspaceId: _ws.id,
+    workspaceRoot: workspaceRoot,
     cols: 80,
     rows: 24,
     cwd: cwd,
     createdAt: DateTime.now().millisecondsSinceEpoch,
+    externalSessionId: externalSessionId,
   );
 }
 
@@ -77,13 +82,20 @@ BackendTarget _backend({
   String id = 'backend-1',
   String name = 'home',
   String host = 'home.local',
+  int port = 7860,
+  BackendTransport transport = BackendTransport.websocket,
+  String? irohEndpointId,
+  String? irohTicket,
 }) {
   return BackendTarget(
     id: id,
     name: name,
     host: host,
-    port: 7860,
+    port: port,
     token: 'token',
+    transport: transport,
+    irohEndpointId: irohEndpointId,
+    irohTicket: irohTicket,
     origin: BackendOrigin.manual,
     addedAt: 0,
   );
@@ -94,6 +106,7 @@ class _FakeTerminalHub extends TerminalHub {
 
   List<BackendTerminalGroup> _groups;
   final ValueNotifier<int> _previewVersion = ValueNotifier<int>(0);
+  final Map<String, TerminalPreview> _previews = {};
   String? renamedTitle;
 
   @override
@@ -101,6 +114,25 @@ class _FakeTerminalHub extends TerminalHub {
 
   @override
   ValueNotifier<int> get previewVersion => _previewVersion;
+
+  @override
+  TerminalPreview previewFor(String backendId, String sessionId) =>
+      _previews['$backendId/$sessionId'] ??
+      const TerminalPreview(text: null, lastDataAt: null);
+
+  void setPreview(
+    String backendId,
+    String sessionId, {
+    required String text,
+    String? recentText,
+  }) {
+    _previews['$backendId/$sessionId'] = TerminalPreview(
+      text: text,
+      lastDataAt: DateTime.now().millisecondsSinceEpoch,
+      recentText: recentText ?? text,
+    );
+    _previewVersion.value += 1;
+  }
 
   @override
   Future<void> renameTerminal(
@@ -213,6 +245,258 @@ void main() {
     expect(find.text('sh · 1'), findsNothing);
   });
 
+  testWidgets('agent sessions render compact Claude and Codex tags', (
+    tester,
+  ) async {
+    final appState = await _appStateWith(
+      sessions: [
+        _session('sid-claude'),
+        _session('sid-codex', externalSessionId: 'codex-prod-review'),
+      ],
+    );
+    addTearDown(appState.dispose);
+    await tester.pumpWidget(_wrap(TerminalTab(appState: appState)));
+    await tester.pump();
+
+    appState.debugInjectTerminalOutput(
+      'sid-claude',
+      utf8.encode('Welcome to Claude Code\n'),
+    );
+    await tester.pump();
+
+    expect(find.text('Claude'), findsOneWidget);
+    expect(find.text('Codex'), findsOneWidget);
+  });
+
+  testWidgets('plain .codex preview does not render an agent tag', (
+    tester,
+  ) async {
+    final appState = await _appStateWith(
+      sessions: [_session('sid-plain-shell')],
+    );
+    addTearDown(appState.dispose);
+    await tester.pumpWidget(_wrap(TerminalTab(appState: appState)));
+    await tester.pump();
+
+    appState.debugInjectTerminalOutput(
+      'sid-plain-shell',
+      utf8.encode('.codex\n'),
+    );
+    await tester.pump();
+
+    expect(find.text('.codex'), findsOneWidget);
+    expect(find.text('Codex'), findsNothing);
+  });
+
+  testWidgets('shell command invocation can identify a Claude agent session', (
+    tester,
+  ) async {
+    final appState = await _appStateWith(
+      sessions: [_session('sid-claude-cmd')],
+    );
+    addTearDown(appState.dispose);
+    await tester.pumpWidget(_wrap(TerminalTab(appState: appState)));
+    await tester.pump();
+
+    appState.debugInjectTerminalOutput(
+      'sid-claude-cmd',
+      utf8.encode('\$ claude --resume\n'),
+    );
+    await tester.pump();
+
+    expect(find.text('Claude'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('terminal-agent-activity-strip')),
+      findsOneWidget,
+    );
+    expect(find.text('Claude agent'), findsOneWidget);
+  });
+
+  testWidgets('Codex product text identifies a Codex agent session', (
+    tester,
+  ) async {
+    final appState = await _appStateWith(sessions: [_session('sid-codex-ui')]);
+    addTearDown(appState.dispose);
+    await tester.pumpWidget(_wrap(TerminalTab(appState: appState)));
+    await tester.pump();
+
+    appState.debugInjectTerminalOutput(
+      'sid-codex-ui',
+      utf8.encode('GPT-5 Codex\nAsk for a coding task\n'),
+    );
+    await tester.pump();
+
+    expect(find.text('Codex'), findsOneWidget);
+    expect(find.text('Codex agent'), findsOneWidget);
+  });
+
+  testWidgets('Claude status text renders an agent tag', (tester) async {
+    final appState = await _appStateWith(
+      sessions: [_session('sid-claude-status')],
+    );
+    addTearDown(appState.dispose);
+    await tester.pumpWidget(_wrap(TerminalTab(appState: appState)));
+    await tester.pump();
+
+    appState.debugInjectTerminalOutput(
+      'sid-claude-status',
+      utf8.encode('bypass permissions on (shift+tab to cycle)\n'),
+    );
+    await tester.pump();
+
+    expect(
+      find.text('bypass permissions on (shift+tab to cycle)'),
+      findsOneWidget,
+    );
+    expect(find.text('Claude'), findsOneWidget);
+    expect(find.text('Needs input'), findsNothing);
+  });
+
+  testWidgets('agent approval prompt renders a needs-input tag', (
+    tester,
+  ) async {
+    final appState = await _appStateWith(
+      sessions: [_session('sid-claude-approval')],
+    );
+    addTearDown(appState.dispose);
+    await tester.pumpWidget(_wrap(TerminalTab(appState: appState)));
+    await tester.pump();
+
+    appState.debugInjectTerminalOutput(
+      'sid-claude-approval',
+      utf8.encode(
+        'Welcome to Claude Code\n'
+        'Do you want to proceed?\n'
+        '1. Yes\n',
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('1. Yes'), findsOneWidget);
+    expect(find.text('Claude'), findsOneWidget);
+    expect(find.text('Needs input'), findsOneWidget);
+  });
+
+  testWidgets('agent activity strip summarizes and opens waiting agents', (
+    tester,
+  ) async {
+    final appState = await _appStateWith(
+      sessions: [
+        _session('sid-codex-active', externalSessionId: 'codex-prod-review'),
+        _session('sid-claude-waiting', title: 'claude review'),
+        _session('sid-shell'),
+      ],
+    );
+    addTearDown(appState.dispose);
+    await tester.pumpWidget(_wrap(TerminalTab(appState: appState)));
+    await tester.pump();
+
+    appState.debugInjectTerminalOutput(
+      'sid-claude-waiting',
+      utf8.encode(
+        'Welcome to Claude Code\n'
+        'Do you want to proceed?\n'
+        '1. Yes\n',
+      ),
+    );
+    await tester.pump();
+
+    expect(
+      find.byKey(const ValueKey<String>('terminal-agent-activity-strip')),
+      findsOneWidget,
+    );
+    expect(find.text('Agent activity'), findsOneWidget);
+    expect(find.text('1 waiting · 2 active'), findsOneWidget);
+    expect(find.text('Needs input: Do you want to proceed?'), findsOneWidget);
+    expect(find.text('Claude agent'), findsOneWidget);
+    expect(find.text('Codex agent'), findsOneWidget);
+    expect(find.text('sid-shell'), findsNothing);
+
+    await tester.tap(
+      find.byKey(
+        const ValueKey<String>('terminal-agent-activity:sid-claude-waiting'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(TerminalDetailScreen), findsOneWidget);
+    expect(find.text('claude review'), findsOneWidget);
+  });
+
+  testWidgets('plain shell prompt does not render a needs-input tag', (
+    tester,
+  ) async {
+    final appState = await _appStateWith(
+      sessions: [_session('sid-shell-prompt')],
+    );
+    addTearDown(appState.dispose);
+    await tester.pumpWidget(_wrap(TerminalTab(appState: appState)));
+    await tester.pump();
+
+    appState.debugInjectTerminalOutput(
+      'sid-shell-prompt',
+      utf8.encode('Do you want to proceed?\n'),
+    );
+    await tester.pump();
+
+    expect(find.text('Do you want to proceed?'), findsOneWidget);
+    expect(find.text('Needs input'), findsNothing);
+  });
+
+  testWidgets('Codex command approval prompt renders as waiting input', (
+    tester,
+  ) async {
+    final appState = await _appStateWith(sessions: [_session('sid-codex-run')]);
+    addTearDown(appState.dispose);
+    await tester.pumpWidget(_wrap(TerminalTab(appState: appState)));
+    await tester.pump();
+
+    appState.debugInjectTerminalOutput(
+      'sid-codex-run',
+      utf8.encode(
+        'GPT-5 Codex\n'
+        'Allow command?\n'
+        '1. Yes\n',
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Codex'), findsOneWidget);
+    expect(find.text('Needs input'), findsOneWidget);
+    expect(find.text('Needs input: Allow command?'), findsOneWidget);
+  });
+
+  testWidgets('session action sheet can open linked files', (tester) async {
+    final session = _session('sid-linked-files', workspaceRoot: '/tmp/ws-1');
+    final appState = await _appStateWith(sessions: [session]);
+    addTearDown(appState.dispose);
+    final opened = <TerminalSession>[];
+
+    await tester.pumpWidget(
+      _wrap(
+        TerminalTab(
+          appState: appState,
+          onOpenFilesForSession: (session) async {
+            opened.add(session);
+          },
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.longPress(find.text('sh · 1'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Open files'), findsOneWidget);
+    expect(find.text('/tmp/ws-1'), findsOneWidget);
+
+    await tester.tap(find.text('Open files'));
+    await tester.pumpAndSettle();
+
+    expect(opened, hasLength(1));
+    expect(opened.single.id, 'sid-linked-files');
+  });
+
   testWidgets('ANSI / OSC / control bytes are stripped from the preview', (
     tester,
   ) async {
@@ -314,8 +598,247 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.textContaining('Iroh connection failed'), findsOneWidget);
+    expect(find.text('Iroh ticket expired'), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('backend header summarizes reconnect errors readably', (
+    tester,
+  ) async {
+    final appState = await _appStateWith(workspace: false);
+    addTearDown(appState.dispose);
+    final hub = _FakeTerminalHub([
+      BackendTerminalGroup(
+        backend: _backend(name: 'phone relay'),
+        connectionState: BackendConnectionState.reconnecting,
+        lastError:
+            'socket error: PlatformException(IROH_CLOSED, frame too large, null, null)',
+        sessions: const [],
+      ),
+    ]);
+    addTearDown(hub.dispose);
+
+    await tester.pumpWidget(
+      _wrap(TerminalTab(appState: appState, terminalHub: hub)),
+    );
+    await tester.pump();
+
+    expect(find.text('reconnecting: Message too large'), findsOneWidget);
+    expect(find.textContaining('PlatformException'), findsNothing);
+  });
+
+  testWidgets(
+    'Iroh backend header shows readable endpoint and terminal count',
+    (tester) async {
+      final appState = await _appStateWith(workspace: false);
+      addTearDown(appState.dispose);
+      final hub = _FakeTerminalHub([
+        BackendTerminalGroup(
+          backend: _backend(
+            name: 'iroh backend',
+            host: '',
+            port: 0,
+            transport: BackendTransport.iroh,
+            irohEndpointId: 'endpoint-abcdef0123456789',
+          ),
+          connectionState: BackendConnectionState.connected,
+          lastError: null,
+          sessions: [_session('sid-aaaaaaaaaaaa', cwd: '/tmp/AgentM')],
+        ),
+      ]);
+      addTearDown(hub.dispose);
+
+      await tester.pumpWidget(
+        _wrap(TerminalTab(appState: appState, terminalHub: hub)),
+      );
+      await tester.pump();
+
+      expect(find.textContaining('Iroh endpoint-abc'), findsOneWidget);
+      expect(find.byTooltip('1 terminal'), findsOneWidget);
+      expect(find.textContaining('iroh:'), findsNothing);
+      expect(find.textContaining(':0'), findsNothing);
+    },
+  );
+
+  testWidgets('duplicate backend names get short identity suffixes', (
+    tester,
+  ) async {
+    final appState = await _appStateWith(workspace: false);
+    addTearDown(appState.dispose);
+    final hub = _FakeTerminalHub([
+      BackendTerminalGroup(
+        backend: _backend(
+          id: 'backend-a',
+          name: 'iroh backend',
+          transport: BackendTransport.iroh,
+          irohEndpointId: 'endpoint-abcdef0123456789',
+        ),
+        connectionState: BackendConnectionState.connected,
+        lastError: null,
+        sessions: const [],
+      ),
+      BackendTerminalGroup(
+        backend: _backend(
+          id: 'backend-b',
+          name: 'iroh backend',
+          transport: BackendTransport.iroh,
+          irohEndpointId: 'endpoint-fedcba9876543210',
+        ),
+        connectionState: BackendConnectionState.connected,
+        lastError: null,
+        sessions: const [],
+      ),
+    ]);
+    addTearDown(hub.dispose);
+
+    await tester.pumpWidget(
+      _wrap(TerminalTab(appState: appState, terminalHub: hub)),
+    );
+    await tester.pump();
+
+    expect(find.text('iroh backend'), findsNWidgets(2));
+    expect(find.text('#456789'), findsOneWidget);
+    expect(find.text('#543210'), findsOneWidget);
+    expect(find.byTooltip('Backend identity #456789'), findsOneWidget);
+    expect(find.byTooltip('Backend identity #543210'), findsOneWidget);
+    expect(find.byTooltip('No terminals'), findsNWidgets(2));
+    expect(find.text('connected'), findsNothing);
+  });
+
+  testWidgets('backend header marks the active backend', (tester) async {
+    final appState = await _appStateWith(workspace: false);
+    addTearDown(appState.dispose);
+    final hub = _FakeTerminalHub([
+      BackendTerminalGroup(
+        backend: _backend(id: 'backend-a', name: 'workstation'),
+        connectionState: BackendConnectionState.connected,
+        lastError: null,
+        sessions: const [],
+      ),
+      BackendTerminalGroup(
+        backend: _backend(id: 'backend-b', name: 'phone relay'),
+        connectionState: BackendConnectionState.connected,
+        lastError: null,
+        sessions: const [],
+      ),
+    ]);
+    addTearDown(hub.dispose);
+
+    await tester.pumpWidget(
+      _wrap(
+        TerminalTab(
+          appState: appState,
+          terminalHub: hub,
+          activeBackendId: 'backend-b',
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Active'), findsOneWidget);
+    expect(find.byTooltip('Active backend'), findsOneWidget);
+  });
+
+  testWidgets('backend header summarizes agent sessions', (tester) async {
+    final appState = await _appStateWith(workspace: false);
+    addTearDown(appState.dispose);
+    final hub = _FakeTerminalHub([
+      BackendTerminalGroup(
+        backend: _backend(name: 'prod'),
+        connectionState: BackendConnectionState.connected,
+        lastError: null,
+        sessions: [
+          _session('sid-codex-agent', externalSessionId: 'codex-prod-review'),
+          _session('sid-shell'),
+        ],
+      ),
+    ]);
+    addTearDown(hub.dispose);
+
+    await tester.pumpWidget(
+      _wrap(TerminalTab(appState: appState, terminalHub: hub)),
+    );
+    await tester.pump();
+
+    expect(find.text('1 agent'), findsOneWidget);
+    expect(find.text('Codex'), findsOneWidget);
+    expect(find.byTooltip('2 terminals'), findsOneWidget);
+  });
+
+  testWidgets('collapsed backend header keeps agent attention visible', (
+    tester,
+  ) async {
+    final appState = await _appStateWith(workspace: false);
+    addTearDown(appState.dispose);
+    final hub = _FakeTerminalHub([
+      BackendTerminalGroup(
+        backend: _backend(name: 'prod'),
+        connectionState: BackendConnectionState.connected,
+        lastError: null,
+        sessions: [_session('sid-claude-agent', title: 'claude review')],
+      ),
+    ]);
+    hub.setPreview(
+      'backend-1',
+      'sid-claude-agent',
+      text: '1. Yes',
+      recentText: 'Do you want to proceed?\n1. Yes',
+    );
+    addTearDown(hub.dispose);
+
+    await tester.pumpWidget(
+      _wrap(TerminalTab(appState: appState, terminalHub: hub)),
+    );
+    await tester.pump();
+
+    await tester.tap(find.text('prod'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('claude review'), findsNothing);
+    expect(find.text('Needs input'), findsOneWidget);
+  });
+
+  testWidgets('hub session action sheet can open linked files', (tester) async {
+    final appState = await _appStateWith(workspace: false);
+    addTearDown(appState.dispose);
+    final backend = _backend(name: 'prod');
+    final session = _session('sid-hub-linked-files', workspaceRoot: '/srv/app');
+    final hub = _FakeTerminalHub([
+      BackendTerminalGroup(
+        backend: backend,
+        connectionState: BackendConnectionState.connected,
+        lastError: null,
+        sessions: [session],
+      ),
+    ]);
+    addTearDown(hub.dispose);
+    final opened = <BackendTerminalSession>[];
+
+    await tester.pumpWidget(
+      _wrap(
+        TerminalTab(
+          appState: appState,
+          terminalHub: hub,
+          onOpenFilesForBackendSession: (session) async {
+            opened.add(session);
+          },
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.longPress(find.text('sh · 1'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Open files'), findsOneWidget);
+    expect(find.text('prod · /srv/app'), findsOneWidget);
+
+    await tester.tap(find.text('Open files'));
+    await tester.pumpAndSettle();
+
+    expect(opened, hasLength(1));
+    expect(opened.single.backend.id, backend.id);
+    expect(opened.single.session.id, 'sid-hub-linked-files');
   });
 
   testWidgets('renaming a hub terminal updates after dialog closes safely', (

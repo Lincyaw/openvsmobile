@@ -95,6 +95,7 @@ class _BackendEditorScreenState extends State<BackendEditorScreen> {
   }
 
   void _log(String text, {bool isError = false}) {
+    if (!mounted) return;
     setState(() {
       _testLogs.add(
         _LogEntry(time: DateTime.now(), text: text, isError: isError),
@@ -225,7 +226,7 @@ class _BackendEditorScreenState extends State<BackendEditorScreen> {
       try {
         await ch?.sink.close();
       } catch (_) {}
-      setState(() => _testing = false);
+      if (mounted) setState(() => _testing = false);
     }
   }
 
@@ -299,7 +300,9 @@ class _BackendEditorScreenState extends State<BackendEditorScreen> {
   }
 
   Future<void> _submit() async {
+    if (_saving) return;
     if (!_formKey.currentState!.validate()) return;
+    final messenger = ScaffoldMessenger.of(context);
     setState(() => _saving = true);
     final name = _nameCtrl.text.trim();
     final host = _transport == BackendTransport.websocket
@@ -333,9 +336,15 @@ class _BackendEditorScreenState extends State<BackendEditorScreen> {
           : null,
       clearIroh: _transport == BackendTransport.websocket,
     );
-    await widget.onSave(updated);
-    if (!mounted) return;
-    Navigator.of(context).pop(updated);
+    try {
+      await widget.onSave(updated);
+      if (!mounted) return;
+      Navigator.of(context).pop(updated);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      messenger.showSnackBar(SnackBar(content: Text('Save failed: $e')));
+    }
   }
 
   @override

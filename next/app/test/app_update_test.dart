@@ -53,11 +53,13 @@ void main() {
         name: 'v0.4.0',
         body: '',
         assets: names
-            .map((n) => ReleaseAsset(
-                  name: n,
-                  downloadUrl: 'https://example.com/$n',
-                  size: 1000,
-                ))
+            .map(
+              (n) => ReleaseAsset(
+                name: n,
+                downloadUrl: 'https://example.com/$n',
+                size: 1000,
+              ),
+            )
             .toList(),
       );
     }
@@ -83,9 +85,7 @@ void main() {
     });
 
     test('returns null when no APK matches', () {
-      final release = makeRelease([
-        'openvsmobile-backend-linux-x64.tar.gz',
-      ]);
+      final release = makeRelease(['openvsmobile-backend-linux-x64.tar.gz']);
       final asset = service.pickAsset(release, 'arm64-v8a');
       expect(asset, isNull);
     });

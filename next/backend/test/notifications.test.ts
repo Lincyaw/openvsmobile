@@ -1119,6 +1119,190 @@ describe("CLI smoke: mobile-notify --from-json -", () => {
       "aoy-test",
     );
   });
+
+  it("--from-agent-hook keeps an external terminal action when no terminal id is known", async () => {
+    const hookEvent = {
+      hook_event_name: "Stop",
+      session_id: "session-with-external-terminal",
+      cwd: "/home/u/proj",
+      last_message: "External-only terminal run finished.",
+    };
+
+    const child = spawn(
+      process.execPath,
+      [
+        CLI_PATH,
+        "--server",
+        `127.0.0.1:${h.port}`,
+        "--token",
+        TOKEN,
+        "--from-agent-hook",
+      ],
+      {
+        stdio: ["pipe", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          ZELLIJ_SESSION_NAME: "aoy-external-only",
+        },
+      },
+    );
+    child.stdin.write(JSON.stringify(hookEvent));
+    child.stdin.end();
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    child.stdout.on("data", (c) => stdoutChunks.push(c));
+    child.stderr.on("data", (c) => stderrChunks.push(c));
+    const exitCode: number = await new Promise((resolve) =>
+      child.on("close", (code) => resolve(code ?? -1)),
+    );
+    const stdout = Buffer.concat(stdoutChunks).toString("utf8").trim();
+    const stderr = Buffer.concat(stderrChunks).toString("utf8");
+    expect(exitCode, `stderr: ${stderr}`).toBe(0);
+
+    const stored = h.state.notificationHub
+      .list({ limit: 5 })
+      .items.find((n) => n.id === stdout);
+    expect(stored).toBeDefined();
+    expect(stored!.action).toEqual({
+      kind: "open-terminal",
+      externalSessionId: "aoy-external-only",
+    });
+    expect(stored!.fields?.find((f) => f.key === "zellij")?.value).toBe(
+      "aoy-external-only",
+    );
+  });
+
+  it("--from-agent-hook marks approval prompts as attention-worthy", async () => {
+    const hookEvent = {
+      hook_event_name: "Stop",
+      session_id: "agent-needs-input-session",
+      cwd: "/home/u/proj",
+      last_message: [
+        "Do you want to proceed?",
+        "1. Yes",
+        "2. No",
+      ].join("\n"),
+    };
+
+    const child = spawn(
+      process.execPath,
+      [
+        CLI_PATH,
+        "--server",
+        `127.0.0.1:${h.port}`,
+        "--token",
+        TOKEN,
+        "--from-agent-hook",
+      ],
+      { stdio: ["pipe", "pipe", "pipe"] },
+    );
+    child.stdin.write(JSON.stringify(hookEvent));
+    child.stdin.end();
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    child.stdout.on("data", (c) => stdoutChunks.push(c));
+    child.stderr.on("data", (c) => stderrChunks.push(c));
+    const exitCode: number = await new Promise((resolve) =>
+      child.on("close", (code) => resolve(code ?? -1)),
+    );
+    const stdout = Buffer.concat(stdoutChunks).toString("utf8").trim();
+    const stderr = Buffer.concat(stderrChunks).toString("utf8");
+    expect(exitCode, `stderr: ${stderr}`).toBe(0);
+
+    const stored = h.state.notificationHub
+      .list({ limit: 5 })
+      .items.find((n) => n.id === stdout);
+    expect(stored).toBeDefined();
+    expect(stored!.title).toContain("Do you want to proceed?");
+    expect(stored!.level).toBe("warning");
+    expect(stored!.important).toBe(true);
+  });
+
+  it("--from-agent-hook with a publish token does not attempt RPC terminal lookup", async () => {
+    const publishToken = `${"a".repeat(12)}.${"b".repeat(64)}`;
+    const notifyId = "00000000-0000-4000-8000-000000000000";
+    let upgradeCount = 0;
+    let notifyAuth: string | undefined;
+    let notifyPayload: unknown;
+
+    const fakeServer = createServer((req, res) => {
+      if (req.url !== "/notify" || req.method !== "POST") {
+        res.statusCode = 404;
+        res.end();
+        return;
+      }
+      notifyAuth = req.headers.authorization;
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.on("end", () => {
+        notifyPayload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        res.statusCode = 200;
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ id: notifyId }));
+      });
+    });
+    fakeServer.on("upgrade", (_req, socket) => {
+      upgradeCount += 1;
+      socket.destroy();
+    });
+
+    await new Promise<void>((resolve) =>
+      fakeServer.listen(0, "127.0.0.1", resolve),
+    );
+    try {
+      const address = fakeServer.address();
+      if (address === null || typeof address === "string") {
+        throw new Error("fake server did not bind a TCP port");
+      }
+      const hookEvent = {
+        hook_event_name: "Stop",
+        session_id: "publish-token-hook-session",
+        cwd: "/home/u/proj",
+        last_message: "Publish token hook finished.",
+      };
+      const child = spawn(
+        process.execPath,
+        [
+          CLI_PATH,
+          "--server",
+          `127.0.0.1:${address.port}`,
+          "--token",
+          publishToken,
+          "--from-agent-hook",
+        ],
+        {
+          stdio: ["pipe", "pipe", "pipe"],
+          env: {
+            ...process.env,
+            ZELLIJ_SESSION_NAME: "aoy-publish-token",
+          },
+        },
+      );
+      child.stdin.write(JSON.stringify(hookEvent));
+      child.stdin.end();
+      const stdoutChunks: Buffer[] = [];
+      const stderrChunks: Buffer[] = [];
+      child.stdout.on("data", (c) => stdoutChunks.push(c));
+      child.stderr.on("data", (c) => stderrChunks.push(c));
+      const exitCode: number = await new Promise((resolve) =>
+        child.on("close", (code) => resolve(code ?? -1)),
+      );
+      const stdout = Buffer.concat(stdoutChunks).toString("utf8").trim();
+      const stderr = Buffer.concat(stderrChunks).toString("utf8");
+      expect(exitCode, `stderr: ${stderr}`).toBe(0);
+      expect(stdout).toBe(notifyId);
+      expect(notifyAuth).toBe(`Bearer ${publishToken}`);
+      expect(upgradeCount).toBe(0);
+      expect((notifyPayload as { action?: unknown }).action).toEqual({
+        kind: "open-terminal",
+        externalSessionId: "aoy-publish-token",
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        fakeServer.close((err) => (err ? reject(err) : resolve()));
+      });
+    }
+  });
 });
 
 describe("hub fan-out gating", () => {

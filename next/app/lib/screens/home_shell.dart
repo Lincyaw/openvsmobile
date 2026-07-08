@@ -10,6 +10,8 @@ import '../app_state.dart';
 import '../backend_client.dart';
 import '../models.dart';
 import '../notification.dart';
+import '../services/connection_diagnostics.dart';
+import '../services/terminal_notification_resolver.dart';
 import '../services/system_tray.dart';
 import '../settings_store.dart';
 import '../state/terminal_hub.dart';
@@ -37,12 +39,6 @@ class HomeShell extends StatefulWidget {
   /// session into its Files workspace.
   final Future<void> Function(String backendId) onSwitchBackend;
 
-  /// Wire a freshly-bootstrapped backend back into the persisted list.
-  /// Forwarded to the Settings tab so SSH bootstrap launched from there
-  /// produces the same result as launching it from BackendsScreen.
-  final Future<void> Function(BackendTarget target, {required bool makeActive})
-  onBackendInstalled;
-
   /// Called when the notification preferences screen saves a change.
   /// `main.dart` uses this to (re)start or stop the foreground service.
   final Future<void> Function() onNotificationPrefsChanged;
@@ -65,7 +61,6 @@ class HomeShell extends StatefulWidget {
     required this.systemTrayController,
     required this.onOpenBackends,
     required this.onSwitchBackend,
-    required this.onBackendInstalled,
     required this.onNotificationPrefsChanged,
     required this.themeMode,
     required this.onThemeModeChanged,
@@ -209,21 +204,23 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   Future<void> _openTerminalFromNotification(OpenTerminalAction action) async {
-    final backendId = action.backendId ?? widget.state.activeBackendId;
-    if (backendId == null || backendId.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No backend is active for this terminal')),
-      );
-      return;
-    }
-
-    var ref = widget.terminalHub.sessionFor(backendId, action.sessionId);
+    final ref = await resolveTerminalForNotification(
+      terminalHub: widget.terminalHub,
+      action: action,
+      activeBackendId: widget.state.activeBackendId,
+      isMounted: () => mounted,
+    );
+    if (!mounted) return;
     if (ref == null) {
-      await widget.terminalHub.refreshAll();
-      if (!mounted) return;
-      ref = widget.terminalHub.sessionFor(backendId, action.sessionId);
-    }
-    if (ref == null) {
+      final backendId = action.backendId ?? widget.state.activeBackendId;
+      if (backendId == null || backendId.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No backend is active for this terminal'),
+          ),
+        );
+        return;
+      }
       final suffix = action.externalSessionId == null
           ? ''
           : ' (${action.externalSessionId})';
@@ -330,9 +327,10 @@ class _HomeShellState extends State<HomeShell> {
                 SettingsTab(
                   appState: widget.appState,
                   settingsStore: widget.settingsStore,
+                  backendState: widget.state,
                   systemTrayController: widget.systemTrayController,
+                  isActive: _tab == _kSettingsTabIndex,
                   onOpenBackends: widget.onOpenBackends,
-                  onBackendInstalled: widget.onBackendInstalled,
                   onNotificationPrefsChanged: widget.onNotificationPrefsChanged,
                   themeMode: widget.themeMode,
                   onThemeModeChanged: widget.onThemeModeChanged,
@@ -518,6 +516,11 @@ class _ConnectionBannerState extends State<_ConnectionBanner> {
     if (!_shouldShow) return const SizedBox.shrink();
     final theme = Theme.of(context);
     final s = widget.state;
+    final copy = connectionStatusCopy(
+      state: s,
+      backendName: widget.backendName,
+      lastError: widget.lastError,
+    );
     if (s == BackendConnectionState.failed) {
       return Container(
         width: double.infinity,
@@ -529,9 +532,29 @@ class _ConnectionBannerState extends State<_ConnectionBanner> {
         child: Row(
           children: [
             Expanded(
-              child: Text(
-                widget.lastError ?? 'Connection failed.',
-                style: TextStyle(color: theme.colorScheme.onErrorContainer),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    copy.title,
+                    style: TextStyle(
+                      color: theme.colorScheme.onErrorContainer,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  if (copy.detail != null) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      copy.detail!,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: theme.colorScheme.onErrorContainer,
+                        fontSize: theme.textTheme.bodySmall?.fontSize,
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ),
             TextButton(
@@ -542,28 +565,7 @@ class _ConnectionBannerState extends State<_ConnectionBanner> {
         ),
       );
     }
-    final target = widget.backendName == null || widget.backendName!.isEmpty
-        ? ''
-        : ' to ${widget.backendName}';
-    final (msg, withSpinner) = switch (s) {
-      BackendConnectionState.connecting => ('Connecting$target…', true),
-      BackendConnectionState.reconnecting => ('Connecting$target…', true),
-      BackendConnectionState.waitingForNetwork => (
-        widget.backendName == null || widget.backendName!.isEmpty
-            ? 'Waiting for network.'
-            : 'Waiting for network · ${widget.backendName}.',
-        true,
-      ),
-      BackendConnectionState.disconnected => (
-        widget.backendName == null || widget.backendName!.isEmpty
-            ? 'Disconnected.'
-            : '${widget.backendName} disconnected.',
-        false,
-      ),
-      BackendConnectionState.connected => ('', false),
-      BackendConnectionState.failed => ('', false), // handled above
-    };
-    if (msg.isEmpty) return const SizedBox.shrink();
+    if (s == BackendConnectionState.connected) return const SizedBox.shrink();
     return Container(
       width: double.infinity,
       color: theme.colorScheme.secondaryContainer,
@@ -573,17 +575,41 @@ class _ConnectionBannerState extends State<_ConnectionBanner> {
       ),
       child: Row(
         children: [
-          if (withSpinner)
+          if (copy.loading)
             const SizedBox(
               width: 14,
               height: 14,
               child: CircularProgressIndicator(strokeWidth: 2),
             ),
-          if (withSpinner) const SizedBox(width: AppSpacing.sm),
+          if (copy.loading) const SizedBox(width: AppSpacing.sm),
           Expanded(
-            child: Text(
-              msg,
-              style: TextStyle(color: theme.colorScheme.onSecondaryContainer),
+            child: Semantics(
+              label: copy.semanticsLabel,
+              child: ExcludeSemantics(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      copy.title,
+                      style: TextStyle(
+                        color: theme.colorScheme.onSecondaryContainer,
+                      ),
+                    ),
+                    if (copy.detail != null) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        copy.detail!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: theme.colorScheme.onSecondaryContainer,
+                          fontSize: theme.textTheme.bodySmall?.fontSize,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
             ),
           ),
         ],
@@ -907,30 +933,70 @@ class _BellIconAction extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final unread = appState.notifications.unreadCount;
+    final attention = appState.notifications.attentionCount;
     final connected =
         appState.connectionState == BackendConnectionState.connected;
     if (!connected && unread == 0) return const SizedBox.shrink();
-    return IconButton(
-      tooltip: 'Notifications',
-      icon: unread > 0
-          ? Badge.count(
-              count: unread,
-              child: const Icon(Icons.notifications_outlined),
-            )
-          : const Icon(Icons.notifications_outlined),
-      onPressed: () {
-        Navigator.of(context).push(
-          MaterialPageRoute<void>(
-            builder: (_) => NotificationCenterScreen(
-              appState: appState,
-              settingsStore: settingsStore,
-              onOpenTerminal: onOpenTerminal,
-            ),
+    void openCenter() {
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => NotificationCenterScreen(
+            appState: appState,
+            settingsStore: settingsStore,
+            onOpenTerminal: onOpenTerminal,
           ),
-        );
-      },
+        ),
+      );
+    }
+
+    return Semantics(
+      label: _notificationBellSemanticsLabel(
+        unreadCount: unread,
+        attentionCount: attention,
+      ),
+      button: true,
+      onTap: openCenter,
+      child: ExcludeSemantics(
+        child: IconButton(
+          tooltip: 'Notifications',
+          icon: _notificationBellIcon(
+            unreadCount: unread,
+            attentionCount: attention,
+          ),
+          onPressed: openCenter,
+        ),
+      ),
     );
   }
+}
+
+Widget _notificationBellIcon({
+  required int unreadCount,
+  required int attentionCount,
+}) {
+  const icon = Icon(Icons.notifications_outlined);
+  if (attentionCount > 0) {
+    return Badge(label: Text(_compactBadgeCount(attentionCount)), child: icon);
+  }
+  if (unreadCount > 0) {
+    return const Badge(child: icon);
+  }
+  return icon;
+}
+
+String _compactBadgeCount(int count) => count > 9 ? '9+' : count.toString();
+
+String _notificationBellSemanticsLabel({
+  required int unreadCount,
+  required int attentionCount,
+}) {
+  if (attentionCount > 0) {
+    return attentionCount == 1
+        ? 'Notifications, 1 item needs attention'
+        : 'Notifications, $attentionCount items need attention';
+  }
+  if (unreadCount > 0) return 'Notifications, unread items';
+  return 'Notifications';
 }
 
 String _terminalSessionTitle(TerminalSession session, int index) {

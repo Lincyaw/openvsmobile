@@ -84,18 +84,18 @@ sealed class NotificationAction {
         return null;
       case 'open-terminal':
         final sessionId = json['sessionId'];
-        if (sessionId is String && sessionId.isNotEmpty) {
+        final externalSessionId = json['externalSessionId'];
+        final hasSessionId = sessionId is String && sessionId.isNotEmpty;
+        final hasExternalSessionId =
+            externalSessionId is String && externalSessionId.isNotEmpty;
+        if (hasSessionId || hasExternalSessionId) {
           final backendId = json['backendId'];
-          final externalSessionId = json['externalSessionId'];
           return OpenTerminalAction(
-            sessionId: sessionId,
+            sessionId: hasSessionId ? sessionId : null,
             backendId: backendId is String && backendId.isNotEmpty
                 ? backendId
                 : null,
-            externalSessionId:
-                externalSessionId is String && externalSessionId.isNotEmpty
-                ? externalSessionId
-                : null,
+            externalSessionId: hasExternalSessionId ? externalSessionId : null,
           );
         }
         return null;
@@ -121,11 +121,11 @@ class OpenWorkspaceAction extends NotificationAction {
 }
 
 class OpenTerminalAction extends NotificationAction {
-  final String sessionId;
+  final String? sessionId;
   final String? backendId;
   final String? externalSessionId;
   const OpenTerminalAction({
-    required this.sessionId,
+    this.sessionId,
     this.backendId,
     this.externalSessionId,
   });

@@ -1,17 +1,16 @@
-// Webhook tokens admin screen. Manages publish tokens (the second token
-// class from design §4.5 "Auth and publish tokens"): a list view of
-// active tokens with a per-row revoke action, plus a "New token" flow
-// that returns the freshly-minted `<id>.<secret>` exactly once.
-//
-// Calls `auth.publishTokens.{list,create,revoke,relabel}` directly on
-// BackendClient — this is admin tooling, not user-visible state that
-// other widgets re-read, so a TokensModel mirror in AppState would only
-// add ceremony.
+// Webhook tokens admin screen. Manages publish tokens (design section 4.5) for
+// agent/CI notification senders. Server-derived token state lives in
+// AppState.publishTokens; this screen only owns transient form state.
+
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../app_state.dart';
+import '../backend_client.dart';
+import '../models.dart';
+import '../state/publish_tokens_model.dart';
 import '../ui/app_tokens.dart';
 import '../ui/inset_section.dart';
 
@@ -23,86 +22,64 @@ class WebhookTokensScreen extends StatefulWidget {
   State<WebhookTokensScreen> createState() => _WebhookTokensScreenState();
 }
 
-class _TokenRow {
-  final String id;
-  final String label;
-  final String? sourcePrefix;
-  final int rateLimitPerMin;
-  final int rateLimitPerHour;
-  final int createdAt;
-  final int? lastUsedAt;
-
-  _TokenRow({
-    required this.id,
-    required this.label,
-    required this.sourcePrefix,
-    required this.rateLimitPerMin,
-    required this.rateLimitPerHour,
-    required this.createdAt,
-    required this.lastUsedAt,
-  });
-
-  factory _TokenRow.fromJson(Map<String, dynamic> j) => _TokenRow(
-    id: j['id'] as String,
-    label: j['label'] as String,
-    sourcePrefix: j['sourcePrefix'] as String?,
-    rateLimitPerMin: j['rateLimitPerMin'] as int,
-    rateLimitPerHour: j['rateLimitPerHour'] as int,
-    createdAt: j['createdAt'] as int,
-    lastUsedAt: j['lastUsedAt'] as int?,
-  );
-}
-
 class _WebhookTokensScreenState extends State<WebhookTokensScreen> {
-  bool _loading = true;
-  String? _loadError;
-  List<_TokenRow> _tokens = const [];
+  bool _initialRefreshScheduled = false;
 
   @override
   void initState() {
     super.initState();
-    _refresh();
+    _scheduleInitialRefresh();
+  }
+
+  @override
+  void didUpdateWidget(covariant WebhookTokensScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.appState != widget.appState) _scheduleInitialRefresh();
+  }
+
+  void _scheduleInitialRefresh() {
+    if (_initialRefreshScheduled) return;
+    final tokens = widget.appState.publishTokens;
+    if (widget.appState.connectionState != BackendConnectionState.connected ||
+        tokens.loaded ||
+        tokens.loading) {
+      return;
+    }
+    _initialRefreshScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _initialRefreshScheduled = false;
+      if (!mounted) return;
+      final appState = widget.appState;
+      final tokens = appState.publishTokens;
+      if (appState.connectionState != BackendConnectionState.connected ||
+          tokens.loaded ||
+          tokens.loading) {
+        return;
+      }
+      unawaited(tokens.refresh());
+    });
   }
 
   Future<void> _refresh() async {
-    setState(() {
-      _loading = true;
-      _loadError = null;
-    });
-    try {
-      final result =
-          await widget.appState.client.call('auth.publishTokens.list')
-              as Map<String, dynamic>;
-      final items = (result['items'] as List<dynamic>)
-          .cast<Map<String, dynamic>>()
-          .map(_TokenRow.fromJson)
-          .toList();
-      if (!mounted) return;
-      setState(() {
-        _tokens = items;
-        _loading = false;
-      });
-    } catch (err) {
-      if (!mounted) return;
-      setState(() {
-        _loadError = err.toString();
-        _loading = false;
-      });
+    if (widget.appState.connectionState != BackendConnectionState.connected) {
+      return;
     }
+    await widget.appState.publishTokens.refresh();
   }
 
   Future<void> _openCreate() async {
-    final created = await Navigator.of(context).push<_CreatedToken?>(
-      MaterialPageRoute<_CreatedToken?>(
+    if (widget.appState.connectionState != BackendConnectionState.connected) {
+      return;
+    }
+    await Navigator.of(context).push<CreatedPublishToken?>(
+      MaterialPageRoute<CreatedPublishToken?>(
         builder: (_) => _CreateTokenScreen(appState: widget.appState),
       ),
     );
-    if (created != null) {
-      await _refresh();
-    }
   }
 
-  Future<void> _revoke(_TokenRow row) async {
+  Future<void> _revoke(PublishTokenRecord row) async {
+    final messenger = ScaffoldMessenger.of(context);
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -128,83 +105,125 @@ class _WebhookTokensScreenState extends State<WebhookTokensScreen> {
     );
     if (confirm != true) return;
     try {
-      await widget.appState.client.call('auth.publishTokens.revoke', {
-        'id': row.id,
-      });
-      await _refresh();
+      await widget.appState.publishTokens.revoke(row.id);
+      if (!mounted) return;
+      messenger.showSnackBar(const SnackBar(content: Text('Token revoked')));
     } catch (err) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Revoke failed: $err')),
-      );
+      messenger.showSnackBar(SnackBar(content: Text('Revoke failed: $err')));
     }
   }
 
-  Future<void> _relabel(_TokenRow row) async {
+  Future<void> _relabel(PublishTokenRecord row) async {
     final controller = TextEditingController(text: row.label);
-    final newLabel = await showDialog<String?>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Rename token'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(labelText: 'Label'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(null),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(controller.text),
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    );
-    if (newLabel == null || newLabel.trim().isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
     try {
-      await widget.appState.client.call('auth.publishTokens.relabel', {
-        'id': row.id,
-        'label': newLabel.trim(),
-      });
-      await _refresh();
+      final newLabel = await showDialog<String?>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Rename token'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            decoration: const InputDecoration(labelText: 'Label'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(null),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(controller.text),
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      );
+      final label = newLabel?.trim();
+      if (label == null || label.isEmpty || label == row.label) return;
+      await widget.appState.publishTokens.relabel(row.id, label);
+      if (!mounted) return;
+      messenger.showSnackBar(const SnackBar(content: Text('Token renamed')));
     } catch (err) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Rename failed: $err')),
-      );
+      messenger.showSnackBar(SnackBar(content: Text('Rename failed: $err')));
+    } finally {
+      controller.dispose();
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Webhook tokens'),
-        actions: [
-          IconButton(
-            tooltip: 'Refresh',
-            onPressed: _loading ? null : _refresh,
-            icon: const Icon(Icons.refresh),
+    return AnimatedBuilder(
+      animation: widget.appState,
+      builder: (context, _) {
+        _scheduleInitialRefresh();
+        final connected =
+            widget.appState.connectionState == BackendConnectionState.connected;
+        final tokens = widget.appState.publishTokens;
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text('Webhook tokens'),
+            actions: [
+              IconButton(
+                tooltip: 'Refresh',
+                onPressed: connected && !tokens.loading ? _refresh : null,
+                icon: const Icon(Icons.refresh),
+              ),
+            ],
           ),
-        ],
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _openCreate,
-        icon: const Icon(Icons.add),
-        label: const Text('New token'),
-      ),
-      body: _buildBody(),
+          floatingActionButton: FloatingActionButton.extended(
+            onPressed: connected ? _openCreate : null,
+            icon: const Icon(Icons.add),
+            label: const Text('New token'),
+          ),
+          body: _buildBody(tokens, connected: connected),
+        );
+      },
     );
   }
 
-  Widget _buildBody() {
-    if (_loading) {
-      return const Center(child: CircularProgressIndicator());
+  Widget _buildBody(PublishTokensModel tokens, {required bool connected}) {
+    if (!connected && !tokens.loaded) {
+      return const Padding(
+        padding: EdgeInsets.all(AppSpacing.md),
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.cloud_off_outlined, size: 48),
+              SizedBox(height: AppSpacing.sm),
+              Text(
+                'Backend offline',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              SizedBox(height: AppSpacing.xs),
+              Text(
+                'Connect to a backend to manage webhook tokens.',
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      );
     }
-    if (_loadError != null) {
+    if (tokens.loading && !tokens.loaded) {
+      return const Center(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: kSpinnerSm,
+              height: kSpinnerSm,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            SizedBox(width: AppSpacing.sm),
+            Text('Loading webhook tokens...'),
+          ],
+        ),
+      );
+    }
+    if (tokens.error != null && !tokens.loaded) {
       return Padding(
         padding: const EdgeInsets.all(AppSpacing.md),
         child: Column(
@@ -212,27 +231,29 @@ class _WebhookTokensScreenState extends State<WebhookTokensScreen> {
           children: [
             const Icon(Icons.error_outline, size: 48),
             const SizedBox(height: AppSpacing.sm),
-            Text('Could not load tokens.\n$_loadError'),
+            Text('Could not load tokens.\n${tokens.error}'),
             const SizedBox(height: AppSpacing.md),
             FilledButton(onPressed: _refresh, child: const Text('Retry')),
           ],
         ),
       );
     }
-    if (_tokens.isEmpty) {
+    if (tokens.items.isEmpty) {
       return ListView(
         padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
         children: const [
-          Padding(
-            padding: EdgeInsets.symmetric(
-              horizontal: AppSpacing.md,
-              vertical: AppSpacing.md,
-            ),
-            child: Text(
-              'No webhook tokens yet. Tap "New token" to mint one — useful '
-              'for posting notifications from CI, monitoring, or other tools '
-              'without sharing the auth token in config.json.',
-            ),
+          InsetSection(
+            title: 'No tokens',
+            children: [
+              ListTile(
+                leading: Icon(Icons.key_outlined),
+                title: Text('Create a publish token'),
+                subtitle: Text(
+                  'Use publish tokens for mobile-notify, Claude/Codex hooks, '
+                  'CI, and monitoring senders without sharing the backend auth token.',
+                ),
+              ),
+            ],
           ),
         ],
       );
@@ -245,12 +266,13 @@ class _WebhookTokensScreenState extends State<WebhookTokensScreen> {
           InsetSection(
             title: 'Active',
             children: [
-              for (final t in _tokens)
+              for (final t in tokens.items)
                 ListTile(
                   key: ValueKey<String>('webhook-token:${t.id}'),
                   title: Text(t.label),
                   subtitle: Text(_describeToken(t)),
                   trailing: PopupMenuButton<String>(
+                    enabled: connected,
                     onSelected: (v) {
                       if (v == 'rename') _relabel(t);
                       if (v == 'revoke') _revoke(t);
@@ -268,7 +290,7 @@ class _WebhookTokensScreenState extends State<WebhookTokensScreen> {
     );
   }
 
-  String _describeToken(_TokenRow t) {
+  String _describeToken(PublishTokenRecord t) {
     final parts = <String>[];
     parts.add('id ${t.id}');
     parts.add(
@@ -295,12 +317,6 @@ String _relative(int epochMs) {
   return '${(diff / 86_400_000).round()}d ago';
 }
 
-class _CreatedToken {
-  final String id;
-  final String secret;
-  _CreatedToken(this.id, this.secret);
-}
-
 class _CreateTokenScreen extends StatefulWidget {
   final AppState appState;
   const _CreateTokenScreen({required this.appState});
@@ -316,7 +332,7 @@ class _CreateTokenScreenState extends State<_CreateTokenScreen> {
   final _perHourCtl = TextEditingController(text: '600');
   bool _submitting = false;
   String? _error;
-  _CreatedToken? _result;
+  CreatedPublishToken? _result;
 
   @override
   void dispose() {
@@ -341,7 +357,7 @@ class _CreateTokenScreenState extends State<_CreateTokenScreen> {
       return;
     }
     if (perHour == null || perHour < perMin) {
-      setState(() => _error = 'Per-hour rate must be ≥ per-minute');
+      setState(() => _error = 'Per-hour rate must be >= per-minute');
       return;
     }
     setState(() {
@@ -349,23 +365,15 @@ class _CreateTokenScreenState extends State<_CreateTokenScreen> {
       _error = null;
     });
     try {
-      final params = <String, dynamic>{
-        'label': label,
-        'rateLimitPerMin': perMin,
-        'rateLimitPerHour': perHour,
-      };
-      if (prefix.isNotEmpty) params['sourcePrefix'] = prefix;
-      final result =
-          await widget.appState.client.call(
-                'auth.publishTokens.create',
-                params,
-              )
-              as Map<String, dynamic>;
-      final id = (result['record'] as Map<String, dynamic>)['id'] as String;
-      final secret = result['secret'] as String;
+      final created = await widget.appState.publishTokens.create(
+        label: label,
+        sourcePrefix: prefix.isEmpty ? null : prefix,
+        rateLimitPerMin: perMin,
+        rateLimitPerHour: perHour,
+      );
       if (!mounted) return;
       setState(() {
-        _result = _CreatedToken(id, secret);
+        _result = created;
         _submitting = false;
       });
     } catch (err) {
@@ -398,7 +406,8 @@ class _CreateTokenScreenState extends State<_CreateTokenScreen> {
           controller: _labelCtl,
           decoration: const InputDecoration(
             labelText: 'Label',
-            helperText: 'Human name, e.g. "github-actions" or "grafana"',
+            helperText: 'Human name, e.g. "claude-code" or "github-actions"',
+            helperMaxLines: 2,
           ),
         ),
         const SizedBox(height: AppSpacing.md),
@@ -407,7 +416,8 @@ class _CreateTokenScreenState extends State<_CreateTokenScreen> {
           decoration: const InputDecoration(
             labelText: 'Source prefix (optional)',
             helperText:
-                'Limit which "source" values this token can publish. Empty = no restriction.',
+                'Limit allowed source values. Empty means no restriction.',
+            helperMaxLines: 2,
           ),
         ),
         const SizedBox(height: AppSpacing.md),
@@ -443,10 +453,17 @@ class _CreateTokenScreenState extends State<_CreateTokenScreen> {
         FilledButton(
           onPressed: _submitting ? null : _submit,
           child: _submitting
-              ? const SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+              ? const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(
+                      width: kSpinnerSm,
+                      height: kSpinnerSm,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    SizedBox(width: AppSpacing.sm),
+                    Text('Minting...'),
+                  ],
                 )
               : const Text('Mint token'),
         ),
@@ -454,78 +471,149 @@ class _CreateTokenScreenState extends State<_CreateTokenScreen> {
     );
   }
 
-  Widget _success(_CreatedToken token) {
+  Widget _success(CreatedPublishToken token) {
+    final agentHookSnippets = _agentHookSnippets(token);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const Text(
-          'Token minted. Copy it now — it will not be shown again.',
+          'Token minted. Copy it now; it will not be shown again.',
           style: TextStyle(fontWeight: FontWeight.w600),
         ),
         const SizedBox(height: AppSpacing.md),
-        Container(
-          padding: const EdgeInsets.all(AppSpacing.sm),
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.surfaceContainerHigh,
-            borderRadius: BorderRadius.circular(AppRadius.sm),
-          ),
-          child: SelectableText(
-            token.secret,
-            style: const TextStyle(fontFamily: 'monospace'),
-          ),
-        ),
+        _CodeBlock(text: token.secret, copyLabel: 'Copy token'),
         const SizedBox(height: AppSpacing.sm),
-        Row(
-          children: [
-            Expanded(
-              child: FilledButton.icon(
-                onPressed: () async {
-                  await Clipboard.setData(ClipboardData(text: token.secret));
-                  if (!mounted) return;
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Copied')),
-                  );
-                },
-                icon: const Icon(Icons.copy),
-                label: const Text('Copy token'),
-              ),
-            ),
-          ],
+        FilledButton.icon(
+          onPressed: () async {
+            final messenger = ScaffoldMessenger.of(context);
+            await Clipboard.setData(ClipboardData(text: token.secret));
+            if (!mounted) return;
+            messenger.showSnackBar(const SnackBar(content: Text('Copied')));
+          },
+          icon: const Icon(Icons.copy),
+          label: const Text('Copy token'),
         ),
         const SizedBox(height: AppSpacing.lg),
-        Text('Authorization header form:'),
+        const Text('Authorization header form:'),
         const SizedBox(height: AppSpacing.xs),
-        Container(
-          padding: const EdgeInsets.all(AppSpacing.sm),
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.surfaceContainerHigh,
-            borderRadius: BorderRadius.circular(AppRadius.sm),
-          ),
-          child: SelectableText(
-            'Authorization: Bearer ${token.secret}',
-            style: const TextStyle(fontFamily: 'monospace'),
-          ),
+        _CodeBlock(
+          text: 'Authorization: Bearer ${token.secret}',
+          copyLabel: 'Copy authorization header',
         ),
         const SizedBox(height: AppSpacing.md),
-        Text('URL form (for paste-into-webhook fields):'),
+        const Text('Paste-friendly hook URL form:'),
         const SizedBox(height: AppSpacing.xs),
-        Container(
-          padding: const EdgeInsets.all(AppSpacing.sm),
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.surfaceContainerHigh,
-            borderRadius: BorderRadius.circular(AppRadius.sm),
-          ),
-          child: SelectableText(
-            'POST /hook/${token.secret}/<source>',
-            style: const TextStyle(fontFamily: 'monospace'),
-          ),
+        _CodeBlock(
+          text: 'POST /hook/${token.secret}/<source>',
+          copyLabel: 'Copy hook URL form',
         ),
+        const SizedBox(height: AppSpacing.md),
+        const Text('mobile-notify CLI:'),
+        const SizedBox(height: AppSpacing.xs),
+        _CodeBlock(
+          text:
+              'mobile-notify --token ${token.secret} --source ${token.record.sourcePrefix ?? '<source>'} --title "Task finished"',
+          copyLabel: 'Copy mobile-notify command',
+        ),
+        for (final snippet in agentHookSnippets) ...[
+          const SizedBox(height: AppSpacing.md),
+          Text(snippet.title),
+          const SizedBox(height: AppSpacing.xs),
+          _CodeBlock(
+            text:
+                'mobile-notify --token ${token.secret} --source ${snippet.source} --from-agent-hook',
+            copyLabel: snippet.copyLabel,
+          ),
+        ],
         const SizedBox(height: AppSpacing.lg),
         FilledButton(
           onPressed: () => Navigator.of(context).pop(token),
           child: const Text('Done'),
         ),
       ],
+    );
+  }
+}
+
+class _AgentHookSnippet {
+  final String title;
+  final String source;
+  final String copyLabel;
+
+  const _AgentHookSnippet({
+    required this.title,
+    required this.source,
+    required this.copyLabel,
+  });
+}
+
+List<_AgentHookSnippet> _agentHookSnippets(CreatedPublishToken token) {
+  final prefix = token.record.sourcePrefix?.trim();
+  if (prefix != null && prefix.isNotEmpty) {
+    return [
+      _AgentHookSnippet(
+        title: 'Agent hook CLI:',
+        source: prefix,
+        copyLabel: 'Copy agent hook command',
+      ),
+    ];
+  }
+  return const [
+    _AgentHookSnippet(
+      title: 'Claude Code hook CLI:',
+      source: 'claude-code',
+      copyLabel: 'Copy Claude Code hook command',
+    ),
+    _AgentHookSnippet(
+      title: 'Codex hook CLI:',
+      source: 'codex',
+      copyLabel: 'Copy Codex hook command',
+    ),
+  ];
+}
+
+class _CodeBlock extends StatelessWidget {
+  final String text;
+  final String copyLabel;
+
+  const _CodeBlock({required this.text, required this.copyLabel});
+
+  Future<void> _copy(BuildContext context) async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    await Clipboard.setData(ClipboardData(text: text));
+    messenger?.showSnackBar(const SnackBar(content: Text('Copied')));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.sm,
+        AppSpacing.xs,
+        AppSpacing.xs,
+        AppSpacing.xs,
+      ),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.only(top: AppSpacing.xs),
+              child: SelectableText(text, style: AppText.monoCaption(context)),
+            ),
+          ),
+          IconButton(
+            tooltip: copyLabel,
+            visualDensity: VisualDensity.compact,
+            icon: const Icon(Icons.copy, size: AppIconSize.sm),
+            onPressed: () => unawaited(_copy(context)),
+          ),
+        ],
+      ),
     );
   }
 }

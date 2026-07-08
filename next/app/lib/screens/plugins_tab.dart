@@ -702,16 +702,12 @@ class _PluginKebabMenu extends StatelessWidget {
   final PluginInfo info;
   const _PluginKebabMenu({required this.appState, required this.info});
 
-  void _showLogPath(BuildContext context) {
-    // The host writes stderr logs to
-    // ~/.local/state/openvsmobile-next/plugins/<id>.stderr.log
-    // (see host.ts). No in-app viewer in v0 — settled decision; we
-    // surface the path so the user knows where to tail.
-    final path =
-        '~/.local/state/openvsmobile-next/plugins/${info.id}.stderr.log';
-    ScaffoldMessenger.maybeOf(
-      context,
-    )?.showSnackBar(SnackBar(content: Text('Plugin log: $path')));
+  void _openLog(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => PluginLogScreen(appState: appState, info: info),
+      ),
+    );
   }
 
   @override
@@ -746,10 +742,199 @@ class _PluginKebabMenu extends StatelessWidget {
             );
             break;
           case 'log':
-            _showLogPath(context);
+            _openLog(context);
             break;
         }
       },
+    );
+  }
+}
+
+class PluginLogScreen extends StatefulWidget {
+  final AppState appState;
+  final PluginInfo info;
+
+  const PluginLogScreen({
+    super.key,
+    required this.appState,
+    required this.info,
+  });
+
+  @override
+  State<PluginLogScreen> createState() => _PluginLogScreenState();
+}
+
+class _PluginLogScreenState extends State<PluginLogScreen> {
+  late Future<PluginLogTail> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = _load();
+  }
+
+  Future<PluginLogTail> _load() {
+    return widget.appState.plugins.fetchLog(widget.info.id);
+  }
+
+  void _refresh() {
+    setState(() => _future = _load());
+  }
+
+  Future<void> _copy(String label, String text) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    ScaffoldMessenger.maybeOf(
+      context,
+    )?.showSnackBar(SnackBar(content: Text('Copied $label')));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('${widget.info.name} log'),
+        actions: [
+          IconButton(
+            tooltip: 'Refresh log',
+            icon: const Icon(Icons.refresh),
+            onPressed: _refresh,
+          ),
+        ],
+      ),
+      body: FutureBuilder<PluginLogTail>(
+        future: _future,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snapshot.hasError) {
+            return _PluginLogError(error: snapshot.error, onRetry: _refresh);
+          }
+          final log = snapshot.data;
+          if (log == null) {
+            return _PluginLogError(error: 'No log response', onRetry: _refresh);
+          }
+          return _PluginLogView(
+            log: log,
+            onCopyPath: () => _copy('path', log.path),
+            onCopyText: log.text.isEmpty ? null : () => _copy('log', log.text),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _PluginLogError extends StatelessWidget {
+  final Object? error;
+  final VoidCallback onRetry;
+
+  const _PluginLogError({required this.error, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(AppSpacing.xl),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.error_outline,
+              size: AppIconSize.lg,
+              color: theme.colorScheme.error,
+            ),
+            const SizedBox(height: AppSpacing.md),
+            Text(
+              'Could not load plugin log',
+              style: theme.textTheme.titleMedium,
+            ),
+            const SizedBox(height: AppSpacing.sm),
+            Text(
+              '$error',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: AppSpacing.lg),
+            FilledButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Retry'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PluginLogView extends StatelessWidget {
+  final PluginLogTail log;
+  final VoidCallback onCopyPath;
+  final VoidCallback? onCopyText;
+
+  const _PluginLogView({
+    required this.log,
+    required this.onCopyPath,
+    required this.onCopyText,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final meta = log.bytes == 0
+        ? 'No stderr output yet'
+        : '${log.bytes} bytes${log.truncated ? ' · showing tail' : ''}';
+    return ListView(
+      padding: const EdgeInsets.all(AppSpacing.lg),
+      children: [
+        Text('Log file', style: theme.textTheme.labelLarge),
+        const SizedBox(height: AppSpacing.xs),
+        SelectableText(
+          log.path,
+          style: AppText.monoCaption(
+            context,
+          ).copyWith(color: scheme.onSurfaceVariant),
+        ),
+        const SizedBox(height: AppSpacing.md),
+        Wrap(
+          spacing: AppSpacing.sm,
+          runSpacing: AppSpacing.sm,
+          children: [
+            OutlinedButton.icon(
+              onPressed: onCopyPath,
+              icon: const Icon(Icons.copy),
+              label: const Text('Copy path'),
+            ),
+            OutlinedButton.icon(
+              onPressed: onCopyText,
+              icon: const Icon(Icons.content_copy),
+              label: const Text('Copy log'),
+            ),
+          ],
+        ),
+        const SizedBox(height: AppSpacing.lg),
+        Text(meta, style: theme.textTheme.bodySmall),
+        const SizedBox(height: AppSpacing.sm),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(AppSpacing.md),
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainer,
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            border: Border.all(color: scheme.outlineVariant),
+          ),
+          child: SelectableText(
+            log.text.isEmpty ? 'No stderr output yet.' : log.text,
+            style: AppText.monoCode(context),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -1102,11 +1287,11 @@ class _CrashedBanner extends StatelessWidget {
   const _CrashedBanner({required this.appState, required this.info});
 
   void _showLog(BuildContext context) {
-    final path =
-        '~/.local/state/openvsmobile-next/plugins/${info.id}.stderr.log';
-    ScaffoldMessenger.maybeOf(
-      context,
-    )?.showSnackBar(SnackBar(content: Text('Plugin log: $path')));
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => PluginLogScreen(appState: appState, info: info),
+      ),
+    );
   }
 
   @override

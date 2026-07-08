@@ -19,6 +19,7 @@ import { findFiles } from "./findFiles.js";
 import { PluginHostError } from "./plugins/host.js";
 import { safeSend } from "./wsSend.js";
 import { register as registerGitHandlers } from "./rpcHandlers/gitHandlers.js";
+import { register as registerAgentHookHandlers } from "./rpcHandlers/agentHookHandlers.js";
 import { register as registerNotificationHandlers } from "./rpcHandlers/notificationHandlers.js";
 import { register as registerPublishTokenHandlers } from "./rpcHandlers/publishTokenHandlers.js";
 
@@ -336,6 +337,7 @@ const methods = new Map<string, Handler>();
 // modules only `import type` from rpc.ts's downstream deps; the runtime
 // imports (`asBag`, `RpcError`, …) are leaves.
 registerGitHandlers(methods);
+registerAgentHookHandlers(methods);
 registerNotificationHandlers(methods);
 registerPublishTokenHandlers(methods);
 
@@ -859,6 +861,18 @@ methods.set("plugin.disable", async (ctx, params) => {
     rethrowPluginError(err);
   }
   return { ok: true };
+});
+
+methods.set("plugin.log", async (ctx, params) => {
+  const host = requirePluginHost(ctx);
+  const p = asBag(params);
+  const id = requireString(p, "id");
+  const maxBytes = optionalPositiveInt(p, "maxBytes") ?? 32 * 1024;
+  try {
+    return await host.readLogTail(id, maxBytes);
+  } catch (err) {
+    rethrowPluginError(err);
+  }
 });
 
 methods.set("plugin.invokeCommand", async (ctx, params) => {

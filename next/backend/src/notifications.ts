@@ -69,7 +69,7 @@ export type NotificationAction =
   | { kind: "open-workspace"; workspaceId: string }
   | {
       kind: "open-terminal";
-      sessionId: string;
+      sessionId?: string;
       backendId?: string;
       externalSessionId?: string;
     };
@@ -148,27 +148,37 @@ function validateAction(raw: unknown): NotificationAction | undefined {
     return { kind: "open-workspace", workspaceId: raw.workspaceId };
   }
   if (kind === "open-terminal") {
-    if (typeof raw.sessionId !== "string" || raw.sessionId.length === 0) {
-      fail("action.sessionId required for open-terminal");
+    const sessionId = raw.sessionId;
+    const externalSessionId = raw.externalSessionId;
+    if (
+      (typeof sessionId !== "string" || sessionId.length === 0) &&
+      (typeof externalSessionId !== "string" || externalSessionId.length === 0)
+    ) {
+      fail("action.sessionId or action.externalSessionId required for open-terminal");
     }
     const out: Extract<NotificationAction, { kind: "open-terminal" }> = {
       kind: "open-terminal",
-      sessionId: raw.sessionId,
     };
+    if (sessionId !== undefined && sessionId !== null) {
+      if (typeof sessionId !== "string" || sessionId.length === 0) {
+        fail("action.sessionId must be a non-empty string when provided");
+      }
+      out.sessionId = sessionId;
+    }
     if (raw.backendId !== undefined && raw.backendId !== null) {
       if (typeof raw.backendId !== "string" || raw.backendId.length === 0) {
         fail("action.backendId must be a non-empty string when provided");
       }
       out.backendId = raw.backendId;
     }
-    if (raw.externalSessionId !== undefined && raw.externalSessionId !== null) {
+    if (externalSessionId !== undefined && externalSessionId !== null) {
       if (
-        typeof raw.externalSessionId !== "string" ||
-        raw.externalSessionId.length === 0
+        typeof externalSessionId !== "string" ||
+        externalSessionId.length === 0
       ) {
         fail("action.externalSessionId must be a non-empty string when provided");
       }
-      out.externalSessionId = raw.externalSessionId;
+      out.externalSessionId = externalSessionId;
     }
     return out;
   }

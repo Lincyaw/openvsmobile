@@ -254,15 +254,19 @@ class AppText {
 // ---------------------------------------------------------------------
 
 enum SpacingToken { none, xs, sm, md, lg, xl }
+
 enum RadiusToken { none, sm, md, lg, pill }
+
 /// Container background tier — matches the doc spec
 /// (`default | elevated | muted | inverse`). `default` is the bare
 /// surface (no chrome); `elevated` is the raised card layer.
 enum SurfaceToken { defaultSurface, elevated, muted, inverse }
+
 /// Semantic accent — matches the doc spec (`brand | info | success |
 /// warning | danger | muted`). `brand` resolves to the plugin's
 /// `themeColor` if declared, falling back to the app brand.
 enum AccentToken { brand, info, success, warning, danger, muted }
+
 enum SizeToken { xs, sm, md, lg, xl }
 
 SpacingToken? spacingTokenFromString(String? raw) {

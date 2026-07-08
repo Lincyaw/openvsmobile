@@ -1,8 +1,8 @@
 // Settings tab: iOS-Settings-style inset-grouped list of entry tiles for
-// backend management, SSH bootstrap, notification preferences, diagnostics,
-// and About. Per design doc / issue C5 this replaces the transitional More
-// tab. Each tile pushes a dedicated screen — Settings itself is intentionally
-// not a long scroll of controls.
+// backend management, notification preferences, diagnostics, and About. Per
+// design doc / issue C5 this replaces the transitional More tab. Each tile
+// pushes a dedicated screen — Settings itself is intentionally not a long
+// scroll of controls.
 //
 // Visual rework (Batch 2 — §4.3): the surface now uses the same
 // `InsetSection` primitive the plugin UI renderer uses when a plugin
@@ -13,36 +13,33 @@
 // through `UiRenderer` — that's the heavier Option 2, out of scope for
 // this batch).
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
-import '../services/diag_log.dart';
+import '../backend_client.dart';
 import '../services/system_tray.dart';
 import '../settings_store.dart';
 import '../ui/app_tokens.dart';
 import '../ui/inset_section.dart';
 import '../version.dart';
+import 'agent_hooks_screen.dart';
 import 'about_screen.dart';
 import 'app_update_screen.dart';
 import 'notification_settings_screen.dart';
-import 'ssh_bootstrap_screen.dart';
 import 'system_tray_debug_screen.dart';
-import 'webhook_tokens_screen.dart';
 
 class SettingsTab extends StatelessWidget {
   final AppState appState;
   final SettingsStore settingsStore;
+  final AppPersistedState backendState;
   final SystemTrayController systemTrayController;
+  final bool isActive;
 
   /// Push the Backends management screen on the root navigator. Owned by
   /// main.dart so the route lives outside the bottom-nav IndexedStack.
   final VoidCallback onOpenBackends;
-
-  /// Wire a freshly-bootstrapped backend back into the persisted list.
-  /// Mirrors the contract used by BackendsScreen's add-sheet so SSH
-  /// bootstrap launched from Settings produces the same outcome.
-  final Future<void> Function(BackendTarget target, {required bool makeActive})
-  onBackendInstalled;
 
   /// Notify main.dart that notification preferences changed so it can
   /// (re)start or stop the foreground service. Forwarded straight to
@@ -62,26 +59,14 @@ class SettingsTab extends StatelessWidget {
     super.key,
     required this.appState,
     required this.settingsStore,
+    required this.backendState,
     required this.systemTrayController,
+    this.isActive = true,
     required this.onOpenBackends,
-    required this.onBackendInstalled,
     required this.onNotificationPrefsChanged,
     required this.themeMode,
     required this.onThemeModeChanged,
   });
-
-  void _openSshBootstrap(BuildContext context) {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => SshBootstrapScreen(
-          appState: appState,
-          onBackendInstalled: (target) async {
-            await onBackendInstalled(target, makeActive: true);
-          },
-        ),
-      ),
-    );
-  }
 
   void _openNotifications(BuildContext context) {
     Navigator.of(context).push(
@@ -95,10 +80,10 @@ class SettingsTab extends StatelessWidget {
     );
   }
 
-  void _openWebhookTokens(BuildContext context) {
+  void _openAgentHooks(BuildContext context) {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => WebhookTokensScreen(appState: appState),
+        builder: (_) => AgentHooksScreen(appState: appState),
       ),
     );
   }
@@ -106,23 +91,24 @@ class SettingsTab extends StatelessWidget {
   void _openDiagnostics(BuildContext context) {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => SystemTrayDebugScreen(controller: systemTrayController),
+        builder: (_) => SystemTrayDebugScreen(
+          controller: systemTrayController,
+          settingsStore: settingsStore,
+        ),
       ),
     );
   }
 
   void _openAppUpdate(BuildContext context) {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => const AppUpdateScreen(),
-      ),
-    );
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute<void>(builder: (_) => const AppUpdateScreen()));
   }
 
   void _openAbout(BuildContext context) {
-    Navigator.of(
-      context,
-    ).push(MaterialPageRoute<void>(builder: (_) => const AboutScreen()));
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => AboutScreen(appState: appState)),
+    );
   }
 
   Future<void> _openThemePicker(BuildContext context) async {
@@ -175,140 +161,476 @@ class SettingsTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Grouped into three inset sections so the reader's eye finds related
-    // concerns together: Connection (Backends + SSH bootstrap), Appearance
-    // (Theme), and System (Notifications + Diagnostics + About). Same row
-    // primitive everywhere — a Material ListTile inside `InsetSection`.
-    return ListView(
-      padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
-      children: [
-        InsetSection(
-          title: 'Connection',
-          surfaceKey: const ValueKey<String>('settings-section:connection'),
-          children: [
-            ListTile(
-              key: const ValueKey<String>('settings-tile-backends'),
-              leading: const Icon(Icons.dns_outlined),
-              title: const Text('Backends'),
-              subtitle: const Text('Add, switch, rename, or remove servers'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: onOpenBackends,
-            ),
-            ListTile(
-              key: const ValueKey<String>('settings-tile-ssh-bootstrap'),
-              leading: const Icon(Icons.cloud_download_outlined),
-              title: const Text('SSH bootstrap'),
-              subtitle: const Text(
-                'Install a backend on a remote host via SSH',
+    // Keep the top-level settings page focused on user-facing jobs:
+    // connect to a backend, receive agent/status updates, tune app
+    // preferences, and inspect maintenance surfaces.
+    return AnimatedBuilder(
+      animation: appState,
+      builder: (context, _) => ListView(
+        padding: const EdgeInsets.fromLTRB(0, AppSpacing.sm, 0, AppSpacing.xl),
+        children: [
+          _AgentHookStatusAutoRefresh(appState: appState, active: isActive),
+          _RemoteControlSummary(appState: appState, backendState: backendState),
+          InsetSection(
+            title: 'Backend',
+            surfaceKey: const ValueKey<String>('settings-section:backend'),
+            children: [
+              ListTile(
+                key: const ValueKey<String>('settings-tile-backends'),
+                leading: const Icon(Icons.dns_outlined),
+                title: const Text('Backend servers'),
+                subtitle: const Text('Add, switch, rename, or remove servers'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: onOpenBackends,
               ),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => _openSshBootstrap(context),
-            ),
-          ],
-        ),
-        InsetSection(
-          title: 'Appearance',
-          surfaceKey: const ValueKey<String>('settings-section:appearance'),
-          children: [
-            ListTile(
-              key: const ValueKey<String>('settings-theme-tile'),
-              leading: const Icon(Icons.brightness_6_outlined),
-              title: const Text('Theme'),
-              subtitle: Text(_describeThemeMode(themeMode)),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => _openThemePicker(context),
-            ),
-          ],
-        ),
-        InsetSection(
-          title: 'System',
-          surfaceKey: const ValueKey<String>('settings-section:system'),
-          children: [
-            ListTile(
-              key: const ValueKey<String>('settings-tile-app-update'),
-              leading: const Icon(Icons.system_update_outlined),
-              title: const Text('App update'),
-              subtitle: const Text('v$kBackendVersion'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => _openAppUpdate(context),
-            ),
-            ListTile(
-              key: const ValueKey<String>('settings-tile-notifications'),
-              leading: const Icon(Icons.notifications_outlined),
-              title: const Text('Notifications'),
-              subtitle: const Text(
-                'Background service, per-source mute, quiet hours, TTL',
+            ],
+          ),
+          InsetSection(
+            title: 'Workflow',
+            surfaceKey: const ValueKey<String>('settings-section:workflow'),
+            children: [
+              ListTile(
+                key: const ValueKey<String>('settings-tile-notifications'),
+                leading: const Icon(Icons.notifications_outlined),
+                title: const Text('Notifications'),
+                subtitle: const Text(
+                  'Background delivery, source mute, quiet hours',
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _openNotifications(context),
               ),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => _openNotifications(context),
-            ),
-            ListTile(
-              key: const ValueKey<String>('settings-tile-webhook-tokens'),
-              leading: const Icon(Icons.key_outlined),
-              title: const Text('Webhook tokens'),
-              subtitle: const Text(
-                'Publish-only tokens for CI, monitoring, webhooks',
+              ListTile(
+                key: const ValueKey<String>('settings-tile-agent-hooks'),
+                leading: const Icon(Icons.bolt_outlined),
+                title: const Text('Agent hooks'),
+                subtitle: const Text('Claude/Codex completion notifications'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _openAgentHooks(context),
               ),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => _openWebhookTokens(context),
-            ),
-            ListTile(
-              key: const ValueKey<String>('settings-tile-diagnostics'),
-              leading: const Icon(Icons.bug_report_outlined),
-              title: const Text('Diagnostics'),
-              subtitle: const Text('System status, send test notification'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => _openDiagnostics(context),
-            ),
-            const _DebugOverlayToggle(),
-            ListTile(
-              key: const ValueKey<String>('settings-tile-about'),
-              leading: const Icon(Icons.info_outline),
-              title: const Text('About'),
-              subtitle: const Text('Version, license, project links'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => _openAbout(context),
-            ),
-          ],
-        ),
-      ],
+            ],
+          ),
+          InsetSection(
+            title: 'Preferences',
+            surfaceKey: const ValueKey<String>('settings-section:preferences'),
+            children: [
+              ListTile(
+                key: const ValueKey<String>('settings-theme-tile'),
+                leading: const Icon(Icons.brightness_6_outlined),
+                title: const Text('Theme'),
+                subtitle: Text(_describeThemeMode(themeMode)),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _openThemePicker(context),
+              ),
+            ],
+          ),
+          InsetSection(
+            title: 'Maintenance',
+            surfaceKey: const ValueKey<String>('settings-section:maintenance'),
+            children: [
+              ListTile(
+                key: const ValueKey<String>('settings-tile-app-update'),
+                leading: const Icon(Icons.system_update_outlined),
+                title: const Text('Updates'),
+                subtitle: const Text('v$kBackendVersion'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _openAppUpdate(context),
+              ),
+              ListTile(
+                key: const ValueKey<String>('settings-tile-diagnostics'),
+                leading: const Icon(Icons.bug_report_outlined),
+                title: const Text('Diagnostics'),
+                subtitle: const Text(
+                  'Connection trace, tray tests, debug tools',
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _openDiagnostics(context),
+              ),
+              ListTile(
+                key: const ValueKey<String>('settings-tile-about'),
+                leading: const Icon(Icons.info_outline),
+                title: const Text('About'),
+                subtitle: const Text('Version, license, project links'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _openAbout(context),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }
 
-/// Self-contained switch that toggles the app-wide floating debug overlay.
-/// Persists to SharedPreferences and mirrors the flag into the [DiagLog]
-/// singleton so the change is live without an app restart. Kept local
-/// (rather than threaded through `MobileCodeApp`) because it is a developer
-/// instrument, not app-wide product state.
-class _DebugOverlayToggle extends StatefulWidget {
-  const _DebugOverlayToggle();
+class _AgentHookStatusAutoRefresh extends StatefulWidget {
+  final AppState appState;
+  final bool active;
+
+  const _AgentHookStatusAutoRefresh({
+    required this.appState,
+    required this.active,
+  });
 
   @override
-  State<_DebugOverlayToggle> createState() => _DebugOverlayToggleState();
+  State<_AgentHookStatusAutoRefresh> createState() =>
+      _AgentHookStatusAutoRefreshState();
 }
 
-class _DebugOverlayToggleState extends State<_DebugOverlayToggle> {
-  final SettingsStore _store = SettingsStore();
+class _AgentHookStatusAutoRefreshState
+    extends State<_AgentHookStatusAutoRefresh> {
+  int? _lastRequestedBackendEpoch;
+  bool _scheduled = false;
 
-  Future<void> _set(bool value) async {
-    setState(() => DiagLog.instance.enabled = value);
-    await _store.setBool(kDiagLogPrefKey, value);
+  @override
+  void initState() {
+    super.initState();
+    _maybeSchedule();
+  }
+
+  @override
+  void didUpdateWidget(covariant _AgentHookStatusAutoRefresh oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _maybeSchedule();
+  }
+
+  void _maybeSchedule() {
+    final appState = widget.appState;
+    final hooks = appState.agentHooks;
+    if (!widget.active ||
+        appState.connectionState != BackendConnectionState.connected ||
+        hooks.checking ||
+        hooks.installing ||
+        hooks.statusUnsupported ||
+        hooks.lastResult != null ||
+        _lastRequestedBackendEpoch == appState.backendSessionEpoch ||
+        _scheduled) {
+      return;
+    }
+    _scheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scheduled = false;
+      if (!mounted) return;
+      final epoch = widget.appState.backendSessionEpoch;
+      final hooks = widget.appState.agentHooks;
+      if (!widget.active ||
+          widget.appState.connectionState != BackendConnectionState.connected ||
+          hooks.checking ||
+          hooks.installing ||
+          hooks.statusUnsupported ||
+          hooks.lastResult != null ||
+          _lastRequestedBackendEpoch == epoch) {
+        return;
+      }
+      _lastRequestedBackendEpoch = epoch;
+      unawaited(_refreshStatus());
+    });
+  }
+
+  Future<void> _refreshStatus() async {
+    try {
+      await widget.appState.agentHooks.refreshStatus();
+    } catch (_) {
+      // AgentHooksModel reports the user-visible error; Settings should not
+      // turn a background status chip refresh into a second failure surface.
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return SwitchListTile(
-      key: const ValueKey<String>('settings-tile-debug-overlay'),
-      secondary: const Icon(Icons.bug_report_outlined),
-      title: const Text('Debug overlay'),
-      subtitle: const Text(
-        'Floating event log to record, mark & export app behaviour',
+    _maybeSchedule();
+    return const SizedBox.shrink();
+  }
+}
+
+class _RemoteControlSummary extends StatelessWidget {
+  final AppState appState;
+  final AppPersistedState backendState;
+
+  const _RemoteControlSummary({
+    required this.appState,
+    required this.backendState,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final active = backendState.activeBackend;
+    final connection = _connectionPresentation(
+      appState.connectionState,
+      scheme,
+    );
+    final title = active == null ? 'No backend selected' : _backendName(active);
+    final endpoint = active == null
+        ? 'Add a backend to start'
+        : _backendEndpointLabel(active);
+    final hookChip = _agentHooksPresentation(appState, scheme);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.lg,
+        vertical: AppSpacing.sm,
       ),
-      value: DiagLog.instance.enabled,
-      onChanged: _set,
+      child: Material(
+        key: const ValueKey<String>('settings-remote-summary'),
+        color: scheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        clipBehavior: Clip.antiAlias,
+        child: Padding(
+          key: const ValueKey<String>('settings-remote-summary-main'),
+          padding: const EdgeInsets.all(AppSpacing.md),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    active?.transport == BackendTransport.iroh
+                        ? Icons.hub_outlined
+                        : Icons.dns_outlined,
+                    color: connection.accent,
+                  ),
+                  const SizedBox(width: AppSpacing.sm),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          endpoint,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppText.mono(
+                            fontSize: theme.textTheme.labelMedium?.fontSize,
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              Wrap(
+                spacing: AppSpacing.xs,
+                runSpacing: AppSpacing.xs,
+                children: [
+                  _SummaryChip(
+                    label: connection.label,
+                    accent: connection.accent,
+                    showDot: true,
+                  ),
+                  _SummaryChip(label: _backendCountLabel(backendState)),
+                  _SummaryChip(
+                    key: const ValueKey<String>('settings-summary-hook-chip'),
+                    label: hookChip.label,
+                    accent: hookChip.accent,
+                    showDot: hookChip.showDot,
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
+}
+
+class _SummaryChip extends StatelessWidget {
+  final String label;
+  final Color? accent;
+  final bool showDot;
+
+  const _SummaryChip({
+    super.key,
+    required this.label,
+    this.accent,
+    this.showDot = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final color = accent ?? scheme.onSurfaceVariant;
+    final background = accent == null
+        ? scheme.surfaceContainerHighest
+        : accent!.withAlpha(AppBannerOpacity.wash);
+    final borderColor = accent == null
+        ? scheme.outlineVariant
+        : accent!.withAlpha(AppBannerOpacity.border);
+
+    final shape = RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(AppRadius.sm),
+      side: BorderSide(color: borderColor),
+    );
+    final labelStyle = theme.textTheme.labelSmall?.copyWith(
+      color: color,
+      fontWeight: FontWeight.w700,
+    );
+    final content = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (showDot) ...[
+          Container(
+            width: 7,
+            height: 7,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 6),
+        ],
+        Text(label, style: labelStyle),
+      ],
+    );
+    return DecoratedBox(
+      decoration: ShapeDecoration(color: background, shape: shape),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+        child: content,
+      ),
+    );
+  }
+}
+
+class _ConnectionPresentation {
+  final String label;
+  final Color accent;
+
+  const _ConnectionPresentation({required this.label, required this.accent});
+}
+
+_ConnectionPresentation _connectionPresentation(
+  BackendConnectionState state,
+  ColorScheme scheme,
+) {
+  return switch (state) {
+    BackendConnectionState.connected => _ConnectionPresentation(
+      label: 'Connected',
+      accent: scheme.primary,
+    ),
+    BackendConnectionState.connecting => _ConnectionPresentation(
+      label: 'Connecting',
+      accent: scheme.tertiary,
+    ),
+    BackendConnectionState.reconnecting => _ConnectionPresentation(
+      label: 'Reconnecting',
+      accent: scheme.tertiary,
+    ),
+    BackendConnectionState.waitingForNetwork => _ConnectionPresentation(
+      label: 'No network',
+      accent: scheme.tertiary,
+    ),
+    BackendConnectionState.failed => _ConnectionPresentation(
+      label: 'Failed',
+      accent: scheme.error,
+    ),
+    BackendConnectionState.disconnected => _ConnectionPresentation(
+      label: 'Offline',
+      accent: scheme.onSurfaceVariant,
+    ),
+  };
+}
+
+String _backendName(BackendTarget target) {
+  final name = target.name.trim();
+  if (name.isNotEmpty) return name;
+  return _backendEndpointLabel(target);
+}
+
+String _backendEndpointLabel(BackendTarget target) =>
+    switch (target.transport) {
+      BackendTransport.websocket =>
+        target.host.isEmpty ? 'websocket' : '${target.host}:${target.port}',
+      BackendTransport.iroh => 'iroh:${_shortIrohLabel(target)}',
+    };
+
+String _shortIrohLabel(BackendTarget target) {
+  final raw = (target.irohEndpointId ?? target.irohTicket ?? '').trim();
+  if (raw.isEmpty) return 'ticket';
+  return raw.substring(0, raw.length < 12 ? raw.length : 12);
+}
+
+String _backendCountLabel(AppPersistedState state) {
+  final count = state.backends.length;
+  return count == 1 ? '1 backend' : '$count backends';
+}
+
+class _SummaryChipPresentation {
+  final String label;
+  final Color? accent;
+  final bool showDot;
+
+  const _SummaryChipPresentation({
+    required this.label,
+    this.accent,
+    this.showDot = false,
+  });
+}
+
+_SummaryChipPresentation _agentHooksPresentation(
+  AppState appState,
+  ColorScheme scheme,
+) {
+  final hooks = appState.agentHooks;
+  if (hooks.installing) {
+    return _SummaryChipPresentation(
+      label: 'Installing hooks',
+      accent: scheme.tertiary,
+      showDot: true,
+    );
+  }
+  if (hooks.checking) {
+    return _SummaryChipPresentation(
+      label: 'Checking hooks',
+      accent: scheme.tertiary,
+      showDot: true,
+    );
+  }
+  if (hooks.statusUnsupported) {
+    return const _SummaryChipPresentation(label: 'Hooks unavailable');
+  }
+  final result = hooks.lastResult;
+  if (result == null) {
+    return const _SummaryChipPresentation(label: 'Hooks not checked');
+  }
+  if (!result.ok) {
+    return _SummaryChipPresentation(
+      label: 'Hook scan failed',
+      accent: scheme.error,
+      showDot: true,
+    );
+  }
+  final available = result.statuses.where((s) => s.available).toList();
+  if (available.isEmpty) {
+    return _SummaryChipPresentation(
+      label: 'No agents found',
+      accent: scheme.onSurfaceVariant,
+    );
+  }
+  final needsSetup = available.any(
+    (s) =>
+        s.state == 'not-installed' || s.state == 'stale' || s.state == 'error',
+  );
+  if (needsSetup) {
+    return _SummaryChipPresentation(
+      label: 'Hooks need setup',
+      accent: scheme.tertiary,
+      showDot: true,
+    );
+  }
+  return _SummaryChipPresentation(
+    label: 'Hooks ready',
+    accent: scheme.primary,
+    showDot: true,
+  );
 }
 
 /// One row in the Theme picker. Held as a top-level constant so the

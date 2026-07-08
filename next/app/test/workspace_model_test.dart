@@ -160,17 +160,9 @@ void main() {
         'version': 0,
         'entries': const [],
       });
-      await model.listDir(
-        workspaceId: 'ws-1',
-        relPath: 'src',
-        fetch: fetch,
-      );
+      await model.listDir(workspaceId: 'ws-1', relPath: 'src', fetch: fetch);
       // Cache hit confirms baseline.
-      await model.listDir(
-        workspaceId: 'ws-1',
-        relPath: 'src',
-        fetch: fetch,
-      );
+      await model.listDir(workspaceId: 'ws-1', relPath: 'src', fetch: fetch);
       expect(fetches, 1);
       // tree.delta touching src/ should evict its cache entry.
       model.onTreeDelta({
@@ -180,11 +172,7 @@ void main() {
         'removed': const [],
         'renamed': const [],
       });
-      await model.listDir(
-        workspaceId: 'ws-1',
-        relPath: 'src',
-        fetch: fetch,
-      );
+      await model.listDir(workspaceId: 'ws-1', relPath: 'src', fetch: fetch);
       expect(fetches, 2);
     });
 
@@ -195,85 +183,81 @@ void main() {
     // simulates an AppState-style fetch lambda that resolves to abs
     // internally — only the rel arg passed to `listDir` is what the
     // cache should see.
-    test('cache key is the rel arg, not the abs path the fetch resolves to',
-        () async {
-      final model = WorkspacesModel(client: BackendClient());
-      const wsRoot = '/home/user/proj';
-      var fetches = 0;
-      Future<List<DirEntry>> Function() fetchFor(String relPath) {
-        return () async {
-          // Stand-in for AppState's actual fetch lambda — it resolves the
-          // rel arg to an absolute path before calling the backend. The
-          // cache should not see this absolute form.
-          final resolved =
-              relPath.isEmpty ? wsRoot : '$wsRoot/$relPath';
-          expect(resolved.startsWith(wsRoot), isTrue);
+    test(
+      'cache key is the rel arg, not the abs path the fetch resolves to',
+      () async {
+        final model = WorkspacesModel(client: BackendClient());
+        const wsRoot = '/home/user/proj';
+        var fetches = 0;
+        Future<List<DirEntry>> Function() fetchFor(String relPath) {
+          return () async {
+            // Stand-in for AppState's actual fetch lambda — it resolves the
+            // rel arg to an absolute path before calling the backend. The
+            // cache should not see this absolute form.
+            final resolved = relPath.isEmpty ? wsRoot : '$wsRoot/$relPath';
+            expect(resolved.startsWith(wsRoot), isTrue);
+            fetches++;
+            return const [];
+          };
+        }
+
+        await model.listDir(
+          workspaceId: 'ws-1',
+          relPath: 'src',
+          fetch: fetchFor('src'),
+        );
+        expect(fetches, 1);
+        // The cache must be keyed by 'src' (rel), NOT '/home/user/proj/src'.
+        expect(model.stateFor('ws-1')!.hasCachedListDir('src'), isTrue);
+        expect(
+          model.stateFor('ws-1')!.hasCachedListDir('$wsRoot/src'),
+          isFalse,
+          reason: 'absolute path must not appear in the cache',
+        );
+
+        // Now a tree.delta arrives over the wire with workspace-relative
+        // paths (matching what the backend actually emits). It must evict
+        // the 'src' cache entry.
+        model.onTreeDelta({
+          'workspaceId': 'ws-1',
+          'version': 1,
+          'added': ['src/new.dart'],
+          'removed': const [],
+          'renamed': const [],
+        });
+        expect(model.stateFor('ws-1')!.hasCachedListDir('src'), isFalse);
+
+        // A subsequent listDir for 'src' should re-fetch.
+        await model.listDir(
+          workspaceId: 'ws-1',
+          relPath: 'src',
+          fetch: fetchFor('src'),
+        );
+        expect(fetches, 2);
+      },
+    );
+
+    test(
+      'snapshot subscribe-mode clears entire cache via state hook',
+      () async {
+        final model = WorkspacesModel(client: BackendClient());
+        var fetches = 0;
+        Future<List<DirEntry>> fetch() async {
           fetches++;
           return const [];
-        };
-      }
+        }
 
-      await model.listDir(
-        workspaceId: 'ws-1',
-        relPath: 'src',
-        fetch: fetchFor('src'),
-      );
-      expect(fetches, 1);
-      // The cache must be keyed by 'src' (rel), NOT '/home/user/proj/src'.
-      expect(model.stateFor('ws-1')!.hasCachedListDir('src'), isTrue);
-      expect(
-        model.stateFor('ws-1')!.hasCachedListDir('$wsRoot/src'),
-        isFalse,
-        reason: 'absolute path must not appear in the cache',
-      );
-
-      // Now a tree.delta arrives over the wire with workspace-relative
-      // paths (matching what the backend actually emits). It must evict
-      // the 'src' cache entry.
-      model.onTreeDelta({
-        'workspaceId': 'ws-1',
-        'version': 1,
-        'added': ['src/new.dart'],
-        'removed': const [],
-        'renamed': const [],
-      });
-      expect(model.stateFor('ws-1')!.hasCachedListDir('src'), isFalse);
-
-      // A subsequent listDir for 'src' should re-fetch.
-      await model.listDir(
-        workspaceId: 'ws-1',
-        relPath: 'src',
-        fetch: fetchFor('src'),
-      );
-      expect(fetches, 2);
-    });
-
-    test('snapshot subscribe-mode clears entire cache via state hook', () async {
-      final model = WorkspacesModel(client: BackendClient());
-      var fetches = 0;
-      Future<List<DirEntry>> fetch() async {
-        fetches++;
-        return const [];
-      }
-
-      await model.listDir(
-        workspaceId: 'ws-1',
-        relPath: 'src',
-        fetch: fetch,
-      );
-      await model.listDir(
-        workspaceId: 'ws-1',
-        relPath: 'docs',
-        fetch: fetch,
-      );
-      expect(fetches, 2);
-      expect(model.stateFor('ws-1')!.cachedListDirCount, 2);
-      // A snapshot push doesn't itself wipe the listDir cache (that's done
-      // by the subscribe handler on mode=snapshot). Verify the
-      // evictListDirEntry hook works as our coarse approximation.
-      model.evictListDirEntry('ws-1', 'src');
-      expect(model.stateFor('ws-1')!.hasCachedListDir('src'), isFalse);
-      expect(model.stateFor('ws-1')!.hasCachedListDir('docs'), isTrue);
-    });
+        await model.listDir(workspaceId: 'ws-1', relPath: 'src', fetch: fetch);
+        await model.listDir(workspaceId: 'ws-1', relPath: 'docs', fetch: fetch);
+        expect(fetches, 2);
+        expect(model.stateFor('ws-1')!.cachedListDirCount, 2);
+        // A snapshot push doesn't itself wipe the listDir cache (that's done
+        // by the subscribe handler on mode=snapshot). Verify the
+        // evictListDirEntry hook works as our coarse approximation.
+        model.evictListDirEntry('ws-1', 'src');
+        expect(model.stateFor('ws-1')!.hasCachedListDir('src'), isFalse);
+        expect(model.stateFor('ws-1')!.hasCachedListDir('docs'), isTrue);
+      },
+    );
   });
 }

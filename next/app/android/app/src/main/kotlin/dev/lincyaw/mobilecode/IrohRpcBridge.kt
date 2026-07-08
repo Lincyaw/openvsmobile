@@ -118,6 +118,7 @@ class IrohRpcBridge(
                 )
                 sessions[id] = session
                 session.start(scope)
+                Log.i(TAG, "Iroh RPC session $id connected to ${conn.remoteId()}")
                 withContext(Dispatchers.Main) {
                     result.success(id)
                 }
@@ -185,12 +186,12 @@ private class IrohRpcSession(
         readJob = scope.launch { readLoop() }
         scope.launch {
             try {
-                connection.closed()
-            } catch (_: Throwable) {
+                val reason = connection.closed()
+                finishClosed("connection closed: $reason")
+            } catch (t: Throwable) {
                 // The read loop also reports errors; this path just guarantees
                 // that a remote close wakes Dart even if recv is idle.
-            } finally {
-                finishClosed()
+                finishClosed("connection closed: ${t.message ?: t.toString()}")
             }
         }
     }
@@ -234,24 +235,30 @@ private class IrohRpcSession(
             } catch (_: Throwable) {
                 // Already closed.
             }
-            finishClosed()
+            finishClosed(if (reason.isBlank()) "local close" else "local close: $reason")
         }
     }
 
     private suspend fun readLoop() {
         val recv = bi.recv()
+        var closeReason = "recv closed"
         try {
             while (!closed) {
                 val chunk = recv.read(16_384u)
-                if (chunk.isEmpty()) break
+                if (chunk.isEmpty()) {
+                    closeReason = "recv EOF"
+                    break
+                }
                 acceptText(chunk.toString(Charsets.UTF_8))
             }
         } catch (e: CancellationException) {
+            closeReason = "read cancelled"
             throw e
         } catch (t: Throwable) {
+            closeReason = "read error: ${t.message ?: t.toString()}"
             emitError(t.message ?: t.toString())
         } finally {
-            finishClosed()
+            finishClosed(closeReason)
         }
     }
 
@@ -274,13 +281,21 @@ private class IrohRpcSession(
     }
 
     private fun emitError(message: String) {
+        Log.w(TAG, "Iroh RPC session $id error: $message")
         emit(mapOf("id" to id, "type" to "error", "message" to message))
     }
 
-    private fun finishClosed() {
+    private fun finishClosed(reason: String? = null) {
         if (!closedNotified.compareAndSet(false, true)) return
         if (!closed) closed = true
         onClosed()
-        emit(mapOf("id" to id, "type" to "closed"))
+        val detail = reason?.takeIf { it.isNotBlank() }
+        if (detail == null) {
+            Log.i(TAG, "Iroh RPC session $id closed")
+            emit(mapOf("id" to id, "type" to "closed"))
+        } else {
+            Log.i(TAG, "Iroh RPC session $id closed: $detail")
+            emit(mapOf("id" to id, "type" to "closed", "reason" to detail))
+        }
     }
 }

@@ -269,6 +269,44 @@ void main() {
     expect(find.text('last rendered state'), findsOneWidget);
   });
 
+  testWidgets('crashed plugin opens stderr log viewer', (tester) async {
+    final appState = await _appStateWithSeed([
+      _info(id: 'crashy-log', state: PluginWireState.crashed),
+    ]);
+    addTearDown(appState.dispose);
+    final calls = <String>[];
+    appState.plugins.debugRpcOverride = (method, params) async {
+      calls.add('$method:${params?['id'] ?? ''}');
+      if (method == 'plugin.log') {
+        return <String, dynamic>{
+          'id': 'crashy-log',
+          'path': '/tmp/openvsmobile/plugins/crashy-log.stderr.log',
+          'text': 'panic: fixture crash\nstack line\n',
+          'bytes': 31,
+          'truncated': false,
+        };
+      }
+      return <String, dynamic>{'ok': true};
+    };
+
+    final info = appState.plugins.plugin('crashy-log')!;
+    await tester.pumpWidget(
+      _wrap(PluginDetailView(appState: appState, info: info)),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byKey(const ValueKey<String>('plugin-view-log')));
+    await tester.pumpAndSettle();
+
+    expect(calls, contains('plugin.log:crashy-log'));
+    expect(find.widgetWithText(AppBar, 'crashy-log log'), findsOneWidget);
+    expect(find.textContaining('panic: fixture crash'), findsOneWidget);
+    expect(
+      find.text('/tmp/openvsmobile/plugins/crashy-log.stderr.log'),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('command chip invokes plugin.invokeCommand', (tester) async {
     final appState = await _appStateWithSeed([
       _info(

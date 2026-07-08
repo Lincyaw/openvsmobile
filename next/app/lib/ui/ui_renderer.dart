@@ -81,7 +81,12 @@ class UiRenderer extends StatelessWidget {
             axis: Axis.horizontal,
           ),
         );
-      case UiSection(:final title, :final variant, :final collapsible, :final children):
+      case UiSection(
+        :final title,
+        :final variant,
+        :final collapsible,
+        :final children,
+      ):
         // Dispatch on the optional `variant`. Omitted → `plain` so any
         // pre-Batch-2 tree (no variant on the wire) renders identically
         // to the old Section path. `card` reuses the renderer's Card
@@ -109,9 +114,7 @@ class UiRenderer extends StatelessWidget {
                 ? Column(
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: children
-                        .map((c) => _render(context, c))
-                        .toList(),
+                    children: children.map((c) => _render(context, c)).toList(),
                   )
                 : const SizedBox.shrink();
             return body;
@@ -147,11 +150,13 @@ class UiRenderer extends StatelessWidget {
           label: label,
           initialValue: value,
           placeholder: placeholder,
-          onChanged: (v) => onEvent(UiNodeEvent(
-            nodeId: node.id,
-            type: 'changed',
-            payload: {'value': v},
-          )),
+          onChanged: (v) => onEvent(
+            UiNodeEvent(
+              nodeId: node.id,
+              type: 'changed',
+              payload: {'value': v},
+            ),
+          ),
         );
       case UiButton(:final label, :final style):
         return _buildButton(key, node.id, label, style);
@@ -164,17 +169,9 @@ class UiRenderer extends StatelessWidget {
       case UiAppGrid():
         return _buildAppGrid(context, key, node);
       case UiSwitch():
-        return _UiSwitchRenderer(
-          key: key,
-          node: node,
-          onEvent: onEvent,
-        );
+        return _UiSwitchRenderer(key: key, node: node, onEvent: onEvent);
       case UiSelect():
-        return _UiSelectRenderer(
-          key: key,
-          node: node,
-          onEvent: onEvent,
-        );
+        return _UiSelectRenderer(key: key, node: node, onEvent: onEvent);
       case UiInlineBanner():
         return _buildBanner(context, key, node);
       case UiDivider():
@@ -218,8 +215,8 @@ class UiRenderer extends StatelessWidget {
       case UiScroll(:final axis, :final child):
         return SingleChildScrollView(
           key: key,
-          scrollDirection: (axis ?? UiScrollAxis.vertical) ==
-                  UiScrollAxis.horizontal
+          scrollDirection:
+              (axis ?? UiScrollAxis.vertical) == UiScrollAxis.horizontal
               ? Axis.horizontal
               : Axis.vertical,
           child: _render(context, child),
@@ -227,29 +224,13 @@ class UiRenderer extends StatelessWidget {
       case UiTabBar():
         return _buildTabBar(context, key, node);
       case UiSearchField():
-        return _UiSearchFieldRenderer(
-          key: key,
-          node: node,
-          onEvent: onEvent,
-        );
+        return _UiSearchFieldRenderer(key: key, node: node, onEvent: onEvent);
       case UiCheckbox():
-        return _UiCheckboxRenderer(
-          key: key,
-          node: node,
-          onEvent: onEvent,
-        );
+        return _UiCheckboxRenderer(key: key, node: node, onEvent: onEvent);
       case UiRadioGroup():
-        return _UiRadioGroupRenderer(
-          key: key,
-          node: node,
-          onEvent: onEvent,
-        );
+        return _UiRadioGroupRenderer(key: key, node: node, onEvent: onEvent);
       case UiSlider():
-        return _UiSliderRenderer(
-          key: key,
-          node: node,
-          onEvent: onEvent,
-        );
+        return _UiSliderRenderer(key: key, node: node, onEvent: onEvent);
     }
   }
 
@@ -384,9 +365,9 @@ class UiRenderer extends StatelessWidget {
                   Text(
                     node.title,
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          fontWeight: FontWeight.w600,
-                          color: scheme.onSurface,
-                        ),
+                      fontWeight: FontWeight.w600,
+                      color: scheme.onSurface,
+                    ),
                   ),
                   if (node.body != null && node.body!.isNotEmpty)
                     Padding(
@@ -394,8 +375,8 @@ class UiRenderer extends StatelessWidget {
                       child: Text(
                         node.body!,
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: scheme.onSurfaceVariant,
-                            ),
+                          color: scheme.onSurfaceVariant,
+                        ),
                       ),
                     ),
                   if (action != null)
@@ -413,10 +394,9 @@ class UiRenderer extends StatelessWidget {
                             minimumSize: const Size(0, 32),
                             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                           ),
-                          onPressed: () => onEvent(UiNodeEvent(
-                            nodeId: node.id,
-                            type: action.eventId,
-                          )),
+                          onPressed: () => onEvent(
+                            UiNodeEvent(nodeId: node.id, type: action.eventId),
+                          ),
                           child: Text(action.label),
                         ),
                       ),
@@ -432,10 +412,8 @@ class UiRenderer extends StatelessWidget {
                   size: AppIconSize.sm,
                   color: scheme.onSurfaceVariant,
                 ),
-                onPressed: () => onEvent(UiNodeEvent(
-                  nodeId: node.id,
-                  type: dismissId,
-                )),
+                onPressed: () =>
+                    onEvent(UiNodeEvent(nodeId: node.id, type: dismissId)),
               ),
           ],
         ),
@@ -448,7 +426,12 @@ class UiRenderer extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     switch (orientation) {
       case UiDividerOrientation.horizontal:
-        return Divider(key: key, height: 1, thickness: 1, color: scheme.outline);
+        return Divider(
+          key: key,
+          height: 1,
+          thickness: 1,
+          color: scheme.outline,
+        );
       case UiDividerOrientation.vertical:
         return VerticalDivider(
           key: key,
@@ -555,9 +538,9 @@ class UiRenderer extends StatelessWidget {
       child: Text(
         label,
         style: Theme.of(context).textTheme.labelSmall?.copyWith(
-              color: fg,
-              fontWeight: FontWeight.w600,
-            ),
+          color: fg,
+          fontWeight: FontWeight.w600,
+        ),
       ),
     );
   }
@@ -570,10 +553,7 @@ class UiRenderer extends StatelessWidget {
       trailing: node.trailing == null ? null : _render(context, node.trailing!),
       onTap: node.onTapEvent == null
           ? null
-          : () => onEvent(UiNodeEvent(
-                nodeId: node.id,
-                type: node.onTapEvent!,
-              )),
+          : () => onEvent(UiNodeEvent(nodeId: node.id, type: node.onTapEvent!)),
     );
     final actions = node.swipeActions;
     if (actions == null || actions.isEmpty) {
@@ -601,10 +581,9 @@ class UiRenderer extends StatelessWidget {
         dismissible: actions.length == 1
             ? DismissiblePane(
                 closeOnCancel: true,
-                onDismissed: () => onEvent(UiNodeEvent(
-                  nodeId: node.id,
-                  type: actions.first.eventId,
-                )),
+                onDismissed: () => onEvent(
+                  UiNodeEvent(nodeId: node.id, type: actions.first.eventId),
+                ),
               )
             : null,
         children: [
@@ -640,10 +619,7 @@ class UiRenderer extends StatelessWidget {
         : resolveIconByName(action.icon!);
     return SlidableAction(
       key: ValueKey<String>('ui-swipe-action:$key/${action.eventId}'),
-      onPressed: (_) => onEvent(UiNodeEvent(
-        nodeId: key,
-        type: action.eventId,
-      )),
+      onPressed: (_) => onEvent(UiNodeEvent(nodeId: key, type: action.eventId)),
       backgroundColor: bg,
       foregroundColor: fg,
       icon: iconData,
@@ -677,11 +653,13 @@ class UiRenderer extends StatelessWidget {
             return _AppGridTile(
               tile: tile,
               gridId: node.id,
-              onTap: () => onEvent(UiNodeEvent(
-                nodeId: node.id,
-                type: node.onLaunchEvent ?? 'launch',
-                payload: {'tileId': tile.id},
-              )),
+              onTap: () => onEvent(
+                UiNodeEvent(
+                  nodeId: node.id,
+                  type: node.onLaunchEvent ?? 'launch',
+                  payload: {'tileId': tile.id},
+                ),
+              ),
               onLongPress: longPress == null
                   ? null
                   : () => longPress(node.id, tile.id),
@@ -706,17 +684,9 @@ class UiRenderer extends StatelessWidget {
     void emit() => onEvent(UiNodeEvent(nodeId: nodeId, type: 'tap'));
     switch (style ?? UiButtonStyleKind.primary) {
       case UiButtonStyleKind.primary:
-        return ElevatedButton(
-          key: key,
-          onPressed: emit,
-          child: Text(label),
-        );
+        return ElevatedButton(key: key, onPressed: emit, child: Text(label));
       case UiButtonStyleKind.secondary:
-        return OutlinedButton(
-          key: key,
-          onPressed: emit,
-          child: Text(label),
-        );
+        return OutlinedButton(key: key, onPressed: emit, child: Text(label));
       case UiButtonStyleKind.danger:
         // FilledButton.tonal per the issue spec — keeps the v0 vocabulary
         // small while still differentiating from primary/secondary.
@@ -746,8 +716,11 @@ class UiRenderer extends StatelessWidget {
     }
   }
 
-  List<Widget> _withGap(List<Widget> children, double? gap,
-      {required Axis axis}) {
+  List<Widget> _withGap(
+    List<Widget> children,
+    double? gap, {
+    required Axis axis,
+  }) {
     if (gap == null || gap <= 0 || children.length < 2) return children;
     final spacer = SizedBox(
       width: axis == Axis.horizontal ? gap : 0,
@@ -1014,9 +987,7 @@ class UiRenderer extends StatelessWidget {
     Widget body;
     if (language.isEmpty) {
       // Unknown / absent language → plain monospace, no highlight stack.
-      body = SelectionArea(
-        child: Text(node.code, style: monoStyle),
-      );
+      body = SelectionArea(child: Text(node.code, style: monoStyle));
     } else {
       body = SelectionArea(
         child: HighlightView(
@@ -1038,8 +1009,9 @@ class UiRenderer extends StatelessWidget {
     return LayoutBuilder(
       key: key,
       builder: (context, constraints) {
-        final maxW =
-            constraints.maxWidth.isFinite ? constraints.maxWidth : 320.0;
+        final maxW = constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : 320.0;
         return ConstrainedBox(
           constraints: BoxConstraints(maxWidth: maxW),
           child: Container(
@@ -1104,19 +1076,16 @@ class UiRenderer extends StatelessWidget {
             strokeWidth: 2.5,
           ),
         );
-        if (label == null || label.isEmpty) return KeyedSubtree(key: key, child: indicator);
+        if (label == null || label.isEmpty) {
+          return KeyedSubtree(key: key, child: indicator);
+        }
         return Row(
           key: key,
           mainAxisSize: MainAxisSize.min,
           children: [
             indicator,
             const SizedBox(width: AppSpacing.sm),
-            Flexible(
-              child: Text(
-                label,
-                style: theme.textTheme.bodyMedium,
-              ),
-            ),
+            Flexible(child: Text(label, style: theme.textTheme.bodyMedium)),
           ],
         );
     }
@@ -1141,7 +1110,9 @@ class UiRenderer extends StatelessWidget {
           // Adaptive: target ~120dp per cell. Clamp to >=1 so very-narrow
           // viewports still render at least one column.
           const target = 120.0;
-          final w = constraints.maxWidth.isFinite ? constraints.maxWidth : 360.0;
+          final w = constraints.maxWidth.isFinite
+              ? constraints.maxWidth
+              : 360.0;
           columns = (w / target).floor().clamp(1, 1 << 8);
         }
         return GridView.builder(
@@ -1226,11 +1197,13 @@ class UiRenderer extends StatelessWidget {
                 onTap: () {
                   final evt = node.onChangeEvent;
                   if (evt != null) {
-                    onEvent(UiNodeEvent(
-                      nodeId: node.id,
-                      type: evt,
-                      payload: {'tabId': tab.id},
-                    ));
+                    onEvent(
+                      UiNodeEvent(
+                        nodeId: node.id,
+                        type: evt,
+                        payload: {'tabId': tab.id},
+                      ),
+                    );
                   }
                 },
               ),
@@ -1293,6 +1266,7 @@ class _AppGridTile extends StatelessWidget {
   final UiAppTile tile;
   final String gridId;
   final VoidCallback onTap;
+
   /// Screen-local long-press hook (Plugins-tab launcher only). Null for
   /// plugin-authored panels.
   final VoidCallback? onLongPress;
@@ -1355,9 +1329,9 @@ class _AppGridTile extends StatelessWidget {
                 textAlign: TextAlign.center,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
+                style: Theme.of(
+                  context,
+                ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w600),
               ),
             ],
           ),
@@ -1515,11 +1489,13 @@ class _UiSwitchRendererState extends State<_UiSwitchRenderer> {
         setState(() => _value = next);
         final evt = widget.node.onChangeEvent;
         if (evt != null) {
-          widget.onEvent(UiNodeEvent(
-            nodeId: widget.node.id,
-            type: evt,
-            payload: {'value': next},
-          ));
+          widget.onEvent(
+            UiNodeEvent(
+              nodeId: widget.node.id,
+              type: evt,
+              payload: {'value': next},
+            ),
+          );
         }
       },
     );
@@ -1636,11 +1612,13 @@ class _UiSelectRendererState extends State<_UiSelectRenderer> {
     setState(() => _value = picked);
     final evt = widget.node.onChangeEvent;
     if (evt != null) {
-      widget.onEvent(UiNodeEvent(
-        nodeId: widget.node.id,
-        type: evt,
-        payload: {'value': picked},
-      ));
+      widget.onEvent(
+        UiNodeEvent(
+          nodeId: widget.node.id,
+          type: evt,
+          payload: {'value': picked},
+        ),
+      );
     }
   }
 
@@ -1657,14 +1635,13 @@ class _UiSelectRendererState extends State<_UiSelectRenderer> {
         ),
         child: Row(
           children: [
-            if (label != null && label.isNotEmpty)
-              Expanded(child: Text(label)),
+            if (label != null && label.isNotEmpty) Expanded(child: Text(label)),
             if (label == null || label.isEmpty) const Spacer(),
             Text(
               _displayLabel(),
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: scheme.onSurfaceVariant,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
             ),
             const SizedBox(width: AppSpacing.xs),
             Icon(
@@ -1733,10 +1710,10 @@ class _CollapsibleSectionState extends State<_CollapsibleSection> {
                   widget.title!,
                   style: widget.variant == UiSectionVariant.inset
                       ? theme.textTheme.labelSmall?.copyWith(
-                            color: scheme.onSurfaceVariant,
-                            letterSpacing: 0.6,
-                            fontWeight: FontWeight.w600,
-                          )
+                          color: scheme.onSurfaceVariant,
+                          letterSpacing: 0.6,
+                          fontWeight: FontWeight.w600,
+                        )
                       : theme.textTheme.titleMedium,
                 ),
               )
@@ -1758,10 +1735,7 @@ class _CollapsibleSectionState extends State<_CollapsibleSection> {
         content = Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            header,
-            if (_expanded) body,
-          ],
+          children: [header, if (_expanded) body],
         );
         break;
       case UiSectionVariant.card:
@@ -1841,15 +1815,14 @@ class _AppTileBadge extends StatelessWidget {
       child: Text(
         label,
         style: Theme.of(context).textTheme.labelSmall?.copyWith(
-              color: scheme.onError,
-              fontSize: 10,
-              fontWeight: FontWeight.w700,
-            ),
+          color: scheme.onError,
+          fontSize: 10,
+          fontWeight: FontWeight.w700,
+        ),
       ),
     );
   }
 }
-
 
 /// Single segmented-control tab inside [UiTabBar]. Active tabs raise
 /// to the surface-container-highest with a subtle border; inactive
@@ -1874,9 +1847,7 @@ class _UiTabBarItem extends StatelessWidget {
       decoration: BoxDecoration(
         color: selected ? scheme.surfaceContainerHighest : null,
         borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: selected
-            ? Border.all(color: scheme.outline, width: 1)
-            : null,
+        border: selected ? Border.all(color: scheme.outline, width: 1) : null,
       ),
       padding: const EdgeInsets.symmetric(
         horizontal: AppSpacing.sm,
@@ -1957,11 +1928,9 @@ class _UiSearchFieldRendererState extends State<_UiSearchFieldRenderer> {
   void _emit(String value) {
     final evt = widget.node.onChangeEvent;
     if (evt == null) return;
-    widget.onEvent(UiNodeEvent(
-      nodeId: widget.node.id,
-      type: evt,
-      payload: {'value': value},
-    ));
+    widget.onEvent(
+      UiNodeEvent(nodeId: widget.node.id, type: evt, payload: {'value': value}),
+    );
   }
 
   @override
@@ -2041,11 +2010,13 @@ class _UiCheckboxRendererState extends State<_UiCheckboxRenderer> {
     setState(() => _value = next);
     final evt = widget.node.onChangeEvent;
     if (evt != null) {
-      widget.onEvent(UiNodeEvent(
-        nodeId: widget.node.id,
-        type: evt,
-        payload: {'value': next},
-      ));
+      widget.onEvent(
+        UiNodeEvent(
+          nodeId: widget.node.id,
+          type: evt,
+          payload: {'value': next},
+        ),
+      );
     }
   }
 
@@ -2105,11 +2076,13 @@ class _UiRadioGroupRendererState extends State<_UiRadioGroupRenderer> {
     setState(() => _value = next);
     final evt = widget.node.onChangeEvent;
     if (evt != null) {
-      widget.onEvent(UiNodeEvent(
-        nodeId: widget.node.id,
-        type: evt,
-        payload: {'value': next},
-      ));
+      widget.onEvent(
+        UiNodeEvent(
+          nodeId: widget.node.id,
+          type: evt,
+          payload: {'value': next},
+        ),
+      );
     }
   }
 
@@ -2202,11 +2175,9 @@ class _UiSliderRendererState extends State<_UiSliderRenderer> {
     setState(() => _value = v);
     final evt = widget.node.onChangeEvent;
     if (evt != null) {
-      widget.onEvent(UiNodeEvent(
-        nodeId: widget.node.id,
-        type: evt,
-        payload: {'value': v},
-      ));
+      widget.onEvent(
+        UiNodeEvent(nodeId: widget.node.id, type: evt, payload: {'value': v}),
+      );
     }
   }
 

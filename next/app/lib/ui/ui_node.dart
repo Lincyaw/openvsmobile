@@ -106,8 +106,7 @@ class UiGridColumns {
   final bool adaptive;
   const UiGridColumns._({this.fixed, this.adaptive = false});
 
-  factory UiGridColumns.fixedCount(int n) =>
-      UiGridColumns._(fixed: n);
+  factory UiGridColumns.fixedCount(int n) => UiGridColumns._(fixed: n);
   factory UiGridColumns.adaptiveCount() =>
       const UiGridColumns._(adaptive: true);
 }
@@ -162,11 +161,7 @@ sealed class UiNode {
         if (text is! String) {
           throw const FormatException('UiText.text must be a string');
         }
-        return UiText(
-          id: id,
-          text: text,
-          style: _textStyle(raw['style']),
-        );
+        return UiText(id: id, text: text, style: _textStyle(raw['style']));
       case 'Spacer':
         return UiSpacer(id: id, size: _spacingSlot(raw['size']));
       case 'TextField':
@@ -191,9 +186,7 @@ sealed class UiNode {
       case 'Icon':
         final name = raw['name'];
         if (name is! String || name.isEmpty) {
-          throw const FormatException(
-            'UiIcon.name must be a non-empty string',
-          );
+          throw const FormatException('UiIcon.name must be a non-empty string');
         }
         return UiIcon(
           id: id,
@@ -305,9 +298,7 @@ sealed class UiNode {
       case 'Image':
         final src = raw['src'];
         if (src is! String || src.isEmpty) {
-          throw const FormatException(
-            'UiImage.src must be a non-empty string',
-          );
+          throw const FormatException('UiImage.src must be a non-empty string');
         }
         return UiImage(
           id: id,
@@ -319,9 +310,7 @@ sealed class UiNode {
         final src = _asString(raw['src']);
         final initial = _asString(raw['initial']);
         if (src == null && initial == null) {
-          throw const FormatException(
-            'UiAvatar requires src or initial',
-          );
+          throw const FormatException('UiAvatar requires src or initial');
         }
         return UiAvatar(
           id: id,
@@ -333,9 +322,7 @@ sealed class UiNode {
       case 'Markdown':
         final markdown = raw['markdown'];
         if (markdown is! String) {
-          throw const FormatException(
-            'UiMarkdown.markdown must be a string',
-          );
+          throw const FormatException('UiMarkdown.markdown must be a string');
         }
         return UiMarkdown(id: id, markdown: markdown);
       case 'CodeBlock':
@@ -479,9 +466,7 @@ sealed class UiNode {
           throw const FormatException('UiSlider: min must be < max');
         }
         if (valueRaw is! num || !valueRaw.isFinite) {
-          throw const FormatException(
-            'UiSlider.value must be a finite number',
-          );
+          throw const FormatException('UiSlider.value must be a finite number');
         }
         double? step;
         final stepRaw = raw['step'];
@@ -509,9 +494,7 @@ sealed class UiNode {
   static bool? _asBool(Object? raw) {
     if (raw == null) return null;
     if (raw is bool) return raw;
-    throw FormatException(
-      'UiNode: expected bool, got ${raw.runtimeType}',
-    );
+    throw FormatException('UiNode: expected bool, got ${raw.runtimeType}');
   }
 
   static String _requiredString(Object? raw, String field) {
@@ -576,17 +559,13 @@ sealed class UiNode {
 
   static List<UiTabBarTab> _tabBarTabs(Object? raw) {
     if (raw is! List || raw.isEmpty) {
-      throw const FormatException(
-        'UiTabBar.tabs must be a non-empty array',
-      );
+      throw const FormatException('UiTabBar.tabs must be a non-empty array');
     }
     final out = <UiTabBarTab>[];
     final seen = <String>{};
     for (final entry in raw) {
       if (entry is! Map<String, dynamic>) {
-        throw const FormatException(
-          'UiTabBar.tabs[*] must be a JSON object',
-        );
+        throw const FormatException('UiTabBar.tabs[*] must be a JSON object');
       }
       final id = entry['id'];
       final label = entry['label'];
@@ -604,7 +583,9 @@ sealed class UiNode {
           'UiTabBar.tabs[*].label must be a non-empty string',
         );
       }
-      out.add(UiTabBarTab(id: id, label: label, icon: _asString(entry['icon'])));
+      out.add(
+        UiTabBarTab(id: id, label: label, icon: _asString(entry['icon'])),
+      );
     }
     return out;
   }
@@ -631,9 +612,7 @@ sealed class UiNode {
         );
       }
       if (seen.contains(value)) {
-        throw FormatException(
-          'UiRadioGroup: duplicate option value "$value"',
-        );
+        throw FormatException('UiRadioGroup: duplicate option value "$value"');
       }
       seen.add(value);
       if (label is! String || label.isEmpty) {
@@ -875,19 +854,20 @@ class UiColumn extends UiNode {
   final List<UiNode> children;
   final SpacingSlot? gap;
   const UiColumn({required String id, required this.children, this.gap})
-      : super(id);
+    : super(id);
 }
 
 class UiRow extends UiNode {
   final List<UiNode> children;
   final SpacingSlot? gap;
   const UiRow({required String id, required this.children, this.gap})
-      : super(id);
+    : super(id);
 }
 
 class UiSection extends UiNode {
   final String? title;
   final UiSectionVariant? variant;
+
   /// When true the renderer adds a tap-to-expand-collapse header
   /// chevron. The renderer persists the expanded/collapsed state per
   /// node id across re-renders.
@@ -916,7 +896,7 @@ class UiText extends UiNode {
   final String text;
   final UiTextStyleKind? style;
   const UiText({required String id, required this.text, this.style})
-      : super(id);
+    : super(id);
 }
 
 class UiSpacer extends UiNode {
@@ -940,19 +920,15 @@ class UiButton extends UiNode {
   final String label;
   final UiButtonStyleKind? style;
   const UiButton({required String id, required this.label, this.style})
-      : super(id);
+    : super(id);
 }
 
 class UiIcon extends UiNode {
   final String name;
   final SizeSlot? size;
   final AccentToken? accent;
-  const UiIcon({
-    required String id,
-    required this.name,
-    this.size,
-    this.accent,
-  }) : super(id);
+  const UiIcon({required String id, required this.name, this.size, this.accent})
+    : super(id);
 }
 
 class UiBadge extends UiNode {
@@ -1022,6 +998,7 @@ class UiAppTileBadge {
 class UiAppTile {
   final String id;
   final String name;
+
   /// One of: `String iconName` (Feather catalog lookup) or
   /// `UiAppTileIconUri uri` (opaque ref for future Batch 3 image support).
   final UiAppTileIcon icon;
@@ -1065,7 +1042,8 @@ class UiAppTile {
       int? count;
       if (rawCount is int) {
         count = rawCount;
-      } else if (rawCount is double && rawCount == rawCount.truncateToDouble()) {
+      } else if (rawCount is double &&
+          rawCount == rawCount.truncateToDouble()) {
         count = rawCount.toInt();
       } else if (rawCount != null) {
         throw const FormatException('UiAppTile.badge.count must be an int');
@@ -1198,12 +1176,8 @@ class UiImage extends UiNode {
   final String src;
   final UiImageFit? fit;
   final SizeSlot? size;
-  const UiImage({
-    required String id,
-    required this.src,
-    this.fit,
-    this.size,
-  }) : super(id);
+  const UiImage({required String id, required this.src, this.fit, this.size})
+    : super(id);
 }
 
 /// Profile circle (Batch 3 — §4.3). With [src] → renders the image
@@ -1237,11 +1211,8 @@ class UiMarkdown extends UiNode {
 class UiCodeBlock extends UiNode {
   final String code;
   final String? language;
-  const UiCodeBlock({
-    required String id,
-    required this.code,
-    this.language,
-  }) : super(id);
+  const UiCodeBlock({required String id, required this.code, this.language})
+    : super(id);
 }
 
 /// Progress indicator (Batch 3 — §4.3). [value] in [0, 1] → determinate;
@@ -1287,22 +1258,16 @@ class UiGrid extends UiNode {
 class UiStack extends UiNode {
   final List<UiNode> children;
   final UiStackAlignment? alignment;
-  const UiStack({
-    required String id,
-    required this.children,
-    this.alignment,
-  }) : super(id);
+  const UiStack({required String id, required this.children, this.alignment})
+    : super(id);
 }
 
 /// Aspect-ratio enforcer (Batch 5). [ratio] is width / height.
 class UiAspect extends UiNode {
   final double ratio;
   final UiNode child;
-  const UiAspect({
-    required String id,
-    required this.ratio,
-    required this.child,
-  }) : super(id);
+  const UiAspect({required String id, required this.ratio, required this.child})
+    : super(id);
 }
 
 /// Flex distribution hint for a Row/Column child (Batch 5). Outside a
@@ -1311,22 +1276,16 @@ class UiAspect extends UiNode {
 class UiFlex extends UiNode {
   final double flex;
   final UiNode child;
-  const UiFlex({
-    required String id,
-    required this.flex,
-    required this.child,
-  }) : super(id);
+  const UiFlex({required String id, required this.flex, required this.child})
+    : super(id);
 }
 
 /// Explicit scroll region (Batch 5). Default axis is vertical.
 class UiScroll extends UiNode {
   final UiScrollAxis? axis;
   final UiNode child;
-  const UiScroll({
-    required String id,
-    this.axis,
-    required this.child,
-  }) : super(id);
+  const UiScroll({required String id, this.axis, required this.child})
+    : super(id);
 }
 
 /// Tab entry inside [UiTabBar] (Batch 5).
@@ -1478,9 +1437,7 @@ class UiAlertAction {
           variant = UiAlertActionVariant.danger;
           break;
         default:
-          throw FormatException(
-            'UiAlertAction: unknown variant "$rawVariant"',
-          );
+          throw FormatException('UiAlertAction: unknown variant "$rawVariant"');
       }
     }
     return UiAlertAction(label: label, eventId: eventId, variant: variant);
@@ -1493,6 +1450,7 @@ class UiAlertDialog {
   final String title;
   final String? body;
   final List<UiAlertAction> actions;
+
   /// Default `true`. `false` blocks tap-outside / back-press; only the
   /// action buttons resolve the dialog.
   final bool dismissible;

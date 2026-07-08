@@ -75,95 +75,131 @@ UiNode _allKindsTree() {
     id: 'root-col',
     gap: SpacingSlot.number(8),
     children: [
-      const UiText(id: 't-title', text: 'Title goes here', style: UiTextStyleKind.title),
-      const UiText(id: 't-body',  text: 'Body line',       style: UiTextStyleKind.body),
-      const UiText(id: 't-caption', text: 'caption text',  style: UiTextStyleKind.caption),
-      const UiText(id: 't-mono',  text: 'mono()',          style: UiTextStyleKind.mono),
+      const UiText(
+        id: 't-title',
+        text: 'Title goes here',
+        style: UiTextStyleKind.title,
+      ),
+      const UiText(
+        id: 't-body',
+        text: 'Body line',
+        style: UiTextStyleKind.body,
+      ),
+      const UiText(
+        id: 't-caption',
+        text: 'caption text',
+        style: UiTextStyleKind.caption,
+      ),
+      const UiText(id: 't-mono', text: 'mono()', style: UiTextStyleKind.mono),
       UiSpacer(id: 'sp-1', size: SpacingSlot.number(12)),
-      UiRow(id: 'row-1', gap: SpacingSlot.number(4), children: const [
-        UiText(id: 'row-t1', text: 'left'),
-        UiText(id: 'row-t2', text: 'right'),
-      ]),
-      UiSection(id: 'sec-1', title: 'A section', children: [
-        UiText(id: 'sec-t', text: 'inside section'),
-      ]),
-      UiCard(id: 'card-1', children: [
-        UiText(id: 'card-t', text: 'inside card'),
-      ]),
-      UiList(id: 'list-1', items: [
-        UiText(id: 'list-i0', text: 'item 0'),
-        UiText(id: 'list-i1', text: 'item 1'),
-      ]),
+      UiRow(
+        id: 'row-1',
+        gap: SpacingSlot.number(4),
+        children: const [
+          UiText(id: 'row-t1', text: 'left'),
+          UiText(id: 'row-t2', text: 'right'),
+        ],
+      ),
+      UiSection(
+        id: 'sec-1',
+        title: 'A section',
+        children: [UiText(id: 'sec-t', text: 'inside section')],
+      ),
+      UiCard(
+        id: 'card-1',
+        children: [UiText(id: 'card-t', text: 'inside card')],
+      ),
+      UiList(
+        id: 'list-1',
+        items: [
+          UiText(id: 'list-i0', text: 'item 0'),
+          UiText(id: 'list-i1', text: 'item 1'),
+        ],
+      ),
       UiTextField(
         id: 'tf-1',
         label: 'Name',
         value: 'initial',
         placeholder: 'enter name',
       ),
-      UiButton(id: 'btn-primary',   label: 'Primary',   style: UiButtonStyleKind.primary),
-      UiButton(id: 'btn-secondary', label: 'Secondary', style: UiButtonStyleKind.secondary),
-      UiButton(id: 'btn-danger',    label: 'Danger',    style: UiButtonStyleKind.danger),
+      UiButton(
+        id: 'btn-primary',
+        label: 'Primary',
+        style: UiButtonStyleKind.primary,
+      ),
+      UiButton(
+        id: 'btn-secondary',
+        label: 'Secondary',
+        style: UiButtonStyleKind.secondary,
+      ),
+      UiButton(
+        id: 'btn-danger',
+        label: 'Danger',
+        style: UiButtonStyleKind.danger,
+      ),
     ],
   );
 }
 
 void main() {
-  testWidgets('renders every widget kind without throwing',
-      (tester) async {
+  testWidgets('renders every widget kind without throwing', (tester) async {
     await tester.pumpWidget(_host(_allKindsTree()));
     // The error pump would have surfaced via takeException; ensure we
     // also see the obvious bits.
     expect(tester.takeException(), isNull);
-    expect(find.byType(Column),         findsWidgets);
-    expect(find.byType(Row),            findsOneWidget);
-    expect(find.byType(Card),           findsOneWidget);
-    expect(find.byType(ListView),       findsOneWidget);
-    expect(find.text('Title goes here'),findsOneWidget);
-    expect(find.text('Body line'),      findsOneWidget);
-    expect(find.text('caption text'),   findsOneWidget);
-    expect(find.text('mono()'),         findsOneWidget);
+    expect(find.byType(Column), findsWidgets);
+    expect(find.byType(Row), findsOneWidget);
+    expect(find.byType(Card), findsOneWidget);
+    expect(find.byType(ListView), findsOneWidget);
+    expect(find.text('Title goes here'), findsOneWidget);
+    expect(find.text('Body line'), findsOneWidget);
+    expect(find.text('caption text'), findsOneWidget);
+    expect(find.text('mono()'), findsOneWidget);
     expect(find.text('inside section'), findsOneWidget);
-    expect(find.text('inside card'),    findsOneWidget);
-    expect(find.text('item 0'),         findsOneWidget);
-    expect(find.text('item 1'),         findsOneWidget);
-    expect(find.byType(TextField),      findsOneWidget);
+    expect(find.text('inside card'), findsOneWidget);
+    expect(find.text('item 0'), findsOneWidget);
+    expect(find.text('item 1'), findsOneWidget);
+    expect(find.byType(TextField), findsOneWidget);
     expect(find.byType(ElevatedButton), findsOneWidget);
     expect(find.byType(OutlinedButton), findsOneWidget);
-    expect(find.byType(FilledButton),   findsOneWidget);
+    expect(find.byType(FilledButton), findsOneWidget);
   });
 
-  testWidgets('reconciles by id: same Text Element after a mutating re-render',
-      (tester) async {
+  testWidgets(
+    'reconciles by id: same Text Element after a mutating re-render',
+    (tester) async {
+      UiNode treeWithLabel(String label) => UiColumn(
+        id: 'root',
+        children: [UiText(id: 'leaf', text: label)],
+      );
+
+      final firstHost = _host(treeWithLabel('alpha'));
+      await tester.pumpWidget(firstHost);
+      final firstElement = tester.element(
+        find.byKey(const ValueKey('ui:leaf')),
+      );
+      expect(find.text('alpha'), findsOneWidget);
+
+      // Same tree shape, same node ids, mutated leaf value.
+      await tester.pumpWidget(_host(treeWithLabel('beta')));
+      final secondElement = tester.element(
+        find.byKey(const ValueKey('ui:leaf')),
+      );
+      // Identical Element instance → Flutter matched the new widget to the
+      // existing Element, which is what preserves focus/scroll/animation.
+      expect(identical(firstElement, secondElement), isTrue);
+      expect(find.text('beta'), findsOneWidget);
+      expect(find.text('alpha'), findsNothing);
+    },
+  );
+
+  testWidgets('reconciles by id: TextField Element survives re-render', (
+    tester,
+  ) async {
     UiNode treeWithLabel(String label) => UiColumn(
-          id: 'root',
-          children: [
-            UiText(id: 'leaf', text: label),
-          ],
-        );
-
-    final firstHost = _host(treeWithLabel('alpha'));
-    await tester.pumpWidget(firstHost);
-    final firstElement = tester.element(find.byKey(const ValueKey('ui:leaf')));
-    expect(find.text('alpha'), findsOneWidget);
-
-    // Same tree shape, same node ids, mutated leaf value.
-    await tester.pumpWidget(_host(treeWithLabel('beta')));
-    final secondElement = tester.element(find.byKey(const ValueKey('ui:leaf')));
-    // Identical Element instance → Flutter matched the new widget to the
-    // existing Element, which is what preserves focus/scroll/animation.
-    expect(identical(firstElement, secondElement), isTrue);
-    expect(find.text('beta'), findsOneWidget);
-    expect(find.text('alpha'), findsNothing);
-  });
-
-  testWidgets('reconciles by id: TextField Element survives re-render',
-      (tester) async {
-    UiNode treeWithLabel(String label) => UiColumn(
-          id: 'root',
-          children: [
-            UiTextField(id: 'tf', label: label),
-          ],
-        );
+      id: 'root',
+      children: [UiTextField(id: 'tf', label: label)],
+    );
 
     await tester.pumpWidget(_host(treeWithLabel('First')));
     final firstElement = tester.element(find.byKey(const ValueKey('ui:tf')));
@@ -181,8 +217,9 @@ void main() {
     expect(find.text('user text'), findsOneWidget);
   });
 
-  testWidgets('TextField onChange emits UiNodeEvent with the new value',
-      (tester) async {
+  testWidgets('TextField onChange emits UiNodeEvent with the new value', (
+    tester,
+  ) async {
     final events = <UiNodeEvent>[];
     final tree = UiTextField(id: 'tf', label: 'name');
     await tester.pumpWidget(_host(tree, onEvent: events.add));
@@ -253,8 +290,9 @@ void main() {
 
   // ---- Batch 1 widgets (§4.3) ----
 
-  testWidgets('UiIcon renders a known Feather glyph at the requested size',
-      (tester) async {
+  testWidgets('UiIcon renders a known Feather glyph at the requested size', (
+    tester,
+  ) async {
     final tree = UiIcon(
       id: 'i',
       name: 'home',
@@ -268,8 +306,9 @@ void main() {
     expect(iconWidget.icon, isNotNull);
   });
 
-  testWidgets('UiIcon falls back to a placeholder for unknown names',
-      (tester) async {
+  testWidgets('UiIcon falls back to a placeholder for unknown names', (
+    tester,
+  ) async {
     const tree = UiIcon(id: 'i', name: 'no-such-icon');
     await tester.pumpWidget(_host(tree));
     expect(tester.takeException(), isNull);
@@ -292,8 +331,9 @@ void main() {
     expect(size.height, 8);
   });
 
-  testWidgets('UiBadge pill renders text/count and a rounded background',
-      (tester) async {
+  testWidgets('UiBadge pill renders text/count and a rounded background', (
+    tester,
+  ) async {
     const tree = UiBadge(
       id: 'b2',
       variant: UiBadgeVariant.pill,
@@ -305,8 +345,9 @@ void main() {
     expect(find.text('3'), findsOneWidget);
   });
 
-  testWidgets('UiListTile renders title/subtitle and emits onTapEvent',
-      (tester) async {
+  testWidgets('UiListTile renders title/subtitle and emits onTapEvent', (
+    tester,
+  ) async {
     final events = <UiNodeEvent>[];
     const tree = UiListTile(
       id: 'row',
@@ -324,8 +365,9 @@ void main() {
     expect(events.single.nodeId, 'row');
   });
 
-  testWidgets('UiListTile renders leading + trailing nodes via recursion',
-      (tester) async {
+  testWidgets('UiListTile renders leading + trailing nodes via recursion', (
+    tester,
+  ) async {
     const tree = UiListTile(
       id: 'row',
       title: 'With chrome',
@@ -342,8 +384,9 @@ void main() {
     expect(find.byKey(const ValueKey('ui:row.t')), findsOneWidget);
   });
 
-  testWidgets('UiListTile with swipeActions wraps the tile in a Slidable',
-      (tester) async {
+  testWidgets('UiListTile with swipeActions wraps the tile in a Slidable', (
+    tester,
+  ) async {
     // Batch 4 lights up the swipe gesture. The tile is wrapped in a
     // Slidable when `swipeActions` is non-empty; tapping a revealed
     // action fires the configured eventId.
@@ -372,8 +415,9 @@ void main() {
     expect(events, isEmpty);
   });
 
-  testWidgets('UiAppGrid renders one tile per item and fires onLaunchEvent',
-      (tester) async {
+  testWidgets('UiAppGrid renders one tile per item and fires onLaunchEvent', (
+    tester,
+  ) async {
     final events = <UiNodeEvent>[];
     const tree = UiAppGrid(
       id: 'grid',
@@ -398,8 +442,9 @@ void main() {
     expect(events.single.payload, {'tileId': 't1'});
   });
 
-  testWidgets('UiAppGrid uses default onLaunchEvent="launch" when omitted',
-      (tester) async {
+  testWidgets('UiAppGrid uses default onLaunchEvent="launch" when omitted', (
+    tester,
+  ) async {
     final events = <UiNodeEvent>[];
     const tree = UiAppGrid(
       id: 'grid',
@@ -414,27 +459,31 @@ void main() {
   });
 
   testWidgets(
-      'UiAppGrid long-press fires the screen-local onAppTileLongPress hook',
-      (tester) async {
-    final longPresses = <(String, String)>[];
-    const tree = UiAppGrid(
-      id: 'g',
-      items: [
-        UiAppTile(id: 't1', name: 'Alpha', icon: UiAppTileIconName('home')),
-      ],
-    );
-    await tester.pumpWidget(_host(
-      tree,
-      onAppTileLongPress: (gridId, tileId) =>
-          longPresses.add((gridId, tileId)),
-    ));
-    await tester.longPress(find.text('Alpha'));
-    await tester.pump();
-    expect(longPresses, [('g', 't1')]);
-  });
+    'UiAppGrid long-press fires the screen-local onAppTileLongPress hook',
+    (tester) async {
+      final longPresses = <(String, String)>[];
+      const tree = UiAppGrid(
+        id: 'g',
+        items: [
+          UiAppTile(id: 't1', name: 'Alpha', icon: UiAppTileIconName('home')),
+        ],
+      );
+      await tester.pumpWidget(
+        _host(
+          tree,
+          onAppTileLongPress: (gridId, tileId) =>
+              longPresses.add((gridId, tileId)),
+        ),
+      );
+      await tester.longPress(find.text('Alpha'));
+      await tester.pump();
+      expect(longPresses, [('g', 't1')]);
+    },
+  );
 
-  testWidgets('UiBadge danger pill pairs the foreground with onError',
-      (tester) async {
+  testWidgets('UiBadge danger pill pairs the foreground with onError', (
+    tester,
+  ) async {
     // Regression guard for the contrast accident: danger background is
     // scheme.error, so the matched on-* role is onError. Using onPrimary
     // would degrade contrast on a theme whose primary != error.
@@ -446,8 +495,7 @@ void main() {
     );
     await tester.pumpWidget(_host(tree));
     final textWidget = tester.widget<Text>(find.text('99'));
-    final scheme =
-        Theme.of(tester.element(find.text('99'))).colorScheme;
+    final scheme = Theme.of(tester.element(find.text('99'))).colorScheme;
     expect(textWidget.style?.color, scheme.onError);
   });
 
@@ -487,8 +535,9 @@ void main() {
 
   // ---- StyleSlotResolver round-trip ----
 
-  testWidgets('StyleSlotResolver: spacing tokens map to AppSpacing scale',
-      (tester) async {
+  testWidgets('StyleSlotResolver: spacing tokens map to AppSpacing scale', (
+    tester,
+  ) async {
     // Tokens resolve to the same px values that legacy `AppSpacing.*`
     // constants exposed, so numeric and tokenized authors share one scale.
     expect(StyleSlotResolver.spacing(SpacingToken.none), 0);
@@ -505,22 +554,28 @@ void main() {
     );
   });
 
-  testWidgets('StyleSlotResolver: size tokens map to icon size buckets',
-      (tester) async {
+  testWidgets('StyleSlotResolver: size tokens map to icon size buckets', (
+    tester,
+  ) async {
     expect(StyleSlotResolver.size(SizeToken.sm), AppIconSize.sm);
     expect(StyleSlotResolver.size(SizeToken.md), AppIconSize.md);
     expect(StyleSlotResolver.size(SizeToken.lg), AppIconSize.lg);
   });
 
-  testWidgets('StyleSlotResolver: surface / accent resolve via ColorScheme',
-      (tester) async {
+  testWidgets('StyleSlotResolver: surface / accent resolve via ColorScheme', (
+    tester,
+  ) async {
     late BuildContext capturedCtx;
-    await tester.pumpWidget(MaterialApp(
-      home: Builder(builder: (ctx) {
-        capturedCtx = ctx;
-        return const SizedBox.shrink();
-      }),
-    ));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (ctx) {
+            capturedCtx = ctx;
+            return const SizedBox.shrink();
+          },
+        ),
+      ),
+    );
     final scheme = Theme.of(capturedCtx).colorScheme;
     expect(
       StyleSlotResolver.surface(capturedCtx, SurfaceToken.defaultSurface),
@@ -540,52 +595,67 @@ void main() {
     );
   });
 
-  testWidgets('StyleSlotResolver: info / success / warning paint distinct hues',
-      (tester) async {
-    // Regression guard: pre-review these collapsed to scheme.tertiary
-    // (info+warning) and a hardcoded green hex (success). Each must
-    // resolve to a different Color so plugin authors using the three
-    // tokens get visually distinguishable accents.
-    late BuildContext ctx;
-    await tester.pumpWidget(MaterialApp(
-      home: Builder(builder: (c) {
-        ctx = c;
-        return const SizedBox.shrink();
-      }),
-    ));
-    final info = StyleSlotResolver.accent(ctx, AccentToken.info);
-    final success = StyleSlotResolver.accent(ctx, AccentToken.success);
-    final warning = StyleSlotResolver.accent(ctx, AccentToken.warning);
-    expect(info, isNot(equals(success)));
-    expect(info, isNot(equals(warning)));
-    expect(success, isNot(equals(warning)));
-  });
+  testWidgets(
+    'StyleSlotResolver: info / success / warning paint distinct hues',
+    (tester) async {
+      // Regression guard: pre-review these collapsed to scheme.tertiary
+      // (info+warning) and a hardcoded green hex (success). Each must
+      // resolve to a different Color so plugin authors using the three
+      // tokens get visually distinguishable accents.
+      late BuildContext ctx;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (c) {
+              ctx = c;
+              return const SizedBox.shrink();
+            },
+          ),
+        ),
+      );
+      final info = StyleSlotResolver.accent(ctx, AccentToken.info);
+      final success = StyleSlotResolver.accent(ctx, AccentToken.success);
+      final warning = StyleSlotResolver.accent(ctx, AccentToken.warning);
+      expect(info, isNot(equals(success)));
+      expect(info, isNot(equals(warning)));
+      expect(success, isNot(equals(warning)));
+    },
+  );
 
-  testWidgets('StyleSlotResolver: brightness flips info between light & dark',
-      (tester) async {
+  testWidgets('StyleSlotResolver: brightness flips info between light & dark', (
+    tester,
+  ) async {
     // Same accent token reads differently on a light vs dark surface —
     // the resolver picks a tuned hue per brightness so the contrast
     // intent survives mode switches.
     Color? darkInfo;
-    await tester.pumpWidget(MaterialApp(
-      home: Theme(
-        data: ThemeData(brightness: Brightness.dark),
-        child: Builder(builder: (ctx) {
-          darkInfo = StyleSlotResolver.accent(ctx, AccentToken.info);
-          return const SizedBox.shrink();
-        }),
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Theme(
+          data: ThemeData(brightness: Brightness.dark),
+          child: Builder(
+            builder: (ctx) {
+              darkInfo = StyleSlotResolver.accent(ctx, AccentToken.info);
+              return const SizedBox.shrink();
+            },
+          ),
+        ),
       ),
-    ));
+    );
     Color? lightInfo;
-    await tester.pumpWidget(MaterialApp(
-      home: Theme(
-        data: ThemeData(brightness: Brightness.light),
-        child: Builder(builder: (ctx) {
-          lightInfo = StyleSlotResolver.accent(ctx, AccentToken.info);
-          return const SizedBox.shrink();
-        }),
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Theme(
+          data: ThemeData(brightness: Brightness.light),
+          child: Builder(
+            builder: (ctx) {
+              lightInfo = StyleSlotResolver.accent(ctx, AccentToken.info);
+              return const SizedBox.shrink();
+            },
+          ),
+        ),
       ),
-    ));
+    );
     expect(darkInfo, isNotNull);
     expect(lightInfo, isNotNull);
     expect(darkInfo, isNot(equals(lightInfo)));
@@ -609,8 +679,9 @@ void main() {
 
   // ---- Batch 2 widgets (§4.3) ----
 
-  testWidgets('UiSection variant=plain renders title + children stacked',
-      (tester) async {
+  testWidgets('UiSection variant=plain renders title + children stacked', (
+    tester,
+  ) async {
     const tree = UiSection(
       id: 's',
       title: 'Plain section',
@@ -626,22 +697,24 @@ void main() {
   });
 
   testWidgets(
-      'UiSection variant=null behaves identically to plain (pre-Batch-2 compat)',
-      (tester) async {
-    const tree = UiSection(
-      id: 's',
-      title: 'Compat',
-      children: [UiText(id: 's.t', text: 'inside')],
-    );
-    await tester.pumpWidget(_host(tree));
-    expect(tester.takeException(), isNull);
-    expect(find.text('Compat'), findsOneWidget);
-    expect(find.text('inside'), findsOneWidget);
-    expect(find.byType(Card), findsNothing);
-  });
+    'UiSection variant=null behaves identically to plain (pre-Batch-2 compat)',
+    (tester) async {
+      const tree = UiSection(
+        id: 's',
+        title: 'Compat',
+        children: [UiText(id: 's.t', text: 'inside')],
+      );
+      await tester.pumpWidget(_host(tree));
+      expect(tester.takeException(), isNull);
+      expect(find.text('Compat'), findsOneWidget);
+      expect(find.text('inside'), findsOneWidget);
+      expect(find.byType(Card), findsNothing);
+    },
+  );
 
-  testWidgets('UiSection variant=card wraps children in a Material Card',
-      (tester) async {
+  testWidgets('UiSection variant=card wraps children in a Material Card', (
+    tester,
+  ) async {
     const tree = UiSection(
       id: 's',
       title: 'Card section',
@@ -655,54 +728,57 @@ void main() {
   });
 
   testWidgets(
-      'UiCard (deprecated alias) renders through the same path as variant=card',
-      (tester) async {
-    const tree = UiCard(
-      id: 'c',
-      children: [UiText(id: 'c.t', text: 'inside-card')],
-    );
-    await tester.pumpWidget(_host(tree));
-    expect(tester.takeException(), isNull);
-    // Acceptance per Batch 2: existing UiCard nodes from older plugins
-    // (clock/notes/sysinfo/hello prior to migration) must keep rendering.
-    expect(find.byType(Card), findsOneWidget);
-    expect(find.text('inside-card'), findsOneWidget);
-  });
+    'UiCard (deprecated alias) renders through the same path as variant=card',
+    (tester) async {
+      const tree = UiCard(
+        id: 'c',
+        children: [UiText(id: 'c.t', text: 'inside-card')],
+      );
+      await tester.pumpWidget(_host(tree));
+      expect(tester.takeException(), isNull);
+      // Acceptance per Batch 2: existing UiCard nodes from older plugins
+      // (clock/notes/sysinfo/hello prior to migration) must keep rendering.
+      expect(find.byType(Card), findsOneWidget);
+      expect(find.text('inside-card'), findsOneWidget);
+    },
+  );
 
   testWidgets(
-      'UiSection variant=inset renders dividers between adjacent rows',
-      (tester) async {
-    const tree = UiSection(
-      id: 's',
-      title: 'Inset',
-      variant: UiSectionVariant.inset,
-      children: [
-        UiText(id: 'r1', text: 'first row'),
-        UiText(id: 'r2', text: 'second row'),
-        UiText(id: 'r3', text: 'third row'),
-      ],
-    );
-    await tester.pumpWidget(_host(tree));
-    expect(tester.takeException(), isNull);
-    expect(find.text('first row'), findsOneWidget);
-    expect(find.text('third row'), findsOneWidget);
-    // Exactly N-1 dividers between N rows — no leading/trailing separator.
-    expect(
-      find.byKey(const ValueKey<String>('inset-section-divider:1')),
-      findsOneWidget,
-    );
-    expect(
-      find.byKey(const ValueKey<String>('inset-section-divider:2')),
-      findsOneWidget,
-    );
-    expect(
-      find.byKey(const ValueKey<String>('inset-section-divider:3')),
-      findsNothing,
-    );
-  });
+    'UiSection variant=inset renders dividers between adjacent rows',
+    (tester) async {
+      const tree = UiSection(
+        id: 's',
+        title: 'Inset',
+        variant: UiSectionVariant.inset,
+        children: [
+          UiText(id: 'r1', text: 'first row'),
+          UiText(id: 'r2', text: 'second row'),
+          UiText(id: 'r3', text: 'third row'),
+        ],
+      );
+      await tester.pumpWidget(_host(tree));
+      expect(tester.takeException(), isNull);
+      expect(find.text('first row'), findsOneWidget);
+      expect(find.text('third row'), findsOneWidget);
+      // Exactly N-1 dividers between N rows — no leading/trailing separator.
+      expect(
+        find.byKey(const ValueKey<String>('inset-section-divider:1')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('inset-section-divider:2')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('inset-section-divider:3')),
+        findsNothing,
+      );
+    },
+  );
 
-  testWidgets('UiSection variant=inset paints title as caption above surface',
-      (tester) async {
+  testWidgets('UiSection variant=inset paints title as caption above surface', (
+    tester,
+  ) async {
     const tree = UiSection(
       id: 's',
       title: 'Connection',
@@ -714,8 +790,9 @@ void main() {
     expect(find.text('CONNECTION'), findsOneWidget);
   });
 
-  testWidgets('UiSwitch flips locally and emits onChangeEvent payload',
-      (tester) async {
+  testWidgets('UiSwitch flips locally and emits onChangeEvent payload', (
+    tester,
+  ) async {
     final events = <UiNodeEvent>[];
     const tree = UiSwitch(
       id: 'sw',
@@ -736,8 +813,9 @@ void main() {
     expect(swWidget.value, isTrue);
   });
 
-  testWidgets('UiSwitch syncs local value when the wire value changes',
-      (tester) async {
+  testWidgets('UiSwitch syncs local value when the wire value changes', (
+    tester,
+  ) async {
     // Authority loop: plugin re-renders to "reject" the user's flip; the
     // renderer must adopt the wire value rather than stick with its local
     // optimistic state.
@@ -752,8 +830,9 @@ void main() {
     expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse);
   });
 
-  testWidgets('UiSelect opens a modal bottom sheet picker on tap',
-      (tester) async {
+  testWidgets('UiSelect opens a modal bottom sheet picker on tap', (
+    tester,
+  ) async {
     final events = <UiNodeEvent>[];
     const tree = UiSelect(
       id: 'sel',
@@ -782,7 +861,9 @@ void main() {
       findsOneWidget,
     );
     // Pick "Dark".
-    await tester.tap(find.byKey(const ValueKey<String>('select-option:sel/dark')));
+    await tester.tap(
+      find.byKey(const ValueKey<String>('select-option:sel/dark')),
+    );
     await tester.pumpAndSettle();
     expect(events, hasLength(1));
     expect(events.single.type, 'pick');
@@ -791,8 +872,9 @@ void main() {
     expect(find.text('Dark'), findsOneWidget);
   });
 
-  testWidgets('UiInlineBanner paints with the accent color and an icon',
-      (tester) async {
+  testWidgets('UiInlineBanner paints with the accent color and an icon', (
+    tester,
+  ) async {
     const tree = UiInlineBanner(
       id: 'b',
       title: 'Heads up',
@@ -808,8 +890,9 @@ void main() {
     expect(find.byIcon(iconData!), findsOneWidget);
   });
 
-  testWidgets('UiInlineBanner action fires the configured eventId',
-      (tester) async {
+  testWidgets('UiInlineBanner action fires the configured eventId', (
+    tester,
+  ) async {
     final events = <UiNodeEvent>[];
     const tree = UiInlineBanner(
       id: 'b',
@@ -825,8 +908,9 @@ void main() {
     expect(events.single.type, 'saveNow');
   });
 
-  testWidgets('UiInlineBanner dismiss button fires dismissEventId',
-      (tester) async {
+  testWidgets('UiInlineBanner dismiss button fires dismissEventId', (
+    tester,
+  ) async {
     final events = <UiNodeEvent>[];
     const tree = UiInlineBanner(
       id: 'b',
@@ -840,34 +924,44 @@ void main() {
     expect(events.single.type, 'dismiss');
   });
 
-  testWidgets('UiDivider horizontal renders a Material Divider',
-      (tester) async {
-    const tree = UiColumn(id: 'c', children: [
-      UiText(id: 't1', text: 'above'),
-      UiDivider(id: 'div'),
-      UiText(id: 't2', text: 'below'),
-    ]);
+  testWidgets('UiDivider horizontal renders a Material Divider', (
+    tester,
+  ) async {
+    const tree = UiColumn(
+      id: 'c',
+      children: [
+        UiText(id: 't1', text: 'above'),
+        UiDivider(id: 'div'),
+        UiText(id: 't2', text: 'below'),
+      ],
+    );
     await tester.pumpWidget(_host(tree));
     expect(tester.takeException(), isNull);
     expect(find.byKey(const ValueKey<String>('ui:div')), findsOneWidget);
     expect(find.byType(Divider), findsWidgets);
   });
 
-  testWidgets('UiDivider vertical renders a VerticalDivider',
-      (tester) async {
-    const tree = UiDivider(id: 'div', orientation: UiDividerOrientation.vertical);
-    await tester.pumpWidget(MaterialApp(
-      home: Scaffold(
-        body: SizedBox(
-          height: 50,
-          child: Row(children: [
-            const Text('a'),
-            UiRenderer(tree: tree, onEvent: (_) {}),
-            const Text('b'),
-          ]),
+  testWidgets('UiDivider vertical renders a VerticalDivider', (tester) async {
+    const tree = UiDivider(
+      id: 'div',
+      orientation: UiDividerOrientation.vertical,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            height: 50,
+            child: Row(
+              children: [
+                const Text('a'),
+                UiRenderer(tree: tree, onEvent: (_) {}),
+                const Text('b'),
+              ],
+            ),
+          ),
         ),
       ),
-    ));
+    );
     expect(find.byType(VerticalDivider), findsOneWidget);
   });
 
@@ -887,59 +981,62 @@ void main() {
     expect((plainOmitted as UiSection).variant, isNull);
   });
 
-  test('UiNode.fromJson parses UiSwitch / UiSelect / UiInlineBanner / UiDivider',
-      () {
-    final sw = UiNode.fromJson(<String, dynamic>{
-      'kind': 'Switch',
-      'id': 'sw',
-      'value': true,
-      'label': 'On',
-      'onChangeEvent': 'flip',
-    });
-    expect((sw as UiSwitch).value, true);
-    expect(sw.label, 'On');
-    expect(sw.onChangeEvent, 'flip');
+  test(
+    'UiNode.fromJson parses UiSwitch / UiSelect / UiInlineBanner / UiDivider',
+    () {
+      final sw = UiNode.fromJson(<String, dynamic>{
+        'kind': 'Switch',
+        'id': 'sw',
+        'value': true,
+        'label': 'On',
+        'onChangeEvent': 'flip',
+      });
+      expect((sw as UiSwitch).value, true);
+      expect(sw.label, 'On');
+      expect(sw.onChangeEvent, 'flip');
 
-    final sel = UiNode.fromJson(<String, dynamic>{
-      'kind': 'Select',
-      'id': 'sel',
-      'label': 'Theme',
-      'value': 'dark',
-      'onChangeEvent': 'picked',
-      'options': <Map<String, dynamic>>[
-        <String, dynamic>{'value': 'light', 'label': 'Light'},
-        <String, dynamic>{'value': 'dark', 'label': 'Dark'},
-      ],
-    });
-    expect((sel as UiSelect).options.length, 2);
-    expect(sel.options[1].value, 'dark');
-    expect(sel.value, 'dark');
+      final sel = UiNode.fromJson(<String, dynamic>{
+        'kind': 'Select',
+        'id': 'sel',
+        'label': 'Theme',
+        'value': 'dark',
+        'onChangeEvent': 'picked',
+        'options': <Map<String, dynamic>>[
+          <String, dynamic>{'value': 'light', 'label': 'Light'},
+          <String, dynamic>{'value': 'dark', 'label': 'Dark'},
+        ],
+      });
+      expect((sel as UiSelect).options.length, 2);
+      expect(sel.options[1].value, 'dark');
+      expect(sel.value, 'dark');
 
-    final banner = UiNode.fromJson(<String, dynamic>{
-      'kind': 'Banner',
-      'id': 'b',
-      'title': 'x',
-      'body': 'y',
-      'accent': 'success',
-      'action': <String, dynamic>{'label': 'Go', 'eventId': 'go'},
-      'dismissEventId': 'no',
-    });
-    expect((banner as UiInlineBanner).accent, UiInlineBannerAccent.success);
-    expect(banner.action?.eventId, 'go');
-    expect(banner.dismissEventId, 'no');
+      final banner = UiNode.fromJson(<String, dynamic>{
+        'kind': 'Banner',
+        'id': 'b',
+        'title': 'x',
+        'body': 'y',
+        'accent': 'success',
+        'action': <String, dynamic>{'label': 'Go', 'eventId': 'go'},
+        'dismissEventId': 'no',
+      });
+      expect((banner as UiInlineBanner).accent, UiInlineBannerAccent.success);
+      expect(banner.action?.eventId, 'go');
+      expect(banner.dismissEventId, 'no');
 
-    final div = UiNode.fromJson(<String, dynamic>{
-      'kind': 'Divider',
-      'id': 'd',
-      'orientation': 'vertical',
-    });
-    expect((div as UiDivider).orientation, UiDividerOrientation.vertical);
-  });
+      final div = UiNode.fromJson(<String, dynamic>{
+        'kind': 'Divider',
+        'id': 'd',
+        'orientation': 'vertical',
+      });
+      expect((div as UiDivider).orientation, UiDividerOrientation.vertical);
+    },
+  );
 
   // ---- Batch 3 widgets (§4.3) — rich display ----
 
-  testWidgets('UiImage renders a NetworkImage for an https:// src',
-      (tester) async {
+  testWidgets('UiImage renders a NetworkImage for an https:// src', (
+    tester,
+  ) async {
     const tree = UiImage(
       id: 'img',
       src: 'https://example.com/x.png',
@@ -955,8 +1052,7 @@ void main() {
     expect(image.image, isA<NetworkImage>());
   });
 
-  testWidgets('UiImage renders a MemoryImage for a data: URL',
-      (tester) async {
+  testWidgets('UiImage renders a MemoryImage for a data: URL', (tester) async {
     // 1x1 transparent PNG, base64 encoded.
     const onePixelPng =
         'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
@@ -967,40 +1063,47 @@ void main() {
     expect(image.image, isA<MemoryImage>());
   });
 
-  testWidgets('UiImage with unknown scheme renders the broken-image placeholder',
-      (tester) async {
-    const tree = UiImage(id: 'broken', src: 'rocket://nowhere');
-    await tester.pumpWidget(_host(tree));
-    expect(tester.takeException(), isNull);
-    // Placeholder uses Icons.broken_image_outlined; no Image widget rendered.
-    expect(find.byIcon(Icons.broken_image_outlined), findsOneWidget);
-    expect(find.byType(Image), findsNothing);
-  });
+  testWidgets(
+    'UiImage with unknown scheme renders the broken-image placeholder',
+    (tester) async {
+      const tree = UiImage(id: 'broken', src: 'rocket://nowhere');
+      await tester.pumpWidget(_host(tree));
+      expect(tester.takeException(), isNull);
+      // Placeholder uses Icons.broken_image_outlined; no Image widget rendered.
+      expect(find.byIcon(Icons.broken_image_outlined), findsOneWidget);
+      expect(find.byType(Image), findsNothing);
+    },
+  );
 
   testWidgets(
-      'UiAvatar with no src renders the initial glyph on a hashed color',
-      (tester) async {
-    const tree = UiAvatar(id: 'av', initial: 'AB');
-    await tester.pumpWidget(_host(tree));
-    expect(tester.takeException(), isNull);
-    // Glyph is uppercased to "AB" by the renderer's _avatarGlyph helper.
-    expect(find.text('AB'), findsOneWidget);
-    expect(find.byType(Image), findsNothing);
-  });
+    'UiAvatar with no src renders the initial glyph on a hashed color',
+    (tester) async {
+      const tree = UiAvatar(id: 'av', initial: 'AB');
+      await tester.pumpWidget(_host(tree));
+      expect(tester.takeException(), isNull);
+      // Glyph is uppercased to "AB" by the renderer's _avatarGlyph helper.
+      expect(find.text('AB'), findsOneWidget);
+      expect(find.byType(Image), findsNothing);
+    },
+  );
 
-  testWidgets('UiAvatar hash color is deterministic for the same initial',
-      (tester) async {
+  testWidgets('UiAvatar hash color is deterministic for the same initial', (
+    tester,
+  ) async {
     // Two avatars with the same initial must paint identical container
     // colors; two with different initials should differ (with very high
     // probability across the 8-bucket palette). The Avatar widget IS
     // a Container (no nested chrome), so we read the keyed Container's
     // decoration directly — `find.descendant + Container` would match
     // both the avatar AND any enclosing surface, breaking `widget()`.
-    const tree = UiRow(id: 'r', children: [
-      UiAvatar(id: 'a1', initial: 'A'),
-      UiAvatar(id: 'a2', initial: 'A'),
-      UiAvatar(id: 'a3', initial: 'Z'),
-    ]);
+    const tree = UiRow(
+      id: 'r',
+      children: [
+        UiAvatar(id: 'a1', initial: 'A'),
+        UiAvatar(id: 'a2', initial: 'A'),
+        UiAvatar(id: 'a3', initial: 'Z'),
+      ],
+    );
     await tester.pumpWidget(_host(tree));
     Color? colorFor(String avatarId) {
       final container = tester.widget<Container>(
@@ -1008,6 +1111,7 @@ void main() {
       );
       return (container.decoration as BoxDecoration).color;
     }
+
     final c1 = colorFor('a1');
     final c2 = colorFor('a2');
     final c3 = colorFor('a3');
@@ -1015,8 +1119,7 @@ void main() {
     expect(c1, isNot(equals(c3)));
   });
 
-  testWidgets('UiAvatar accent overrides the hash color',
-      (tester) async {
+  testWidgets('UiAvatar accent overrides the hash color', (tester) async {
     const tree = UiAvatar(
       id: 'av-accent',
       initial: 'X',
@@ -1029,8 +1132,7 @@ void main() {
     // the exact value because that's owned by StyleSlotResolver.
   });
 
-  testWidgets('UiMarkdown renders body text without throwing',
-      (tester) async {
+  testWidgets('UiMarkdown renders body text without throwing', (tester) async {
     const tree = UiMarkdown(
       id: 'md',
       markdown: '# Heading\n\nThis is **bold** text with `code`.',
@@ -1043,8 +1145,9 @@ void main() {
     expect(find.byType(MarkdownBody), findsOneWidget);
   });
 
-  testWidgets('UiMarkdown out-of-subset constructs do not crash',
-      (tester) async {
+  testWidgets('UiMarkdown out-of-subset constructs do not crash', (
+    tester,
+  ) async {
     // Tables and raw HTML are out of subset — they should degrade to
     // escaped text rather than crashing.
     const tree = UiMarkdown(
@@ -1056,8 +1159,9 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('UiCodeBlock with known language renders HighlightView',
-      (tester) async {
+  testWidgets('UiCodeBlock with known language renders HighlightView', (
+    tester,
+  ) async {
     const tree = UiCodeBlock(
       id: 'cb',
       code: 'const x = 1;',
@@ -1068,8 +1172,9 @@ void main() {
     expect(find.byType(HighlightView), findsOneWidget);
   });
 
-  testWidgets('UiCodeBlock without language falls back to plain monospace',
-      (tester) async {
+  testWidgets('UiCodeBlock without language falls back to plain monospace', (
+    tester,
+  ) async {
     const tree = UiCodeBlock(id: 'cb-plain', code: 'plain text');
     await tester.pumpWidget(_host(tree));
     expect(tester.takeException(), isNull);
@@ -1082,11 +1187,13 @@ void main() {
   // inner horizontal scroller — without an outer width constraint, an
   // unbounded Row child would assert. Asserting `takeException()` is
   // null covers any future regression where the constraint disappears.
-  testWidgets('UiCodeBlock inside UiRow lays out under bounded constraints',
-      (tester) async {
-    final tree = UiRow(id: 'row-cb', children: [
-      UiCodeBlock(id: 'cb-row', code: 'x' * 200),
-    ]);
+  testWidgets('UiCodeBlock inside UiRow lays out under bounded constraints', (
+    tester,
+  ) async {
+    final tree = UiRow(
+      id: 'row-cb',
+      children: [UiCodeBlock(id: 'cb-row', code: 'x' * 200)],
+    );
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -1103,8 +1210,9 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('UiProgress determinate linear renders LinearProgressIndicator',
-      (tester) async {
+  testWidgets('UiProgress determinate linear renders LinearProgressIndicator', (
+    tester,
+  ) async {
     const tree = UiProgress(id: 'pg', value: 0.4, label: '40%');
     await tester.pumpWidget(_host(tree));
     expect(tester.takeException(), isNull);
@@ -1115,8 +1223,7 @@ void main() {
     expect(find.text('40%'), findsOneWidget);
   });
 
-  testWidgets('UiProgress indeterminate has null value',
-      (tester) async {
+  testWidgets('UiProgress indeterminate has null value', (tester) async {
     const tree = UiProgress(id: 'pg2');
     await tester.pumpWidget(_host(tree));
     final ind = tester.widget<LinearProgressIndicator>(
@@ -1125,8 +1232,9 @@ void main() {
     expect(ind.value, isNull);
   });
 
-  testWidgets('UiProgress circular variant renders CircularProgressIndicator',
-      (tester) async {
+  testWidgets('UiProgress circular variant renders CircularProgressIndicator', (
+    tester,
+  ) async {
     const tree = UiProgress(
       id: 'pg3',
       value: 0.7,
@@ -1141,87 +1249,91 @@ void main() {
     expect(find.text('syncing'), findsOneWidget);
   });
 
-  testWidgets('UiSpinner renders CircularProgressIndicator with optional label',
-      (tester) async {
-    const tree = UiSpinner(id: 'sp', label: 'refreshing…');
-    await tester.pumpWidget(_host(tree));
-    expect(tester.takeException(), isNull);
-    final ind = tester.widget<CircularProgressIndicator>(
-      find.byType(CircularProgressIndicator),
-    );
-    // Spinner is indeterminate.
-    expect(ind.value, isNull);
-    expect(find.text('refreshing…'), findsOneWidget);
-  });
+  testWidgets(
+    'UiSpinner renders CircularProgressIndicator with optional label',
+    (tester) async {
+      const tree = UiSpinner(id: 'sp', label: 'refreshing…');
+      await tester.pumpWidget(_host(tree));
+      expect(tester.takeException(), isNull);
+      final ind = tester.widget<CircularProgressIndicator>(
+        find.byType(CircularProgressIndicator),
+      );
+      // Spinner is indeterminate.
+      expect(ind.value, isNull);
+      expect(find.text('refreshing…'), findsOneWidget);
+    },
+  );
 
-  testWidgets('UiSpinner without label still renders the indicator',
-      (tester) async {
+  testWidgets('UiSpinner without label still renders the indicator', (
+    tester,
+  ) async {
     const tree = UiSpinner(id: 'sp2');
     await tester.pumpWidget(_host(tree));
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
   });
 
   test(
-      'UiNode.fromJson parses Batch 3 widgets (Image / Avatar / Markdown / CodeBlock / Progress / Spinner)',
-      () {
-    final img = UiNode.fromJson(<String, dynamic>{
-      'kind': 'Image',
-      'id': 'i',
-      'src': 'https://x/y.png',
-      'fit': 'contain',
-      'size': 'lg',
-    });
-    expect((img as UiImage).src, 'https://x/y.png');
-    expect(img.fit, UiImageFit.contain);
-    expect(img.size?.token, SizeToken.lg);
+    'UiNode.fromJson parses Batch 3 widgets (Image / Avatar / Markdown / CodeBlock / Progress / Spinner)',
+    () {
+      final img = UiNode.fromJson(<String, dynamic>{
+        'kind': 'Image',
+        'id': 'i',
+        'src': 'https://x/y.png',
+        'fit': 'contain',
+        'size': 'lg',
+      });
+      expect((img as UiImage).src, 'https://x/y.png');
+      expect(img.fit, UiImageFit.contain);
+      expect(img.size?.token, SizeToken.lg);
 
-    final av = UiNode.fromJson(<String, dynamic>{
-      'kind': 'Avatar',
-      'id': 'a',
-      'initial': 'AB',
-      'accent': 'info',
-    });
-    expect((av as UiAvatar).initial, 'AB');
-    expect(av.accent, AccentToken.info);
+      final av = UiNode.fromJson(<String, dynamic>{
+        'kind': 'Avatar',
+        'id': 'a',
+        'initial': 'AB',
+        'accent': 'info',
+      });
+      expect((av as UiAvatar).initial, 'AB');
+      expect(av.accent, AccentToken.info);
 
-    final mdNode = UiNode.fromJson(<String, dynamic>{
-      'kind': 'Markdown',
-      'id': 'm',
-      'markdown': '# h',
-    });
-    expect((mdNode as UiMarkdown).markdown, '# h');
+      final mdNode = UiNode.fromJson(<String, dynamic>{
+        'kind': 'Markdown',
+        'id': 'm',
+        'markdown': '# h',
+      });
+      expect((mdNode as UiMarkdown).markdown, '# h');
 
-    final cb = UiNode.fromJson(<String, dynamic>{
-      'kind': 'CodeBlock',
-      'id': 'c',
-      'code': 'x=1',
-      'language': 'python',
-    });
-    expect((cb as UiCodeBlock).code, 'x=1');
-    expect(cb.language, 'python');
+      final cb = UiNode.fromJson(<String, dynamic>{
+        'kind': 'CodeBlock',
+        'id': 'c',
+        'code': 'x=1',
+        'language': 'python',
+      });
+      expect((cb as UiCodeBlock).code, 'x=1');
+      expect(cb.language, 'python');
 
-    final pg = UiNode.fromJson(<String, dynamic>{
-      'kind': 'Progress',
-      'id': 'p',
-      'value': 0.3,
-      'variant': 'circular',
-      'label': 'go',
-      'accent': 'success',
-    });
-    expect((pg as UiProgress).value, 0.3);
-    expect(pg.variant, UiProgressVariant.circular);
-    expect(pg.label, 'go');
-    expect(pg.accent, AccentToken.success);
+      final pg = UiNode.fromJson(<String, dynamic>{
+        'kind': 'Progress',
+        'id': 'p',
+        'value': 0.3,
+        'variant': 'circular',
+        'label': 'go',
+        'accent': 'success',
+      });
+      expect((pg as UiProgress).value, 0.3);
+      expect(pg.variant, UiProgressVariant.circular);
+      expect(pg.label, 'go');
+      expect(pg.accent, AccentToken.success);
 
-    final sp = UiNode.fromJson(<String, dynamic>{
-      'kind': 'Spinner',
-      'id': 's',
-      'label': 'loading',
-      'size': 'md',
-    });
-    expect((sp as UiSpinner).label, 'loading');
-    expect(sp.size?.token, SizeToken.md);
-  });
+      final sp = UiNode.fromJson(<String, dynamic>{
+        'kind': 'Spinner',
+        'id': 's',
+        'label': 'loading',
+        'size': 'md',
+      });
+      expect((sp as UiSpinner).label, 'loading');
+      expect(sp.size?.token, SizeToken.md);
+    },
+  );
 
   test('UiAvatar.fromJson rejects when neither src nor initial is set', () {
     expect(
@@ -1255,8 +1367,9 @@ void main() {
 
   // ---- Batch 4 SwipeAction rendering ----
 
-  testWidgets('UiListTile swipe reveals action and tap fires eventId',
-      (tester) async {
+  testWidgets('UiListTile swipe reveals action and tap fires eventId', (
+    tester,
+  ) async {
     // The Slidable action pane sits offscreen until swipe. We drag the
     // tile left to expose the action, then tap the revealed label.
     final events = <UiNodeEvent>[];
@@ -1300,8 +1413,9 @@ void main() {
   // MaterialApp host so showDialog / showModalBottomSheet have a
   // Navigator.
 
-  testWidgets('showUiModal AlertDialog fires picked action eventId',
-      (tester) async {
+  testWidgets('showUiModal AlertDialog fires picked action eventId', (
+    tester,
+  ) async {
     UiNodeEvent? captured;
     await _runModalHarness(
       tester,
@@ -1334,36 +1448,38 @@ void main() {
   });
 
   testWidgets(
-      'showUiModal AlertDialog with dismissible:false blocks tap-outside',
-      (tester) async {
-    UiNodeEvent? captured;
-    await _runModalHarness(
-      tester,
-      push: const UiAlertPush(
-        pluginId: 'p',
-        panelId: 'home',
-        alert: UiAlertDialog(
-          id: 'a-2',
-          title: 'Confirm',
-          actions: [UiAlertAction(label: 'OK', eventId: 'ok')],
-          dismissible: false,
+    'showUiModal AlertDialog with dismissible:false blocks tap-outside',
+    (tester) async {
+      UiNodeEvent? captured;
+      await _runModalHarness(
+        tester,
+        push: const UiAlertPush(
+          pluginId: 'p',
+          panelId: 'home',
+          alert: UiAlertDialog(
+            id: 'a-2',
+            title: 'Confirm',
+            actions: [UiAlertAction(label: 'OK', eventId: 'ok')],
+            dismissible: false,
+          ),
         ),
-      ),
-      onEvent: (e) => captured = e,
-    );
-    // Tap-outside the dialog should NOT close it.
-    await tester.tapAt(const Offset(10, 10));
-    await tester.pumpAndSettle();
-    expect(find.text('Confirm'), findsOneWidget);
-    expect(captured, isNull);
-    // OK still works.
-    await tester.tap(find.text('OK'));
-    await tester.pumpAndSettle();
-    expect(captured?.type, 'ok');
-  });
+        onEvent: (e) => captured = e,
+      );
+      // Tap-outside the dialog should NOT close it.
+      await tester.tapAt(const Offset(10, 10));
+      await tester.pumpAndSettle();
+      expect(find.text('Confirm'), findsOneWidget);
+      expect(captured, isNull);
+      // OK still works.
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+      expect(captured?.type, 'ok');
+    },
+  );
 
-  testWidgets('showUiModal ActionSheet fires picked action and dismiss event',
-      (tester) async {
+  testWidgets('showUiModal ActionSheet fires picked action and dismiss event', (
+    tester,
+  ) async {
     final captured = <UiNodeEvent>[];
     await _runModalHarness(
       tester,
@@ -1390,8 +1506,9 @@ void main() {
     expect(captured.single.type, 'i:15');
   });
 
-  testWidgets('showUiModal BottomSheet renders child via UiRenderer',
-      (tester) async {
+  testWidgets('showUiModal BottomSheet renders child via UiRenderer', (
+    tester,
+  ) async {
     final captured = <UiNodeEvent>[];
     await _runModalHarness(
       tester,
@@ -1426,52 +1543,53 @@ void main() {
   // ---- Batch 4 modal type parsing ----
 
   test(
-      'UiModalPush.tryFromJson parses alert / actionSheet / bottomSheet kinds',
-      () {
-    final alert = UiModalPush.tryFromJson(<String, dynamic>{
-      'kind': 'alert',
-      'pluginId': 'p',
-      'panelId': 'home',
-      'alert': <String, dynamic>{
-        'id': 'a',
-        'title': 'T',
-        'actions': [
-          <String, dynamic>{'label': 'OK', 'eventId': 'ok'},
-        ],
-      },
-    });
-    expect(alert, isA<UiAlertPush>());
-    expect((alert as UiAlertPush).alert.title, 'T');
+    'UiModalPush.tryFromJson parses alert / actionSheet / bottomSheet kinds',
+    () {
+      final alert = UiModalPush.tryFromJson(<String, dynamic>{
+        'kind': 'alert',
+        'pluginId': 'p',
+        'panelId': 'home',
+        'alert': <String, dynamic>{
+          'id': 'a',
+          'title': 'T',
+          'actions': [
+            <String, dynamic>{'label': 'OK', 'eventId': 'ok'},
+          ],
+        },
+      });
+      expect(alert, isA<UiAlertPush>());
+      expect((alert as UiAlertPush).alert.title, 'T');
 
-    final sheet = UiModalPush.tryFromJson(<String, dynamic>{
-      'kind': 'actionSheet',
-      'pluginId': 'p',
-      'panelId': 'home',
-      'sheet': <String, dynamic>{
-        'id': 'sh',
-        'actions': [
-          <String, dynamic>{'label': 'A', 'eventId': 'a'},
-        ],
-      },
-    });
-    expect(sheet, isA<UiActionSheetPush>());
+      final sheet = UiModalPush.tryFromJson(<String, dynamic>{
+        'kind': 'actionSheet',
+        'pluginId': 'p',
+        'panelId': 'home',
+        'sheet': <String, dynamic>{
+          'id': 'sh',
+          'actions': [
+            <String, dynamic>{'label': 'A', 'eventId': 'a'},
+          ],
+        },
+      });
+      expect(sheet, isA<UiActionSheetPush>());
 
-    final bs = UiModalPush.tryFromJson(<String, dynamic>{
-      'kind': 'bottomSheet',
-      'pluginId': 'p',
-      'panelId': 'home',
-      'sheet': <String, dynamic>{
-        'id': 'bs',
-        'child': <String, dynamic>{'kind': 'Text', 'id': 't', 'text': 'x'},
-      },
-    });
-    expect(bs, isA<UiBottomSheetPush>());
+      final bs = UiModalPush.tryFromJson(<String, dynamic>{
+        'kind': 'bottomSheet',
+        'pluginId': 'p',
+        'panelId': 'home',
+        'sheet': <String, dynamic>{
+          'id': 'bs',
+          'child': <String, dynamic>{'kind': 'Text', 'id': 't', 'text': 'x'},
+        },
+      });
+      expect(bs, isA<UiBottomSheetPush>());
 
-    expect(
-      UiModalPush.tryFromJson(<String, dynamic>{'kind': 'bogus'}),
-      isNull,
-    );
-  });
+      expect(
+        UiModalPush.tryFromJson(<String, dynamic>{'kind': 'bogus'}),
+        isNull,
+      );
+    },
+  );
 
   test('icon catalog covers a few essential names', () {
     // Quick smoke test that the curated subset is wired up. We don't
@@ -1498,8 +1616,9 @@ void main() {
 // ---- Batch 5 widgets (§4.3) — long tail ----
 
 void _batch5Tests() {
-  testWidgets('UiGrid renders fixed-column GridView with N items',
-      (tester) async {
+  testWidgets('UiGrid renders fixed-column GridView with N items', (
+    tester,
+  ) async {
     final tree = UiGrid(
       id: 'g',
       columns: UiGridColumns.fixedCount(2),
@@ -1517,8 +1636,7 @@ void _batch5Tests() {
     expect(find.text('four'), findsOneWidget);
   });
 
-  testWidgets('UiGrid adaptive columns scales with viewport',
-      (tester) async {
+  testWidgets('UiGrid adaptive columns scales with viewport', (tester) async {
     // Narrow viewport: at ~120dp per cell we expect 1 column.
     tester.view.physicalSize = const Size(160, 800);
     tester.view.devicePixelRatio = 1;
@@ -1534,7 +1652,8 @@ void _batch5Tests() {
     await tester.pumpWidget(_host(tree));
     expect(tester.takeException(), isNull);
     final gridView = tester.widget<GridView>(find.byType(GridView));
-    final delegate = gridView.gridDelegate as SliverGridDelegateWithFixedCrossAxisCount;
+    final delegate =
+        gridView.gridDelegate as SliverGridDelegateWithFixedCrossAxisCount;
     expect(delegate.crossAxisCount, greaterThanOrEqualTo(1));
   });
 
@@ -1550,8 +1669,7 @@ void _batch5Tests() {
     expect(stack.alignment, Alignment.bottomRight);
   });
 
-  testWidgets('UiAspect wraps its child in an AspectRatio',
-      (tester) async {
+  testWidgets('UiAspect wraps its child in an AspectRatio', (tester) async {
     const tree = UiAspect(
       id: 'a',
       ratio: 16 / 9,
@@ -1565,10 +1683,21 @@ void _batch5Tests() {
   });
 
   testWidgets('UiFlex inside Row takes the larger share', (tester) async {
-    final tree = UiRow(id: 'r', children: const [
-      UiFlex(id: 'f1', flex: 1, child: UiText(id: 'a', text: 'a')),
-      UiFlex(id: 'f2', flex: 3, child: UiText(id: 'b', text: 'b')),
-    ]);
+    final tree = UiRow(
+      id: 'r',
+      children: const [
+        UiFlex(
+          id: 'f1',
+          flex: 1,
+          child: UiText(id: 'a', text: 'a'),
+        ),
+        UiFlex(
+          id: 'f2',
+          flex: 3,
+          child: UiText(id: 'b', text: 'b'),
+        ),
+      ],
+    );
     await tester.pumpWidget(_host(tree));
     expect(tester.takeException(), isNull);
     // Both render; the underlying Expanded is what matters.
@@ -1577,14 +1706,18 @@ void _batch5Tests() {
     expect(find.byType(Expanded), findsNWidgets(2));
   });
 
-  testWidgets('UiScroll defaults to vertical and accepts horizontal',
-      (tester) async {
-    const vert = UiScroll(id: 'sv', child: UiText(id: 'sv.t', text: 'v'));
+  testWidgets('UiScroll defaults to vertical and accepts horizontal', (
+    tester,
+  ) async {
+    const vert = UiScroll(
+      id: 'sv',
+      child: UiText(id: 'sv.t', text: 'v'),
+    );
     await tester.pumpWidget(_host(vert));
     expect(
-      tester.widget<SingleChildScrollView>(
-        find.byKey(const ValueKey('ui:sv')),
-      ).scrollDirection,
+      tester
+          .widget<SingleChildScrollView>(find.byKey(const ValueKey('ui:sv')))
+          .scrollDirection,
       Axis.vertical,
     );
     const horiz = UiScroll(
@@ -1594,15 +1727,16 @@ void _batch5Tests() {
     );
     await tester.pumpWidget(_host(horiz));
     expect(
-      tester.widget<SingleChildScrollView>(
-        find.byKey(const ValueKey('ui:sh')),
-      ).scrollDirection,
+      tester
+          .widget<SingleChildScrollView>(find.byKey(const ValueKey('ui:sh')))
+          .scrollDirection,
       Axis.horizontal,
     );
   });
 
-  testWidgets('UiTabBar renders one item per tab and fires onChangeEvent',
-      (tester) async {
+  testWidgets('UiTabBar renders one item per tab and fires onChangeEvent', (
+    tester,
+  ) async {
     final events = <UiNodeEvent>[];
     const tree = UiTabBar(
       id: 'tb',
@@ -1627,53 +1761,55 @@ void _batch5Tests() {
   });
 
   testWidgets(
-      'Section.collapsible persists expand state across re-render with same id',
-      (tester) async {
-    UiNode treeWithLabel(String label) => UiSection(
-          id: 'collapsible-sec',
-          title: 'Section',
-          collapsible: true,
-          children: [
-            UiText(id: 'leaf', text: label),
-          ],
-        );
+    'Section.collapsible persists expand state across re-render with same id',
+    (tester) async {
+      UiNode treeWithLabel(String label) => UiSection(
+        id: 'collapsible-sec',
+        title: 'Section',
+        collapsible: true,
+        children: [UiText(id: 'leaf', text: label)],
+      );
 
-    await tester.pumpWidget(_host(treeWithLabel('alpha')));
-    // Default state is expanded → leaf visible.
-    expect(find.text('alpha'), findsOneWidget);
-    // Tap the header chevron / row to collapse.
-    await tester.tap(find.text('Section'));
-    await tester.pumpAndSettle();
-    expect(find.text('alpha'), findsNothing);
-    // Re-render with the same id but mutated leaf — collapsed state
-    // should survive because the State is keyed by the section id.
-    await tester.pumpWidget(_host(treeWithLabel('beta')));
-    await tester.pump();
-    expect(find.text('alpha'), findsNothing);
-    expect(find.text('beta'), findsNothing);
-  });
+      await tester.pumpWidget(_host(treeWithLabel('alpha')));
+      // Default state is expanded → leaf visible.
+      expect(find.text('alpha'), findsOneWidget);
+      // Tap the header chevron / row to collapse.
+      await tester.tap(find.text('Section'));
+      await tester.pumpAndSettle();
+      expect(find.text('alpha'), findsNothing);
+      // Re-render with the same id but mutated leaf — collapsed state
+      // should survive because the State is keyed by the section id.
+      await tester.pumpWidget(_host(treeWithLabel('beta')));
+      await tester.pump();
+      expect(find.text('alpha'), findsNothing);
+      expect(find.text('beta'), findsNothing);
+    },
+  );
 
-  testWidgets('Section.collapsible defaults expanded after re-render with new id',
-      (tester) async {
-    UiNode treeWithId(String id) => UiSection(
-          id: id,
-          title: 'Section',
-          collapsible: true,
-          children: const [UiText(id: 'leaf', text: 'visible')],
-        );
+  testWidgets(
+    'Section.collapsible defaults expanded after re-render with new id',
+    (tester) async {
+      UiNode treeWithId(String id) => UiSection(
+        id: id,
+        title: 'Section',
+        collapsible: true,
+        children: const [UiText(id: 'leaf', text: 'visible')],
+      );
 
-    await tester.pumpWidget(_host(treeWithId('first')));
-    expect(find.text('visible'), findsOneWidget);
-    await tester.tap(find.text('Section'));
-    await tester.pumpAndSettle();
-    expect(find.text('visible'), findsNothing);
-    // New id → fresh State → default expanded.
-    await tester.pumpWidget(_host(treeWithId('second')));
-    expect(find.text('visible'), findsOneWidget);
-  });
+      await tester.pumpWidget(_host(treeWithId('first')));
+      expect(find.text('visible'), findsOneWidget);
+      await tester.tap(find.text('Section'));
+      await tester.pumpAndSettle();
+      expect(find.text('visible'), findsNothing);
+      // New id → fresh State → default expanded.
+      await tester.pumpWidget(_host(treeWithId('second')));
+      expect(find.text('visible'), findsOneWidget);
+    },
+  );
 
-  testWidgets('UiSearchField renders magnifier prefix and emits onChange',
-      (tester) async {
+  testWidgets('UiSearchField renders magnifier prefix and emits onChange', (
+    tester,
+  ) async {
     final events = <UiNodeEvent>[];
     const tree = UiSearchField(
       id: 'sf',
@@ -1688,26 +1824,29 @@ void _batch5Tests() {
     expect(events.last.payload, {'value': 'ada'});
   });
 
-  testWidgets('UiSearchField clear button wipes the controller and emits empty',
-      (tester) async {
-    final events = <UiNodeEvent>[];
-    const tree = UiSearchField(
-      id: 'sf2',
-      value: 'starting',
-      onChangeEvent: 'q',
-    );
-    await tester.pumpWidget(_host(tree, onEvent: events.add));
-    // Clear button appears because value is non-empty.
-    expect(find.byType(IconButton), findsOneWidget);
-    await tester.tap(find.byType(IconButton));
-    await tester.pump();
-    final tf = tester.widget<TextField>(find.byType(TextField));
-    expect(tf.controller!.text, isEmpty);
-    expect(events.last.payload, {'value': ''});
-  });
+  testWidgets(
+    'UiSearchField clear button wipes the controller and emits empty',
+    (tester) async {
+      final events = <UiNodeEvent>[];
+      const tree = UiSearchField(
+        id: 'sf2',
+        value: 'starting',
+        onChangeEvent: 'q',
+      );
+      await tester.pumpWidget(_host(tree, onEvent: events.add));
+      // Clear button appears because value is non-empty.
+      expect(find.byType(IconButton), findsOneWidget);
+      await tester.tap(find.byType(IconButton));
+      await tester.pump();
+      final tf = tester.widget<TextField>(find.byType(TextField));
+      expect(tf.controller!.text, isEmpty);
+      expect(events.last.payload, {'value': ''});
+    },
+  );
 
-  testWidgets('UiCheckbox toggles locally and emits onChangeEvent',
-      (tester) async {
+  testWidgets('UiCheckbox toggles locally and emits onChangeEvent', (
+    tester,
+  ) async {
     final events = <UiNodeEvent>[];
     const tree = UiCheckbox(
       id: 'c',
@@ -1725,20 +1864,22 @@ void _batch5Tests() {
   });
 
   testWidgets(
-      'UiCheckbox syncs to wire value when the plugin re-renders disagreeing',
-      (tester) async {
-    UiNode tree(bool v) => UiCheckbox(id: 'c', value: v);
-    await tester.pumpWidget(_host(tree(false)));
-    await tester.tap(find.byType(Checkbox));
-    await tester.pumpAndSettle();
-    expect(tester.widget<Checkbox>(find.byType(Checkbox)).value, isTrue);
-    // Plugin re-renders with false — local must snap back.
-    await tester.pumpWidget(_host(tree(false)));
-    expect(tester.widget<Checkbox>(find.byType(Checkbox)).value, isFalse);
-  });
+    'UiCheckbox syncs to wire value when the plugin re-renders disagreeing',
+    (tester) async {
+      UiNode tree(bool v) => UiCheckbox(id: 'c', value: v);
+      await tester.pumpWidget(_host(tree(false)));
+      await tester.tap(find.byType(Checkbox));
+      await tester.pumpAndSettle();
+      expect(tester.widget<Checkbox>(find.byType(Checkbox)).value, isTrue);
+      // Plugin re-renders with false — local must snap back.
+      await tester.pumpWidget(_host(tree(false)));
+      expect(tester.widget<Checkbox>(find.byType(Checkbox)).value, isFalse);
+    },
+  );
 
-  testWidgets('UiRadioGroup single-select fires payload with picked value',
-      (tester) async {
+  testWidgets('UiRadioGroup single-select fires payload with picked value', (
+    tester,
+  ) async {
     final events = <UiNodeEvent>[];
     const tree = UiRadioGroup(
       id: 'r',
@@ -1757,27 +1898,33 @@ void _batch5Tests() {
     expect(events.single.payload, {'value': 'b'});
   });
 
-  testWidgets('UiRadioGroup syncs to wire value when plugin re-renders disagreeing',
-      (tester) async {
-    UiNode tree(String? v) => UiRadioGroup(
-          id: 'r2',
-          value: v,
-          options: const [
-            UiRadioOption(value: 'a', label: 'A'),
-            UiRadioOption(value: 'b', label: 'B'),
-          ],
-        );
-    await tester.pumpWidget(_host(tree('a')));
-    await tester.tap(find.byKey(const ValueKey<String>('radio:r2/b')));
-    await tester.pumpAndSettle();
-    // Plugin re-renders, still pointing at 'a' — local must snap.
-    await tester.pumpWidget(_host(tree('a')));
-    final radios = tester.widgetList<Radio<String>>(find.byType(Radio<String>)).toList();
-    // RadioGroup<String> ancestor owns groupValue; assert through it.
-    final group = tester.widget<RadioGroup<String>>(find.byType(RadioGroup<String>));
-    expect(group.groupValue, 'a');
-    expect(radios, hasLength(2));
-  });
+  testWidgets(
+    'UiRadioGroup syncs to wire value when plugin re-renders disagreeing',
+    (tester) async {
+      UiNode tree(String? v) => UiRadioGroup(
+        id: 'r2',
+        value: v,
+        options: const [
+          UiRadioOption(value: 'a', label: 'A'),
+          UiRadioOption(value: 'b', label: 'B'),
+        ],
+      );
+      await tester.pumpWidget(_host(tree('a')));
+      await tester.tap(find.byKey(const ValueKey<String>('radio:r2/b')));
+      await tester.pumpAndSettle();
+      // Plugin re-renders, still pointing at 'a' — local must snap.
+      await tester.pumpWidget(_host(tree('a')));
+      final radios = tester
+          .widgetList<Radio<String>>(find.byType(Radio<String>))
+          .toList();
+      // RadioGroup<String> ancestor owns groupValue; assert through it.
+      final group = tester.widget<RadioGroup<String>>(
+        find.byType(RadioGroup<String>),
+      );
+      expect(group.groupValue, 'a');
+      expect(radios, hasLength(2));
+    },
+  );
 
   testWidgets('UiSlider continuous emits payload on drag', (tester) async {
     final events = <UiNodeEvent>[];
@@ -1799,180 +1946,214 @@ void _batch5Tests() {
     expect(events.single.payload, {'value': 50.0});
   });
 
-  testWidgets('UiSlider stepped sets divisions from min/max/step',
-      (tester) async {
-    const tree = UiSlider(
-      id: 's2',
-      min: 0,
-      max: 10,
-      step: 2,
-      value: 4,
-    );
+  testWidgets('UiSlider stepped sets divisions from min/max/step', (
+    tester,
+  ) async {
+    const tree = UiSlider(id: 's2', min: 0, max: 10, step: 2, value: 4);
     await tester.pumpWidget(_host(tree));
     final slider = tester.widget<Slider>(find.byType(Slider));
     expect(slider.divisions, 5);
   });
 
-  testWidgets('UiSlider clamps incoming value into [min, max]',
-      (tester) async {
+  testWidgets('UiSlider clamps incoming value into [min, max]', (tester) async {
     const tree = UiSlider(id: 's3', min: 0, max: 10, value: 999);
     await tester.pumpWidget(_host(tree));
     final slider = tester.widget<Slider>(find.byType(Slider));
     expect(slider.value, 10);
   });
 
-  testWidgets('UiSlider syncs to wire value when plugin re-renders disagreeing',
-      (tester) async {
-    UiNode tree(double v) => UiSlider(id: 'sw', min: 0, max: 100, value: v);
-    await tester.pumpWidget(_host(tree(20)));
-    tester.widget<Slider>(find.byType(Slider)).onChanged!(70);
-    await tester.pump();
-    expect(tester.widget<Slider>(find.byType(Slider)).value, 70);
-    // Plugin re-renders with 30 — local must snap.
-    await tester.pumpWidget(_host(tree(30)));
-    expect(tester.widget<Slider>(find.byType(Slider)).value, 30);
-  });
+  testWidgets(
+    'UiSlider syncs to wire value when plugin re-renders disagreeing',
+    (tester) async {
+      UiNode tree(double v) => UiSlider(id: 'sw', min: 0, max: 100, value: v);
+      await tester.pumpWidget(_host(tree(20)));
+      tester.widget<Slider>(find.byType(Slider)).onChanged!(70);
+      await tester.pump();
+      expect(tester.widget<Slider>(find.byType(Slider)).value, 70);
+      // Plugin re-renders with 30 — local must snap.
+      await tester.pumpWidget(_host(tree(30)));
+      expect(tester.widget<Slider>(find.byType(Slider)).value, 30);
+    },
+  );
 
   testWidgets(
-      'UiSlider snaps back when plugin re-renders with the prior value after a local drag',
-      (tester) async {
-    // Regression: the prior didUpdateWidget compared new wire vs old
-    // wire — a "plugin rejects local drag by re-rendering the same
-    // wire value" sequence (20 → drag to 70 → re-render with 20) left
-    // the UI on 70 because wire-vs-wire was equal. The correct
-    // comparator is wire-vs-local; this test pins it.
-    UiNode tree(double v) => UiSlider(id: 'sw-reject', min: 0, max: 100, value: v);
-    await tester.pumpWidget(_host(tree(20)));
-    expect(tester.widget<Slider>(find.byType(Slider)).value, 20);
-    // User drags to 70 — local optimistic update.
-    tester.widget<Slider>(find.byType(Slider)).onChanged!(70);
-    await tester.pump();
-    expect(tester.widget<Slider>(find.byType(Slider)).value, 70);
-    // Plugin rejects: re-renders with the same wire value (20). Local
-    // must snap back even though new wire == old wire.
-    await tester.pumpWidget(_host(tree(20)));
-    expect(tester.widget<Slider>(find.byType(Slider)).value, 20);
-  });
+    'UiSlider snaps back when plugin re-renders with the prior value after a local drag',
+    (tester) async {
+      // Regression: the prior didUpdateWidget compared new wire vs old
+      // wire — a "plugin rejects local drag by re-rendering the same
+      // wire value" sequence (20 → drag to 70 → re-render with 20) left
+      // the UI on 70 because wire-vs-wire was equal. The correct
+      // comparator is wire-vs-local; this test pins it.
+      UiNode tree(double v) =>
+          UiSlider(id: 'sw-reject', min: 0, max: 100, value: v);
+      await tester.pumpWidget(_host(tree(20)));
+      expect(tester.widget<Slider>(find.byType(Slider)).value, 20);
+      // User drags to 70 — local optimistic update.
+      tester.widget<Slider>(find.byType(Slider)).onChanged!(70);
+      await tester.pump();
+      expect(tester.widget<Slider>(find.byType(Slider)).value, 70);
+      // Plugin rejects: re-renders with the same wire value (20). Local
+      // must snap back even though new wire == old wire.
+      await tester.pumpWidget(_host(tree(20)));
+      expect(tester.widget<Slider>(find.byType(Slider)).value, 20);
+    },
+  );
 
   test('UiNode.fromJson parses Batch 5 widgets', () {
-    final g = UiNode.fromJson(<String, dynamic>{
-      'kind': 'Grid',
-      'id': 'g',
-      'columns': 4,
-      'gap': 'md',
-      'children': <Map<String, dynamic>>[
-        <String, dynamic>{'kind': 'Text', 'id': 't', 'text': 'x'},
-      ],
-    }) as UiGrid;
+    final g =
+        UiNode.fromJson(<String, dynamic>{
+              'kind': 'Grid',
+              'id': 'g',
+              'columns': 4,
+              'gap': 'md',
+              'children': <Map<String, dynamic>>[
+                <String, dynamic>{'kind': 'Text', 'id': 't', 'text': 'x'},
+              ],
+            })
+            as UiGrid;
     expect(g.columns.fixed, 4);
     expect(g.gap?.token, SpacingToken.md);
 
-    final adaptive = UiNode.fromJson(<String, dynamic>{
-      'kind': 'Grid',
-      'id': 'g2',
-      'columns': 'adaptive',
-      'children': <Map<String, dynamic>>[],
-    }) as UiGrid;
+    final adaptive =
+        UiNode.fromJson(<String, dynamic>{
+              'kind': 'Grid',
+              'id': 'g2',
+              'columns': 'adaptive',
+              'children': <Map<String, dynamic>>[],
+            })
+            as UiGrid;
     expect(adaptive.columns.adaptive, isTrue);
 
-    final st = UiNode.fromJson(<String, dynamic>{
-      'kind': 'Stack',
-      'id': 's',
-      'alignment': 'bottomEnd',
-      'children': <Map<String, dynamic>>[],
-    }) as UiStack;
+    final st =
+        UiNode.fromJson(<String, dynamic>{
+              'kind': 'Stack',
+              'id': 's',
+              'alignment': 'bottomEnd',
+              'children': <Map<String, dynamic>>[],
+            })
+            as UiStack;
     expect(st.alignment, UiStackAlignment.bottomEnd);
 
-    final ar = UiNode.fromJson(<String, dynamic>{
-      'kind': 'Aspect',
-      'id': 'a',
-      'ratio': 1.5,
-      'child': <String, dynamic>{'kind': 'Text', 'id': 't', 'text': 'x'},
-    }) as UiAspect;
+    final ar =
+        UiNode.fromJson(<String, dynamic>{
+              'kind': 'Aspect',
+              'id': 'a',
+              'ratio': 1.5,
+              'child': <String, dynamic>{
+                'kind': 'Text',
+                'id': 't',
+                'text': 'x',
+              },
+            })
+            as UiAspect;
     expect(ar.ratio, 1.5);
     expect(ar.child, isA<UiText>());
 
-    final flex = UiNode.fromJson(<String, dynamic>{
-      'kind': 'Flex',
-      'id': 'f',
-      'flex': 2,
-      'child': <String, dynamic>{'kind': 'Text', 'id': 't', 'text': 'x'},
-    }) as UiFlex;
+    final flex =
+        UiNode.fromJson(<String, dynamic>{
+              'kind': 'Flex',
+              'id': 'f',
+              'flex': 2,
+              'child': <String, dynamic>{
+                'kind': 'Text',
+                'id': 't',
+                'text': 'x',
+              },
+            })
+            as UiFlex;
     expect(flex.flex, 2);
 
-    final sc = UiNode.fromJson(<String, dynamic>{
-      'kind': 'Scroll',
-      'id': 'sc',
-      'axis': 'horizontal',
-      'child': <String, dynamic>{'kind': 'Text', 'id': 't', 'text': 'x'},
-    }) as UiScroll;
+    final sc =
+        UiNode.fromJson(<String, dynamic>{
+              'kind': 'Scroll',
+              'id': 'sc',
+              'axis': 'horizontal',
+              'child': <String, dynamic>{
+                'kind': 'Text',
+                'id': 't',
+                'text': 'x',
+              },
+            })
+            as UiScroll;
     expect(sc.axis, UiScrollAxis.horizontal);
 
-    final tb = UiNode.fromJson(<String, dynamic>{
-      'kind': 'TabBar',
-      'id': 'tb',
-      'activeId': 'a',
-      'onChangeEvent': 'p',
-      'tabs': <Map<String, dynamic>>[
-        <String, dynamic>{'id': 'a', 'label': 'A'},
-        <String, dynamic>{'id': 'b', 'label': 'B', 'icon': 'home'},
-      ],
-    }) as UiTabBar;
+    final tb =
+        UiNode.fromJson(<String, dynamic>{
+              'kind': 'TabBar',
+              'id': 'tb',
+              'activeId': 'a',
+              'onChangeEvent': 'p',
+              'tabs': <Map<String, dynamic>>[
+                <String, dynamic>{'id': 'a', 'label': 'A'},
+                <String, dynamic>{'id': 'b', 'label': 'B', 'icon': 'home'},
+              ],
+            })
+            as UiTabBar;
     expect(tb.tabs.length, 2);
     expect(tb.tabs[1].icon, 'home');
     expect(tb.activeId, 'a');
 
-    final sf = UiNode.fromJson(<String, dynamic>{
-      'kind': 'SearchField',
-      'id': 'sf',
-      'value': 'q',
-      'placeholder': 'go',
-      'onChangeEvent': 'changed',
-    }) as UiSearchField;
+    final sf =
+        UiNode.fromJson(<String, dynamic>{
+              'kind': 'SearchField',
+              'id': 'sf',
+              'value': 'q',
+              'placeholder': 'go',
+              'onChangeEvent': 'changed',
+            })
+            as UiSearchField;
     expect(sf.value, 'q');
     expect(sf.onChangeEvent, 'changed');
 
-    final cb = UiNode.fromJson(<String, dynamic>{
-      'kind': 'Checkbox',
-      'id': 'cb',
-      'value': true,
-      'label': 'ok',
-      'onChangeEvent': 'flip',
-    }) as UiCheckbox;
+    final cb =
+        UiNode.fromJson(<String, dynamic>{
+              'kind': 'Checkbox',
+              'id': 'cb',
+              'value': true,
+              'label': 'ok',
+              'onChangeEvent': 'flip',
+            })
+            as UiCheckbox;
     expect(cb.value, isTrue);
     expect(cb.label, 'ok');
 
-    final rg = UiNode.fromJson(<String, dynamic>{
-      'kind': 'RadioGroup',
-      'id': 'rg',
-      'value': 'x',
-      'options': <Map<String, dynamic>>[
-        <String, dynamic>{'value': 'x', 'label': 'X'},
-        <String, dynamic>{'value': 'y', 'label': 'Y'},
-      ],
-    }) as UiRadioGroup;
+    final rg =
+        UiNode.fromJson(<String, dynamic>{
+              'kind': 'RadioGroup',
+              'id': 'rg',
+              'value': 'x',
+              'options': <Map<String, dynamic>>[
+                <String, dynamic>{'value': 'x', 'label': 'X'},
+                <String, dynamic>{'value': 'y', 'label': 'Y'},
+              ],
+            })
+            as UiRadioGroup;
     expect(rg.options, hasLength(2));
     expect(rg.value, 'x');
 
-    final sl = UiNode.fromJson(<String, dynamic>{
-      'kind': 'Slider',
-      'id': 'sl',
-      'min': 0,
-      'max': 10,
-      'step': 1,
-      'value': 5,
-    }) as UiSlider;
+    final sl =
+        UiNode.fromJson(<String, dynamic>{
+              'kind': 'Slider',
+              'id': 'sl',
+              'min': 0,
+              'max': 10,
+              'step': 1,
+              'value': 5,
+            })
+            as UiSlider;
     expect(sl.min, 0);
     expect(sl.max, 10);
     expect(sl.step, 1);
     expect(sl.value, 5);
 
-    final coll = UiNode.fromJson(<String, dynamic>{
-      'kind': 'Section',
-      'id': 's',
-      'collapsible': true,
-      'children': <Map<String, dynamic>>[],
-    }) as UiSection;
+    final coll =
+        UiNode.fromJson(<String, dynamic>{
+              'kind': 'Section',
+              'id': 's',
+              'collapsible': true,
+              'children': <Map<String, dynamic>>[],
+            })
+            as UiSection;
     expect(coll.collapsible, isTrue);
   });
 }

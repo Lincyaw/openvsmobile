@@ -106,6 +106,20 @@ class NotificationsModel extends ChangeNotifier {
     return c;
   }
 
+  /// Count of unread rows that should interrupt the user at chrome level.
+  /// Routine info/success messages still show a subtle dot on the bell, but
+  /// only important / warning / error rows earn a numeric badge.
+  int get attentionCount {
+    final me = _deviceId();
+    var c = 0;
+    for (final n in _items.values) {
+      if (n.supersededBy != null) continue;
+      if (n.readByDevice(me)) continue;
+      if (_needsAttention(n)) c++;
+    }
+    return c;
+  }
+
   String? get filterSource => _filterSource;
   bool get subscribed => _subscribed;
 
@@ -116,6 +130,14 @@ class NotificationsModel extends ChangeNotifier {
     final n = _items[id];
     if (n == null) return false;
     return n.readByDevice(_deviceId());
+  }
+
+  bool _needsAttention(AppNotification n) {
+    if (n.important) return true;
+    return switch (n.level) {
+      NotificationLevel.warning || NotificationLevel.error => true,
+      NotificationLevel.info || NotificationLevel.success => false,
+    };
   }
 
   // ---- Filter ----
@@ -231,6 +253,16 @@ class NotificationsModel extends ChangeNotifier {
     }
   }
 
+  /// Subscribe to live pushes and, only when the local model is empty, pull
+  /// one initial snapshot. This is the cold-start path: it fixes an empty
+  /// notification center after app restart without introducing polling or
+  /// wiping last-known reconnect state.
+  Future<void> subscribeAndBackfillIfEmpty() async {
+    await subscribe(sinceTs: lastSeenTs);
+    if (_items.isNotEmpty) return;
+    await refresh();
+  }
+
   Future<void> unsubscribe() async {
     try {
       await _client.call('notification.unsubscribe');
@@ -243,7 +275,8 @@ class NotificationsModel extends ChangeNotifier {
 
   /// Page-fetch from the backend. Replaces the in-memory map when [since]
   /// is null (initial load / forced refresh); merges when [since] is given
-  /// (incremental sync — currently unused but the API is shaped for it).
+  /// for older-page pagination (`notification.list.since` means timestamp
+  /// older than the cursor, not "newer than").
   Future<void> refresh({
     DateTime? since,
     int limit = 100,

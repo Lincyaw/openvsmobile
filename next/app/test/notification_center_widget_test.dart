@@ -4,6 +4,7 @@
 // push handlers (no WS), pump the widget, assert on the render.
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:mobilecode/app_state.dart';
@@ -28,26 +29,36 @@ AppNotification _n({
   NotificationLevel level = NotificationLevel.info,
   int? ts,
   String? body,
+  List<NotificationField> fields = const [],
   NotificationAction? action,
-}) =>
-    AppNotification(
-      id: id,
-      source: source,
-      level: level,
-      title: title,
-      body: body,
-      action: action,
-      timestamp: ts ?? DateTime.now().millisecondsSinceEpoch,
-    );
+  String? groupKey,
+}) => AppNotification(
+  id: id,
+  source: source,
+  level: level,
+  title: title,
+  body: body,
+  fields: fields,
+  action: action,
+  groupKey: groupKey,
+  timestamp: ts ?? DateTime.now().millisecondsSinceEpoch,
+);
 
-Future<void> _pumpCenter(WidgetTester tester, AppState appState) async {
+Future<void> _pumpCenter(
+  WidgetTester tester,
+  AppState appState, {
+  Future<void> Function(OpenTerminalAction action)? onOpenTerminal,
+}) async {
   await tester.pumpWidget(
     MaterialApp(
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
         useMaterial3: true,
       ),
-      home: NotificationCenterScreen(appState: appState),
+      home: NotificationCenterScreen(
+        appState: appState,
+        onOpenTerminal: onOpenTerminal,
+      ),
     ),
   );
   await tester.pump();
@@ -58,20 +69,33 @@ void main() {
     final appState = AppState(client: BackendClient(), deviceId: 'me');
     addTearDown(appState.dispose);
     await _pumpCenter(tester, appState);
-    expect(find.text('No notifications yet'), findsOneWidget);
-    expect(find.byIcon(Icons.notifications_off_outlined), findsOneWidget);
+    expect(find.text('No agent alerts yet'), findsOneWidget);
+    expect(find.byIcon(Icons.smart_toy_outlined), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('notifications-empty-agent-hooks')),
+      findsOneWidget,
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('notifications-empty-agent-hooks')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Agent hooks'), findsOneWidget);
   });
 
   testWidgets('renders a card with source pill, title, body', (tester) async {
     final appState = AppState(client: BackendClient(), deviceId: 'me');
     addTearDown(appState.dispose);
-    appState.notifications.onShow(_n(
-      id: 'n1',
-      title: 'Build green',
-      source: 'ci:nightly',
-      body: 'all 42 checks passed',
-      level: NotificationLevel.success,
-    ));
+    appState.notifications.onShow(
+      _n(
+        id: 'n1',
+        title: 'Build green',
+        source: 'ci:nightly',
+        body: 'all 42 checks passed',
+        level: NotificationLevel.success,
+      ),
+    );
     await _pumpCenter(tester, appState);
     expect(find.text('Build green'), findsOneWidget);
     // Source string appears both in the pill on the card and in the
@@ -87,11 +111,82 @@ void main() {
     expect(find.text('all 42 checks passed'), findsOneWidget);
   });
 
+  testWidgets('terminal action card expands details before opening terminal', (
+    tester,
+  ) async {
+    final appState = AppState(client: BackendClient(), deviceId: 'me');
+    addTearDown(appState.dispose);
+    appState.notifications.onShow(
+      _n(
+        id: 'agent-done',
+        title: 'Claude finished',
+        source: 'claude-code',
+        body: 'Changed the Settings tab and all tests passed.',
+        fields: const [
+          NotificationField(key: 'cwd', value: '/srv/app'),
+          NotificationField(key: 'zellij', value: 'claude-main'),
+        ],
+        action: const OpenTerminalAction(
+          sessionId: 'session-1',
+          externalSessionId: 'claude-main',
+        ),
+      ),
+    );
+
+    final opened = <OpenTerminalAction>[];
+    await _pumpCenter(
+      tester,
+      appState,
+      onOpenTerminal: (action) async {
+        opened.add(action);
+      },
+    );
+
+    expect(
+      find.text('Changed the Settings tab and all tests passed.'),
+      findsNothing,
+    );
+
+    await tester.tap(find.text('Claude finished').last);
+    await tester.pump();
+
+    expect(opened, isEmpty);
+    expect(
+      find.text('Changed the Settings tab and all tests passed.'),
+      findsOneWidget,
+    );
+    expect(find.text('/srv/app'), findsOneWidget);
+    expect(find.text('claude-main'), findsAtLeastNWidgets(1));
+    expect(
+      tester
+          .getTopLeft(
+            find.widgetWithText(OutlinedButton, 'Open terminal').first,
+          )
+          .dy,
+      lessThan(
+        tester
+            .getTopLeft(
+              find.text('Changed the Settings tab and all tests passed.'),
+            )
+            .dy,
+      ),
+    );
+
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Open terminal'));
+    await tester.pumpAndSettle();
+
+    expect(opened, hasLength(1));
+    expect(opened.single.sessionId, 'session-1');
+    expect(opened.single.externalSessionId, 'claude-main');
+  });
+
   testWidgets('filter pill narrows the list', (tester) async {
     final appState = AppState(client: BackendClient(), deviceId: 'me');
     addTearDown(appState.dispose);
     appState.notifications.onShow(_n(id: '1', title: 'CI msg', source: 'ci'));
-    appState.notifications.onShow(_n(id: '2', title: 'Claude msg', source: 'claude'));
+    appState.notifications.onShow(
+      _n(id: '2', title: 'Claude msg', source: 'claude'),
+    );
     await _pumpCenter(tester, appState);
     expect(find.text('CI msg'), findsOneWidget);
     expect(find.text('Claude msg'), findsOneWidget);
@@ -144,14 +239,16 @@ void main() {
   ) async {
     final appState = AppState(client: BackendClient(), deviceId: 'me');
     addTearDown(appState.dispose);
-    appState.notifications.onShow(_n(
-      id: 'term-ready',
-      title: 'Terminal finished',
-      action: const OpenTerminalAction(
-        sessionId: 'session-1',
-        externalSessionId: 'aoy',
+    appState.notifications.onShow(
+      _n(
+        id: 'term-ready',
+        title: 'Terminal finished',
+        action: const OpenTerminalAction(
+          sessionId: 'session-1',
+          externalSessionId: 'aoy',
+        ),
       ),
-    ));
+    );
 
     final opened = <OpenTerminalAction>[];
     await tester.pumpWidget(
@@ -189,6 +286,505 @@ void main() {
     expect(opened.single.externalSessionId, 'aoy');
   });
 
+  testWidgets('highlighted copy notification waits for explicit tap', (
+    tester,
+  ) async {
+    final appState = AppState(client: BackendClient(), deviceId: 'me');
+    addTearDown(appState.dispose);
+    appState.notifications.onShow(
+      _n(
+        id: 'copy-ready',
+        title: 'Copy deploy command',
+        action: const CopyAction('deploy --confirm'),
+      ),
+    );
+    String? copiedText;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          final args = call.arguments as Map<Object?, Object?>;
+          copiedText = args['text'] as String?;
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(
+          colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
+          useMaterial3: true,
+        ),
+        home: NotificationCenterScreen(
+          appState: appState,
+          highlightId: 'copy-ready',
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(copiedText, isNull);
+    expect(find.text('Copy deploy command'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Copy'));
+    await tester.pump();
+
+    expect(copiedText, 'deploy --confirm');
+  });
+
+  testWidgets('grouped notification exposes newest open-terminal action', (
+    tester,
+  ) async {
+    final appState = AppState(client: BackendClient(), deviceId: 'me');
+    addTearDown(appState.dispose);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    appState.notifications.onShow(
+      _n(
+        id: 'older-finish',
+        title: 'Previous agent run finished',
+        groupKey: 'agent:session-1',
+        ts: now - 1000,
+      ),
+    );
+    appState.notifications.onShow(
+      _n(
+        id: 'newer-finish',
+        title: 'Latest agent run finished',
+        groupKey: 'agent:session-1',
+        ts: now,
+        action: const OpenTerminalAction(
+          sessionId: 'session-1',
+          externalSessionId: 'claude',
+        ),
+      ),
+    );
+
+    final opened = <OpenTerminalAction>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(
+          colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
+          useMaterial3: true,
+        ),
+        home: Builder(
+          builder: (context) => TextButton(
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => NotificationCenterScreen(
+                    appState: appState,
+                    onOpenTerminal: (action) async {
+                      opened.add(action);
+                    },
+                  ),
+                ),
+              );
+            },
+            child: const Text('Open center'),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open center'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Latest agent run finished'), findsAtLeastNWidgets(1));
+    expect(find.text('x2'), findsOneWidget);
+    final actionButton = find.widgetWithText(OutlinedButton, 'Open terminal');
+    expect(actionButton, findsOneWidget);
+
+    await tester.tap(actionButton);
+    await tester.pumpAndSettle();
+
+    expect(opened, hasLength(1));
+    expect(opened.single.sessionId, 'session-1');
+    expect(opened.single.externalSessionId, 'claude');
+  });
+
+  testWidgets('terminal action grouping collapses separate agent runs', (
+    tester,
+  ) async {
+    final appState = AppState(client: BackendClient(), deviceId: 'me');
+    addTearDown(appState.dispose);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    appState.notifications.onShow(
+      _n(
+        id: 'run-a',
+        title: 'Claude run A finished',
+        source: 'claude-code',
+        groupKey: 'claude-code:agent-session-a',
+        ts: now - 1000,
+        action: const OpenTerminalAction(
+          backendId: 'backend-a',
+          externalSessionId: 'aoy',
+        ),
+      ),
+    );
+    appState.notifications.onShow(
+      _n(
+        id: 'run-b',
+        title: 'Claude run B finished',
+        source: 'claude-code',
+        groupKey: 'claude-code:agent-session-b',
+        ts: now,
+        action: const OpenTerminalAction(
+          backendId: 'backend-a',
+          externalSessionId: 'aoy',
+        ),
+      ),
+    );
+
+    final opened = <OpenTerminalAction>[];
+    await _pumpCenter(
+      tester,
+      appState,
+      onOpenTerminal: (action) async {
+        opened.add(action);
+      },
+    );
+
+    expect(find.text('Claude run B finished'), findsAtLeastNWidgets(1));
+    expect(find.text('Claude run A finished'), findsNothing);
+    expect(find.text('x2'), findsOneWidget);
+    expect(
+      find.widgetWithText(OutlinedButton, 'Open terminal'),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Open terminal'));
+    await tester.pumpAndSettle();
+
+    expect(opened, hasLength(1));
+    expect(opened.single.backendId, 'backend-a');
+    expect(opened.single.externalSessionId, 'aoy');
+  });
+
+  testWidgets(
+    'collapsed groups mark only the newest visible notification read',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 620);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final client = _RecordingBackendClient();
+      final appState = AppState(client: client, deviceId: 'me');
+      addTearDown(appState.dispose);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      appState.notifications.onShow(
+        _n(
+          id: 'run-a',
+          title: 'Claude run A finished',
+          source: 'claude-code',
+          groupKey: 'claude-code:agent-session-a',
+          ts: now - 1000,
+          action: const OpenTerminalAction(
+            backendId: 'backend-a',
+            externalSessionId: 'aoy',
+          ),
+        ),
+      );
+      appState.notifications.onShow(
+        _n(
+          id: 'run-b',
+          title: 'Claude run B finished',
+          source: 'claude-code',
+          groupKey: 'claude-code:agent-session-b',
+          ts: now,
+          action: const OpenTerminalAction(
+            backendId: 'backend-a',
+            externalSessionId: 'aoy',
+          ),
+        ),
+      );
+
+      await _pumpCenter(tester, appState);
+      await tester.pump(const Duration(milliseconds: 650));
+
+      final markReadCalls = client.calls
+          .where((c) => c.method == 'notification.markRead')
+          .toList();
+      expect(markReadCalls, isNotEmpty);
+      final markedIds = <String>{
+        for (final c in markReadCalls)
+          ...((c.params?['ids'] as List?) ?? const []).whereType<String>(),
+      };
+
+      expect(markedIds, contains('run-b'));
+      expect(markedIds, isNot(contains('run-a')));
+      expect(appState.notifications.isRead('run-b'), isTrue);
+      expect(appState.notifications.isRead('run-a'), isFalse);
+    },
+  );
+
+  testWidgets('expanded groups mark visible historical notifications read', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final client = _RecordingBackendClient();
+    final appState = AppState(client: client, deviceId: 'me');
+    addTearDown(appState.dispose);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    appState.notifications.onShow(
+      _n(
+        id: 'run-a',
+        title: 'Claude run A finished',
+        source: 'claude-code',
+        groupKey: 'claude-code:agent-session-a',
+        ts: now - 1000,
+        action: const OpenTerminalAction(
+          backendId: 'backend-a',
+          externalSessionId: 'aoy',
+        ),
+      ),
+    );
+    appState.notifications.onShow(
+      _n(
+        id: 'run-b',
+        title: 'Claude run B finished',
+        source: 'claude-code',
+        groupKey: 'claude-code:agent-session-b',
+        ts: now,
+        action: const OpenTerminalAction(
+          backendId: 'backend-a',
+          externalSessionId: 'aoy',
+        ),
+      ),
+    );
+
+    await _pumpCenter(tester, appState);
+    await tester.pump(const Duration(milliseconds: 650));
+
+    expect(appState.notifications.isRead('run-b'), isTrue);
+    expect(appState.notifications.isRead('run-a'), isFalse);
+    client.calls.clear();
+
+    await tester.tap(find.text('x2'));
+    await tester.pump();
+    expect(find.text('Claude run A finished'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 650));
+
+    final markReadCalls = client.calls
+        .where((c) => c.method == 'notification.markRead')
+        .toList();
+    expect(markReadCalls, isNotEmpty);
+    final markedIds = <String>{
+      for (final c in markReadCalls)
+        ...((c.params?['ids'] as List?) ?? const []).whereType<String>(),
+    };
+
+    expect(markedIds, contains('run-a'));
+    expect(appState.notifications.isRead('run-a'), isTrue);
+  });
+
+  testWidgets('expanded large groups leave offscreen history unread', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 420);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final client = _RecordingBackendClient();
+    final appState = AppState(client: client, deviceId: 'me');
+    addTearDown(appState.dispose);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    for (var i = 0; i < 14; i++) {
+      appState.notifications.onShow(
+        _n(
+          id: 'run-$i',
+          title: 'Claude run $i finished',
+          source: 'claude-code',
+          groupKey: 'claude-code:agent-session-a',
+          ts: now + i,
+        ),
+      );
+    }
+
+    await _pumpCenter(tester, appState);
+    await tester.pump(const Duration(milliseconds: 650));
+
+    expect(appState.notifications.isRead('run-13'), isTrue);
+    expect(appState.notifications.isRead('run-12'), isFalse);
+    expect(appState.notifications.isRead('run-0'), isFalse);
+    client.calls.clear();
+
+    await tester.tap(find.text('x14'));
+    await tester.pump();
+    expect(find.text('Claude run 12 finished'), findsOneWidget);
+    expect(find.text('Claude run 0 finished'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 650));
+
+    final markReadCalls = client.calls
+        .where((c) => c.method == 'notification.markRead')
+        .toList();
+    expect(markReadCalls, isNotEmpty);
+    final markedIds = <String>{
+      for (final c in markReadCalls)
+        ...((c.params?['ids'] as List?) ?? const []).whereType<String>(),
+    };
+
+    expect(markedIds, contains('run-12'));
+    expect(markedIds, isNot(contains('run-0')));
+    expect(appState.notifications.isRead('run-12'), isTrue);
+    expect(appState.notifications.isRead('run-0'), isFalse);
+  });
+
+  testWidgets('agent session strip groups terminal actions and opens latest', (
+    tester,
+  ) async {
+    final appState = AppState(client: BackendClient(), deviceId: 'me');
+    addTearDown(appState.dispose);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    appState.notifications.onShow(
+      _n(
+        id: 'agent-older',
+        title: 'Previous agent run finished',
+        source: 'claude',
+        ts: now - 1000,
+        action: const OpenTerminalAction(
+          sessionId: 'session-1',
+          backendId: 'backend-a',
+          externalSessionId: 'claude-main',
+        ),
+      ),
+    );
+    appState.notifications.onShow(
+      _n(
+        id: 'agent-newer',
+        title: 'Latest agent run finished',
+        source: 'claude',
+        ts: now,
+        action: const OpenTerminalAction(
+          sessionId: 'session-1',
+          backendId: 'backend-a',
+          externalSessionId: 'claude-main',
+        ),
+      ),
+    );
+
+    final opened = <OpenTerminalAction>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(
+          colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
+          useMaterial3: true,
+        ),
+        home: Builder(
+          builder: (context) => TextButton(
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => NotificationCenterScreen(
+                    appState: appState,
+                    onOpenTerminal: (action) async {
+                      opened.add(action);
+                    },
+                  ),
+                ),
+              );
+            },
+            child: const Text('Open center'),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open center'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Agent sessions'), findsOneWidget);
+    expect(find.text('claude-main'), findsOneWidget);
+    expect(find.text('2'), findsOneWidget);
+
+    await tester.tap(
+      find.byKey(
+        const ValueKey<String>('agent-session:backend-a|session-1|claude-main'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(opened, hasLength(1));
+    expect(opened.single.sessionId, 'session-1');
+    expect(opened.single.backendId, 'backend-a');
+    expect(opened.single.externalSessionId, 'claude-main');
+  });
+
+  testWidgets('agent session strip handles external-only terminal actions', (
+    tester,
+  ) async {
+    final appState = AppState(client: BackendClient(), deviceId: 'me');
+    addTearDown(appState.dispose);
+    appState.notifications.onShow(
+      _n(
+        id: 'agent-external-only',
+        title: 'External agent run finished',
+        source: 'codex',
+        action: const OpenTerminalAction(
+          backendId: 'backend-a',
+          externalSessionId: 'zellij-external-only',
+        ),
+      ),
+    );
+
+    final opened = <OpenTerminalAction>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(
+          colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
+          useMaterial3: true,
+        ),
+        home: Builder(
+          builder: (context) => TextButton(
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => NotificationCenterScreen(
+                    appState: appState,
+                    onOpenTerminal: (action) async {
+                      opened.add(action);
+                    },
+                  ),
+                ),
+              );
+            },
+            child: const Text('Open center'),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open center'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Agent sessions'), findsOneWidget);
+    expect(find.text('zellij-external-only'), findsOneWidget);
+
+    await tester.tap(
+      find.byKey(
+        const ValueKey<String>('agent-session:backend-a||zellij-external-only'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(opened, hasLength(1));
+    expect(opened.single.sessionId, isNull);
+    expect(opened.single.backendId, 'backend-a');
+    expect(opened.single.externalSessionId, 'zellij-external-only');
+  });
+
   testWidgets('opening the center only marks rendered visible cards as read', (
     tester,
   ) async {
@@ -203,20 +799,23 @@ void main() {
 
     final now = DateTime.now().millisecondsSinceEpoch;
     for (var i = 0; i < 18; i++) {
-      appState.notifications.onShow(_n(
-        id: 'n$i',
-        title: 'Notification $i',
-        source: 'ci',
-        ts: now - i,
-        body: 'body $i',
-      ));
+      appState.notifications.onShow(
+        _n(
+          id: 'n$i',
+          title: 'Notification $i',
+          source: 'ci',
+          ts: now - i,
+          body: 'body $i',
+        ),
+      );
     }
 
     await _pumpCenter(tester, appState);
     await tester.pump(const Duration(milliseconds: 650));
 
-    final markReadCalls =
-        client.calls.where((c) => c.method == 'notification.markRead').toList();
+    final markReadCalls = client.calls
+        .where((c) => c.method == 'notification.markRead')
+        .toList();
     expect(markReadCalls, isNotEmpty);
     final markedIds = <String>{
       for (final c in markReadCalls)

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -139,6 +141,38 @@ void main() {
       find.text('this is an Iroh ticket; paste the bearer token'),
       findsOneWidget,
     );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('save failure keeps editor usable and shows an error', (
+    tester,
+  ) async {
+    final save = Completer<void>();
+    await _pumpEditor(
+      tester,
+      _target(host: '', token: ''),
+      onSave: (_) => save.future,
+    );
+
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Host'),
+      'new.local',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Bearer token'),
+      'new-token',
+    );
+    await tester.tap(find.text('Save'));
+    await tester.pump();
+    expect(find.text('Saving...'), findsOneWidget);
+
+    save.completeError(Exception('disk full'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('New WebSocket backend'), findsOneWidget);
+    expect(find.text('Save'), findsOneWidget);
+    expect(find.text('Saving...'), findsNothing);
+    expect(find.text('Save failed: Exception: disk full'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

@@ -43,8 +43,7 @@ void main() {
 
     test('handles alt-buffer and app-cursor-keys toggles', () {
       sniffDecModes('\x1b[?1049h\x1b[?1l');
-      final modes =
-          diag.live.where((e) => e.category == DiagCat.mode).toList();
+      final modes = diag.live.where((e) => e.category == DiagCat.mode).toList();
       expect(modes[0].text, contains('alt-buffer'));
       expect(modes[1].text, contains('app-cursor-keys'));
     });
@@ -90,6 +89,12 @@ void main() {
     test('arbitrary categories are accepted', () {
       diag.log('custom-subsystem', 'hello');
       expect(diag.live.last.category, 'custom-subsystem');
+    });
+
+    test('has a distinct Iroh transport category', () {
+      diag.log(DiagCat.iroh, 'closed: recv EOF');
+      expect(diag.live.last.category, DiagCat.iroh);
+      expect(diag.live.last.text, contains('recv EOF'));
     });
   });
 }

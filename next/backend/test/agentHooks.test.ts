@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   mkdirSync,
   mkdtempSync,
+  existsSync,
   readFileSync,
   rmSync,
   statSync,
@@ -11,11 +12,13 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { getAgentHookStatus, installAgentHooks } from "../src/agentHooks.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BACKEND_DIR = join(HERE, "..");
 const INSTALLER = join(BACKEND_DIR, "bin", "install-agent-hooks.mjs");
 const HOOK_NOTIFY = join(BACKEND_DIR, "bin", "openvsmobile-agent-hook-notify.mjs");
+const MOBILE_NOTIFY = join(BACKEND_DIR, "bin", "mobile-notify.mjs");
 
 function withTmpHome<T>(fn: (home: string) => T): T {
   const home = mkdtempSync(join(tmpdir(), "ovsm-agent-hooks-"));
@@ -26,8 +29,8 @@ function withTmpHome<T>(fn: (home: string) => T): T {
   }
 }
 
-function runInstaller(home: string) {
-  return spawnSync(process.execPath, [INSTALLER], {
+function runInstaller(home: string, args: string[] = []) {
+  return spawnSync(process.execPath, [INSTALLER, ...args], {
     env: {
       ...process.env,
       OPENVSMOBILE_AGENT_HOOK_HOME: home,
@@ -37,6 +40,128 @@ function runInstaller(home: string) {
 }
 
 describe("install-agent-hooks", () => {
+  it("emits structured JSON for the Settings surface", () => {
+    withTmpHome((home) => {
+      const settingsPath = join(home, ".claude", "settings.json");
+      const codexConfigPath = join(home, ".codex", "config.toml");
+      mkdirSync(dirname(settingsPath), { recursive: true });
+      mkdirSync(dirname(codexConfigPath), { recursive: true });
+      writeFileSync(settingsPath, JSON.stringify({ hooks: {} }, null, 2), {
+        mode: 0o600,
+      });
+      writeFileSync(codexConfigPath, 'model = "gpt-5.5"\n', { mode: 0o600 });
+
+      const res = spawnSync(process.execPath, [INSTALLER, "--json"], {
+        env: {
+          ...process.env,
+          OPENVSMOBILE_AGENT_HOOK_HOME: home,
+        },
+        encoding: "utf8",
+      });
+      expect(res.status).toBe(0);
+      const payload = JSON.parse(res.stdout) as {
+        ok: boolean;
+        results: {
+          claude: { agent: string; changed: boolean; state: string };
+          codex: { agent: string; changed: boolean; state: string };
+        };
+      };
+      expect(payload.ok).toBe(true);
+      expect(payload.results.claude.agent).toBe("claude-code");
+      expect(payload.results.claude.changed).toBe(true);
+      expect(payload.results.claude.state).toBe("installed");
+      expect(payload.results.codex.agent).toBe("codex");
+      expect(payload.results.codex.changed).toBe(true);
+      expect(payload.results.codex.state).toBe("installed");
+    });
+  });
+
+  it("checks hook status without writing agent config", () => {
+    withTmpHome((home) => {
+      const settingsPath = join(home, ".claude", "settings.json");
+      const codexConfigPath = join(home, ".codex", "config.toml");
+      mkdirSync(dirname(settingsPath), { recursive: true });
+      mkdirSync(dirname(codexConfigPath), { recursive: true });
+      writeFileSync(settingsPath, JSON.stringify({ hooks: {} }, null, 2), {
+        mode: 0o600,
+      });
+      writeFileSync(codexConfigPath, 'model = "gpt-5.5"\n', { mode: 0o600 });
+
+      const res = runInstaller(home, ["--json", "--check"]);
+      expect(res.status).toBe(0);
+      const payload = JSON.parse(res.stdout) as {
+        ok: boolean;
+        results: {
+          claude: { state: string; changed: boolean };
+          codex: { state: string; changed: boolean };
+        };
+      };
+      expect(payload.ok).toBe(true);
+      expect(payload.results.claude.state).toBe("not-installed");
+      expect(payload.results.codex.state).toBe("not-installed");
+      expect(payload.results.claude.changed).toBe(false);
+      expect(payload.results.codex.changed).toBe(false);
+      expect(readFileSync(settingsPath, "utf8")).toBe(
+        JSON.stringify({ hooks: {} }, null, 2),
+      );
+      expect(readFileSync(codexConfigPath, "utf8")).toBe('model = "gpt-5.5"\n');
+    });
+  });
+
+  it("agent hook runner parses installer statuses", async () => {
+    const home = mkdtempSync(join(tmpdir(), "ovsm-agent-hooks-runner-"));
+    try {
+      const settingsPath = join(home, ".claude", "settings.json");
+      mkdirSync(dirname(settingsPath), { recursive: true });
+      writeFileSync(settingsPath, JSON.stringify({ hooks: {} }, null, 2), {
+        mode: 0o600,
+      });
+      const result = await installAgentHooks({
+        backendRoot: BACKEND_DIR,
+        env: {
+          ...process.env,
+          OPENVSMOBILE_AGENT_HOOK_HOME: home,
+        },
+      });
+      expect(result.ok).toBe(true);
+      expect(result.statuses.map((s) => s.agent)).toContain("claude-code");
+      expect(result.statuses.find((s) => s.agent === "claude-code")?.changed)
+        .toBe(true);
+      expect(result.statuses.find((s) => s.agent === "codex")?.available)
+        .toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("agent hook status runner uses the read-only check path", async () => {
+    const home = mkdtempSync(join(tmpdir(), "ovsm-agent-hooks-status-"));
+    try {
+      const settingsPath = join(home, ".claude", "settings.json");
+      mkdirSync(dirname(settingsPath), { recursive: true });
+      writeFileSync(settingsPath, JSON.stringify({ hooks: {} }, null, 2), {
+        mode: 0o600,
+      });
+      const result = await getAgentHookStatus({
+        backendRoot: BACKEND_DIR,
+        env: {
+          ...process.env,
+          OPENVSMOBILE_AGENT_HOOK_HOME: home,
+        },
+      });
+      expect(result.ok).toBe(true);
+      expect(result.statuses.find((s) => s.agent === "claude-code")?.state)
+        .toBe("not-installed");
+      expect(result.statuses.find((s) => s.agent === "claude-code")?.changed)
+        .toBe(false);
+      expect(readFileSync(settingsPath, "utf8")).toBe(
+        JSON.stringify({ hooks: {} }, null, 2),
+      );
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("appends a Claude Code Stop hook without removing existing hooks", () => {
     withTmpHome((home) => {
       const settingsPath = join(home, ".claude", "settings.json");
@@ -72,6 +197,48 @@ describe("install-agent-hooks", () => {
       expect(second.status).toBe(0);
       const after = JSON.parse(readFileSync(settingsPath, "utf8"));
       expect(after.hooks.Stop).toHaveLength(2);
+    });
+  });
+
+  it("writes an executable Node binary for the current backend layout", () => {
+    withTmpHome((home) => {
+      const settingsPath = join(home, ".claude", "settings.json");
+      const codexDir = join(home, ".codex");
+      const codexConfigPath = join(codexDir, "config.toml");
+      mkdirSync(dirname(settingsPath), { recursive: true });
+      mkdirSync(codexDir, { recursive: true });
+      writeFileSync(settingsPath, JSON.stringify({ hooks: {} }, null, 2), {
+        mode: 0o600,
+      });
+      writeFileSync(codexConfigPath, 'model = "gpt-5.5"\n', { mode: 0o600 });
+
+      const bundledNode = join(BACKEND_DIR, "node", "bin", "node");
+      const expectedNode = existsSync(bundledNode)
+        ? bundledNode
+        : process.execPath;
+
+      const first = runInstaller(home);
+      expect(first.status).toBe(0);
+
+      const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+      const claudeCommand = settings.hooks.Stop[0].hooks[0].command as string;
+      expect(claudeCommand).toContain(expectedNode);
+      expect(claudeCommand).toContain("openvsmobile-agent-hook-notify.mjs");
+
+      const codexHooksPath = join(
+        codexDir,
+        ".tmp",
+        "marketplaces",
+        "openvsmobile-local",
+        "plugins",
+        "openvsmobile-notify",
+        "hooks",
+        "hooks.json",
+      );
+      const codexHooks = JSON.parse(readFileSync(codexHooksPath, "utf8"));
+      const codexCommand = codexHooks.hooks.Stop[0].hooks[0].command as string;
+      expect(codexCommand).toContain(expectedNode);
+      expect(codexCommand).toContain("openvsmobile-agent-hook-notify.mjs");
     });
   });
 
@@ -316,7 +483,7 @@ describe("install-agent-hooks", () => {
         stdin: string;
       };
       expect(record.argv).toEqual([
-        "--from-claude-hook",
+        "--from-agent-hook",
         "--source",
         "codex",
         "--quiet",
@@ -325,5 +492,26 @@ describe("install-agent-hooks", () => {
       ]);
       expect(JSON.parse(record.stdin).cwd).toBe("/tmp/repo");
     });
+  });
+
+  it("mobile-notify accepts the generic agent hook flag", () => {
+    const res = spawnSync(
+      process.execPath,
+      [
+        MOBILE_NOTIFY,
+        "--server",
+        "127.0.0.1:1",
+        "--token",
+        "test-token",
+        "--from-agent-hook",
+      ],
+      {
+        input: "{",
+        encoding: "utf8",
+      },
+    );
+    expect(res.status).toBe(2);
+    expect(res.stderr).toContain("--from-agent-hook: invalid JSON on stdin");
+    expect(res.stderr).not.toContain("Unknown option");
   });
 });

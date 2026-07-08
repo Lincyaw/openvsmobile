@@ -99,10 +99,8 @@ String _stripPreRelease(String version) {
 /// Returns true when [remote] is strictly newer than [local].
 /// Pre-release suffixes are stripped before comparison.
 bool isNewerVersion(String remote, String local) {
-  final rParts =
-      _stripPreRelease(remote).split('.').map(int.tryParse).toList();
-  final lParts =
-      _stripPreRelease(local).split('.').map(int.tryParse).toList();
+  final rParts = _stripPreRelease(remote).split('.').map(int.tryParse).toList();
+  final lParts = _stripPreRelease(local).split('.').map(int.tryParse).toList();
   for (var i = 0; i < 3; i++) {
     final r = (i < rParts.length ? rParts[i] : null) ?? 0;
     final l = (i < lParts.length ? lParts[i] : null) ?? 0;
@@ -147,18 +145,18 @@ class AppUpdateService {
       final response = await request.close();
       if (response.statusCode != 200) {
         final body = await response.transform(utf8.decoder).join();
-        throw Exception(
-          'GitHub API returned ${response.statusCode}: $body',
-        );
+        throw Exception('GitHub API returned ${response.statusCode}: $body');
       }
       final body = await response.transform(utf8.decoder).join();
       final json = jsonDecode(body) as Map<String, dynamic>;
       final assets = (json['assets'] as List<dynamic>)
-          .map((a) => ReleaseAsset(
-                name: a['name'] as String,
-                downloadUrl: a['browser_download_url'] as String,
-                size: (a['size'] as num).toInt(),
-              ))
+          .map(
+            (a) => ReleaseAsset(
+              name: a['name'] as String,
+              downloadUrl: a['browser_download_url'] as String,
+              size: (a['size'] as num).toInt(),
+            ),
+          )
           .toList();
       return ReleaseInfo(
         tagName: json['tag_name'] as String,

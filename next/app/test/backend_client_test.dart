@@ -57,6 +57,7 @@ void main() {
     await client.start();
 
     expect(client.state.value, BackendConnectionState.connected);
+    expect(client.serverVersion, 'test');
     await _waitUntil(
       () => handshakes >= 2,
       timeout: const Duration(seconds: 1),

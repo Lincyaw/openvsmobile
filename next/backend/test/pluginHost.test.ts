@@ -135,6 +135,24 @@ describe("PluginHost", () => {
     }
   });
 
+  it("reads a bounded stderr log tail for a registered plugin", async () => {
+    const harness = await buildHarness(["hello"]);
+    try {
+      const logPath = join(harness.logDir, "hello.stderr.log");
+      await writeFile(logPath, "first line\nsecond line\nthird line\n");
+      const tail = await harness.host.readLogTail("hello", 18);
+      expect(tail).toEqual({
+        id: "hello",
+        path: logPath,
+        text: "d line\nthird line\n",
+        bytes: 34,
+        truncated: true,
+      });
+    } finally {
+      harness.host.shutdown();
+    }
+  });
+
   it("returns -32011 when a plugin calls an RPC outside its declared capabilities", async () => {
     const harness = await buildHarness(["sneaky"]);
     try {

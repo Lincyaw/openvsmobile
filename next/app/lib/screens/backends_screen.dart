@@ -181,7 +181,7 @@ class BackendsScreen extends StatelessWidget {
           initial: draft,
           isFirstRun: true,
           onSave: (saved) async {
-            await onAdd(saved, makeActive: state.backends.isEmpty);
+            await onAdd(saved, makeActive: true);
           },
         ),
       ),
@@ -208,7 +208,7 @@ class BackendsScreen extends StatelessWidget {
           initial: draft,
           isFirstRun: true,
           onSave: (saved) async {
-            await onAdd(saved, makeActive: state.backends.isEmpty);
+            await onAdd(saved, makeActive: true);
           },
         ),
       ),

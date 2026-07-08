@@ -12,6 +12,19 @@ import 'package:mobilecode/backend_client.dart';
 import 'package:mobilecode/notification.dart';
 import 'package:mobilecode/state/notifications_model.dart';
 
+class _RecordingBackendClient extends BackendClient {
+  final Map<String, dynamic> responses;
+  final List<({String method, Map<String, dynamic>? params})> calls = [];
+
+  _RecordingBackendClient(this.responses);
+
+  @override
+  Future<dynamic> call(String method, [Map<String, dynamic>? params]) async {
+    calls.add((method: method, params: params));
+    return responses[method] ?? <String, dynamic>{'ok': true};
+  }
+}
+
 AppNotification _make({
   required String id,
   String source = 'demo',
@@ -22,18 +35,19 @@ AppNotification _make({
   String? groupKey,
   String? supersededBy,
   bool important = false,
-}) =>
-    AppNotification(
-      id: id,
-      source: source,
-      level: level,
-      title: title,
-      body: body,
-      timestamp: timestamp ?? DateTime.now().millisecondsSinceEpoch,
-      groupKey: groupKey,
-      supersededBy: supersededBy,
-      important: important,
-    );
+  List<String> readBy = const [],
+}) => AppNotification(
+  id: id,
+  source: source,
+  level: level,
+  title: title,
+  body: body,
+  timestamp: timestamp ?? DateTime.now().millisecondsSinceEpoch,
+  groupKey: groupKey,
+  supersededBy: supersededBy,
+  important: important,
+  readBy: readBy,
+);
 
 NotificationsModel _model({String deviceId = 'this-device'}) {
   final errors = <String>[];
@@ -88,6 +102,34 @@ void main() {
     });
   });
 
+  group('attentionCount', () {
+    test('counts only unread important, warning, and error rows', () {
+      final m = _model(deviceId: 'me');
+      m.onShow(_make(id: 'info', level: NotificationLevel.info));
+      m.onShow(_make(id: 'success', level: NotificationLevel.success));
+      m.onShow(_make(id: 'important', important: true));
+      m.onShow(_make(id: 'warning', level: NotificationLevel.warning));
+      m.onShow(_make(id: 'error', level: NotificationLevel.error));
+      m.onShow(
+        _make(
+          id: 'read-warning',
+          level: NotificationLevel.warning,
+          readBy: const ['me'],
+        ),
+      );
+      m.onShow(
+        _make(
+          id: 'old-error',
+          level: NotificationLevel.error,
+          supersededBy: 'new-error',
+        ),
+      );
+
+      expect(m.unreadCount, 5);
+      expect(m.attentionCount, 3);
+    });
+  });
+
   group('markRead optimistic', () {
     test('flips local read state immediately', () async {
       final m = _model(deviceId: 'me');
@@ -130,6 +172,72 @@ void main() {
       m.onShow(_make(id: '2', source: 'alpha'));
       m.onShow(_make(id: '3', source: 'alpha'));
       expect(m.knownSources, ['alpha', 'zeta']);
+    });
+  });
+
+  group('subscribeAndBackfillIfEmpty', () {
+    test(
+      'subscribes and pulls an initial snapshot for an empty model',
+      () async {
+        final client = _RecordingBackendClient({
+          'notification.list': {
+            'items': [
+              {
+                'id': 'from-server',
+                'source': 'claude-code',
+                'level': 'info',
+                'title': 'Claude finished',
+                'timestamp': 100,
+              },
+            ],
+          },
+        });
+        final m = NotificationsModel(
+          client: client,
+          deviceId: () => 'phone',
+          reportError: (_) {},
+        );
+
+        await m.subscribeAndBackfillIfEmpty();
+
+        expect(client.calls.map((c) => c.method).toList(), [
+          'notification.subscribe',
+          'notification.list',
+        ]);
+        expect(client.calls.first.params, isEmpty);
+        expect(m.subscribed, isTrue);
+        expect(m.items.map((n) => n.id).toList(), ['from-server']);
+      },
+    );
+
+    test('keeps cached reconnect state and skips a full snapshot', () async {
+      final client = _RecordingBackendClient({
+        'notification.list': {
+          'items': [
+            {
+              'id': 'from-server',
+              'source': 'claude-code',
+              'level': 'info',
+              'title': 'Claude finished',
+              'timestamp': 200,
+            },
+          ],
+        },
+      });
+      final m = NotificationsModel(
+        client: client,
+        deviceId: () => 'phone',
+        reportError: (_) {},
+      );
+      m.onShow(_make(id: 'cached', timestamp: 1000));
+
+      await m.subscribeAndBackfillIfEmpty();
+
+      expect(client.calls.map((c) => c.method).toList(), [
+        'notification.subscribe',
+      ]);
+      expect(client.calls.single.params, {'sinceTs': 1000});
+      expect(m.items.map((n) => n.id).toList(), ['cached']);
     });
   });
 }

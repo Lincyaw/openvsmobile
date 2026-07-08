@@ -99,7 +99,11 @@ openvsmobile command to the Claude Code `Stop` hook list. If
 `~/.codex/config.toml` exists, it installs and enables a local Codex hook
 plugin. Both hooks call the bundled `mobile-notify` path and post a phone
 notification when the agent finishes; existing hooks are left in place and the
-operation is idempotent.
+operation is idempotent. New hook installs use `mobile-notify
+--from-agent-hook`; the older `--from-claude-hook` spelling remains accepted as
+a compatibility alias. When the hook can only see a zellij session name, the
+notification still carries an `open-terminal` action with that external session
+id so the app can adopt or reattach it lazily.
 
 ### Smoke-testing without the Flutter app
 
@@ -221,11 +225,14 @@ Frontend → Backend:
 | `notification.markRead`      | `{ ids }` → `{ ok: true }`. Writes the connection's `deviceId` (from handshake) into each row's `read_by` array; broadcasts `notification.readChanged` to subscribed peers. Same id from the same device twice is a no-op (the array stays length-1). |
 | `notification.delete`        | `{ ids }` → `{ ok: true }`. Broadcasts `notification.deleted`. Unknown ids are silently swallowed. |
 | `notification.markImportant` | `{ id, important }` → `{ ok: true }`. Promote clears `ttl_until`. Demote always re-anchors at `now + 7d` (the original window is not preserved — promote wipes it). Unknown ids are silently swallowed. |
+| `notification.agentHookStatus` | `{}` → `{ ok, exitCode, statuses, stdout, stderr }`. Read-only Claude Code / Codex Stop-hook status check; never writes agent config. |
+| `notification.installAgentHooks` | `{}` → `{ ok, exitCode, statuses, stdout, stderr }`. Idempotently installs or repairs Claude Code / Codex Stop hooks. |
 | `plugin.subscribe`           | `{}` → `{ ok: true }`. Per-connection toggle for the `plugin.stateChanged` push surface; off until called so older clients don't receive the frames. |
 | `plugin.unsubscribe`         | `{}` → `{ ok: true }`. |
 | `plugin.list`                | `{}` → `{ plugins: PluginInfo[] }` where `PluginInfo = { id, name, version, state: "running" \| "stopped" \| "crashed" \| "disabled", capabilities, contributes, crashReason? }`. Backend is the source of truth — clients render from this, never from a cached copy. |
 | `plugin.enable`              | `{ id }` → `{ ok: true }`. Removes the plugin from the persisted disabled set; if the in-memory state was `disabled`, transitions to `stopped` and immediately activates when the manifest declares `onStartup`. Fires `plugin.stateChanged`. |
 | `plugin.disable`             | `{ id }` → `{ ok: true }`. Persists the disabled flag, then terminates the child process (SIGTERM, 10 s grace, SIGKILL). Fires `plugin.stateChanged` to `state: "disabled"`. |
+| `plugin.log`                 | `{ id, maxBytes? }` → `{ id, path, text, bytes, truncated }`. Returns the tail of the plugin's stderr log, capped server-side at 256 KiB. Missing log files return an empty `text` field; unknown plugin ids reject with `-32602`. |
 | `plugin.invokeCommand`       | `{ id, commandId, args? }` → `{ result?: any }`. Routed through the plugin's JSON-RPC channel as a host→plugin `command.invoke` request; the plugin's response (or error) is returned. Triggers `onCommand:<commandId>` activation if the plugin is in `stopped` state and lists that activation event. Disabled / crashed plugins reject with `-32602`. When invoked from a code-selection surface, the Flutter client passes `args.selection` with `source`, `workspaceId`, `path`, `relativePath`, selected `text`, and half-open 1-based line/column ranges. |
 | `ui.subscribe`               | `{}` → `{ ok: true }`. Per-connection toggle for the UI-descriptor fan-out (design §4.3 / issue #59). The response is followed (on the next microtask) by one `ui.tree` push per currently-active panel so a fresh subscriber lands in sync. |
 | `ui.unsubscribe`             | `{}` → `{}`. Drops this connection from the `ui.tree` fan-out. Connection-close auto-unsubscribes too. |

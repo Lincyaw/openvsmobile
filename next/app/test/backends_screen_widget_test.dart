@@ -31,6 +31,7 @@ Future<void> _pump(
   Future<bool> Function()? onExport,
   Future<int?> Function()? onImport,
   Future<void> Function(String)? onSwitch,
+  Future<void> Function(BackendTarget, {required bool makeActive})? onAdd,
 }) async {
   appState ??= AppState(client: BackendClient());
   await tester.pumpWidget(
@@ -38,7 +39,7 @@ Future<void> _pump(
       home: BackendsScreen(
         state: state,
         appState: appState,
-        onAdd: (_, {required bool makeActive}) async {},
+        onAdd: onAdd ?? (_, {required bool makeActive}) async {},
         onUpdate: (_) async {},
         onDelete: (_) async {},
         onSwitch: onSwitch ?? (_) async {},
@@ -120,6 +121,91 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(switched, 'b2');
+  });
+
+  testWidgets('manual WebSocket add becomes the active backend', (
+    tester,
+  ) async {
+    final appState = AppState(client: BackendClient());
+    addTearDown(appState.dispose);
+    BackendTarget? added;
+    bool? capturedMakeActive;
+    final state = AppPersistedState(
+      backends: [_target()],
+      activeBackendId: 'b1',
+    );
+    await _pump(
+      tester,
+      state,
+      appState: appState,
+      onAdd: (target, {required bool makeActive}) async {
+        added = target;
+        capturedMakeActive = makeActive;
+      },
+    );
+
+    await tester.tap(find.byTooltip('Add backend'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('WebSocket backend'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Host'),
+      'new.local',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Bearer token'),
+      'new-token',
+    );
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    expect(added, isNotNull);
+    expect(added!.host, 'new.local');
+    expect(added!.token, 'new-token');
+    expect(capturedMakeActive, isTrue);
+  });
+
+  testWidgets('manual Iroh add becomes the active backend', (tester) async {
+    final appState = AppState(client: BackendClient());
+    addTearDown(appState.dispose);
+    BackendTarget? added;
+    bool? capturedMakeActive;
+    final state = AppPersistedState(
+      backends: [_target()],
+      activeBackendId: 'b1',
+    );
+    await _pump(
+      tester,
+      state,
+      appState: appState,
+      onAdd: (target, {required bool makeActive}) async {
+        added = target;
+        capturedMakeActive = makeActive;
+      },
+    );
+
+    await tester.tap(find.byTooltip('Add backend'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Iroh ticket'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Iroh ticket'),
+      'endpoint-ticket',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Bearer token (not ticket)'),
+      'iroh-token',
+    );
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    expect(added, isNotNull);
+    expect(added!.transport, BackendTransport.iroh);
+    expect(added!.irohTicket, 'endpoint-ticket');
+    expect(added!.token, 'iroh-token');
+    expect(capturedMakeActive, isTrue);
   });
 
   testWidgets('exports backend backup from the overflow menu', (tester) async {

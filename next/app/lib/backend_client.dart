@@ -24,9 +24,10 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as ws_status;
+import 'package:web_socket_channel/web_socket_channel.dart';
 
+import 'services/diag_log.dart';
 import 'settings_store.dart';
 import 'version.dart';
 
@@ -172,6 +173,9 @@ class BackendClient {
   /// Server-provided default cwd from handshake. Empty until first connect.
   String defaultCwd = '';
 
+  /// Server-provided backend version from handshake. Empty until connected.
+  String serverVersion = '';
+
   // --- Configured settings (set by configure()) ---
   String? _host;
   int? _port;
@@ -260,6 +264,8 @@ class BackendClient {
     _stopHeartbeat();
     _drainQueue('user disconnected');
     await _closeSocket();
+    defaultCwd = '';
+    serverVersion = '';
     state.value = BackendConnectionState.disconnected;
     lastError.value = null;
   }
@@ -358,6 +364,7 @@ class BackendClient {
       _onMessage,
       onError: (Object e) {
         lastError.value = 'socket error: $e';
+        DiagLog.instance.log(DiagCat.error, 'socket error → $e');
         _onSocketGone();
       },
       onDone: () {
@@ -390,6 +397,8 @@ class BackendClient {
               as Map<String, dynamic>;
       final cwd = hsResult['defaultCwd'];
       defaultCwd = cwd is String ? cwd : '/';
+      final version = hsResult['serverVersion'];
+      serverVersion = version is String ? version : '';
     } on BackendRpcException catch (e) {
       // Auth failure is permanent — user has to fix settings.
       if (e.code == kRpcUnauthorized) {
@@ -455,6 +464,9 @@ class BackendClient {
       return;
     }
     if (!hadChannel) return;
+    if (lastError.value == null || lastError.value!.isEmpty) {
+      lastError.value = 'socket closed';
+    }
     if (!_online) {
       state.value = BackendConnectionState.waitingForNetwork;
       return;
@@ -803,13 +815,21 @@ class _IrohRpcSocket implements _RpcSocket {
         final text = raw['text'];
         if (text is String) _controller.add(text);
       case 'closed':
+        final reason = raw['reason'];
+        if (reason is String && reason.isNotEmpty) {
+          DiagLog.instance.log(DiagCat.iroh, 'closed → $reason');
+          _controller.addError(
+            PlatformException(code: 'IROH_CLOSED', message: reason),
+          );
+        } else {
+          DiagLog.instance.log(DiagCat.iroh, 'closed');
+        }
         unawaited(_finishClosed());
       case 'error':
+        final message = raw['message'] as String? ?? 'Iroh transport error';
+        DiagLog.instance.log(DiagCat.iroh, 'error → $message');
         _controller.addError(
-          PlatformException(
-            code: 'IROH_ERROR',
-            message: raw['message'] as String? ?? 'Iroh transport error',
-          ),
+          PlatformException(code: 'IROH_ERROR', message: message),
         );
         unawaited(_finishClosed());
     }

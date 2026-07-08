@@ -16,6 +16,7 @@ import 'package:flutter/material.dart';
 
 import '../app_state.dart';
 import '../models.dart';
+import '../services/connection_diagnostics.dart';
 import '../settings_store.dart';
 import '../state/terminal_hub.dart';
 import '../ui/app_tokens.dart';
@@ -95,12 +96,21 @@ class _TerminalTabState extends State<TerminalTab> {
 
   Future<void> _showSessionActions(TerminalSession s) async {
     final canDetach = s.externalSessionId != null;
+    final canOpenFiles =
+        s.workspaceRoot != null && widget.onOpenFilesForSession != null;
     final action = await showModalBottomSheet<String>(
       context: context,
       builder: (ctx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (canOpenFiles)
+              ListTile(
+                leading: const Icon(Icons.folder_open),
+                title: const Text('Open files'),
+                subtitle: Text(s.workspaceRoot!),
+                onTap: () => Navigator.of(ctx).pop('open-files'),
+              ),
             if (canDetach)
               ListTile(
                 leading: const Icon(Icons.logout),
@@ -137,7 +147,9 @@ class _TerminalTabState extends State<TerminalTab> {
       ),
     );
     if (!mounted) return;
-    if (action == 'detach') {
+    if (action == 'open-files') {
+      await widget.onOpenFilesForSession?.call(s);
+    } else if (action == 'detach') {
       await widget.appState.detachTerminal(s.id);
       if (!mounted) return;
       final name = s.externalSessionId;
@@ -161,12 +173,21 @@ class _TerminalTabState extends State<TerminalTab> {
   Future<void> _showHubSessionActions(BackendTerminalSession ref) async {
     final s = ref.session;
     final canDetach = s.externalSessionId != null;
+    final canOpenFiles =
+        s.workspaceRoot != null && widget.onOpenFilesForBackendSession != null;
     final action = await showModalBottomSheet<String>(
       context: context,
       builder: (ctx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (canOpenFiles)
+              ListTile(
+                leading: const Icon(Icons.folder_open),
+                title: const Text('Open files'),
+                subtitle: Text('${ref.backend.name} · ${s.workspaceRoot!}'),
+                onTap: () => Navigator.of(ctx).pop('open-files'),
+              ),
             if (canDetach)
               ListTile(
                 leading: const Icon(Icons.logout),
@@ -202,7 +223,9 @@ class _TerminalTabState extends State<TerminalTab> {
     );
     final hub = widget.terminalHub;
     if (!mounted || hub == null) return;
-    if (action == 'detach') {
+    if (action == 'open-files') {
+      await widget.onOpenFilesForBackendSession?.call(ref);
+    } else if (action == 'detach') {
       await hub.detachTerminal(ref.backendId, ref.sessionId);
       if (!mounted) return;
       final name = s.externalSessionId;
@@ -420,10 +443,18 @@ class _TerminalTabState extends State<TerminalTab> {
       listenable: widget.appState.terminalPreviewChanges,
       builder: (context, _) {
         final now = DateTime.now();
+        final agentItems = _localAgentActivityItems(sessions, now);
+        final hasAgentStrip = agentItems.isNotEmpty;
         return ListView.separated(
-          itemCount: sessions.length + 2,
+          itemCount: sessions.length + 2 + (hasAgentStrip ? 1 : 0),
           separatorBuilder: (_, _) => const Divider(height: 1),
           itemBuilder: (context, index) {
+            if (hasAgentStrip) {
+              if (index == 0) {
+                return _AgentActivityStrip(items: agentItems);
+              }
+              index--;
+            }
             if (index == sessions.length) {
               return _NewSessionTile(onTap: _createAndOpen);
             }
@@ -432,10 +463,14 @@ class _TerminalTabState extends State<TerminalTab> {
             }
             final s = sessions[index];
             final preview = widget.appState.terminalPreviewFor(s.id);
+            final agentContext = preview.recentText ?? preview.text;
+            final agentKind = _detectAgentSession(s, agentContext);
             return _SessionTile(
               label: _displaySessionLabel(s, index),
               cwdBasename: _basename(s.cwd),
               previewText: preview.text,
+              agentKind: agentKind,
+              needsInput: _detectAgentNeedsInput(agentKind, agentContext),
               timestamp: _formatRelativeTimestamp(
                 preview.lastDataAt ?? s.createdAt,
                 now,
@@ -460,22 +495,40 @@ class _TerminalTabState extends State<TerminalTab> {
         ),
       );
     }
+    final nameCounts = _backendNameCounts(groups);
     final hasSessions = groups.any((g) => g.sessions.isNotEmpty);
     return ListenableBuilder(
       listenable: hub.previewVersion,
       builder: (context, _) {
         final now = DateTime.now();
+        final agentItems = _hubAgentActivityItems(groups, hub, now);
+        final hasAgentStrip = agentItems.isNotEmpty;
         return ListView.separated(
-          itemCount: _hubItemCount(groups, _collapsedBackendIds),
+          itemCount:
+              _hubItemCount(groups, _collapsedBackendIds) +
+              (hasAgentStrip ? 1 : 0),
           separatorBuilder: (_, _) => const Divider(height: 1),
           itemBuilder: (context, rawIndex) {
+            if (hasAgentStrip) {
+              if (rawIndex == 0) {
+                return _AgentActivityStrip(items: agentItems);
+              }
+              rawIndex--;
+            }
             var index = rawIndex;
             for (final group in groups) {
               final collapsed = _collapsedBackendIds.contains(group.backend.id);
               if (index == 0) {
                 return _BackendGroupHeader(
                   group: group,
+                  displayName: _backendDisplayName(group.backend),
+                  identityLabel: _backendDuplicateIdentityLabel(
+                    group.backend,
+                    nameCounts,
+                  ),
+                  isActive: group.backend.id == widget.activeBackendId,
                   collapsed: collapsed,
+                  agentSummary: _backendAgentSummary(group, hub),
                   onToggle: () => _toggleBackendCollapsed(group.backend.id),
                   onNew: group.isConnected
                       ? () => _openCreateTerminalSheet(group)
@@ -500,6 +553,8 @@ class _TerminalTabState extends State<TerminalTab> {
               if (index < group.sessions.length) {
                 final session = group.sessions[index];
                 final preview = hub.previewFor(group.backend.id, session.id);
+                final agentContext = preview.recentText ?? preview.text;
+                final agentKind = _detectAgentSession(session, agentContext);
                 final ref = BackendTerminalSession(
                   backend: group.backend,
                   session: session,
@@ -508,6 +563,8 @@ class _TerminalTabState extends State<TerminalTab> {
                   label: _displaySessionLabel(session, index),
                   cwdBasename: _basename(session.cwd),
                   previewText: preview.text,
+                  agentKind: agentKind,
+                  needsInput: _detectAgentNeedsInput(agentKind, agentContext),
                   timestamp: _formatRelativeTimestamp(
                     preview.lastDataAt ?? session.createdAt,
                     now,
@@ -525,6 +582,86 @@ class _TerminalTabState extends State<TerminalTab> {
         );
       },
     );
+  }
+
+  List<_AgentActivityItem> _localAgentActivityItems(
+    List<TerminalSession> sessions,
+    DateTime now,
+  ) {
+    final items = <_AgentActivityItem>[];
+    for (var index = 0; index < sessions.length; index++) {
+      final session = sessions[index];
+      final preview = widget.appState.terminalPreviewFor(session.id);
+      final agentContext = preview.recentText ?? preview.text;
+      final kind = _detectAgentSession(session, agentContext);
+      if (kind == null) continue;
+      final lastActivityMs = preview.lastDataAt ?? session.createdAt;
+      final needsInput = _detectAgentNeedsInput(kind, agentContext);
+      items.add(
+        _AgentActivityItem(
+          key: session.id,
+          kind: kind,
+          needsInput: needsInput,
+          label: _displaySessionLabel(session, index),
+          contextLabel: _activityContextLabel(
+            cwdBasename: _basename(session.cwd),
+          ),
+          statusText: _agentActivityStatusText(
+            needsInput: needsInput,
+            recentText: agentContext,
+            previewText: preview.text,
+          ),
+          timestamp: _formatRelativeTimestamp(lastActivityMs, now),
+          lastActivityMs: lastActivityMs,
+          onTap: () => _openDetail(session, index),
+        ),
+      );
+    }
+    return _sortAgentActivityItems(items);
+  }
+
+  List<_AgentActivityItem> _hubAgentActivityItems(
+    List<BackendTerminalGroup> groups,
+    TerminalHub hub,
+    DateTime now,
+  ) {
+    final items = <_AgentActivityItem>[];
+    for (final group in groups) {
+      for (var index = 0; index < group.sessions.length; index++) {
+        final session = group.sessions[index];
+        final preview = hub.previewFor(group.backend.id, session.id);
+        final agentContext = preview.recentText ?? preview.text;
+        final kind = _detectAgentSession(session, agentContext);
+        if (kind == null) continue;
+        final lastActivityMs = preview.lastDataAt ?? session.createdAt;
+        final ref = BackendTerminalSession(
+          backend: group.backend,
+          session: session,
+        );
+        final needsInput = _detectAgentNeedsInput(kind, agentContext);
+        items.add(
+          _AgentActivityItem(
+            key: ref.key,
+            kind: kind,
+            needsInput: needsInput,
+            label: _displaySessionLabel(session, index),
+            contextLabel: _activityContextLabel(
+              backendName: group.backend.name,
+              cwdBasename: _basename(session.cwd),
+            ),
+            statusText: _agentActivityStatusText(
+              needsInput: needsInput,
+              recentText: agentContext,
+              previewText: preview.text,
+            ),
+            timestamp: _formatRelativeTimestamp(lastActivityMs, now),
+            lastActivityMs: lastActivityMs,
+            onTap: () => _openHubDetail(ref, index),
+          ),
+        );
+      }
+    }
+    return _sortAgentActivityItems(items);
   }
 }
 
@@ -615,6 +752,281 @@ String _displaySessionLabel(TerminalSession session, int index) {
   return _sessionLabel(index);
 }
 
+enum _AgentSessionKind { claude, codex }
+
+_AgentSessionKind? _detectAgentSession(
+  TerminalSession session,
+  String? previewText,
+) {
+  final identityText = [
+    session.title,
+    session.externalSessionId,
+  ].whereType<String>().join(' ').toLowerCase();
+  if (_containsAgentWord(identityText, 'claude')) {
+    return _AgentSessionKind.claude;
+  }
+  if (_containsAgentWord(identityText, 'codex')) return _AgentSessionKind.codex;
+
+  final preview = previewText?.toLowerCase() ?? '';
+  if (_kClaudeIdentityPhrases.any((p) => _containsAgentPhrase(preview, p)) ||
+      _containsAgentPrompt(preview, 'claude') ||
+      _containsCommandInvocation(preview, 'claude')) {
+    return _AgentSessionKind.claude;
+  }
+  if (_kClaudeStatusPhrases.any((p) => _containsAgentPhrase(preview, p))) {
+    return _AgentSessionKind.claude;
+  }
+  if (_kCodexIdentityPhrases.any((p) => _containsAgentPhrase(preview, p)) ||
+      _containsAgentPrompt(preview, 'codex') ||
+      _containsCommandInvocation(preview, 'codex')) {
+    return _AgentSessionKind.codex;
+  }
+  return null;
+}
+
+const List<String> _kClaudeIdentityPhrases = [
+  'claude code',
+  'welcome to claude',
+];
+
+const List<String> _kCodexIdentityPhrases = [
+  'openai codex',
+  'codex cli',
+  'gpt-5 codex',
+  'welcome to codex',
+];
+
+const List<String> _kClaudeStatusPhrases = [
+  'bypass permissions on',
+  'bypass permissions off',
+  'auto-accept edits on',
+  'auto-accept edits off',
+];
+
+bool _containsAgentWord(String haystack, String word) {
+  final pattern = RegExp('(^|[^a-z0-9])$word([^a-z0-9]|\$)');
+  return pattern.hasMatch(haystack);
+}
+
+bool _containsAgentPhrase(String haystack, String phrase) {
+  final escaped = RegExp.escape(phrase).replaceAll(r'\ ', r'\s+');
+  final pattern = RegExp('(^|[^a-z0-9])$escaped([^a-z0-9]|\$)');
+  return pattern.hasMatch(haystack);
+}
+
+bool _containsAgentPrompt(String haystack, String word) {
+  final pattern = RegExp('(^|[^a-z0-9])$word\\s*[>›]');
+  return pattern.hasMatch(haystack);
+}
+
+bool _containsCommandInvocation(String haystack, String command) {
+  final escaped = RegExp.escape(command);
+  final pattern = RegExp(
+    r'(^|\n)\s*(?:[$#>›❯➜]\s*)?(?:\.\/|(?:[\w.-]+\/)+)?' + escaped + r'(\s|$)',
+  );
+  return pattern.hasMatch(haystack);
+}
+
+bool _detectAgentNeedsInput(_AgentSessionKind? kind, String? recentText) {
+  if (kind == null) return false;
+  final normalized = recentText
+      ?.toLowerCase()
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+  if (normalized == null || normalized.isEmpty) return false;
+  return _kAgentNeedsInputPatterns.any((p) => p.hasMatch(normalized));
+}
+
+final List<RegExp> _kAgentNeedsInputPatterns = [
+  RegExp(r'\bdo you want to (proceed|continue|run|apply)\b'),
+  RegExp(r'\bwould you like to (proceed|continue|run|apply)\b'),
+  RegExp(r'\ballow (this )?(command|edit|change|operation)\b'),
+  RegExp(r'\ballow .+ to (run|execute|modify|edit|write|read)\b'),
+  RegExp(r'\bapprove (this )?(command|edit|change|operation)\b'),
+  RegExp(r'\bconfirm .*\b(proceed|continue|run|apply)\b'),
+  RegExp(r'\b(proceed|continue)\?\s*\[?[yn]/[yn]\]?'),
+  RegExp(r'\bpress (enter|return) to continue\b'),
+  RegExp(r'\bpress (y|n) to (continue|proceed|approve)\b'),
+  RegExp(r'\bwaiting for (your )?(input|response)\b'),
+  RegExp(r'\bwaiting for user input\b'),
+  RegExp(r'\bselect an option\b'),
+  RegExp(r'\bchoose an option\b'),
+  RegExp(r'\bapproval required\b'),
+  RegExp(r'\brequires approval\b'),
+];
+
+String _backendEndpointLabel(BackendTarget target) =>
+    switch (target.transport) {
+      BackendTransport.websocket =>
+        target.host.isEmpty ? 'websocket' : '${target.host}:${target.port}',
+      BackendTransport.iroh => 'Iroh ${_shortIrohLabel(target)}',
+    };
+
+String _terminalCountLabel(int count) {
+  if (count == 0) return 'No terminals';
+  if (count == 1) return '1 terminal';
+  return '$count terminals';
+}
+
+String _shortIrohLabel(BackendTarget target) {
+  final raw = (target.irohEndpointId ?? target.irohTicket ?? '').trim();
+  if (raw.isEmpty) return 'ticket';
+  return raw.substring(0, raw.length < 12 ? raw.length : 12);
+}
+
+Map<String, int> _backendNameCounts(List<BackendTerminalGroup> groups) {
+  final counts = <String, int>{};
+  for (final group in groups) {
+    final key = _backendNameKey(group.backend);
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  return counts;
+}
+
+String _backendDisplayName(BackendTarget target) {
+  final name = target.name.trim().isEmpty ? '(unnamed)' : target.name.trim();
+  return name;
+}
+
+String? _backendDuplicateIdentityLabel(
+  BackendTarget target,
+  Map<String, int> nameCounts,
+) {
+  if ((nameCounts[_backendNameKey(target)] ?? 0) <= 1) return null;
+  return '#${_backendShortIdentity(target)}';
+}
+
+String _backendNameKey(BackendTarget target) {
+  final name = target.name.trim();
+  return name.isEmpty ? '(unnamed)' : name.toLowerCase();
+}
+
+String _backendShortIdentity(BackendTarget target) {
+  final raw = switch (target.transport) {
+    BackendTransport.websocket =>
+      target.host.isEmpty ? target.id : '${target.host}:${target.port}',
+    BackendTransport.iroh =>
+      target.irohEndpointId ?? target.irohTicket ?? target.id,
+  };
+  final cleaned = raw.replaceAll(RegExp(r'[^A-Za-z0-9]'), '');
+  if (cleaned.isEmpty) {
+    final fallback = target.id.trim();
+    if (fallback.length <= 6) return fallback;
+    return fallback.substring(0, 6);
+  }
+  if (cleaned.length <= 6) return cleaned;
+  return cleaned.substring(cleaned.length - 6);
+}
+
+_BackendAgentSummary _backendAgentSummary(
+  BackendTerminalGroup group,
+  TerminalHub hub,
+) {
+  var count = 0;
+  var needsInput = false;
+  for (final session in group.sessions) {
+    final preview = hub.previewFor(group.backend.id, session.id);
+    final agentContext = preview.recentText ?? preview.text;
+    final agentKind = _detectAgentSession(session, agentContext);
+    if (agentKind == null) continue;
+    count += 1;
+    needsInput = needsInput || _detectAgentNeedsInput(agentKind, agentContext);
+  }
+  return _BackendAgentSummary(count: count, needsInput: needsInput);
+}
+
+class _BackendAgentSummary {
+  final int count;
+  final bool needsInput;
+
+  const _BackendAgentSummary({required this.count, required this.needsInput});
+
+  bool get isEmpty => count == 0;
+
+  String get label {
+    if (needsInput) return 'Needs input';
+    return count == 1 ? '1 agent' : '$count agents';
+  }
+}
+
+class _AgentActivityItem {
+  final String key;
+  final _AgentSessionKind kind;
+  final bool needsInput;
+  final String label;
+  final String contextLabel;
+  final String statusText;
+  final String timestamp;
+  final int lastActivityMs;
+  final VoidCallback onTap;
+
+  const _AgentActivityItem({
+    required this.key,
+    required this.kind,
+    required this.needsInput,
+    required this.label,
+    required this.contextLabel,
+    required this.statusText,
+    required this.timestamp,
+    required this.lastActivityMs,
+    required this.onTap,
+  });
+}
+
+List<_AgentActivityItem> _sortAgentActivityItems(
+  List<_AgentActivityItem> items,
+) {
+  return items.toList(growable: false)..sort((a, b) {
+    if (a.needsInput != b.needsInput) {
+      return a.needsInput ? -1 : 1;
+    }
+    return b.lastActivityMs.compareTo(a.lastActivityMs);
+  });
+}
+
+String _activityContextLabel({String? backendName, String? cwdBasename}) {
+  final parts = [
+    backendName?.trim(),
+    cwdBasename?.trim(),
+  ].whereType<String>().where((s) => s.isNotEmpty).toList(growable: false);
+  if (parts.isEmpty) return 'terminal';
+  return parts.join(' · ');
+}
+
+String _agentActivityStatusText({
+  required bool needsInput,
+  required String? recentText,
+  required String? previewText,
+}) {
+  if (needsInput) {
+    final prompt = _extractAgentPromptLine(recentText);
+    return prompt == null ? 'Needs input' : 'Needs input: $prompt';
+  }
+  return previewText == null ? 'No output yet' : 'Latest: $previewText';
+}
+
+String? _extractAgentPromptLine(String? recentText) {
+  if (recentText == null || recentText.trim().isEmpty) return null;
+  final lines = recentText
+      .split(RegExp(r'[\r\n]+'))
+      .map((line) => line.trim())
+      .where((line) => line.isNotEmpty && !_looksLikeChoiceLine(line))
+      .toList(growable: false);
+  for (final line in lines.reversed) {
+    final normalized = line.toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+    if (_kAgentNeedsInputPatterns.any((p) => p.hasMatch(normalized))) {
+      return line;
+    }
+  }
+  return null;
+}
+
+bool _looksLikeChoiceLine(String line) {
+  return RegExp(
+    r'^(?:[>›❯➜]\s*)?(?:\d+[\).]|[a-z][\).]|[-*])\s+',
+  ).hasMatch(line);
+}
+
 /// Last non-empty path segment. The cwd is always absolute (PTY spawned
 /// against the workspace root), so this is a cheap basename.
 String _basename(String path) {
@@ -645,10 +1057,198 @@ String _formatRelativeTimestamp(int ms, DateTime now) {
   return '${t.month}/${t.day}';
 }
 
+String _agentKindLabel(_AgentSessionKind kind) => switch (kind) {
+  _AgentSessionKind.claude => 'Claude',
+  _AgentSessionKind.codex => 'Codex',
+};
+
+class _AgentActivityStrip extends StatelessWidget {
+  final List<_AgentActivityItem> items;
+
+  const _AgentActivityStrip({required this.items});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final waiting = items.where((item) => item.needsInput).length;
+    final summary = waiting > 0
+        ? '$waiting waiting · ${items.length} active'
+        : '${items.length} active';
+    return ColoredBox(
+      key: const ValueKey<String>('terminal-agent-activity-strip'),
+      color: scheme.surface,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.lg,
+          AppSpacing.md,
+          0,
+          AppSpacing.sm,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(right: AppSpacing.lg),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.smart_toy_outlined,
+                    size: AppIconSize.sm,
+                    color: waiting > 0 ? scheme.error : scheme.primary,
+                  ),
+                  const SizedBox(width: AppSpacing.sm),
+                  Text(
+                    'Agent activity',
+                    style: theme.textTheme.labelLarge?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const Spacer(),
+                  Text(
+                    summary,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: waiting > 0
+                          ? scheme.error
+                          : scheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: AppSpacing.sm),
+            SizedBox(
+              height: 104,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: items.length,
+                separatorBuilder: (_, _) =>
+                    const SizedBox(width: AppSpacing.sm),
+                itemBuilder: (context, index) =>
+                    _AgentActivityCard(item: items[index]),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AgentActivityCard extends StatelessWidget {
+  final _AgentActivityItem item;
+
+  const _AgentActivityCard({required this.item});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final accent = item.needsInput ? scheme.error : scheme.primary;
+    return SizedBox(
+      key: ValueKey<String>('terminal-agent-activity:${item.key}'),
+      width: 252,
+      child: Material(
+        color: item.needsInput
+            ? accent.withAlpha(AppBannerOpacity.wash)
+            : scheme.surfaceContainerHigh,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadius.md),
+          side: BorderSide(
+            color: item.needsInput
+                ? accent.withAlpha(AppBannerOpacity.border)
+                : scheme.outlineVariant,
+          ),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: item.onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(AppSpacing.md),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '${_agentKindLabel(item.kind)} agent',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.labelLarge?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    if (item.needsInput) ...[
+                      const SizedBox(width: AppSpacing.sm),
+                      Text(
+                        'Waiting',
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: accent,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: AppSpacing.xs),
+                Text(
+                  item.statusText,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppText.mono(
+                    fontSize: theme.textTheme.bodySmall?.fontSize,
+                    color: scheme.onSurfaceVariant,
+                    fontStyle: item.statusText == 'No output yet'
+                        ? FontStyle.italic
+                        : FontStyle.normal,
+                  ),
+                ),
+                const Spacer(),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '${item.label} · ${item.contextLabel}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: AppSpacing.sm),
+                    Text(
+                      item.timestamp,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(width: AppSpacing.xs),
+                    Icon(
+                      Icons.arrow_forward,
+                      size: AppIconSize.sm,
+                      color: accent,
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _SessionTile extends StatelessWidget {
   final String label;
   final String cwdBasename;
   final String? previewText;
+  final _AgentSessionKind? agentKind;
+  final bool needsInput;
   final String timestamp;
   final bool detached;
   final VoidCallback onTap;
@@ -658,6 +1258,8 @@ class _SessionTile extends StatelessWidget {
     required this.label,
     required this.cwdBasename,
     required this.previewText,
+    required this.agentKind,
+    required this.needsInput,
     required this.timestamp,
     required this.onTap,
     required this.onLongPress,
@@ -711,6 +1313,14 @@ class _SessionTile extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
+                      if (agentKind != null) ...[
+                        const SizedBox(width: AppSpacing.sm),
+                        _AgentPill(kind: agentKind!),
+                      ],
+                      if (needsInput) ...[
+                        const SizedBox(width: AppSpacing.xs),
+                        const _NeedsInputPill(),
+                      ],
                       const SizedBox(width: AppSpacing.sm),
                       Text(
                         timestamp,
@@ -783,6 +1393,67 @@ class _SessionTile extends StatelessWidget {
   }
 }
 
+class _AgentPill extends StatelessWidget {
+  final _AgentSessionKind kind;
+
+  const _AgentPill({required this.kind});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final label = _agentKindLabel(kind);
+    final (background, foreground) = switch (kind) {
+      _AgentSessionKind.claude => (
+        scheme.secondaryContainer,
+        scheme.onSecondaryContainer,
+      ),
+      _AgentSessionKind.codex => (
+        scheme.tertiaryContainer,
+        scheme.onTertiaryContainer,
+      ),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+      ),
+      child: Text(
+        label,
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: foreground,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+}
+
+class _NeedsInputPill extends StatelessWidget {
+  const _NeedsInputPill();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: scheme.errorContainer,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+      ),
+      child: Text(
+        'Needs input',
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: scheme.onErrorContainer,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+}
+
 class _DiscoverSessionsTile extends StatelessWidget {
   final VoidCallback onTap;
   const _DiscoverSessionsTile({required this.onTap});
@@ -849,14 +1520,22 @@ class _NewSessionTile extends StatelessWidget {
 
 class _BackendGroupHeader extends StatelessWidget {
   final BackendTerminalGroup group;
+  final String displayName;
+  final String? identityLabel;
+  final bool isActive;
   final bool collapsed;
+  final _BackendAgentSummary agentSummary;
   final VoidCallback onToggle;
   final VoidCallback? onNew;
   final VoidCallback? onDiscover;
 
   const _BackendGroupHeader({
     required this.group,
+    required this.displayName,
+    required this.identityLabel,
+    required this.isActive,
     required this.collapsed,
+    required this.agentSummary,
     required this.onToggle,
     required this.onNew,
     required this.onDiscover,
@@ -869,7 +1548,6 @@ class _BackendGroupHeader extends StatelessWidget {
     final dim = theme.colorScheme.onSurfaceVariant;
     final connected = group.isConnected;
     final count = group.sessions.length;
-    final countText = count == 1 ? '1 session' : '$count sessions';
     return ColoredBox(
       color: scheme.surfaceContainerHigh,
       child: Row(
@@ -923,7 +1601,7 @@ class _BackendGroupHeader extends StatelessWidget {
                             children: [
                               Expanded(
                                 child: Text(
-                                  group.backend.name,
+                                  displayName,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: theme.textTheme.titleSmall?.copyWith(
@@ -932,19 +1610,43 @@ class _BackendGroupHeader extends StatelessWidget {
                                 ),
                               ),
                               const SizedBox(width: AppSpacing.sm),
-                              Flexible(child: _StatusPill(group: group)),
+                              if (isActive && connected)
+                                const _ActiveBackendPill()
+                              else ...[
+                                Flexible(child: _StatusPill(group: group)),
+                                if (isActive) ...[
+                                  const SizedBox(width: AppSpacing.xs),
+                                  const _ActiveBackendPill(),
+                                ],
+                              ],
                             ],
                           ),
                           const SizedBox(height: 2),
-                          Text(
-                            '${group.backend.host}:${group.backend.port} · '
-                            '$countText',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: AppText.mono(
-                              fontSize: theme.textTheme.labelSmall?.fontSize,
-                              color: dim,
-                            ),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  _backendEndpointLabel(group.backend),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: AppText.mono(
+                                    fontSize:
+                                        theme.textTheme.labelSmall?.fontSize,
+                                    color: dim,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: AppSpacing.xs),
+                              if (identityLabel != null) ...[
+                                _BackendIdentityPill(label: identityLabel!),
+                                const SizedBox(width: AppSpacing.xs),
+                              ],
+                              _BackendTerminalCountPill(count: count),
+                              if (!agentSummary.isEmpty) ...[
+                                const SizedBox(width: AppSpacing.xs),
+                                _BackendAgentSummaryPill(summary: agentSummary),
+                              ],
+                            ],
                           ),
                         ],
                       ),
@@ -972,6 +1674,154 @@ class _BackendGroupHeader extends StatelessWidget {
   }
 }
 
+class _ActiveBackendPill extends StatelessWidget {
+  const _ActiveBackendPill();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Tooltip(
+      message: 'Active backend',
+      child: Semantics(
+        label: 'Active backend',
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          decoration: BoxDecoration(
+            color: scheme.primaryContainer,
+            borderRadius: BorderRadius.circular(AppRadius.sm),
+          ),
+          child: Text(
+            'Active',
+            maxLines: 1,
+            overflow: TextOverflow.visible,
+            softWrap: false,
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: scheme.onPrimaryContainer,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _BackendIdentityPill extends StatelessWidget {
+  final String label;
+
+  const _BackendIdentityPill({required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Tooltip(
+      message: 'Backend identity $label',
+      child: Semantics(
+        label: 'Backend identity $label',
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(AppRadius.sm),
+          ),
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.visible,
+            softWrap: false,
+            style: AppText.mono(
+              fontSize: theme.textTheme.labelSmall?.fontSize,
+              color: scheme.onSurfaceVariant,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _BackendAgentSummaryPill extends StatelessWidget {
+  final _BackendAgentSummary summary;
+
+  const _BackendAgentSummaryPill({required this.summary});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final background = summary.needsInput
+        ? scheme.errorContainer
+        : scheme.primaryContainer;
+    final foreground = summary.needsInput
+        ? scheme.onErrorContainer
+        : scheme.onPrimaryContainer;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+      ),
+      child: Text(
+        summary.label,
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: foreground,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+}
+
+class _BackendTerminalCountPill extends StatelessWidget {
+  final int count;
+
+  const _BackendTerminalCountPill({required this.count});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final label = _terminalCountLabel(count);
+    return Tooltip(
+      message: label,
+      child: Semantics(
+        label: label,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(AppRadius.sm),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.terminal_outlined,
+                size: 12,
+                color: scheme.onSurfaceVariant,
+              ),
+              const SizedBox(width: 3),
+              Text(
+                count.toString(),
+                maxLines: 1,
+                overflow: TextOverflow.visible,
+                softWrap: false,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _StatusPill extends StatelessWidget {
   final BackendTerminalGroup group;
 
@@ -983,6 +1833,23 @@ class _StatusPill extends StatelessWidget {
     final scheme = theme.colorScheme;
     final connected = group.isConnected;
     final color = connected ? scheme.primary : scheme.onSurfaceVariant;
+    if (connected) {
+      return Tooltip(
+        message: 'connected',
+        child: Semantics(
+          label: 'connected',
+          child: Container(
+            width: 9,
+            height: 9,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+        ),
+      );
+    }
+    final label = connectionCompactLabel(
+      group.connectionState,
+      lastError: group.lastError,
+    );
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -993,11 +1860,21 @@ class _StatusPill extends StatelessWidget {
         ),
         const SizedBox(width: AppSpacing.xs),
         Flexible(
-          child: Text(
-            _connectionLabel(group),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: theme.textTheme.labelSmall?.copyWith(color: color),
+          child: Tooltip(
+            message: group.lastError?.trim().isNotEmpty == true
+                ? group.lastError!.trim()
+                : label,
+            child: Semantics(
+              label: label,
+              child: ExcludeSemantics(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.labelSmall?.copyWith(color: color),
+                ),
+              ),
+            ),
           ),
         ),
       ],
@@ -1135,8 +2012,7 @@ class _CreateTerminalSheetState extends State<_CreateTerminalSheet> {
                           style: theme.textTheme.titleMedium,
                         ),
                         Text(
-                          '${widget.group.backend.host}:'
-                          '${widget.group.backend.port}',
+                          _backendEndpointLabel(widget.group.backend),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: AppText.mono(
@@ -1504,19 +2380,6 @@ class _WorkspaceSectionHeader extends StatelessWidget {
       ),
     );
   }
-}
-
-String _connectionLabel(BackendTerminalGroup group) {
-  final err = group.lastError;
-  if (err != null && err.isNotEmpty) return err;
-  return switch (group.connectionState.name) {
-    'connected' => 'connected',
-    'connecting' => 'connecting',
-    'reconnecting' => 'reconnecting',
-    'waitingForNetwork' => 'waiting for network',
-    'failed' => 'failed',
-    _ => 'disconnected',
-  };
 }
 
 class _DiscoverSessionsSheet extends StatefulWidget {
