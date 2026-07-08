@@ -384,4 +384,62 @@ describe("examples/plugins/agentm-gateway", () => {
       await rm(dirname(socketPath), { recursive: true, force: true }).catch(() => {});
     }
   });
+
+  it("notifies and exposes voice output for stream-only final replies", async () => {
+    if (staging === null) throw new Error("staging dir not set up");
+    const socketPath = join(staging, "s.sock");
+    const harness = await buildHarness(socketPath);
+    let hostShutdown = false;
+    try {
+      await harness.gateway.waitForFrame((f) => f.kind === "hello");
+      await waitFor(() => {
+        const panel = harness.host.ui
+          .activePanels()
+          .find((p) => p.pluginId === "agentm-gateway" && p.panelId === "chat");
+        return panel?.tree === undefined ? undefined : panel;
+      }, 5000);
+
+      harness.gateway.sendOutbound("turn_start", "");
+      harness.gateway.sendOutbound("stream_text", "mobile ");
+      harness.gateway.sendOutbound("stream_text", "stream works");
+      harness.gateway.sendOutbound("agent_end", "");
+
+      const notification = await waitFor(
+        () => harness.notifications.find((n) => n.title === "AgentM replied"),
+        5000,
+      );
+      expect(notification.body).toBe("mobile stream works");
+      expect(notification.spoken?.body).toBe("mobile stream works");
+      expect(notification.reply?.target).toEqual({
+        kind: "plugin",
+        pluginId: "agentm-gateway",
+      });
+      expect(
+        harness.notifications.filter((n) => n.title === "AgentM replied"),
+      ).toHaveLength(1);
+
+      const finalPanel = await waitFor(() => {
+        const panel = harness.host.ui
+          .activePanels()
+          .find((p) => p.pluginId === "agentm-gateway" && p.panelId === "chat");
+        if (panel?.tree === undefined) return undefined;
+        const status = findNodeById(panel.tree, "agentm-status");
+        return status?.body === "AgentM replied." ? panel : undefined;
+      }, 5000);
+      expect(findNodeById(finalPanel.tree, "agentm-read-last")?.voiceOutputText).toBe(
+        "mobile stream works",
+      );
+
+      await harness.host.shutdown();
+      hostShutdown = true;
+      expect(
+        harness.hostLogs.some((line) => line.includes("escalating to SIGKILL")),
+      ).toBe(false);
+    } finally {
+      if (!hostShutdown) await harness.host.shutdown();
+      await harness.gateway.close();
+      harness.restoreEnv();
+      await rm(dirname(socketPath), { recursive: true, force: true }).catch(() => {});
+    }
+  });
 });

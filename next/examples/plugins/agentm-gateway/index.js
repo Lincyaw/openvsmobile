@@ -344,21 +344,24 @@ function titleForKind(kind) {
   }
 }
 
-async function notifyOutbound(env) {
+function notificationLevel(kind) {
+  if (kind === "diagnostic_error") return "error";
+  if (kind === "diagnostic_warning") return "warning";
+  return "info";
+}
+
+async function notifyText(kind, text, { notificationKey = kind } = {}) {
   if (!state.ctx) return;
-  const kind = outboundKind(env);
-  if (!DURABLE_NOTIFICATION_KINDS.has(kind)) return;
-  const content = outboundContent(env);
-  const text = content.trim();
-  if (!text) return;
-  const previousId = state.lastNotificationByKind.get(kind);
+  const body = String(text || "").trim();
+  if (!body) return;
+  const previousId = state.lastNotificationByKind.get(notificationKey);
   const input = {
-    level: kind === "diagnostic_error" ? "error" : kind === "diagnostic_warning" ? "warning" : "info",
+    level: notificationLevel(kind),
     title: titleForKind(kind),
-    body: text,
+    body,
     spoken: {
       title: titleForKind(kind),
-      body: text,
+      body,
     },
     reply: {
       event: "agentm.reply",
@@ -374,10 +377,16 @@ async function notifyOutbound(env) {
   if (previousId) input.supersedes = previousId;
   try {
     const result = await state.ctx.showNotification(input);
-    if (result?.id) state.lastNotificationByKind.set(kind, result.id);
+    if (result?.id) state.lastNotificationByKind.set(notificationKey, result.id);
   } catch (err) {
     state.ctx.log("warn", `AgentM notification failed: ${err.message ?? String(err)}`);
   }
+}
+
+async function notifyOutbound(env) {
+  const kind = outboundKind(env);
+  if (!DURABLE_NOTIFICATION_KINDS.has(kind)) return;
+  await notifyText(kind, outboundContent(env));
 }
 
 function handleOutbound(env) {
@@ -431,7 +440,14 @@ function handleOutbound(env) {
     case "agent_end":
       state.activeTurn = false;
       state.turnStartedAt = 0;
-      if (!state.turnHadVisibleReply) {
+      if (state.turnHadVisibleReply) {
+        state.lastStatus = "AgentM replied.";
+        if (state.lastReplyKind === "stream_text") {
+          void notifyText("assistant_text", state.currentReply, {
+            notificationKey: "assistant_text",
+          });
+        }
+      } else {
         state.lastStatus = "Turn finished without a visible reply.";
       }
       appendTranscript("system", "Turn finished", { kind });
