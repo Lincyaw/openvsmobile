@@ -139,6 +139,11 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
   }
 
   Future<void> _executeVoiceInput(_EyesFreeAction action) async {
+    final available = await _speechRecognitionAvailable();
+    if (!available) {
+      await _speak('Speech recognition is not available on this device');
+      return;
+    }
     await _speak('Listening. ${action.label}');
     final String? text;
     try {
@@ -169,6 +174,16 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
       ),
     );
     await _speak('Sent');
+  }
+
+  Future<bool> _speechRecognitionAvailable() async {
+    try {
+      return await widget.voice.isSpeechRecognitionAvailable();
+    } on PlatformException {
+      return false;
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<void> _speak(String text) async {

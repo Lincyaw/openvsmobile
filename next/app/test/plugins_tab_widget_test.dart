@@ -59,9 +59,18 @@ Widget _wrap(Widget child) => MaterialApp(home: Scaffold(body: child));
 class _FakeVoiceInteraction extends VoiceInteraction {
   final String? recognizedText;
   final Object? recognitionError;
+  final bool speechRecognitionAvailable;
   final List<String> spoken = <String>[];
 
-  _FakeVoiceInteraction({this.recognizedText, this.recognitionError});
+  _FakeVoiceInteraction({
+    this.recognizedText,
+    this.recognitionError,
+    this.speechRecognitionAvailable = true,
+  });
+
+  @override
+  Future<bool> isSpeechRecognitionAvailable() async =>
+      speechRecognitionAvailable;
 
   @override
   Future<String?> recognizeOnce({String? prompt}) async {
@@ -573,6 +582,62 @@ void main() {
       expect(voice.spoken.join('\n'), contains('No speech was recognized'));
     },
   );
+
+  testWidgets('eyes-free mode reports unavailable speech recognition', (
+    tester,
+  ) async {
+    final panel = const PluginPanelStub(id: 'chat', title: 'Chat');
+    final appState = await _appStateWithSeed([
+      _info(id: 'agentm', name: 'AgentM', panels: [panel]),
+    ]);
+    addTearDown(appState.dispose);
+
+    appState.uiPanels.debugInjectPush(<String, dynamic>{
+      'pluginId': 'agentm',
+      'panelId': 'chat',
+      'version': 1,
+      'tree': <String, dynamic>{
+        'kind': 'TextField',
+        'id': 'reply',
+        'label': 'Reply',
+        'accessibilityLabel': 'Dictate and send reply',
+        'focusRole': 'action',
+        'focusOrder': 1,
+        'voiceInputEvent': 'send',
+      },
+    });
+
+    final dispatched = <UiNodeEvent>[];
+    appState.uiPanels.debugDispatchOverride =
+        ({required pluginId, required panelId, required event}) async {
+          dispatched.add(event);
+        };
+
+    final voice = _FakeVoiceInteraction(speechRecognitionAvailable: false);
+    final info = appState.plugins.plugin('agentm')!;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PluginEyesFreeScreen(
+          appState: appState,
+          info: info,
+          panel: panel,
+          voice: voice,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await _doubleTap(
+      tester,
+      find.byKey(const ValueKey<String>('eyes-free-gesture-surface')),
+    );
+
+    expect(dispatched, isEmpty);
+    expect(
+      voice.spoken.join('\n'),
+      contains('Speech recognition is not available on this device'),
+    );
+  });
 
   test('PluginInfo.fromJson reads contributes.panels + commands', () {
     final info = PluginInfo.fromJson(<String, dynamic>{

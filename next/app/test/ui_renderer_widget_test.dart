@@ -50,6 +50,9 @@ class _FakeVoiceInteraction extends VoiceInteraction {
   _FakeVoiceInteraction(this.text);
 
   @override
+  Future<bool> isSpeechRecognitionAvailable() async => true;
+
+  @override
   Future<String?> recognizeOnce({String? prompt}) async => text;
 
   @override

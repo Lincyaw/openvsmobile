@@ -3,6 +3,8 @@ import 'package:flutter/services.dart';
 abstract class VoiceInteraction {
   const VoiceInteraction();
 
+  Future<bool> isSpeechRecognitionAvailable();
+
   Future<String?> recognizeOnce({String? prompt});
 
   Future<bool> speak(String text);
@@ -16,6 +18,14 @@ class PlatformVoiceInteraction extends VoiceInteraction {
   );
 
   const PlatformVoiceInteraction();
+
+  @override
+  Future<bool> isSpeechRecognitionAvailable() async {
+    final result = await _channel.invokeMethod<bool>(
+      'isSpeechRecognitionAvailable',
+    );
+    return result == true;
+  }
 
   @override
   Future<String?> recognizeOnce({String? prompt}) async {

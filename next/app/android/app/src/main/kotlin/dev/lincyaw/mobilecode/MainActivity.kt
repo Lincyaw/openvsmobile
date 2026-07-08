@@ -131,6 +131,7 @@ class MainActivity : FlutterActivity() {
                         speakText(text, result)
                     }
                     "stopSpeaking" -> {
+                        finishPendingTtsWithSuccess(false)
                         textToSpeech?.stop()
                         result.success(null)
                     }
@@ -422,6 +423,12 @@ class MainActivity : FlutterActivity() {
         val pending = pendingTtsRequests.toList()
         pendingTtsRequests.clear()
         pending.forEach { it.result.error(code, message, null) }
+    }
+
+    private fun finishPendingTtsWithSuccess(value: Boolean) {
+        val pending = pendingTtsRequests.toList()
+        pendingTtsRequests.clear()
+        pending.forEach { it.result.success(value) }
     }
 
     private fun queueSpeech(text: String, result: MethodChannel.Result, queueMode: Int) {
