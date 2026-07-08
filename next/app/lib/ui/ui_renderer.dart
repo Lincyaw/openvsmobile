@@ -1520,6 +1520,21 @@ class _UiTextFieldRendererState extends State<_UiTextFieldRenderer> {
     if (eventId == null || _listening) return;
     setState(() => _listening = true);
     try {
+      final available = await widget.voice.isSpeechRecognitionAvailable();
+      if (!mounted) return;
+      if (!available) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+          const SnackBar(
+            content: Text('Speech recognition is not available on this device'),
+          ),
+        );
+        return;
+      }
+      try {
+        await widget.voice.stopSpeaking();
+      } catch (_) {
+        // Best-effort: stale TTS should not block visible text input.
+      }
       final text = await widget.voice.recognizeOnce(
         prompt: widget.placeholder ?? widget.label,
       );

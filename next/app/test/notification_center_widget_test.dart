@@ -11,6 +11,7 @@ import 'package:mobilecode/app_state.dart';
 import 'package:mobilecode/backend_client.dart';
 import 'package:mobilecode/notification.dart';
 import 'package:mobilecode/screens/notification_center.dart';
+import 'package:mobilecode/services/voice_interaction.dart';
 
 class _RecordingBackendClient extends BackendClient {
   final List<({String method, Map<String, dynamic>? params})> calls = [];
@@ -19,6 +20,46 @@ class _RecordingBackendClient extends BackendClient {
   Future<dynamic> call(String method, [Map<String, dynamic>? params]) async {
     calls.add((method: method, params: params));
     return <String, dynamic>{'ok': true};
+  }
+}
+
+class _FakeVoiceInteraction extends VoiceInteraction {
+  final String? recognizedText;
+  final bool speechRecognitionAvailable;
+  final List<String> calls = <String>[];
+
+  _FakeVoiceInteraction({
+    this.recognizedText,
+    this.speechRecognitionAvailable = true,
+  });
+
+  @override
+  Future<bool> isSpeechRecognitionAvailable() async {
+    calls.add('isSpeechRecognitionAvailable');
+    return speechRecognitionAvailable;
+  }
+
+  @override
+  Future<String?> recognizeOnce({String? prompt}) async {
+    calls.add('recognizeOnce:${prompt ?? ""}');
+    return recognizedText;
+  }
+
+  @override
+  Future<bool> speak(String text) async {
+    calls.add('speak:$text');
+    return true;
+  }
+
+  @override
+  Future<bool> speakAndWait(String text) async {
+    calls.add('speakAndWait:$text');
+    return true;
+  }
+
+  @override
+  Future<void> stopSpeaking() async {
+    calls.add('stopSpeaking');
   }
 }
 
@@ -50,6 +91,7 @@ Future<void> _pumpCenter(
   WidgetTester tester,
   AppState appState, {
   Future<void> Function(OpenTerminalAction action)? onOpenTerminal,
+  VoiceInteraction voice = const PlatformVoiceInteraction(),
 }) async {
   await tester.pumpWidget(
     MaterialApp(
@@ -60,6 +102,7 @@ Future<void> _pumpCenter(
       home: NotificationCenterScreen(
         appState: appState,
         onOpenTerminal: onOpenTerminal,
+        voice: voice,
       ),
     ),
   );
@@ -212,6 +255,137 @@ void main() {
         .toList();
     expect(calls, hasLength(1));
     expect(calls.single.params, {'id': 'agent-waiting', 'text': 'continue'});
+  });
+
+  testWidgets('replyable notification can send dictated reply', (tester) async {
+    final client = _RecordingBackendClient();
+    final appState = AppState(client: client, deviceId: 'me');
+    addTearDown(appState.dispose);
+    appState.notifications.onShow(
+      _n(
+        id: 'agent-waiting',
+        title: 'Agent waiting',
+        reply: const NotificationReply(
+          target: PluginNotificationReplyTarget(pluginId: 'agent'),
+          placeholder: 'Reply to agent',
+        ),
+      ),
+    );
+    final voice = _FakeVoiceInteraction(recognizedText: 'continue by voice');
+
+    await _pumpCenter(tester, appState, voice: voice);
+
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Reply'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Speak and send'));
+    await tester.pumpAndSettle();
+
+    final calls = client.calls
+        .where((c) => c.method == 'notification.reply')
+        .toList();
+    expect(calls, hasLength(1));
+    expect(calls.single.params, {
+      'id': 'agent-waiting',
+      'text': 'continue by voice',
+    });
+    expect(voice.calls, contains('isSpeechRecognitionAvailable'));
+    final cueIndex = voice.calls.indexWhere(
+      (call) => call.startsWith('speakAndWait:Listening.'),
+    );
+    final stopIndex = voice.calls.indexOf('stopSpeaking');
+    final recognizeIndex = voice.calls.indexWhere(
+      (call) => call.startsWith('recognizeOnce:'),
+    );
+    expect(cueIndex, isNonNegative);
+    expect(stopIndex, greaterThan(cueIndex));
+    expect(recognizeIndex, greaterThan(stopIndex));
+  });
+
+  testWidgets('confirm-required dictated reply fills text before sending', (
+    tester,
+  ) async {
+    final client = _RecordingBackendClient();
+    final appState = AppState(client: client, deviceId: 'me');
+    addTearDown(appState.dispose);
+    appState.notifications.onShow(
+      _n(
+        id: 'agent-waiting',
+        title: 'Agent waiting',
+        reply: const NotificationReply(
+          target: PluginNotificationReplyTarget(pluginId: 'agent'),
+          placeholder: 'Reply to agent',
+          confirmRequired: true,
+        ),
+      ),
+    );
+    final voice = _FakeVoiceInteraction(recognizedText: 'review first');
+
+    await _pumpCenter(tester, appState, voice: voice);
+
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Reply'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Speak reply'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('review first'), findsOneWidget);
+    expect(
+      client.calls.where((c) => c.method == 'notification.reply'),
+      isEmpty,
+    );
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Send'));
+    await tester.pumpAndSettle();
+
+    final calls = client.calls
+        .where((c) => c.method == 'notification.reply')
+        .toList();
+    expect(calls, hasLength(1));
+    expect(calls.single.params, {
+      'id': 'agent-waiting',
+      'text': 'review first',
+    });
+  });
+
+  testWidgets('dictated notification reply reports unavailable recognition', (
+    tester,
+  ) async {
+    final client = _RecordingBackendClient();
+    final appState = AppState(client: client, deviceId: 'me');
+    addTearDown(appState.dispose);
+    appState.notifications.onShow(
+      _n(
+        id: 'agent-waiting',
+        title: 'Agent waiting',
+        reply: const NotificationReply(
+          target: PluginNotificationReplyTarget(pluginId: 'agent'),
+          placeholder: 'Reply to agent',
+        ),
+      ),
+    );
+    final voice = _FakeVoiceInteraction(
+      recognizedText: 'ignored',
+      speechRecognitionAvailable: false,
+    );
+
+    await _pumpCenter(tester, appState, voice: voice);
+
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Reply'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Speak and send'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('Speech recognition is not available on this device'),
+      findsOneWidget,
+    );
+    expect(
+      client.calls.where((c) => c.method == 'notification.reply'),
+      isEmpty,
+    );
+    expect(
+      voice.calls.where((call) => call.startsWith('recognizeOnce:')),
+      isEmpty,
+    );
   });
 
   testWidgets('filter pill narrows the list', (tester) async {

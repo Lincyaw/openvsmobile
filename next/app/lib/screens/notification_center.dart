@@ -17,6 +17,7 @@ import '../app_state.dart';
 import '../ui/app_tokens.dart';
 import '../backend_client.dart';
 import '../notification.dart';
+import '../services/voice_interaction.dart';
 import '../settings_store.dart';
 import 'agent_hooks_screen.dart';
 
@@ -24,6 +25,7 @@ class NotificationCenterScreen extends StatefulWidget {
   final AppState appState;
   final SettingsStore? settingsStore;
   final Future<void> Function(OpenTerminalAction action)? onOpenTerminal;
+  final VoiceInteraction voice;
 
   /// Optional id to scroll-to / highlight on first build. Set by the tap
   /// handler in the foreground service when the user taps a system-tray
@@ -36,6 +38,7 @@ class NotificationCenterScreen extends StatefulWidget {
     this.settingsStore,
     this.onOpenTerminal,
     this.highlightId,
+    this.voice = const PlatformVoiceInteraction(),
   });
 
   @override
@@ -292,7 +295,11 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
     final text = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
-      builder: (_) => _NotificationReplySheet(placeholder: placeholder),
+      builder: (_) => _NotificationReplySheet(
+        placeholder: placeholder,
+        confirmRequired: reply.confirmRequired,
+        voice: widget.voice,
+      ),
     );
     if (!mounted || text == null || text.trim().isEmpty) return;
     await widget.appState.notifications.reply(n.id, text);
@@ -1011,8 +1018,14 @@ class _NotificationCard extends StatelessWidget {
 
 class _NotificationReplySheet extends StatefulWidget {
   final String placeholder;
+  final bool confirmRequired;
+  final VoiceInteraction voice;
 
-  const _NotificationReplySheet({required this.placeholder});
+  const _NotificationReplySheet({
+    required this.placeholder,
+    required this.confirmRequired,
+    required this.voice,
+  });
 
   @override
   State<_NotificationReplySheet> createState() =>
@@ -1021,6 +1034,7 @@ class _NotificationReplySheet extends StatefulWidget {
 
 class _NotificationReplySheetState extends State<_NotificationReplySheet> {
   final TextEditingController _controller = TextEditingController();
+  bool _listening = false;
 
   @override
   void dispose() {
@@ -1032,6 +1046,64 @@ class _NotificationReplySheetState extends State<_NotificationReplySheet> {
     final value = _controller.text;
     if (value.trim().isEmpty) return;
     Navigator.of(context).pop(value);
+  }
+
+  Future<void> _speakReply() async {
+    if (_listening) return;
+    setState(() => _listening = true);
+    try {
+      final available = await widget.voice.isSpeechRecognitionAvailable();
+      if (!mounted) return;
+      if (!available) {
+        _showVoiceMessage('Speech recognition is not available on this device');
+        return;
+      }
+      await _speakAndWait('Listening. ${widget.placeholder}');
+      await _stopSpeaking();
+      final text = await widget.voice.recognizeOnce(prompt: widget.placeholder);
+      if (!mounted) return;
+      if (text == null || text.trim().isEmpty) {
+        _showVoiceMessage('No speech recognized');
+        return;
+      }
+      _controller.text = text;
+      _controller.selection = TextSelection.collapsed(offset: text.length);
+      if (widget.confirmRequired) {
+        _showVoiceMessage('Reply captured. Send when ready.');
+      } else {
+        Navigator.of(context).pop(text);
+      }
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+      _showVoiceMessage(e.message ?? 'Voice input failed');
+    } catch (_) {
+      if (!mounted) return;
+      _showVoiceMessage('Voice input failed');
+    } finally {
+      if (mounted) setState(() => _listening = false);
+    }
+  }
+
+  Future<void> _speakAndWait(String text) async {
+    try {
+      await widget.voice.speakAndWait(text);
+    } catch (_) {
+      // Best-effort cue before opening the microphone.
+    }
+  }
+
+  Future<void> _stopSpeaking() async {
+    try {
+      await widget.voice.stopSpeaking();
+    } catch (_) {
+      // Best-effort only.
+    }
+  }
+
+  void _showVoiceMessage(String message) {
+    ScaffoldMessenger.maybeOf(
+      context,
+    )?.showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
@@ -1059,6 +1131,18 @@ class _NotificationReplySheetState extends State<_NotificationReplySheet> {
                 prefixIcon: const Icon(Icons.reply),
               ),
               onSubmitted: (_) => _submit(),
+            ),
+            const SizedBox(height: AppSpacing.md),
+            FilledButton.tonalIcon(
+              onPressed: _listening ? null : _speakReply,
+              icon: Icon(_listening ? Icons.mic : Icons.mic_none),
+              label: Text(
+                _listening
+                    ? 'Listening'
+                    : widget.confirmRequired
+                    ? 'Speak reply'
+                    : 'Speak and send',
+              ),
             ),
             const SizedBox(height: AppSpacing.md),
             Row(

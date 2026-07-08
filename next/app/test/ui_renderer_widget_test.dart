@@ -46,29 +46,41 @@ Widget _host(
 class _FakeVoiceInteraction extends VoiceInteraction {
   final String? text;
   final List<String> spoken = <String>[];
+  final List<String> calls = <String>[];
+  final bool speechRecognitionAvailable;
 
-  _FakeVoiceInteraction(this.text);
+  _FakeVoiceInteraction(this.text, {this.speechRecognitionAvailable = true});
 
   @override
-  Future<bool> isSpeechRecognitionAvailable() async => true;
+  Future<bool> isSpeechRecognitionAvailable() async {
+    calls.add('isSpeechRecognitionAvailable');
+    return speechRecognitionAvailable;
+  }
 
   @override
-  Future<String?> recognizeOnce({String? prompt}) async => text;
+  Future<String?> recognizeOnce({String? prompt}) async {
+    calls.add('recognizeOnce:${prompt ?? ""}');
+    return text;
+  }
 
   @override
   Future<bool> speak(String text) async {
+    calls.add('speak:$text');
     spoken.add(text);
     return true;
   }
 
   @override
   Future<bool> speakAndWait(String text) async {
+    calls.add('speakAndWait:$text');
     spoken.add(text);
     return true;
   }
 
   @override
-  Future<void> stopSpeaking() async {}
+  Future<void> stopSpeaking() async {
+    calls.add('stopSpeaking');
+  }
 }
 
 /// Drives `showUiModal` from inside a MaterialApp so `showDialog` /
@@ -340,6 +352,44 @@ void main() {
       'value': 'send this by voice',
       'source': 'voice',
     });
+    expect(voice.calls, contains('isSpeechRecognitionAvailable'));
+    final stopIndex = voice.calls.indexOf('stopSpeaking');
+    final recognizeIndex = voice.calls.indexWhere(
+      (call) => call.startsWith('recognizeOnce:'),
+    );
+    expect(stopIndex, isNonNegative);
+    expect(recognizeIndex, greaterThan(stopIndex));
+  });
+
+  testWidgets('voice-enabled TextField reports unavailable recognition', (
+    tester,
+  ) async {
+    final events = <UiNodeEvent>[];
+    final voice = _FakeVoiceInteraction(
+      'ignored',
+      speechRecognitionAvailable: false,
+    );
+    final tree = UiNode.fromJson({
+      'kind': 'TextField',
+      'id': 'tf',
+      'label': 'Message',
+      'placeholder': 'Type or dictate',
+      'voiceInputEvent': 'send',
+    });
+
+    await tester.pumpWidget(_host(tree, onEvent: events.add, voice: voice));
+    await tester.tap(find.text('Speak and send'));
+    await tester.pumpAndSettle();
+
+    expect(events, isEmpty);
+    expect(
+      find.text('Speech recognition is not available on this device'),
+      findsOneWidget,
+    );
+    expect(
+      voice.calls.where((call) => call.startsWith('recognizeOnce:')),
+      isEmpty,
+    );
   });
 
   testWidgets('Button tap emits UiNodeEvent with type=tap', (tester) async {
