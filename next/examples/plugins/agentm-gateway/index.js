@@ -836,7 +836,7 @@ function buildTree() {
           order: 5,
           role: "danger",
           hint: "Stops the current AgentM turn.",
-          voiceShortcut: true,
+          voiceShortcut: state.activeTurn,
         }),
       ],
     }),

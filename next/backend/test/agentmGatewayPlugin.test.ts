@@ -302,6 +302,15 @@ describe("examples/plugins/agentm-gateway", () => {
       expect(findNodeById(initialPanel.tree, "agentm-read-last")?.title).toBe(
         "Read last reply",
       );
+      expect(findNodeById(initialPanel.tree, "agentm-input")?.voiceShortcut).toBe(
+        true,
+      );
+      expect(findNodeById(initialPanel.tree, "agentm-read-last")?.voiceShortcut).toBe(
+        true,
+      );
+      expect(findNodeById(initialPanel.tree, "agentm-interrupt")?.voiceShortcut).toBe(
+        false,
+      );
       expect(findNodeById(initialPanel.tree, "agentm-details")).toBeUndefined();
 
       await call(harness.ctx, "ui.event", {
@@ -326,6 +335,19 @@ describe("examples/plugins/agentm-gateway", () => {
       expect(firstInbound.body.policy).toBe("interrupt_first");
       expect(firstInbound.body.channel).toBe("openvsmobile");
       expect(firstInbound.body.chat_id).toBe("phone");
+
+      const activePanel = await waitFor(() => {
+        const panel = harness.host.ui
+          .activePanels()
+          .find((p) => p.pluginId === "agentm-gateway" && p.panelId === "chat");
+        if (panel?.tree === undefined) return undefined;
+        return findNodeById(panel.tree, "agentm-interrupt")?.voiceShortcut === true
+          ? panel
+          : undefined;
+      }, 5000);
+      expect(findNodeById(activePanel.tree, "agentm-interrupt")?.subtitle).toBe(
+        "Cancels the running request",
+      );
 
       harness.gateway.sendOutbound("assistant_text", "mobile bridge works");
 
