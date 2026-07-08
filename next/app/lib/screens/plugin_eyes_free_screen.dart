@@ -46,7 +46,7 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
   @override
   void dispose() {
     widget.appState.uiPanels.removeListener(_onPanelsChanged);
-    unawaited(widget.voice.stopSpeaking());
+    unawaited(_stopSpeaking());
     super.dispose();
   }
 
@@ -144,7 +144,8 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
       await _speak('Speech recognition is not available on this device');
       return;
     }
-    await _speak('Listening. ${action.label}');
+    await _speakAndWait('Listening. ${action.label}');
+    await _stopSpeaking();
     final String? text;
     try {
       text = await widget.voice.recognizeOnce(prompt: action.prompt);
@@ -198,8 +199,28 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
     }
   }
 
+  Future<void> _speakAndWait(String text) async {
+    try {
+      await widget.voice.speakAndWait(text);
+    } on PlatformException {
+      // Best-effort cue before opening the microphone.
+    } catch (_) {
+      // Best-effort only.
+    }
+  }
+
   void _speakLater(String text) {
     unawaited(_speak(text));
+  }
+
+  Future<void> _stopSpeaking() async {
+    try {
+      await widget.voice.stopSpeaking();
+    } on PlatformException {
+      // Best-effort only.
+    } catch (_) {
+      // Best-effort only.
+    }
   }
 
   Future<void> _dispatch(UiNodeEvent event) {
@@ -212,6 +233,7 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
 
   void _exit() {
     HapticFeedback.heavyImpact();
+    unawaited(_stopSpeaking());
     Navigator.of(context).maybePop();
   }
 

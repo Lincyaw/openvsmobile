@@ -61,6 +61,7 @@ class _FakeVoiceInteraction extends VoiceInteraction {
   final Object? recognitionError;
   final bool speechRecognitionAvailable;
   final List<String> spoken = <String>[];
+  final List<String> calls = <String>[];
 
   _FakeVoiceInteraction({
     this.recognizedText,
@@ -69,11 +70,14 @@ class _FakeVoiceInteraction extends VoiceInteraction {
   });
 
   @override
-  Future<bool> isSpeechRecognitionAvailable() async =>
-      speechRecognitionAvailable;
+  Future<bool> isSpeechRecognitionAvailable() async {
+    calls.add('isSpeechRecognitionAvailable');
+    return speechRecognitionAvailable;
+  }
 
   @override
   Future<String?> recognizeOnce({String? prompt}) async {
+    calls.add('recognizeOnce:${prompt ?? ""}');
     final error = recognitionError;
     if (error != null) throw error;
     return recognizedText;
@@ -81,12 +85,22 @@ class _FakeVoiceInteraction extends VoiceInteraction {
 
   @override
   Future<bool> speak(String text) async {
+    calls.add('speak:$text');
     spoken.add(text);
     return true;
   }
 
   @override
-  Future<void> stopSpeaking() async {}
+  Future<bool> speakAndWait(String text) async {
+    calls.add('speakAndWait:$text');
+    spoken.add(text);
+    return true;
+  }
+
+  @override
+  Future<void> stopSpeaking() async {
+    calls.add('stopSpeaking');
+  }
 }
 
 Future<void> _doubleTap(WidgetTester tester, Finder finder) async {
@@ -512,6 +526,16 @@ void main() {
       'value': 'reply by voice',
       'source': 'voice',
     });
+    final cueIndex = voice.calls.indexWhere(
+      (call) => call.startsWith('speakAndWait:Listening.'),
+    );
+    final stopIndex = voice.calls.indexOf('stopSpeaking');
+    final recognizeIndex = voice.calls.indexWhere(
+      (call) => call.startsWith('recognizeOnce:'),
+    );
+    expect(cueIndex, isNonNegative);
+    expect(stopIndex, greaterThan(cueIndex));
+    expect(recognizeIndex, greaterThan(stopIndex));
 
     dispatched.clear();
     await tester.fling(surface, const Offset(-500, 0), 1000);

@@ -16,6 +16,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
@@ -27,7 +28,8 @@ import java.util.Locale
 class MainActivity : FlutterActivity() {
     private data class PendingTtsRequest(
         val text: String,
-        val result: MethodChannel.Result
+        val result: MethodChannel.Result,
+        val waitForDone: Boolean
     )
 
     private var multicastLock: WifiManager.MulticastLock? = null
@@ -46,8 +48,10 @@ class MainActivity : FlutterActivity() {
     private var textToSpeechReady = false
     private var textToSpeechInitError: String? = null
     private val pendingTtsRequests = mutableListOf<PendingTtsRequest>()
+    private val pendingTtsCompletions = mutableMapOf<String, MethodChannel.Result>()
     private val mainHandler = Handler(Looper.getMainLooper())
     private var ttsInitTimeoutPosted = false
+    private var nextTtsUtteranceId = 0L
     private var irohRpcBridge: IrohRpcBridge? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -128,10 +132,19 @@ class MainActivity : FlutterActivity() {
                             result.error("INVALID_ARG", "Missing 'text' argument", null)
                             return@setMethodCallHandler
                         }
-                        speakText(text, result)
+                        speakText(text, result, waitForDone = false)
+                    }
+                    "speakAndWait" -> {
+                        val text = call.argument<String>("text")
+                        if (text == null) {
+                            result.error("INVALID_ARG", "Missing 'text' argument", null)
+                            return@setMethodCallHandler
+                        }
+                        speakText(text, result, waitForDone = true)
                     }
                     "stopSpeaking" -> {
                         finishPendingTtsWithSuccess(false)
+                        finishPendingTtsCompletionsWithSuccess(false)
                         textToSpeech?.stop()
                         result.success(null)
                     }
@@ -156,6 +169,7 @@ class MainActivity : FlutterActivity() {
         activeSpeechRecognizer?.destroy()
         activeSpeechRecognizer = null
         finishPendingTtsWithError("ACTIVITY_DESTROYED", "Activity was destroyed")
+        finishPendingTtsCompletionsWithError("ACTIVITY_DESTROYED", "Activity was destroyed")
         textToSpeech?.stop()
         textToSpeech?.shutdown()
         textToSpeech = null
@@ -361,7 +375,11 @@ class MainActivity : FlutterActivity() {
             else -> "Speech recognition failed"
         }
 
-    private fun speakText(text: String, result: MethodChannel.Result) {
+    private fun speakText(
+        text: String,
+        result: MethodChannel.Result,
+        waitForDone: Boolean
+    ) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) {
             result.success(false)
@@ -372,19 +390,71 @@ class MainActivity : FlutterActivity() {
             return
         }
         if (textToSpeechReady) {
-            queueSpeech(trimmed, result, TextToSpeech.QUEUE_FLUSH)
+            queueSpeech(trimmed, result, TextToSpeech.QUEUE_FLUSH, waitForDone)
             return
         }
-        pendingTtsRequests.add(PendingTtsRequest(trimmed, result))
+        pendingTtsRequests.add(PendingTtsRequest(trimmed, result, waitForDone))
         if (textToSpeech == null) {
             textToSpeech = TextToSpeech(applicationContext) { status ->
                 runOnUiThread {
                     if (textToSpeechInitError != null) return@runOnUiThread
                     if (status == TextToSpeech.SUCCESS) {
+                        val tts = textToSpeech
+                        if (tts == null) {
+                            finishPendingTtsWithError(
+                                "TTS_INIT_FAILED",
+                                "Text to speech initialization failed"
+                            )
+                            return@runOnUiThread
+                        }
+                        tts.setOnUtteranceProgressListener(
+                            object : UtteranceProgressListener() {
+                                override fun onStart(utteranceId: String?) {}
+
+                                override fun onDone(utteranceId: String?) {
+                                    if (utteranceId == null) return
+                                    runOnUiThread {
+                                        finishTtsCompletionWithSuccess(utteranceId, true)
+                                    }
+                                }
+
+                                override fun onStop(utteranceId: String?, interrupted: Boolean) {
+                                    if (utteranceId == null) return
+                                    runOnUiThread {
+                                        finishTtsCompletionWithSuccess(utteranceId, false)
+                                    }
+                                }
+
+                                @Deprecated("Deprecated in Android")
+                                override fun onError(utteranceId: String?) {
+                                    if (utteranceId == null) return
+                                    runOnUiThread {
+                                        finishTtsCompletionWithError(
+                                            utteranceId,
+                                            "TTS_ERROR",
+                                            "Text to speech failed"
+                                        )
+                                    }
+                                }
+
+                                override fun onError(utteranceId: String?, errorCode: Int) {
+                                    if (utteranceId == null) return
+                                    runOnUiThread {
+                                        finishTtsCompletionWithError(
+                                            utteranceId,
+                                            "TTS_ERROR",
+                                            "Text to speech failed"
+                                        )
+                                    }
+                                }
+                            }
+                        )
                         textToSpeechReady = true
-                        textToSpeech?.language = Locale.getDefault()
+                        tts.language = Locale.getDefault()
+                        ttsInitTimeoutPosted = false
                         drainPendingTts()
                     } else {
+                        ttsInitTimeoutPosted = false
                         finishPendingTtsWithError(
                             "TTS_INIT_FAILED",
                             "Text to speech initialization failed"
@@ -401,7 +471,11 @@ class MainActivity : FlutterActivity() {
         ttsInitTimeoutPosted = true
         mainHandler.postDelayed({
             if (textToSpeechReady || textToSpeechInitError != null) return@postDelayed
-            if (pendingTtsRequests.isEmpty()) return@postDelayed
+            if (pendingTtsRequests.isEmpty()) {
+                ttsInitTimeoutPosted = false
+                return@postDelayed
+            }
+            ttsInitTimeoutPosted = false
             finishPendingTtsWithError(
                 "TTS_INIT_TIMEOUT",
                 "Text to speech initialization timed out"
@@ -414,7 +488,7 @@ class MainActivity : FlutterActivity() {
         pendingTtsRequests.clear()
         pending.forEachIndexed { index, request ->
             val queueMode = if (index == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
-            queueSpeech(request.text, request.result, queueMode)
+            queueSpeech(request.text, request.result, queueMode, request.waitForDone)
         }
     }
 
@@ -431,21 +505,79 @@ class MainActivity : FlutterActivity() {
         pending.forEach { it.result.success(value) }
     }
 
-    private fun queueSpeech(text: String, result: MethodChannel.Result, queueMode: Int) {
+    private fun finishTtsCompletionWithSuccess(utteranceId: String, value: Boolean) {
+        pendingTtsCompletions.remove(utteranceId)?.success(value)
+    }
+
+    private fun finishTtsCompletionWithError(
+        utteranceId: String,
+        code: String,
+        message: String
+    ) {
+        pendingTtsCompletions.remove(utteranceId)?.error(code, message, null)
+    }
+
+    private fun finishPendingTtsCompletionsWithSuccess(value: Boolean) {
+        val pending = pendingTtsCompletions.values.toList()
+        pendingTtsCompletions.clear()
+        pending.forEach { it.success(value) }
+    }
+
+    private fun finishPendingTtsCompletionsWithError(code: String, message: String) {
+        val pending = pendingTtsCompletions.values.toList()
+        pendingTtsCompletions.clear()
+        pending.forEach { it.error(code, message, null) }
+    }
+
+    private fun ttsWaitTimeoutMs(text: String): Long {
+        return (4_000L + text.length * 120L).coerceAtMost(30_000L)
+    }
+
+    private fun nextTtsUtteranceId(): String {
+        nextTtsUtteranceId += 1
+        return "openvsmobile-$nextTtsUtteranceId"
+    }
+
+    private fun queueSpeech(
+        text: String,
+        result: MethodChannel.Result,
+        queueMode: Int,
+        waitForDone: Boolean
+    ) {
         val tts = textToSpeech
         if (tts == null || !textToSpeechReady) {
             result.error("TTS_NOT_READY", "Text to speech is not ready", null)
             return
         }
+        if (queueMode == TextToSpeech.QUEUE_FLUSH) {
+            finishPendingTtsCompletionsWithSuccess(false)
+        }
+        val utteranceId = nextTtsUtteranceId()
+        if (waitForDone) {
+            pendingTtsCompletions[utteranceId] = result
+        }
         val status = tts.speak(
             text,
             queueMode,
             null,
-            "openvsmobile-${System.currentTimeMillis()}"
+            utteranceId
         )
         if (status == TextToSpeech.SUCCESS) {
-            result.success(true)
+            if (waitForDone) {
+                mainHandler.postDelayed({
+                    finishTtsCompletionWithError(
+                        utteranceId,
+                        "TTS_TIMEOUT",
+                        "Text to speech timed out"
+                    )
+                }, ttsWaitTimeoutMs(text))
+            } else {
+                result.success(true)
+            }
         } else {
+            if (waitForDone) {
+                pendingTtsCompletions.remove(utteranceId)
+            }
             result.error("TTS_ERROR", "Text to speech failed", null)
         }
     }

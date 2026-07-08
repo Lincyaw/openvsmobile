@@ -9,6 +9,8 @@ abstract class VoiceInteraction {
 
   Future<bool> speak(String text);
 
+  Future<bool> speakAndWait(String text);
+
   Future<void> stopSpeaking();
 }
 
@@ -41,6 +43,16 @@ class PlatformVoiceInteraction extends VoiceInteraction {
     final trimmed = text.trim();
     if (trimmed.isEmpty) return false;
     final result = await _channel.invokeMethod<bool>('speak', {
+      'text': trimmed,
+    });
+    return result == true;
+  }
+
+  @override
+  Future<bool> speakAndWait(String text) async {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return false;
+    final result = await _channel.invokeMethod<bool>('speakAndWait', {
       'text': trimmed,
     });
     return result == true;

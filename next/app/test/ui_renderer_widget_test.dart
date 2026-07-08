@@ -62,6 +62,12 @@ class _FakeVoiceInteraction extends VoiceInteraction {
   }
 
   @override
+  Future<bool> speakAndWait(String text) async {
+    spoken.add(text);
+    return true;
+  }
+
+  @override
   Future<void> stopSpeaking() async {}
 }
 
