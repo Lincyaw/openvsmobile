@@ -138,6 +138,7 @@ describe("ui.* constructors", () => {
       focusRole: "status",
       focusOrder: 1,
       voiceInputEvent: "voice.reply",
+      voiceShortcut: true,
     });
     expect(node).toMatchObject({
       kind: "Text",
@@ -148,6 +149,7 @@ describe("ui.* constructors", () => {
       focusRole: "status",
       focusOrder: 1,
       voiceInputEvent: "voice.reply",
+      voiceShortcut: true,
     });
   });
 

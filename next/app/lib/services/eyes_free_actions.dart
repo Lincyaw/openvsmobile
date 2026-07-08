@@ -13,6 +13,7 @@ class EyesFreeAction {
   final String? prompt;
   final EyesFreeActionKind kind;
   final UiNodeEvent event;
+  final bool voiceShortcut;
 
   const EyesFreeAction({
     required this.key,
@@ -22,6 +23,7 @@ class EyesFreeAction {
     required this.event,
     this.hint,
     this.prompt,
+    this.voiceShortcut = false,
   });
 }
 
@@ -92,6 +94,7 @@ class _EyesFreeCollector {
           prompt: node.placeholder ?? node.label ?? meta.accessibilityLabel,
           kind: EyesFreeActionKind.voiceInput,
           event: UiNodeEvent(nodeId: node.id, type: voiceInputEvent),
+          voiceShortcut: meta.voiceShortcut,
         ),
       );
     } else if (node is UiButton) {
@@ -104,6 +107,7 @@ class _EyesFreeCollector {
           hint: meta.accessibilityHint,
           kind: EyesFreeActionKind.event,
           event: UiNodeEvent(nodeId: node.id, type: 'tap'),
+          voiceShortcut: meta.voiceShortcut,
         ),
       );
     } else if (node is UiListTile && node.onTapEvent != null) {
@@ -116,6 +120,7 @@ class _EyesFreeCollector {
           hint: meta.accessibilityHint ?? node.subtitle,
           kind: EyesFreeActionKind.event,
           event: UiNodeEvent(nodeId: node.id, type: node.onTapEvent!),
+          voiceShortcut: meta.voiceShortcut,
         ),
       );
     } else if (node is UiInlineBanner && node.action != null) {
@@ -128,6 +133,7 @@ class _EyesFreeCollector {
           hint: meta.accessibilityHint,
           kind: EyesFreeActionKind.event,
           event: UiNodeEvent(nodeId: node.id, type: node.action!.eventId),
+          voiceShortcut: meta.voiceShortcut,
         ),
       );
     } else if (node is UiSwitch && node.onChangeEvent != null) {
@@ -148,6 +154,7 @@ class _EyesFreeCollector {
               type: node.onChangeEvent!,
               payload: {'value': option.value},
             ),
+            voiceShortcut: node.accessibility.voiceShortcut,
           ),
         );
       }
@@ -165,6 +172,7 @@ class _EyesFreeCollector {
               type: node.onChangeEvent!,
               payload: {'tabId': tab.id},
             ),
+            voiceShortcut: node.accessibility.voiceShortcut,
           ),
         );
       }
@@ -191,6 +199,7 @@ class _EyesFreeCollector {
           type: eventType,
           payload: {'value': !value},
         ),
+        voiceShortcut: node.accessibility.voiceShortcut,
       ),
     );
   }

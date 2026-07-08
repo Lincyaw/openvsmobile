@@ -85,6 +85,7 @@ export interface UiNodeMetadata {
   focusRole?: UiFocusRole;
   focusOrder?: number;
   voiceInputEvent?: string;
+  voiceShortcut?: boolean;
 }
 
 export interface UiColumn {

@@ -56,7 +56,7 @@ next/
 
 - **Files** — directory tree + read-only viewer + git decorations (color + M/A/U/? badges) + tap-changed-file → diff. **No separate Git tab**; git is a view layer over Files.
 - **Terminal** — local PTY in the Node backend. Multiple PTYs per workspace via header chips. Soft-keyboard companion bar (Esc/Tab/Ctrl-sticky/arrows/Home/End/PgUp/PgDn/Del).
-- **Voice** — host-rendered eyes-free control surface over plugin-exposed actions. It scans typed `ui.tree` accessibility metadata and routes gestures back through `ui.event`; it is not a built-in AI chat client.
+- **Voice** — host-rendered eyes-free control surface over plugin-exposed shortcuts. It scans typed `ui.tree` nodes marked `voiceShortcut: true` and routes gestures back through `ui.event`; it is not a built-in AI chat client.
 - **Plugins** — entry point for every plugin panel. Lists active plugin panels; drills into the declarative UI tree.
 - **Settings** — server URL/token, pairing, plugin management, About.
 
@@ -70,7 +70,7 @@ The 5-tab arrangement is live in `home_shell.dart`. Earlier drafts of this doc d
 4. **Terminal** with local PTY, ANSI rendering, soft-keyboard companion.
 5. **Auth + pairing.** Bearer token now; QR-code first-run flow deferred.
 6. **Plugin loader + IPC.** Process-per-plugin via stdio JSON-RPC; capability gates declared in `plugin.json`; UI contributions are *data*, not code.
-7. **Voice / eyes-free control surface** as a host projection over plugin-exposed UI accessibility metadata and `ui.event` actions.
+7. **Voice / eyes-free control surface** as a host projection over plugin-exposed `voiceShortcut` actions and `ui.event` routing.
 8. **Notification surface** for plugins to post toasts/badges without owning chrome.
 
 If a capability is not on this list, it is **a plugin or it is deferred** — including LSP, AI assistants, code review, debugger, search-across-files, PR browsing.

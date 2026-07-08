@@ -109,6 +109,7 @@ class UiNodeAccessibility {
   final UiFocusRole? focusRole;
   final int? focusOrder;
   final String? voiceInputEvent;
+  final bool voiceShortcut;
 
   const UiNodeAccessibility({
     this.accessibilityLabel,
@@ -117,6 +118,7 @@ class UiNodeAccessibility {
     this.focusRole,
     this.focusOrder,
     this.voiceInputEvent,
+    this.voiceShortcut = false,
   });
 
   bool get isEmpty =>
@@ -125,7 +127,8 @@ class UiNodeAccessibility {
       spokenValue == null &&
       focusRole == null &&
       focusOrder == null &&
-      voiceInputEvent == null;
+      voiceInputEvent == null &&
+      !voiceShortcut;
 
   factory UiNodeAccessibility.fromJson(Map<String, dynamic> json) {
     return UiNodeAccessibility(
@@ -135,6 +138,7 @@ class UiNodeAccessibility {
       focusRole: _focusRole(json['focusRole']),
       focusOrder: _focusOrder(json['focusOrder']),
       voiceInputEvent: _nonEmptyString(json['voiceInputEvent']),
+      voiceShortcut: json['voiceShortcut'] == true,
     );
   }
 

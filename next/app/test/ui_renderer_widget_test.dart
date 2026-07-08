@@ -196,6 +196,7 @@ void main() {
       'focusRole': 'status',
       'focusOrder': 2,
       'voiceInputEvent': 'voice.reply',
+      'voiceShortcut': true,
     });
 
     expect(node.accessibility.accessibilityLabel, 'Agent status');
@@ -207,6 +208,7 @@ void main() {
     expect(node.accessibility.focusRole, UiFocusRole.status);
     expect(node.accessibility.focusOrder, 2);
     expect(node.accessibility.voiceInputEvent, 'voice.reply');
+    expect(node.accessibility.voiceShortcut, isTrue);
   });
 
   testWidgets('renders eyes-free metadata as Semantics', (tester) async {

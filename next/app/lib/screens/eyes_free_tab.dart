@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -30,13 +32,26 @@ class EyesFreeTab extends StatefulWidget {
 }
 
 class _EyesFreeTabState extends State<EyesFreeTab> {
+  static const _confirmTapWindow = Duration(milliseconds: 700);
+  static const double _confirmTapSlop = 96;
+
   int _index = 0;
   String? _selectedActionKey;
   bool _selectionPinned = false;
   bool _executing = false;
+  Offset? _pointerDownPosition;
+  bool _pointerMoved = false;
+  DateTime? _lastTapAt;
+  Offset? _lastTapPosition;
   String? _lastSpokenStatusKey;
   String? _pendingSpokenStatusKey;
   String? _pendingSpokenStatus;
+
+  void _debugLog(String message) {
+    if (!kDebugMode) return;
+    // ignore: avoid_print
+    print('[eyes-free-tab] $message');
+  }
 
   @override
   void initState() {
@@ -78,6 +93,7 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
             ?.tree;
         final panelState = collectEyesFreeState(tree);
         for (final action in panelState.actions) {
+          if (!action.voiceShortcut) continue;
           result.add(
             _EyesFreeTargetAction(
               plugin: plugin,
@@ -166,6 +182,7 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
     if (_executing) return;
     final actions = _actions;
     if (actions.isEmpty) {
+      _debugLog('move ignored: no actions');
       _speakLater('No eyes-free actions available');
       return;
     }
@@ -176,6 +193,10 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
       _selectionPinned = true;
       _lastSpokenStatusKey = actions[_index].statusKey;
     });
+    _debugLog(
+      'move delta=$delta index=${_safeIndex(actions.length)} '
+      'count=${actions.length} action=${actions[_safeIndex(actions.length)].key}',
+    );
     HapticFeedback.selectionClick();
     _speakLater(_currentAnnouncement(actions));
   }
@@ -186,19 +207,93 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
     _move(velocity < 0 ? 1 : -1);
   }
 
+  void _onPointerDown(PointerDownEvent event) {
+    _pointerDownPosition = event.position;
+    _pointerMoved = false;
+    _debugLog(
+      'pointer down x=${event.position.dx.toStringAsFixed(1)} '
+      'y=${event.position.dy.toStringAsFixed(1)}',
+    );
+  }
+
+  void _onPointerMove(PointerMoveEvent event) {
+    final down = _pointerDownPosition;
+    if (down == null) return;
+    final distance = (event.position - down).distance;
+    if (distance > kTouchSlop && !_pointerMoved) {
+      _pointerMoved = true;
+      _debugLog(
+        'pointer moved beyond tap slop distance=${distance.toStringAsFixed(1)}',
+      );
+    }
+  }
+
+  void _onPointerUp(PointerUpEvent event) {
+    final down = _pointerDownPosition;
+    final moved =
+        _pointerMoved ||
+        (down != null && (event.position - down).distance > kTouchSlop);
+    _pointerDownPosition = null;
+    _pointerMoved = false;
+    _debugLog(
+      'pointer up moved=$moved x=${event.position.dx.toStringAsFixed(1)} '
+      'y=${event.position.dy.toStringAsFixed(1)}',
+    );
+    if (moved) return;
+    _registerConfirmTap(event.position);
+  }
+
+  void _registerConfirmTap(Offset position) {
+    final now = DateTime.now();
+    final previousAt = _lastTapAt;
+    final previousPosition = _lastTapPosition;
+    _lastTapAt = now;
+    _lastTapPosition = position;
+    if (previousAt == null || previousPosition == null) {
+      _debugLog('tap recorded: waiting for second tap');
+      return;
+    }
+    final gap = now.difference(previousAt);
+    if (gap > _confirmTapWindow) {
+      _debugLog('tap ignored: gap ${gap.inMilliseconds}ms exceeded window');
+      return;
+    }
+    if ((position - previousPosition).distance > _confirmTapSlop) {
+      _debugLog(
+        'tap ignored: distance '
+        '${(position - previousPosition).distance.toStringAsFixed(1)} exceeded slop',
+      );
+      return;
+    }
+    _lastTapAt = null;
+    _lastTapPosition = null;
+    _debugLog('double tap confirmed gap=${gap.inMilliseconds}ms');
+    unawaited(_executeCurrent());
+  }
+
   Future<void> _executeCurrent() async {
-    if (_executing) return;
+    if (_executing) {
+      _debugLog('execute ignored: already executing');
+      return;
+    }
     final actions = _actions;
     if (actions.isEmpty) {
+      _debugLog('execute ignored: no actions');
       _speakLater('No eyes-free actions available');
       return;
     }
     _syncSelection(actions);
     final selected = actions[_safeIndex(actions.length)];
     if (selected.frozen) {
+      _debugLog('execute ignored: plugin frozen plugin=${selected.plugin.id}');
       _speakLater('${selected.plugin.name} is frozen');
       return;
     }
+    _debugLog(
+      'execute action plugin=${selected.plugin.id} panel=${selected.panel.id} '
+      'key=${selected.action.key} kind=${selected.action.kind.name} '
+      'event=${selected.action.event.type}',
+    );
     setState(() => _executing = true);
     HapticFeedback.mediumImpact();
     try {
@@ -220,8 +315,12 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
   Future<void> _executeVoiceInput(_EyesFreeTargetAction selected) async {
     final voiceSession = VoiceActivity.instance.begin();
     final action = selected.action;
+    _debugLog(
+      'voice input begin node=${action.event.nodeId} event=${action.event.type}',
+    );
     try {
       final available = await _speechRecognitionAvailable();
+      _debugLog('speech recognition available=$available');
       if (!available) {
         await _speak('Speech recognition is not available on this device');
         return;
@@ -239,9 +338,11 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
         return;
       }
       if (text == null || text.isEmpty) {
+        _debugLog('voice input result empty');
         await _speak('No speech recognized');
         return;
       }
+      _debugLog('voice input result length=${text.length}');
       await _dispatch(
         selected,
         UiNodeEvent(
@@ -302,6 +403,10 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
   }
 
   Future<void> _dispatch(_EyesFreeTargetAction selected, UiNodeEvent event) {
+    _debugLog(
+      'dispatch plugin=${selected.plugin.id} panel=${selected.panel.id} '
+      'node=${event.nodeId} type=${event.type}',
+    );
     return widget.appState.uiPanels.dispatchEvent(
       pluginId: selected.plugin.id,
       panelId: selected.panel.id,
@@ -344,6 +449,7 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
   }
 
   void _exit() {
+    _debugLog('exit');
     HapticFeedback.heavyImpact();
     unawaited(_stopSpeaking());
     widget.onExit();
@@ -360,77 +466,87 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
       letterSpacing: 0,
     );
 
-    return GestureDetector(
-      key: const ValueKey<String>('eyes-free-tab-gesture-surface'),
+    return Listener(
       behavior: HitTestBehavior.opaque,
-      onHorizontalDragEnd: _onHorizontalDragEnd,
-      onDoubleTap: _executeCurrent,
-      onLongPress: _exit,
-      child: Semantics(
-        label:
-            selected?.action.spoken ??
-            selected?.panelState.statusText ??
-            'No eyes-free actions available',
-        hint: 'Swipe left or right to choose. Double tap to confirm.',
-        button: selected != null,
-        child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(AppSpacing.xl),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                if (selected != null) ...[
-                  Text(
-                    selected.plugin.name,
-                    style: theme.textTheme.titleMedium?.copyWith(
-                      color: scheme.primary,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(height: AppSpacing.xs),
-                  Text(
-                    selected.panel.title,
-                    style: theme.textTheme.labelLarge?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ),
-                  if (selected.panelState.statusText != null) ...[
-                    const SizedBox(height: AppSpacing.sm),
+      onPointerDown: _onPointerDown,
+      onPointerMove: _onPointerMove,
+      onPointerUp: _onPointerUp,
+      child: GestureDetector(
+        key: const ValueKey<String>('eyes-free-tab-gesture-surface'),
+        behavior: HitTestBehavior.opaque,
+        onHorizontalDragEnd: _onHorizontalDragEnd,
+        onLongPress: _exit,
+        child: Semantics(
+          key: const ValueKey<String>('eyes-free-tab-semantics'),
+          label:
+              selected?.action.spoken ??
+              selected?.panelState.statusText ??
+              'No eyes-free actions available',
+          hint: 'Swipe left or right to choose. Double tap to confirm.',
+          button: selected != null,
+          onTap: selected == null ? null : _executeCurrent,
+          onLongPress: _exit,
+          onIncrease: selected == null ? null : () => _move(1),
+          onDecrease: selected == null ? null : () => _move(-1),
+          child: SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(AppSpacing.xl),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (selected != null) ...[
                     Text(
-                      selected.panelState.statusText!,
-                      style: theme.textTheme.bodyMedium?.copyWith(
+                      selected.plugin.name,
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        color: scheme.primary,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: AppSpacing.xs),
+                    Text(
+                      selected.panel.title,
+                      style: theme.textTheme.labelLarge?.copyWith(
                         color: scheme.onSurfaceVariant,
                       ),
                     ),
+                    if (selected.panelState.statusText != null) ...[
+                      const SizedBox(height: AppSpacing.sm),
+                      Text(
+                        selected.panelState.statusText!,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
                   ],
-                ],
-                const Spacer(),
-                if (selected == null)
-                  Text(
-                    widget.appState.plugins.plugins.isEmpty
-                        ? 'No plugins available'
-                        : 'No eyes-free actions available',
-                    textAlign: TextAlign.center,
-                    style: actionStyle,
-                  )
-                else ...[
-                  Text(
-                    '${_safeIndex(actions.length) + 1} / ${actions.length}',
-                    textAlign: TextAlign.center,
-                    style: theme.textTheme.labelLarge?.copyWith(
-                      color: scheme.primary,
+                  const Spacer(),
+                  if (selected == null)
+                    Text(
+                      widget.appState.plugins.plugins.isEmpty
+                          ? 'No plugins available'
+                          : 'No eyes-free actions available',
+                      textAlign: TextAlign.center,
+                      style: actionStyle,
+                    )
+                  else ...[
+                    Text(
+                      '${_safeIndex(actions.length) + 1} / ${actions.length}',
+                      textAlign: TextAlign.center,
+                      style: theme.textTheme.labelLarge?.copyWith(
+                        color: scheme.primary,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: AppSpacing.md),
-                  Text(
-                    selected.action.label,
-                    textAlign: TextAlign.center,
-                    style: actionStyle,
-                  ),
+                    const SizedBox(height: AppSpacing.md),
+                    Text(
+                      selected.action.label,
+                      textAlign: TextAlign.center,
+                      style: actionStyle,
+                    ),
+                  ],
+                  const Spacer(),
+                  if (_executing) const LinearProgressIndicator(),
                 ],
-                const Spacer(),
-                if (_executing) const LinearProgressIndicator(),
-              ],
+              ),
             ),
           ),
         ),

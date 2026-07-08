@@ -691,6 +691,7 @@ function actionTile({
   hint,
   role = "action",
   eventId = "tap",
+  voiceShortcut = false,
 }) {
   return ui.withMetadata(
     ui.listTile({
@@ -706,6 +707,7 @@ function actionTile({
       spokenValue: subtitle ? `${title}. ${subtitle}` : title,
       focusRole: role,
       focusOrder: order,
+      voiceShortcut,
     },
   );
 }
@@ -778,6 +780,7 @@ function buildTree() {
             focusRole: "action",
             focusOrder: 2,
             voiceInputEvent: "send",
+            voiceShortcut: true,
           },
         ),
       ],
@@ -803,6 +806,7 @@ function buildTree() {
           accent: "info",
           order: 4,
           hint: "Reads the latest AgentM reply through speech.",
+          voiceShortcut: true,
         }),
         actionTile({
           id: "agentm-interrupt",
@@ -813,6 +817,7 @@ function buildTree() {
           order: 5,
           role: "danger",
           hint: "Stops the current AgentM turn.",
+          voiceShortcut: true,
         }),
       ],
     }),

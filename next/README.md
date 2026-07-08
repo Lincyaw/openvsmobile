@@ -343,9 +343,12 @@ so reordered or duplicate pushes never roll the UI back.
 
 Any `UiNode` may also carry eyes-free metadata:
 `accessibilityLabel`, `accessibilityHint`, `spokenValue`, `focusRole`,
-`focusOrder`, and `voiceInputEvent`. Flutter renders the accessibility
-fields as native semantics; `voiceInputEvent` is reserved for a voice
-input layer that can turn dictated text into a normal `ui.event`.
+`focusOrder`, `voiceInputEvent`, and `voiceShortcut`. Flutter renders
+the accessibility fields as native semantics; `voiceInputEvent` lets a
+voice input layer turn dictated text into a normal `ui.event`. The
+top-level Voice tab only includes actions explicitly marked
+`voiceShortcut: true`, so dense plugin panels do not become oversized
+blind command menus.
 
 A panel's lifetime ends when its plugin's process exits or is disabled
 — the host emits one final `ui.tree { tree: null, version: ++ }` per

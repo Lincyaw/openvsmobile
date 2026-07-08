@@ -17,6 +17,7 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
@@ -36,13 +37,16 @@ class MainActivity : FlutterActivity() {
     private val updaterChannel = "dev.lincyaw.mobilecode/updater"
     private val backendBackupChannel = "dev.lincyaw.mobilecode/backend_backup"
     private val accessibilityVoiceChannel = "dev.lincyaw.mobilecode/accessibility_voice"
+    private val voiceLogTag = "OpenVSMobileVoice"
     private val requestExportBackendBackup = 6201
     private val requestImportBackendBackup = 6202
     private val requestRecordAudio = 6203
+    private val requestSpeechRecognition = 6204
     private var pendingDocumentResult: MethodChannel.Result? = null
     private var pendingExportContent: String? = null
     private var pendingSpeechResult: MethodChannel.Result? = null
     private var pendingSpeechPrompt: String? = null
+    private var pendingSpeechFallbackReason: String? = null
     private var activeSpeechRecognizer: SpeechRecognizer? = null
     private var textToSpeech: TextToSpeech? = null
     private var textToSpeechReady = false
@@ -121,10 +125,13 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "recognizeOnce" -> {
+                        Log.d(voiceLogTag, "recognizeOnce method call")
                         recognizeOnce(call.argument<String>("prompt"), result)
                     }
                     "isSpeechRecognitionAvailable" -> {
-                        result.success(SpeechRecognizer.isRecognitionAvailable(this))
+                        val available = SpeechRecognizer.isRecognitionAvailable(this)
+                        Log.d(voiceLogTag, "isSpeechRecognitionAvailable=$available")
+                        result.success(available)
                     }
                     "speak" -> {
                         val text = call.argument<String>("text")
@@ -239,6 +246,7 @@ class MainActivity : FlutterActivity() {
         when (requestCode) {
             requestExportBackendBackup -> finishExport(resultCode, data)
             requestImportBackendBackup -> finishImport(resultCode, data)
+            requestSpeechRecognition -> finishSpeechActivity(resultCode, data)
         }
     }
 
@@ -263,9 +271,11 @@ class MainActivity : FlutterActivity() {
 
     private fun recognizeOnce(prompt: String?, result: MethodChannel.Result) {
         if (pendingSpeechResult != null || activeSpeechRecognizer != null) {
+            Log.d(voiceLogTag, "recognizeOnce rejected: busy")
             result.error("BUSY", "Speech recognition is already active", null)
             return
         }
+        Log.d(voiceLogTag, "recognizeOnce accepted promptLength=${prompt?.length ?: 0}")
         pendingSpeechResult = result
         pendingSpeechPrompt = prompt
         if (
@@ -274,6 +284,7 @@ class MainActivity : FlutterActivity() {
                 Manifest.permission.RECORD_AUDIO
             ) != PackageManager.PERMISSION_GRANTED
         ) {
+            Log.d(voiceLogTag, "requesting RECORD_AUDIO permission")
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), requestRecordAudio)
             return
         }
@@ -283,24 +294,46 @@ class MainActivity : FlutterActivity() {
     private fun startSpeechRecognition() {
         val result = pendingSpeechResult ?: return
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            Log.d(voiceLogTag, "startSpeechRecognition unavailable")
             finishPendingSpeechWithError(
                 "UNAVAILABLE",
                 "Speech recognition is not available on this device"
             )
             return
         }
+        Log.d(voiceLogTag, "startSpeechRecognition create recognizer")
         val recognizer = SpeechRecognizer.createSpeechRecognizer(this)
         activeSpeechRecognizer = recognizer
         recognizer.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) {}
-            override fun onBeginningOfSpeech() {}
+            override fun onReadyForSpeech(params: Bundle?) {
+                Log.d(voiceLogTag, "onReadyForSpeech")
+            }
+            override fun onBeginningOfSpeech() {
+                Log.d(voiceLogTag, "onBeginningOfSpeech")
+            }
             override fun onRmsChanged(rmsdB: Float) {}
             override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() {}
+            override fun onEndOfSpeech() {
+                Log.d(voiceLogTag, "onEndOfSpeech")
+            }
             override fun onPartialResults(partialResults: Bundle?) {}
             override fun onEvent(eventType: Int, params: Bundle?) {}
 
             override fun onError(error: Int) {
+                if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
+                    Log.d(
+                        voiceLogTag,
+                        "direct recognizer permission denied; falling back to activity"
+                    )
+                    pendingSpeechFallbackReason = "permission"
+                    destroyActiveSpeechRecognizer()
+                    startSpeechRecognitionActivity()
+                    return
+                }
+                Log.d(
+                    voiceLogTag,
+                    "onError code=${speechErrorCode(error)} raw=$error"
+                )
                 finishPendingSpeechWithError(
                     speechErrorCode(error),
                     speechErrorMessage(error)
@@ -312,6 +345,7 @@ class MainActivity : FlutterActivity() {
                     SpeechRecognizer.RESULTS_RECOGNITION
                 )
                 val text = matches?.firstOrNull { it.isNotBlank() } ?: ""
+                Log.d(voiceLogTag, "onResults textLength=${text.length}")
                 val pending = pendingSpeechResult
                 clearPendingSpeech()
                 pending?.success(text)
@@ -329,24 +363,81 @@ class MainActivity : FlutterActivity() {
             }
         }
         try {
+            Log.d(voiceLogTag, "startListening")
             recognizer.startListening(intent)
         } catch (e: Exception) {
+            Log.d(voiceLogTag, "startListening failed: ${e.message}")
             result.error("START_FAILED", e.message, null)
             clearPendingSpeech()
         }
     }
 
+    private fun startSpeechRecognitionActivity() {
+        if (pendingSpeechResult == null) return
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+            )
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
+            pendingSpeechPrompt?.let {
+                putExtra(RecognizerIntent.EXTRA_PROMPT, it)
+            }
+        }
+        try {
+            Log.d(voiceLogTag, "startActivityForResult recognizer fallback")
+            @Suppress("DEPRECATION")
+            startActivityForResult(intent, requestSpeechRecognition)
+        } catch (e: ActivityNotFoundException) {
+            Log.d(voiceLogTag, "recognizer fallback unavailable: ${e.message}")
+            finishPendingSpeechWithError(
+                "UNAVAILABLE",
+                "Speech recognition is not available on this device"
+            )
+        } catch (e: Exception) {
+            Log.d(voiceLogTag, "recognizer fallback failed: ${e.message}")
+            finishPendingSpeechWithError("START_FAILED", e.message ?: "Speech recognition failed")
+        }
+    }
+
+    private fun finishSpeechActivity(resultCode: Int, data: Intent?) {
+        val pending = pendingSpeechResult ?: return
+        if (resultCode != Activity.RESULT_OK) {
+            Log.d(voiceLogTag, "recognizer fallback canceled resultCode=$resultCode")
+            val message = if (pendingSpeechFallbackReason == "permission") {
+                "Speech recognition was canceled. Check microphone permission for the system speech service."
+            } else {
+                "Speech recognition was canceled"
+            }
+            clearPendingSpeech()
+            pending.error("CANCELED", message, null)
+            return
+        }
+        val matches = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+        val text = matches?.firstOrNull { it.isNotBlank() } ?: ""
+        Log.d(voiceLogTag, "recognizer fallback result textLength=${text.length}")
+        clearPendingSpeech()
+        pending.success(text)
+    }
+
     private fun finishPendingSpeechWithError(code: String, message: String) {
+        Log.d(voiceLogTag, "finishPendingSpeechWithError code=$code message=$message")
         val result = pendingSpeechResult
         clearPendingSpeech()
         result?.error(code, message, null)
     }
 
     private fun clearPendingSpeech() {
-        activeSpeechRecognizer?.destroy()
-        activeSpeechRecognizer = null
+        destroyActiveSpeechRecognizer()
         pendingSpeechResult = null
         pendingSpeechPrompt = null
+        pendingSpeechFallbackReason = null
+    }
+
+    private fun destroyActiveSpeechRecognizer() {
+        activeSpeechRecognizer?.destroy()
+        activeSpeechRecognizer = null
     }
 
     private fun speechErrorCode(error: Int): String =

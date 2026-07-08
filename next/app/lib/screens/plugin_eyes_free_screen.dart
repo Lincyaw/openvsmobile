@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -32,11 +34,24 @@ class PluginEyesFreeScreen extends StatefulWidget {
 }
 
 class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
+  static const _confirmTapWindow = Duration(milliseconds: 700);
+  static const double _confirmTapSlop = 96;
+
   int _index = 0;
   String? _selectedActionKey;
   bool _executing = false;
+  Offset? _pointerDownPosition;
+  bool _pointerMoved = false;
+  DateTime? _lastTapAt;
+  Offset? _lastTapPosition;
   String? _lastSpokenStatus;
   String? _pendingSpokenStatus;
+
+  void _debugLog(String message) {
+    if (!kDebugMode) return;
+    // ignore: avoid_print
+    print('[plugin-eyes-free:${widget.info.id}/${widget.panel.id}] $message');
+  }
 
   @override
   void initState() {
@@ -121,6 +136,7 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
     if (_executing) return;
     final actions = collectEyesFreeState(_tree).actions;
     if (actions.isEmpty) {
+      _debugLog('move ignored: no actions');
       _speakLater('No actions available');
       return;
     }
@@ -129,6 +145,10 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
       if (_index < 0) _index += actions.length;
       _selectedActionKey = actions[_index].key;
     });
+    _debugLog(
+      'move delta=$delta index=${_safeIndex(actions.length)} '
+      'count=${actions.length} action=${actions[_safeIndex(actions.length)].key}',
+    );
     HapticFeedback.selectionClick();
     _speakLater(_currentAnnouncement(actions));
   }
@@ -139,19 +159,92 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
     _move(velocity < 0 ? 1 : -1);
   }
 
+  void _onPointerDown(PointerDownEvent event) {
+    _pointerDownPosition = event.position;
+    _pointerMoved = false;
+    _debugLog(
+      'pointer down x=${event.position.dx.toStringAsFixed(1)} '
+      'y=${event.position.dy.toStringAsFixed(1)}',
+    );
+  }
+
+  void _onPointerMove(PointerMoveEvent event) {
+    final down = _pointerDownPosition;
+    if (down == null) return;
+    final distance = (event.position - down).distance;
+    if (distance > kTouchSlop && !_pointerMoved) {
+      _pointerMoved = true;
+      _debugLog(
+        'pointer moved beyond tap slop distance=${distance.toStringAsFixed(1)}',
+      );
+    }
+  }
+
+  void _onPointerUp(PointerUpEvent event) {
+    final down = _pointerDownPosition;
+    final moved =
+        _pointerMoved ||
+        (down != null && (event.position - down).distance > kTouchSlop);
+    _pointerDownPosition = null;
+    _pointerMoved = false;
+    _debugLog(
+      'pointer up moved=$moved x=${event.position.dx.toStringAsFixed(1)} '
+      'y=${event.position.dy.toStringAsFixed(1)}',
+    );
+    if (moved) return;
+    _registerConfirmTap(event.position);
+  }
+
+  void _registerConfirmTap(Offset position) {
+    final now = DateTime.now();
+    final previousAt = _lastTapAt;
+    final previousPosition = _lastTapPosition;
+    _lastTapAt = now;
+    _lastTapPosition = position;
+    if (previousAt == null || previousPosition == null) {
+      _debugLog('tap recorded: waiting for second tap');
+      return;
+    }
+    final gap = now.difference(previousAt);
+    if (gap > _confirmTapWindow) {
+      _debugLog('tap ignored: gap ${gap.inMilliseconds}ms exceeded window');
+      return;
+    }
+    if ((position - previousPosition).distance > _confirmTapSlop) {
+      _debugLog(
+        'tap ignored: distance '
+        '${(position - previousPosition).distance.toStringAsFixed(1)} exceeded slop',
+      );
+      return;
+    }
+    _lastTapAt = null;
+    _lastTapPosition = null;
+    _debugLog('double tap confirmed gap=${gap.inMilliseconds}ms');
+    unawaited(_executeCurrent());
+  }
+
   Future<void> _executeCurrent() async {
-    if (_executing) return;
+    if (_executing) {
+      _debugLog('execute ignored: already executing');
+      return;
+    }
     final state = collectEyesFreeState(_tree);
     if (state.actions.isEmpty) {
+      _debugLog('execute ignored: no actions');
       _speakLater('No actions available');
       return;
     }
     if (widget.frozen) {
+      _debugLog('execute ignored: plugin frozen');
       _speakLater('${widget.info.name} is frozen');
       return;
     }
     _syncSelection(state.actions);
     final action = state.actions[_safeIndex(state.actions.length)];
+    _debugLog(
+      'execute action key=${action.key} kind=${action.kind.name} '
+      'node=${action.event.nodeId} event=${action.event.type}',
+    );
     setState(() => _executing = true);
     HapticFeedback.mediumImpact();
     try {
@@ -172,8 +265,12 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
 
   Future<void> _executeVoiceInput(EyesFreeAction action) async {
     final voiceSession = VoiceActivity.instance.begin();
+    _debugLog(
+      'voice input begin node=${action.event.nodeId} event=${action.event.type}',
+    );
     try {
       final available = await _speechRecognitionAvailable();
+      _debugLog('speech recognition available=$available');
       if (!available) {
         await _speak('Speech recognition is not available on this device');
         return;
@@ -191,9 +288,11 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
         return;
       }
       if (text == null || text.isEmpty) {
+        _debugLog('voice input result empty');
         await _speak('No speech recognized');
         return;
       }
+      _debugLog('voice input result length=${text.length}');
       await _dispatch(
         UiNodeEvent(
           nodeId: action.event.nodeId,
@@ -270,6 +369,7 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
   }
 
   Future<void> _dispatch(UiNodeEvent event) {
+    _debugLog('dispatch node=${event.nodeId} type=${event.type}');
     return widget.appState.uiPanels.dispatchEvent(
       pluginId: widget.info.id,
       panelId: widget.panel.id,
@@ -278,6 +378,7 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
   }
 
   void _exit() {
+    _debugLog('exit');
     HapticFeedback.heavyImpact();
     unawaited(_stopSpeaking());
     Navigator.of(context).maybePop();
@@ -306,64 +407,74 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
           onPressed: _exit,
         ),
       ),
-      body: GestureDetector(
-        key: const ValueKey<String>('eyes-free-gesture-surface'),
+      body: Listener(
         behavior: HitTestBehavior.opaque,
-        onHorizontalDragEnd: _onHorizontalDragEnd,
-        onDoubleTap: _executeCurrent,
-        onLongPress: _exit,
-        child: Semantics(
-          label: selected?.spoken ?? state.statusText ?? 'No actions available',
-          hint: 'Swipe left or right to choose. Double tap to confirm.',
-          button: selected != null,
-          child: SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.all(AppSpacing.xl),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text(
-                    widget.panel.title,
-                    style: theme.textTheme.labelLarge?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ),
-                  if (state.statusText != null) ...[
-                    const SizedBox(height: AppSpacing.sm),
+        onPointerDown: _onPointerDown,
+        onPointerMove: _onPointerMove,
+        onPointerUp: _onPointerUp,
+        child: GestureDetector(
+          key: const ValueKey<String>('eyes-free-gesture-surface'),
+          behavior: HitTestBehavior.opaque,
+          onHorizontalDragEnd: _onHorizontalDragEnd,
+          onLongPress: _exit,
+          child: Semantics(
+            label:
+                selected?.spoken ?? state.statusText ?? 'No actions available',
+            hint: 'Swipe left or right to choose. Double tap to confirm.',
+            button: selected != null,
+            onTap: selected == null ? null : _executeCurrent,
+            onLongPress: _exit,
+            onIncrease: selected == null ? null : () => _move(1),
+            onDecrease: selected == null ? null : () => _move(-1),
+            child: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(AppSpacing.xl),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
                     Text(
-                      state.statusText!,
-                      style: theme.textTheme.bodyMedium?.copyWith(
+                      widget.panel.title,
+                      style: theme.textTheme.labelLarge?.copyWith(
                         color: scheme.onSurfaceVariant,
                       ),
                     ),
-                  ],
-                  const Spacer(),
-                  if (selected == null)
-                    Text(
-                      _tree == null
-                          ? 'Waiting for panel'
-                          : 'No actions exposed',
-                      textAlign: TextAlign.center,
-                      style: titleStyle,
-                    )
-                  else ...[
-                    Text(
-                      '${_safeIndex(actions.length) + 1} / ${actions.length}',
-                      textAlign: TextAlign.center,
-                      style: theme.textTheme.labelLarge?.copyWith(
-                        color: scheme.primary,
+                    if (state.statusText != null) ...[
+                      const SizedBox(height: AppSpacing.sm),
+                      Text(
+                        state.statusText!,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: AppSpacing.md),
-                    Text(
-                      selected.label,
-                      textAlign: TextAlign.center,
-                      style: titleStyle,
-                    ),
+                    ],
+                    const Spacer(),
+                    if (selected == null)
+                      Text(
+                        _tree == null
+                            ? 'Waiting for panel'
+                            : 'No actions exposed',
+                        textAlign: TextAlign.center,
+                        style: titleStyle,
+                      )
+                    else ...[
+                      Text(
+                        '${_safeIndex(actions.length) + 1} / ${actions.length}',
+                        textAlign: TextAlign.center,
+                        style: theme.textTheme.labelLarge?.copyWith(
+                          color: scheme.primary,
+                        ),
+                      ),
+                      const SizedBox(height: AppSpacing.md),
+                      Text(
+                        selected.label,
+                        textAlign: TextAlign.center,
+                        style: titleStyle,
+                      ),
+                    ],
+                    const Spacer(),
+                    if (_executing) const LinearProgressIndicator(),
                   ],
-                  const Spacer(),
-                  if (_executing) const LinearProgressIndicator(),
-                ],
+                ),
               ),
             ),
           ),

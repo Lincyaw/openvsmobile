@@ -59,6 +59,7 @@ export interface UiNodeMetadata {
   focusRole?: UiFocusRole;
   focusOrder?: number;
   voiceInputEvent?: string;
+  voiceShortcut?: boolean;
 }
 
 const SPACING_TOKENS: ReadonlySet<string> = new Set([
@@ -842,6 +843,14 @@ function parseNodeMetadata(
       );
     }
     out.voiceInputEvent = voiceInputEvent;
+  }
+  if (r.voiceShortcut !== undefined && r.voiceShortcut !== null) {
+    if (typeof r.voiceShortcut !== "boolean") {
+      throw new UiValidationError(
+        `${path}.voiceShortcut: must be a boolean when provided`,
+      );
+    }
+    out.voiceShortcut = r.voiceShortcut;
   }
   return out;
 }

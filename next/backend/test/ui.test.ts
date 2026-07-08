@@ -197,6 +197,7 @@ describe("validateUiTree", () => {
       focusRole: "status",
       focusOrder: 2,
       voiceInputEvent: "voice.reply",
+      voiceShortcut: true,
     });
     expect(tree.accessibilityLabel).toBe("Agent status");
     expect(tree.accessibilityHint).toBe("Double tap to open details");
@@ -204,6 +205,7 @@ describe("validateUiTree", () => {
     expect(tree.focusRole).toBe("status");
     expect(tree.focusOrder).toBe(2);
     expect(tree.voiceInputEvent).toBe("voice.reply");
+    expect(tree.voiceShortcut).toBe(true);
   });
 
   it("rejects invalid eyes-free metadata", () => {
@@ -223,6 +225,14 @@ describe("validateUiTree", () => {
         focusOrder: -1,
       }),
     ).toThrow(/focusOrder/);
+    expect(() =>
+      validateUiTree({
+        kind: "Text",
+        id: "status",
+        text: "Done",
+        voiceShortcut: "yes",
+      }),
+    ).toThrow(/voiceShortcut/);
   });
 
   // ---- Batch 1 widgets (§4.3) ----

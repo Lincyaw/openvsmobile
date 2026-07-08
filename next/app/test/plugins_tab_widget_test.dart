@@ -21,6 +21,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -110,9 +111,13 @@ class _FakeVoiceInteraction extends VoiceInteraction {
   }
 }
 
-Future<void> _doubleTap(WidgetTester tester, Finder finder) async {
+Future<void> _doubleTap(
+  WidgetTester tester,
+  Finder finder, {
+  Duration gap = const Duration(milliseconds: 50),
+}) async {
   await tester.tap(finder);
-  await tester.pump(const Duration(milliseconds: 50));
+  await tester.pump(gap);
   await tester.tap(finder);
   await tester.pumpAndSettle();
 }
@@ -481,6 +486,7 @@ void main() {
             'focusRole': 'action',
             'focusOrder': 1,
             'voiceInputEvent': 'send',
+            'voiceShortcut': true,
           },
           <String, dynamic>{
             'kind': 'ListTile',
@@ -489,6 +495,7 @@ void main() {
             'onTapEvent': 'tap',
             'focusRole': 'action',
             'focusOrder': 2,
+            'voiceShortcut': true,
           },
         ],
       },
@@ -522,7 +529,7 @@ void main() {
     expect(find.text('Dictate and send reply'), findsOneWidget);
     expect(voice.spoken.join('\n'), contains('Eyes-free mode'));
 
-    await _doubleTap(tester, surface);
+    await _doubleTap(tester, surface, gap: const Duration(milliseconds: 500));
     expect(dispatched, hasLength(2));
     expect(dispatched[0].nodeId, 'reply');
     expect(dispatched[0].type, 'changed');
@@ -697,6 +704,7 @@ void main() {
             'focusRole': 'action',
             'focusOrder': 1,
             'voiceInputEvent': 'send',
+            'voiceShortcut': true,
           },
         ],
       },
@@ -762,6 +770,7 @@ void main() {
             'focusRole': 'action',
             'focusOrder': 1,
             'voiceInputEvent': 'send',
+            'voiceShortcut': true,
           },
         ],
       },
@@ -898,6 +907,7 @@ void main() {
   testWidgets('Voice tab swipes plugin actions and dispatches to the panel', (
     tester,
   ) async {
+    final semantics = tester.ensureSemantics();
     final panel = const PluginPanelStub(id: 'chat', title: 'Chat');
     final appState = await _appStateWithSeed([
       _info(id: 'agentm', name: 'AgentM', panels: [panel]),
@@ -929,6 +939,7 @@ void main() {
             'focusRole': 'action',
             'focusOrder': 1,
             'voiceInputEvent': 'send',
+            'voiceShortcut': true,
           },
           <String, dynamic>{
             'kind': 'ListTile',
@@ -937,6 +948,7 @@ void main() {
             'onTapEvent': 'tap',
             'focusRole': 'action',
             'focusOrder': 2,
+            'voiceShortcut': true,
           },
         ],
       },
@@ -970,6 +982,15 @@ void main() {
     expect(find.text('AgentM'), findsOneWidget);
     expect(find.text('Dictate and send reply'), findsOneWidget);
     expect(voice.spoken.join('\n'), contains('Voice control'));
+    final semanticsData = tester
+        .getSemantics(
+          find.byKey(const ValueKey<String>('eyes-free-tab-semantics')),
+        )
+        .getSemanticsData();
+    expect(semanticsData.hasAction(SemanticsAction.tap), isTrue);
+    expect(semanticsData.hasAction(SemanticsAction.increase), isTrue);
+    expect(semanticsData.hasAction(SemanticsAction.decrease), isTrue);
+    semantics.dispose();
 
     await _doubleTap(tester, surface);
     expect(dispatched, hasLength(2));
@@ -1032,7 +1053,8 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('Refresh interval... (current: 5s)'), findsOneWidget);
+      expect(find.text('No eyes-free actions available'), findsOneWidget);
+      expect(find.text('Refresh interval... (current: 5s)'), findsNothing);
 
       appState.uiPanels.debugInjectPush(<String, dynamic>{
         'pluginId': 'agentm',
@@ -1046,6 +1068,7 @@ void main() {
           'focusRole': 'action',
           'focusOrder': 1,
           'voiceInputEvent': 'send',
+          'voiceShortcut': true,
         },
       });
       await tester.pumpAndSettle();
