@@ -16,6 +16,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_highlight/flutter_highlight.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
+import 'package:mobilecode/services/voice_interaction.dart';
 import 'package:mobilecode/ui/app_tokens.dart';
 import 'package:mobilecode/ui/icon_catalog.dart';
 import 'package:mobilecode/ui/ui_modal_renderer.dart';
@@ -26,6 +27,7 @@ Widget _host(
   UiNode tree, {
   void Function(UiNodeEvent)? onEvent,
   void Function(String gridId, String tileId)? onAppTileLongPress,
+  VoiceInteraction voice = const PlatformVoiceInteraction(),
 }) {
   return MaterialApp(
     home: Scaffold(
@@ -33,11 +35,31 @@ Widget _host(
         child: UiRenderer(
           tree: tree,
           onEvent: onEvent ?? (_) {},
+          voice: voice,
           onAppTileLongPress: onAppTileLongPress,
         ),
       ),
     ),
   );
+}
+
+class _FakeVoiceInteraction extends VoiceInteraction {
+  final String? text;
+  final List<String> spoken = <String>[];
+
+  _FakeVoiceInteraction(this.text);
+
+  @override
+  Future<String?> recognizeOnce({String? prompt}) async => text;
+
+  @override
+  Future<bool> speak(String text) async {
+    spoken.add(text);
+    return true;
+  }
+
+  @override
+  Future<void> stopSpeaking() async {}
 }
 
 /// Drives `showUiModal` from inside a MaterialApp so `showDialog` /
@@ -279,6 +301,36 @@ void main() {
     expect(events.single.nodeId, 'tf');
     expect(events.single.type, 'changed');
     expect(events.single.payload, {'value': 'hello world'});
+  });
+
+  testWidgets('voice-enabled TextField dictates then fires voice event', (
+    tester,
+  ) async {
+    final events = <UiNodeEvent>[];
+    final voice = _FakeVoiceInteraction('send this by voice');
+    final tree = UiNode.fromJson({
+      'kind': 'TextField',
+      'id': 'tf',
+      'label': 'Message',
+      'placeholder': 'Type or dictate',
+      'voiceInputEvent': 'send',
+    });
+
+    await tester.pumpWidget(_host(tree, onEvent: events.add, voice: voice));
+    await tester.tap(find.text('Speak and send'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('send this by voice'), findsOneWidget);
+    expect(events, hasLength(2));
+    expect(events[0].nodeId, 'tf');
+    expect(events[0].type, 'changed');
+    expect(events[0].payload, {'value': 'send this by voice'});
+    expect(events[1].nodeId, 'tf');
+    expect(events[1].type, 'send');
+    expect(events[1].payload, {
+      'value': 'send this by voice',
+      'source': 'voice',
+    });
   });
 
   testWidgets('Button tap emits UiNodeEvent with type=tap', (tester) async {

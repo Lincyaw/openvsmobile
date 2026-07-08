@@ -299,7 +299,7 @@ describe("examples/plugins/agentm-gateway", () => {
         return panel?.tree === undefined ? undefined : panel;
       }, 5000);
       expect(findNodeById(initialPanel.tree, "agentm-blind-controls")).toBeDefined();
-      expect(findNodeById(initialPanel.tree, "agentm-read-last")?.label).toBe(
+      expect(findNodeById(initialPanel.tree, "agentm-read-last")?.title).toBe(
         "Read last reply",
       );
       expect(findNodeById(initialPanel.tree, "agentm-details")).toBeUndefined();

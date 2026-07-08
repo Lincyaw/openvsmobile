@@ -25,6 +25,7 @@ import 'services/diag_log.dart';
 import 'services/notification_foreground_service.dart';
 import 'services/system_tray.dart';
 import 'services/terminal_notification_resolver.dart';
+import 'services/voice_interaction.dart';
 import 'settings_store.dart';
 import 'state/terminal_hub.dart';
 import 'ui/app_theme.dart';
@@ -63,6 +64,7 @@ class _MobileCodeAppState extends State<MobileCodeApp>
       NotificationServiceController();
   final DeepLinkService _deepLinks = DeepLinkService();
   final SystemTrayController _tray = SystemTrayController();
+  final VoiceInteraction _voice = const PlatformVoiceInteraction();
   StreamSubscription<BackendNotification>? _trayNotifSub;
   VoidCallback? _deepLinkRemover;
   final GlobalKey<NavigatorState> _navKey = GlobalKey<NavigatorState>();
@@ -124,6 +126,7 @@ class _MobileCodeAppState extends State<MobileCodeApp>
         if (raw is! Map<String, dynamic>) return;
         final appNotif = AppNotification.fromJson(raw);
         final prefs = _notifPrefs;
+        _speakNotification(appNotif, prefs);
         unawaited(
           _tray.show(
             appNotif,
@@ -149,6 +152,18 @@ class _MobileCodeAppState extends State<MobileCodeApp>
       default:
         break;
     }
+  }
+
+  void _speakNotification(AppNotification n, NotificationPrefs? prefs) {
+    final spoken = n.spoken;
+    if (spoken == null) return;
+    if ((prefs?.mutedSources ?? const <String>[]).contains(n.source)) return;
+    final parts = <String>[
+      if (spoken.title != null) spoken.title!,
+      spoken.body,
+      if (spoken.detail != null) spoken.detail!,
+    ];
+    unawaited(_voice.speak(parts.join('\n')));
   }
 
   Future<void> _bootstrap() async {

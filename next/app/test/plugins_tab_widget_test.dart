@@ -23,8 +23,11 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:mobilecode/app_state.dart';
 import 'package:mobilecode/backend_client.dart';
+import 'package:mobilecode/screens/plugin_eyes_free_screen.dart';
 import 'package:mobilecode/screens/plugins_tab.dart';
+import 'package:mobilecode/services/voice_interaction.dart';
 import 'package:mobilecode/state/plugins_model.dart';
+import 'package:mobilecode/ui/ui_node.dart';
 
 PluginInfo _info({
   required String id,
@@ -51,6 +54,32 @@ Future<AppState> _appStateWithSeed(List<PluginInfo> seed) async {
 }
 
 Widget _wrap(Widget child) => MaterialApp(home: Scaffold(body: child));
+
+class _FakeVoiceInteraction extends VoiceInteraction {
+  final String? recognizedText;
+  final List<String> spoken = <String>[];
+
+  _FakeVoiceInteraction({this.recognizedText});
+
+  @override
+  Future<String?> recognizeOnce({String? prompt}) async => recognizedText;
+
+  @override
+  Future<bool> speak(String text) async {
+    spoken.add(text);
+    return true;
+  }
+
+  @override
+  Future<void> stopSpeaking() async {}
+}
+
+Future<void> _doubleTap(WidgetTester tester, Finder finder) async {
+  await tester.tap(finder);
+  await tester.pump(const Duration(milliseconds: 50));
+  await tester.tap(finder);
+  await tester.pumpAndSettle();
+}
 
 void main() {
   testWidgets('grid renders one tile per plugin with the tile name visible', (
@@ -380,6 +409,104 @@ void main() {
     await tester.tap(find.text('Disable'));
     await tester.pumpAndSettle();
     expect(calls, ['plugin.disable:alpha']);
+  });
+
+  testWidgets('eyes-free mode swipes actions and dispatches through ui.event', (
+    tester,
+  ) async {
+    final panel = const PluginPanelStub(id: 'chat', title: 'Chat');
+    final appState = await _appStateWithSeed([
+      _info(id: 'agentm', name: 'AgentM', panels: [panel]),
+    ]);
+    addTearDown(appState.dispose);
+
+    appState.uiPanels.debugInjectPush(<String, dynamic>{
+      'pluginId': 'agentm',
+      'panelId': 'chat',
+      'version': 1,
+      'tree': <String, dynamic>{
+        'kind': 'Column',
+        'id': 'root',
+        'children': <Map<String, dynamic>>[
+          <String, dynamic>{
+            'kind': 'Text',
+            'id': 'status',
+            'text': 'Ready',
+            'focusRole': 'status',
+            'spokenValue': 'AgentM ready',
+          },
+          <String, dynamic>{
+            'kind': 'TextField',
+            'id': 'reply',
+            'label': 'Reply',
+            'placeholder': 'Speak a reply',
+            'accessibilityLabel': 'Dictate and send reply',
+            'accessibilityHint': 'Sends speech to AgentM.',
+            'focusRole': 'action',
+            'focusOrder': 1,
+            'voiceInputEvent': 'send',
+          },
+          <String, dynamic>{
+            'kind': 'ListTile',
+            'id': 'read-last',
+            'title': 'Read last reply',
+            'onTapEvent': 'tap',
+            'focusRole': 'action',
+            'focusOrder': 2,
+          },
+        ],
+      },
+    });
+
+    final dispatched = <UiNodeEvent>[];
+    appState.uiPanels.debugDispatchOverride =
+        ({required pluginId, required panelId, required event}) async {
+          expect(pluginId, 'agentm');
+          expect(panelId, 'chat');
+          dispatched.add(event);
+        };
+
+    final voice = _FakeVoiceInteraction(recognizedText: 'reply by voice');
+    final info = appState.plugins.plugin('agentm')!;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PluginEyesFreeScreen(
+          appState: appState,
+          info: info,
+          panel: panel,
+          voice: voice,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final surface = find.byKey(
+      const ValueKey<String>('eyes-free-gesture-surface'),
+    );
+    expect(find.text('Dictate and send reply'), findsOneWidget);
+    expect(voice.spoken.join('\n'), contains('Eyes-free mode'));
+
+    await _doubleTap(tester, surface);
+    expect(dispatched, hasLength(2));
+    expect(dispatched[0].nodeId, 'reply');
+    expect(dispatched[0].type, 'changed');
+    expect(dispatched[0].payload, {'value': 'reply by voice'});
+    expect(dispatched[1].nodeId, 'reply');
+    expect(dispatched[1].type, 'send');
+    expect(dispatched[1].payload, {
+      'value': 'reply by voice',
+      'source': 'voice',
+    });
+
+    dispatched.clear();
+    await tester.fling(surface, const Offset(-500, 0), 1000);
+    await tester.pumpAndSettle();
+    expect(find.text('Read last reply'), findsOneWidget);
+
+    await _doubleTap(tester, surface);
+    expect(dispatched, hasLength(1));
+    expect(dispatched.single.nodeId, 'read-last');
+    expect(dispatched.single.type, 'tap');
   });
 
   test('PluginInfo.fromJson reads contributes.panels + commands', () {

@@ -313,8 +313,9 @@ honours the "Plugin install is filesystem-only" settled decision.
 chat-client peer. Configure it through plugin-safe environment variables such
 as `OPENVSMOBILE_PLUGIN_AGENTM_CONNECT=unix:///tmp/agentm-gw-$(id -u).sock`
 or `OPENVSMOBILE_PLUGIN_AGENTM_CONNECT=ws://host:port`, plus optional
-`OPENVSMOBILE_PLUGIN_AGENTM_TOKEN`. It renders the transcript as native
-plugin UI and turns final AgentM replies into replyable notifications.
+`OPENVSMOBILE_PLUGIN_AGENTM_TOKEN`. It renders a native reply/action panel,
+supports the app's eyes-free gesture mode, and turns final AgentM replies
+into replyable notifications.
 
 ### UI descriptor protocol (`ui.*`)
 

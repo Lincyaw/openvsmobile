@@ -681,6 +681,35 @@ function actionButton({ id, label, style, order, hint }) {
   );
 }
 
+function actionTile({
+  id,
+  title,
+  subtitle,
+  icon,
+  accent = "brand",
+  order,
+  hint,
+  role = "action",
+  eventId = "tap",
+}) {
+  return ui.withMetadata(
+    ui.listTile({
+      id,
+      title,
+      subtitle,
+      onTapEvent: eventId,
+      leading: ui.icon({ id: `${id}-icon`, name: icon, accent }),
+    }),
+    {
+      accessibilityLabel: title,
+      accessibilityHint: hint || subtitle,
+      spokenValue: subtitle ? `${title}. ${subtitle}` : title,
+      focusRole: role,
+      focusOrder: order,
+    },
+  );
+}
+
 function buildTree() {
   const statusText = currentStatusText();
   const replyText = latestReplyText();
@@ -701,34 +730,21 @@ function buildTree() {
         focusOrder: 0,
       },
     ),
+    ...(state.activeTurn
+      ? [
+          ui.progress({
+            id: "agentm-active-turn",
+            label: "Waiting for AgentM",
+            variant: "linear",
+            accent: "info",
+          }),
+        ]
+      : []),
     ui.section({
-      id: "agentm-blind-controls",
-      title: "Blind controls",
+      id: "agentm-last-reply-section",
+      title: "Last reply",
       variant: "inset",
       children: [
-        ui.withMetadata(
-          ui.text({
-            id: "agentm-live-status",
-            text: statusText,
-            style: "title",
-          }),
-          {
-            accessibilityLabel: "Current AgentM state",
-            spokenValue: statusText,
-            focusRole: "status",
-            focusOrder: 1,
-          },
-        ),
-        ...(state.activeTurn
-          ? [
-              ui.progress({
-                id: "agentm-active-turn",
-                label: "Waiting for AgentM",
-                variant: "linear",
-                accent: "info",
-              }),
-            ]
-          : []),
         ui.withMetadata(
           ui.text({
             id: "agentm-last-reply",
@@ -739,77 +755,76 @@ function buildTree() {
             accessibilityLabel: state.lastReply ? "Last AgentM message" : "Last AgentM message is empty",
             spokenValue: replyText,
             focusRole: "status",
-            focusOrder: 2,
+            focusOrder: 1,
           },
         ),
+      ],
+    }),
+    ui.section({
+      id: "agentm-blind-controls",
+      title: "Reply",
+      variant: "inset",
+      children: [
         ui.withMetadata(
           ui.textField({
             id: "agentm-input",
-            label: "Message",
+            label: "Reply",
             value: state.draft,
-            placeholder: "Type or dictate",
+            placeholder: "Speak or type a reply",
           }),
           {
-            accessibilityLabel: "Message to AgentM",
-            accessibilityHint: "Type or dictate a message",
-            focusRole: "input",
-            focusOrder: 3,
+            accessibilityLabel: "Dictate and send reply",
+            accessibilityHint: "Double tap in eyes-free mode to dictate and send.",
+            focusRole: "action",
+            focusOrder: 2,
             voiceInputEvent: "send",
           },
         ),
-        ui.column({
-          id: "agentm-action-buttons",
-          gap: "sm",
-          children: [
-            actionButton({
-              id: "agentm-send",
-              label: "Send message",
-              style: "primary",
-              order: 4,
-              hint: "Sends the message to AgentM",
-            }),
-            actionButton({
-              id: "agentm-interrupt",
-              label: "Stop current turn",
-              style: "danger",
-              order: 5,
-              hint: "Stops the current AgentM turn",
-            }),
-            actionButton({
-              id: "agentm-read-last",
-              label: "Read last reply",
-              style: "secondary",
-              order: 6,
-              hint: "Reads the latest AgentM reply through a notification",
-            }),
-          ],
+      ],
+    }),
+    ui.section({
+      id: "agentm-actions",
+      title: "Actions",
+      variant: "inset",
+      children: [
+        actionTile({
+          id: "agentm-send",
+          title: "Send typed reply",
+          subtitle: state.draft.trim() ? "Sends the text above" : "Type first or use dictate",
+          icon: "send",
+          order: 3,
+          hint: "Sends the typed reply to AgentM.",
+        }),
+        actionTile({
+          id: "agentm-read-last",
+          title: "Read last reply",
+          subtitle: state.lastReply ? "Speaks the latest AgentM message" : "No AgentM reply yet",
+          icon: "volume-2",
+          accent: "info",
+          order: 4,
+          hint: "Reads the latest AgentM reply through speech.",
+        }),
+        actionTile({
+          id: "agentm-interrupt",
+          title: "Stop current turn",
+          subtitle: state.activeTurn ? "Cancels the running request" : "No running request",
+          icon: "square-stop",
+          accent: "danger",
+          order: 5,
+          role: "danger",
+          hint: "Stops the current AgentM turn.",
         }),
       ],
     }),
   ];
 
   children.push(
-    ui.section({
-      id: "agentm-activity",
-      title: "Recent activity",
-      children:
-        activity.length === 0
-          ? [
-              ui.text({
-                id: "agentm-empty",
-                text: "No activity yet.",
-                style: "caption",
-              }),
-            ]
-          : activity.map(transcriptNode),
-    }),
-  );
-
-  children.push(
-    actionButton({
+    actionTile({
       id: "agentm-toggle-details",
-      label: state.showDetails ? "Hide details" : "Show details",
-      style: "secondary",
+      title: state.showDetails ? "Hide details" : "Show details",
+      subtitle: "Connection and recent activity",
+      icon: "info",
+      accent: "muted",
       order: 30,
       hint: "Shows or hides connection diagnostics",
     }),
@@ -817,6 +832,20 @@ function buildTree() {
 
   if (state.showDetails) {
     children.push(
+      ui.section({
+        id: "agentm-activity",
+        title: "Recent activity",
+        children:
+          activity.length === 0
+            ? [
+                ui.text({
+                  id: "agentm-empty",
+                  text: "No activity yet.",
+                  style: "caption",
+                }),
+              ]
+            : activity.map(transcriptNode),
+      }),
       ui.section({
         id: "agentm-details",
         title: "Connection",
