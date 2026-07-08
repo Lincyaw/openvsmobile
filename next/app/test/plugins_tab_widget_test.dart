@@ -30,6 +30,7 @@ import 'package:mobilecode/backend_client.dart';
 import 'package:mobilecode/screens/eyes_free_tab.dart';
 import 'package:mobilecode/screens/plugin_eyes_free_screen.dart';
 import 'package:mobilecode/screens/plugins_tab.dart';
+import 'package:mobilecode/services/voice_activity.dart';
 import 'package:mobilecode/services/voice_interaction.dart';
 import 'package:mobilecode/state/plugins_model.dart';
 import 'package:mobilecode/ui/ui_node.dart';
@@ -64,6 +65,7 @@ class _FakeVoiceInteraction extends VoiceInteraction {
   final String? recognizedText;
   final Object? recognitionError;
   final Completer<String?>? recognitionCompleter;
+  final void Function(String text)? onSpeakAndWait;
   final List<Object?> recognitionResponses;
   final bool speechRecognitionAvailable;
   final List<String> spoken = <String>[];
@@ -73,6 +75,7 @@ class _FakeVoiceInteraction extends VoiceInteraction {
     this.recognizedText,
     this.recognitionError,
     this.recognitionCompleter,
+    this.onSpeakAndWait,
     List<Object?> recognitionResponses = const [],
     this.speechRecognitionAvailable = true,
   }) : recognitionResponses = List<Object?>.from(recognitionResponses);
@@ -113,6 +116,7 @@ class _FakeVoiceInteraction extends VoiceInteraction {
   Future<bool> speakAndWait(String text) async {
     calls.add('speakAndWait:$text');
     spoken.add(text);
+    onSpeakAndWait?.call(text);
     return true;
   }
 
@@ -130,6 +134,12 @@ Future<void> _doubleTap(
   await tester.tap(finder);
   await tester.pump(gap);
   await tester.tap(finder);
+  await tester.pumpAndSettle();
+}
+
+Future<void> _semanticsTap(WidgetTester tester, Finder finder) async {
+  final node = tester.getSemantics(finder);
+  node.owner!.performAction(node.id, SemanticsAction.tap);
   await tester.pumpAndSettle();
 }
 
@@ -642,6 +652,115 @@ void main() {
     expect(dispatched, hasLength(1));
     expect(dispatched.single.nodeId, 'confirm');
     expect(dispatched.single.type, 'tap');
+  });
+
+  testWidgets('eyes-free mode executes semantic tap confirm', (tester) async {
+    final semantics = tester.ensureSemantics();
+    final panel = const PluginPanelStub(id: 'chat', title: 'Chat');
+    final appState = await _appStateWithSeed([
+      _info(id: 'agentm', name: 'AgentM', panels: [panel]),
+    ]);
+    addTearDown(appState.dispose);
+
+    appState.uiPanels.debugInjectPush(<String, dynamic>{
+      'pluginId': 'agentm',
+      'panelId': 'chat',
+      'version': 1,
+      'tree': <String, dynamic>{
+        'kind': 'Button',
+        'id': 'confirm',
+        'label': 'Confirm action',
+        'focusRole': 'action',
+        'focusOrder': 1,
+        'voiceShortcut': true,
+      },
+    });
+
+    final dispatched = <UiNodeEvent>[];
+    appState.uiPanels.debugDispatchOverride =
+        ({required pluginId, required panelId, required event}) async {
+          dispatched.add(event);
+        };
+
+    final info = appState.plugins.plugin('agentm')!;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PluginEyesFreeScreen(
+          appState: appState,
+          info: info,
+          panel: panel,
+          voice: _FakeVoiceInteraction(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await _semanticsTap(
+      tester,
+      find.byKey(const ValueKey<String>('eyes-free-semantics')),
+    );
+
+    expect(dispatched, hasLength(1));
+    expect(dispatched.single.nodeId, 'confirm');
+    expect(dispatched.single.type, 'tap');
+    semantics.dispose();
+  });
+
+  testWidgets('eyes-free mode marks voice output as voice activity', (
+    tester,
+  ) async {
+    final panel = const PluginPanelStub(id: 'chat', title: 'Chat');
+    final appState = await _appStateWithSeed([
+      _info(id: 'agentm', name: 'AgentM', panels: [panel]),
+    ]);
+    addTearDown(appState.dispose);
+
+    appState.uiPanels.debugInjectPush(<String, dynamic>{
+      'pluginId': 'agentm',
+      'panelId': 'chat',
+      'version': 1,
+      'tree': <String, dynamic>{
+        'kind': 'ListTile',
+        'id': 'read-last',
+        'title': 'Read last reply',
+        'onTapEvent': 'tap',
+        'voiceOutputText': 'AgentM finished the task',
+        'focusRole': 'action',
+        'focusOrder': 1,
+        'voiceShortcut': true,
+      },
+    });
+
+    bool? activeDuringOutput;
+    final voice = _FakeVoiceInteraction(
+      onSpeakAndWait: (text) {
+        if (text == 'AgentM finished the task') {
+          activeDuringOutput = VoiceActivity.instance.isActive;
+        }
+      },
+    );
+
+    final info = appState.plugins.plugin('agentm')!;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PluginEyesFreeScreen(
+          appState: appState,
+          info: info,
+          panel: panel,
+          voice: voice,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final surface = find.byKey(
+      const ValueKey<String>('eyes-free-gesture-surface'),
+    );
+    await _doubleTap(tester, surface);
+
+    expect(voice.calls, contains('speakAndWait:AgentM finished the task'));
+    expect(activeDuringOutput, isTrue);
+    expect(VoiceActivity.instance.isActive, isFalse);
   });
 
   testWidgets(
@@ -1178,6 +1297,111 @@ void main() {
     await tester.longPress(surface);
     await tester.pumpAndSettle();
     expect(exited, isTrue);
+  });
+
+  testWidgets('Voice tab executes semantic tap confirm', (tester) async {
+    final semantics = tester.ensureSemantics();
+    final panel = const PluginPanelStub(id: 'chat', title: 'Chat');
+    final appState = await _appStateWithSeed([
+      _info(id: 'agentm', name: 'AgentM', panels: [panel]),
+    ]);
+    addTearDown(appState.dispose);
+
+    appState.uiPanels.debugInjectPush(<String, dynamic>{
+      'pluginId': 'agentm',
+      'panelId': 'chat',
+      'version': 1,
+      'tree': <String, dynamic>{
+        'kind': 'Button',
+        'id': 'confirm',
+        'label': 'Confirm action',
+        'focusRole': 'action',
+        'focusOrder': 1,
+        'voiceShortcut': true,
+      },
+    });
+
+    final dispatched = <UiNodeEvent>[];
+    appState.uiPanels.debugDispatchOverride =
+        ({required pluginId, required panelId, required event}) async {
+          dispatched.add(event);
+        };
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: EyesFreeTab(
+          appState: appState,
+          isActive: true,
+          onExit: () {},
+          voice: _FakeVoiceInteraction(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await _semanticsTap(
+      tester,
+      find.byKey(const ValueKey<String>('eyes-free-tab-semantics')),
+    );
+
+    expect(dispatched, hasLength(1));
+    expect(dispatched.single.nodeId, 'confirm');
+    expect(dispatched.single.type, 'tap');
+    semantics.dispose();
+  });
+
+  testWidgets('Voice tab marks voice output as voice activity', (tester) async {
+    final panel = const PluginPanelStub(id: 'chat', title: 'Chat');
+    final appState = await _appStateWithSeed([
+      _info(id: 'agentm', name: 'AgentM', panels: [panel]),
+    ]);
+    addTearDown(appState.dispose);
+
+    appState.uiPanels.debugInjectPush(<String, dynamic>{
+      'pluginId': 'agentm',
+      'panelId': 'chat',
+      'version': 1,
+      'tree': <String, dynamic>{
+        'kind': 'ListTile',
+        'id': 'read-last',
+        'title': 'Read last reply',
+        'onTapEvent': 'tap',
+        'voiceOutputText': 'AgentM finished the task',
+        'focusRole': 'action',
+        'focusOrder': 1,
+        'voiceShortcut': true,
+      },
+    });
+
+    bool? activeDuringOutput;
+    final voice = _FakeVoiceInteraction(
+      onSpeakAndWait: (text) {
+        if (text == 'AgentM finished the task') {
+          activeDuringOutput = VoiceActivity.instance.isActive;
+        }
+      },
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: EyesFreeTab(
+          appState: appState,
+          isActive: true,
+          onExit: () {},
+          voice: voice,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final surface = find.byKey(
+      const ValueKey<String>('eyes-free-tab-gesture-surface'),
+    );
+    await _doubleTap(tester, surface);
+
+    expect(voice.calls, contains('speakAndWait:AgentM finished the task'));
+    expect(activeDuringOutput, isTrue);
+    expect(VoiceActivity.instance.isActive, isFalse);
   });
 
   testWidgets(

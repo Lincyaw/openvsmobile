@@ -1,11 +1,11 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../app_state.dart';
 import '../services/eyes_free_actions.dart';
+import '../services/eyes_free_trace.dart';
 import '../services/voice_activity.dart';
 import '../services/voice_interaction.dart';
 import '../state/plugins_model.dart';
@@ -48,9 +48,7 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
   String? _pendingSpokenStatus;
 
   void _debugLog(String message) {
-    if (!kDebugMode) return;
-    // ignore: avoid_print
-    print('[eyes-free-tab] $message');
+    EyesFreeTrace.log('tab', message);
   }
 
   @override
@@ -112,6 +110,11 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
     if (!mounted) return;
     final actions = _actions;
     setState(() => _syncSelection(actions));
+    _debugLog(
+      'state changed actions=${actions.length} '
+      'selected=${_selected(actions)?.action.key ?? "-"} '
+      'active=${widget.isActive} executing=$_executing',
+    );
     if (!widget.isActive) return;
     _speakStatusIfChanged(_selected(actions));
   }
@@ -123,6 +126,10 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
     final actions = _actions;
     setState(() => _syncSelection(actions));
     _lastSpokenStatusKey = _selected(actions)?.statusKey;
+    _debugLog(
+      'entry actions=${actions.length} '
+      'selected=${_selected(actions)?.action.key ?? "-"}',
+    );
     final parts = <String>[
       'Voice control',
       _currentAnnouncement(actions),
@@ -203,7 +210,11 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
 
   void _onHorizontalDragEnd(DragEndDetails details) {
     final velocity = details.primaryVelocity ?? 0;
-    if (velocity.abs() < 120) return;
+    if (velocity.abs() < 120) {
+      _debugLog('drag ignored: velocity=${velocity.toStringAsFixed(1)}');
+      return;
+    }
+    _debugLog('drag end velocity=${velocity.toStringAsFixed(1)}');
     _clearPendingTap();
     _move(velocity < 0 ? 1 : -1);
   }
@@ -217,7 +228,8 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
     _pointerDownPosition = event.position;
     _pointerMoved = false;
     _debugLog(
-      'pointer down x=${event.position.dx.toStringAsFixed(1)} '
+      'pointer down id=${event.pointer} kind=${event.kind.name} '
+      'buttons=${event.buttons} x=${event.position.dx.toStringAsFixed(1)} '
       'y=${event.position.dy.toStringAsFixed(1)}',
     );
   }
@@ -249,7 +261,8 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
     _pointerDownPosition = null;
     _pointerMoved = false;
     _debugLog(
-      'pointer up moved=$moved distance=${distance.toStringAsFixed(1)} '
+      'pointer up id=${event.pointer} moved=$moved '
+      'distance=${distance.toStringAsFixed(1)} '
       'x=${event.position.dx.toStringAsFixed(1)} '
       'y=${event.position.dy.toStringAsFixed(1)}',
     );
@@ -269,7 +282,8 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
     _pointerMoved = false;
     _clearPendingTap();
     _debugLog(
-      'pointer cancel x=${event.position.dx.toStringAsFixed(1)} '
+      'pointer cancel id=${event.pointer} '
+      'x=${event.position.dx.toStringAsFixed(1)} '
       'y=${event.position.dy.toStringAsFixed(1)}',
     );
   }
@@ -312,6 +326,16 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
       'double tap confirmed gap=${gap.inMilliseconds}ms '
       'distance=${tapDistance.toStringAsFixed(1)} '
       'actions=${actions.length} selected=${selected?.action.key ?? "-"}',
+    );
+    unawaited(_executeCurrent());
+  }
+
+  void _onSemanticsTap() {
+    final actions = _actions;
+    _debugLog(
+      'semantics tap actions=${actions.length} '
+      'selected=${_selected(actions)?.action.key ?? "-"} '
+      'executing=$_executing',
     );
     unawaited(_executeCurrent());
   }
@@ -361,15 +385,20 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
   }
 
   Future<void> _executeVoiceOutput(EyesFreeAction action) async {
-    final text = action.voiceOutputText?.trim() ?? '';
-    if (text.isEmpty) {
-      _debugLog('voice output ignored: empty text');
-      await _speak('Nothing to read');
-      return;
+    final voiceSession = VoiceActivity.instance.begin();
+    try {
+      final text = action.voiceOutputText?.trim() ?? '';
+      if (text.isEmpty) {
+        _debugLog('voice output ignored: empty text');
+        await _speak('Nothing to read');
+        return;
+      }
+      _debugLog('voice output begin length=${text.length}');
+      await _stopSpeaking();
+      await _speakAndWait(text);
+    } finally {
+      voiceSession.end();
     }
-    _debugLog('voice output begin length=${text.length}');
-    await _stopSpeaking();
-    await _speakAndWait(text);
   }
 
   Future<void> _executeVoiceInput(_EyesFreeTargetAction selected) async {
@@ -562,7 +591,7 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
               'No eyes-free actions available',
           hint: 'Swipe left or right to choose. Double tap to confirm.',
           button: selected != null,
-          onTap: selected == null ? null : _executeCurrent,
+          onTap: selected == null ? null : _onSemanticsTap,
           onLongPress: _exit,
           onIncrease: selected == null ? null : () => _move(1),
           onDecrease: selected == null ? null : () => _move(-1),

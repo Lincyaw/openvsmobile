@@ -1,11 +1,11 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../app_state.dart';
 import '../services/eyes_free_actions.dart';
+import '../services/eyes_free_trace.dart';
 import '../services/voice_activity.dart';
 import '../services/voice_interaction.dart';
 import '../state/plugins_model.dart';
@@ -48,9 +48,7 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
   String? _pendingSpokenStatus;
 
   void _debugLog(String message) {
-    if (!kDebugMode) return;
-    // ignore: avoid_print
-    print('[plugin-eyes-free:${widget.info.id}/${widget.panel.id}] $message');
+    EyesFreeTrace.log('${widget.info.id}/${widget.panel.id}', message);
   }
 
   @override
@@ -78,6 +76,11 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
     final state = collectEyesFreeState(_tree);
     final nextStatus = state.statusText;
     setState(() => _syncSelection(state.actions));
+    _debugLog(
+      'state changed actions=${state.actions.length} '
+      'selected=${state.actions.isEmpty ? "-" : state.actions[_safeIndex(state.actions.length)].key} '
+      'frozen=${widget.frozen} executing=$_executing',
+    );
     if (nextStatus != null && nextStatus != _lastSpokenStatus) {
       if (_executing) {
         _pendingSpokenStatus = nextStatus;
@@ -92,6 +95,10 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
     final state = collectEyesFreeState(_tree);
     _syncSelection(state.actions);
     _lastSpokenStatus = state.statusText;
+    _debugLog(
+      'entry actions=${state.actions.length} '
+      'selected=${state.actions.isEmpty ? "-" : state.actions[_safeIndex(state.actions.length)].key}',
+    );
     final parts = <String>[
       'Eyes-free mode',
       widget.info.name,
@@ -155,7 +162,11 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
 
   void _onHorizontalDragEnd(DragEndDetails details) {
     final velocity = details.primaryVelocity ?? 0;
-    if (velocity.abs() < 120) return;
+    if (velocity.abs() < 120) {
+      _debugLog('drag ignored: velocity=${velocity.toStringAsFixed(1)}');
+      return;
+    }
+    _debugLog('drag end velocity=${velocity.toStringAsFixed(1)}');
     _clearPendingTap();
     _move(velocity < 0 ? 1 : -1);
   }
@@ -169,7 +180,8 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
     _pointerDownPosition = event.position;
     _pointerMoved = false;
     _debugLog(
-      'pointer down x=${event.position.dx.toStringAsFixed(1)} '
+      'pointer down id=${event.pointer} kind=${event.kind.name} '
+      'buttons=${event.buttons} x=${event.position.dx.toStringAsFixed(1)} '
       'y=${event.position.dy.toStringAsFixed(1)}',
     );
   }
@@ -201,7 +213,8 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
     _pointerDownPosition = null;
     _pointerMoved = false;
     _debugLog(
-      'pointer up moved=$moved distance=${distance.toStringAsFixed(1)} '
+      'pointer up id=${event.pointer} moved=$moved '
+      'distance=${distance.toStringAsFixed(1)} '
       'x=${event.position.dx.toStringAsFixed(1)} '
       'y=${event.position.dy.toStringAsFixed(1)}',
     );
@@ -221,7 +234,8 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
     _pointerMoved = false;
     _clearPendingTap();
     _debugLog(
-      'pointer cancel x=${event.position.dx.toStringAsFixed(1)} '
+      'pointer cancel id=${event.pointer} '
+      'x=${event.position.dx.toStringAsFixed(1)} '
       'y=${event.position.dy.toStringAsFixed(1)}',
     );
   }
@@ -270,6 +284,19 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
     unawaited(_executeCurrent());
   }
 
+  void _onSemanticsTap() {
+    final state = collectEyesFreeState(_tree);
+    final action = state.actions.isEmpty
+        ? null
+        : state.actions[_safeIndex(state.actions.length)];
+    _debugLog(
+      'semantics tap actions=${state.actions.length} '
+      'selected=${action?.key ?? "-"} frozen=${widget.frozen} '
+      'executing=$_executing',
+    );
+    unawaited(_executeCurrent());
+  }
+
   Future<void> _executeCurrent() async {
     if (_executing) {
       _debugLog('execute ignored: already executing');
@@ -314,15 +341,20 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
   }
 
   Future<void> _executeVoiceOutput(EyesFreeAction action) async {
-    final text = action.voiceOutputText?.trim() ?? '';
-    if (text.isEmpty) {
-      _debugLog('voice output ignored: empty text');
-      await _speak('Nothing to read');
-      return;
+    final voiceSession = VoiceActivity.instance.begin();
+    try {
+      final text = action.voiceOutputText?.trim() ?? '';
+      if (text.isEmpty) {
+        _debugLog('voice output ignored: empty text');
+        await _speak('Nothing to read');
+        return;
+      }
+      _debugLog('voice output begin length=${text.length}');
+      await _stopSpeaking();
+      await _speakAndWait(text);
+    } finally {
+      voiceSession.end();
     }
-    _debugLog('voice output begin length=${text.length}');
-    await _stopSpeaking();
-    await _speakAndWait(text);
   }
 
   Future<void> _executeVoiceInput(EyesFreeAction action) async {
@@ -498,11 +530,12 @@ class _PluginEyesFreeScreenState extends State<PluginEyesFreeScreen> {
           onHorizontalDragEnd: _onHorizontalDragEnd,
           onLongPress: _exit,
           child: Semantics(
+            key: const ValueKey<String>('eyes-free-semantics'),
             label:
                 selected?.spoken ?? state.statusText ?? 'No actions available',
             hint: 'Swipe left or right to choose. Double tap to confirm.',
             button: selected != null,
-            onTap: selected == null ? null : _executeCurrent,
+            onTap: selected == null ? null : _onSemanticsTap,
             onLongPress: _exit,
             onIncrease: selected == null ? null : () => _move(1),
             onDecrease: selected == null ? null : () => _move(-1),

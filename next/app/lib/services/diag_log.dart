@@ -25,6 +25,7 @@ class DiagCat {
   static const String net = 'net'; // connection state transitions
   static const String rpc = 'rpc'; // JSON-RPC calls / failures
   static const String iroh = 'iroh'; // native Iroh transport events
+  static const String eyes = 'eyes'; // eyes-free gesture / voice flow
   static const String error = 'err'; // something went wrong
   static const String marker = 'mark'; // user-dropped marker
   static const String info = 'info';
