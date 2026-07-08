@@ -48,8 +48,18 @@ export type AccentToken =
   | "danger"
   | "muted";
 export type SizeToken = "xs" | "sm" | "md" | "lg" | "xl";
+export type UiFocusRole = "status" | "action" | "input" | "danger";
 
 export type StyleSlot<TToken extends string> = number | TToken;
+
+export interface UiNodeMetadata {
+  accessibilityLabel?: string;
+  accessibilityHint?: string;
+  spokenValue?: string;
+  focusRole?: UiFocusRole;
+  focusOrder?: number;
+  voiceInputEvent?: string;
+}
 
 const SPACING_TOKENS: ReadonlySet<string> = new Set([
   "none",
@@ -113,6 +123,12 @@ const STACK_ALIGNMENTS: ReadonlySet<string> = new Set([
 const SCROLL_AXES: ReadonlySet<string> = new Set([
   "vertical",
   "horizontal",
+]);
+const FOCUS_ROLES: ReadonlySet<string> = new Set([
+  "status",
+  "action",
+  "input",
+  "danger",
 ]);
 
 export interface UiColumn {
@@ -516,7 +532,7 @@ export interface UiSlider {
   onChangeEvent?: string;
 }
 
-export type UiNode =
+export type UiNode = (
   | UiColumn
   | UiRow
   | UiSection
@@ -549,7 +565,9 @@ export type UiNode =
   | UiSearchField
   | UiCheckbox
   | UiRadioGroup
-  | UiSlider;
+  | UiSlider
+) &
+  UiNodeMetadata;
 
 // ---- Batch 4 imperative modals (§4.3) ----
 //
@@ -646,78 +664,186 @@ function parseNode(raw: unknown, seen: Set<string>, path: string): UiNode {
     throw new UiValidationError(`duplicate node id "${id}"`);
   }
   seen.add(id);
+  const metadata = parseNodeMetadata(r, path);
   const kind = r.kind;
+  let node: UiNode;
   switch (kind) {
     case "Column":
     case "Row":
-      return parseFlex(r, seen, path, id, kind);
+      node = parseFlex(r, seen, path, id, kind) as UiNode;
+      break;
     case "Section":
-      return parseSection(r, seen, path, id);
+      node = parseSection(r, seen, path, id) as UiNode;
+      break;
     case "Card":
-      return parseCard(r, seen, path, id);
+      node = parseCard(r, seen, path, id) as UiNode;
+      break;
     case "List":
-      return parseList(r, seen, path, id);
+      node = parseList(r, seen, path, id) as UiNode;
+      break;
     case "Text":
-      return parseText(r, path, id);
+      node = parseText(r, path, id) as UiNode;
+      break;
     case "Spacer":
-      return parseSpacer(r, path, id);
+      node = parseSpacer(r, path, id) as UiNode;
+      break;
     case "TextField":
-      return parseTextField(r, path, id);
+      node = parseTextField(r, path, id) as UiNode;
+      break;
     case "Button":
-      return parseButton(r, path, id);
+      node = parseButton(r, path, id) as UiNode;
+      break;
     case "Icon":
-      return parseIcon(r, path, id);
+      node = parseIcon(r, path, id) as UiNode;
+      break;
     case "Badge":
-      return parseBadge(r, path, id);
+      node = parseBadge(r, path, id) as UiNode;
+      break;
     case "ListTile":
-      return parseListTile(r, seen, path, id);
+      node = parseListTile(r, seen, path, id) as UiNode;
+      break;
     case "AppGrid":
-      return parseAppGrid(r, path, id);
+      node = parseAppGrid(r, path, id) as UiNode;
+      break;
     case "Switch":
-      return parseSwitch(r, path, id);
+      node = parseSwitch(r, path, id) as UiNode;
+      break;
     case "Select":
-      return parseSelect(r, path, id);
+      node = parseSelect(r, path, id) as UiNode;
+      break;
     case "Banner":
-      return parseBanner(r, path, id);
+      node = parseBanner(r, path, id) as UiNode;
+      break;
     case "Divider":
-      return parseDivider(r, path, id);
+      node = parseDivider(r, path, id) as UiNode;
+      break;
     case "Image":
-      return parseImage(r, path, id);
+      node = parseImage(r, path, id) as UiNode;
+      break;
     case "Avatar":
-      return parseAvatar(r, path, id);
+      node = parseAvatar(r, path, id) as UiNode;
+      break;
     case "Markdown":
-      return parseMarkdown(r, path, id);
+      node = parseMarkdown(r, path, id) as UiNode;
+      break;
     case "CodeBlock":
-      return parseCodeBlock(r, path, id);
+      node = parseCodeBlock(r, path, id) as UiNode;
+      break;
     case "Progress":
-      return parseProgress(r, path, id);
+      node = parseProgress(r, path, id) as UiNode;
+      break;
     case "Spinner":
-      return parseSpinner(r, path, id);
+      node = parseSpinner(r, path, id) as UiNode;
+      break;
     case "Grid":
-      return parseGrid(r, seen, path, id);
+      node = parseGrid(r, seen, path, id) as UiNode;
+      break;
     case "Stack":
-      return parseStack(r, seen, path, id);
+      node = parseStack(r, seen, path, id) as UiNode;
+      break;
     case "Aspect":
-      return parseAspect(r, seen, path, id);
+      node = parseAspect(r, seen, path, id) as UiNode;
+      break;
     case "Flex":
-      return parseFlexNode(r, seen, path, id);
+      node = parseFlexNode(r, seen, path, id) as UiNode;
+      break;
     case "Scroll":
-      return parseScroll(r, seen, path, id);
+      node = parseScroll(r, seen, path, id) as UiNode;
+      break;
     case "TabBar":
-      return parseTabBar(r, path, id);
+      node = parseTabBar(r, path, id) as UiNode;
+      break;
     case "SearchField":
-      return parseSearchField(r, path, id);
+      node = parseSearchField(r, path, id) as UiNode;
+      break;
     case "Checkbox":
-      return parseCheckbox(r, path, id);
+      node = parseCheckbox(r, path, id) as UiNode;
+      break;
     case "RadioGroup":
-      return parseRadioGroup(r, path, id);
+      node = parseRadioGroup(r, path, id) as UiNode;
+      break;
     case "Slider":
-      return parseSlider(r, path, id);
+      node = parseSlider(r, path, id) as UiNode;
+      break;
     default:
       throw new UiValidationError(
         `${path}: unknown node kind ${JSON.stringify(kind)}`,
       );
   }
+  Object.assign(node, metadata);
+  return node;
+}
+
+function parseNodeMetadata(
+  r: Record<string, unknown>,
+  path: string,
+): UiNodeMetadata {
+  const out: UiNodeMetadata = {};
+  const accessibilityLabel = optString(
+    r.accessibilityLabel,
+    path,
+    "accessibilityLabel",
+  );
+  if (accessibilityLabel !== undefined) {
+    if (accessibilityLabel.length === 0) {
+      throw new UiValidationError(
+        `${path}.accessibilityLabel: must be a non-empty string when provided`,
+      );
+    }
+    out.accessibilityLabel = accessibilityLabel;
+  }
+  const accessibilityHint = optString(
+    r.accessibilityHint,
+    path,
+    "accessibilityHint",
+  );
+  if (accessibilityHint !== undefined) {
+    if (accessibilityHint.length === 0) {
+      throw new UiValidationError(
+        `${path}.accessibilityHint: must be a non-empty string when provided`,
+      );
+    }
+    out.accessibilityHint = accessibilityHint;
+  }
+  const spokenValue = optString(r.spokenValue, path, "spokenValue");
+  if (spokenValue !== undefined) {
+    if (spokenValue.length === 0) {
+      throw new UiValidationError(
+        `${path}.spokenValue: must be a non-empty string when provided`,
+      );
+    }
+    out.spokenValue = spokenValue;
+  }
+  if (r.focusRole !== undefined && r.focusRole !== null) {
+    if (typeof r.focusRole !== "string" || !FOCUS_ROLES.has(r.focusRole)) {
+      throw new UiValidationError(
+        `${path}.focusRole: must be "status" | "action" | "input" | "danger"`,
+      );
+    }
+    out.focusRole = r.focusRole as UiFocusRole;
+  }
+  if (r.focusOrder !== undefined && r.focusOrder !== null) {
+    if (
+      typeof r.focusOrder !== "number" ||
+      !Number.isInteger(r.focusOrder) ||
+      r.focusOrder < 0
+    ) {
+      throw new UiValidationError(
+        `${path}.focusOrder: must be a non-negative integer when provided`,
+      );
+    }
+    out.focusOrder = r.focusOrder;
+  }
+  const voiceInputEvent = optString(r.voiceInputEvent, path, "voiceInputEvent");
+  if (voiceInputEvent !== undefined) {
+    if (voiceInputEvent.length === 0) {
+      throw new UiValidationError(
+        `${path}.voiceInputEvent: must be a non-empty string when provided`,
+      );
+    }
+    out.voiceInputEvent = voiceInputEvent;
+  }
+  return out;
 }
 
 function parseChildren(

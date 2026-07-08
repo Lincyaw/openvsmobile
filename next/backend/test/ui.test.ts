@@ -186,6 +186,45 @@ describe("validateUiTree", () => {
     ).toThrow(/style/);
   });
 
+  it("preserves eyes-free metadata on any node", () => {
+    const tree = validateUiTree({
+      kind: "Text",
+      id: "status",
+      text: "Done",
+      accessibilityLabel: "Agent status",
+      accessibilityHint: "Double tap to open details",
+      spokenValue: "Agent finished with 3 changed files",
+      focusRole: "status",
+      focusOrder: 2,
+      voiceInputEvent: "voice.reply",
+    });
+    expect(tree.accessibilityLabel).toBe("Agent status");
+    expect(tree.accessibilityHint).toBe("Double tap to open details");
+    expect(tree.spokenValue).toBe("Agent finished with 3 changed files");
+    expect(tree.focusRole).toBe("status");
+    expect(tree.focusOrder).toBe(2);
+    expect(tree.voiceInputEvent).toBe("voice.reply");
+  });
+
+  it("rejects invalid eyes-free metadata", () => {
+    expect(() =>
+      validateUiTree({
+        kind: "Text",
+        id: "status",
+        text: "Done",
+        focusRole: "primary",
+      }),
+    ).toThrow(/focusRole/);
+    expect(() =>
+      validateUiTree({
+        kind: "Text",
+        id: "status",
+        text: "Done",
+        focusOrder: -1,
+      }),
+    ).toThrow(/focusOrder/);
+  });
+
   // ---- Batch 1 widgets (§4.3) ----
 
   it("accepts UiIcon with a tokenized size and accent", () => {
@@ -1642,6 +1681,61 @@ describe("ui.event round-trip", () => {
           type: "tap",
         }),
       ).rejects.toBeInstanceOf(RpcError);
+    } finally {
+      harness.host.shutdown();
+    }
+  });
+});
+
+describe("notification.reply routing", () => {
+  it("loads the persisted reply target and forwards user text to that plugin", async () => {
+    const harness = await buildHarness(["notify"]);
+    try {
+      const logPath = join(harness.logDir, "notify.stderr.log");
+      await waitFor(async () => {
+        try {
+          const raw = await readFile(logPath, "utf8");
+          return /<<RX>>/.test(raw) ? true : undefined;
+        } catch {
+          return undefined;
+        }
+      }, 3000);
+      const { id } = harness.state.notificationHub.publish({
+        source: "test",
+        level: "info",
+        title: "Reply requested",
+        reply: {
+          target: { kind: "plugin", pluginId: "notify", panelId: "home" },
+          event: "reply",
+          context: { runId: "r1" },
+        },
+      });
+
+      await call(harness.ctx, "notification.reply", {
+        id,
+        text: "continue",
+      });
+
+      const frame = await waitFor(async () => {
+        const raw = await readFile(logPath, "utf8");
+        const all = [...raw.matchAll(/<<RX>>(.*?)<<END>>/gs)];
+        for (const m of all) {
+          const body = JSON.parse(m[1] as string) as {
+            method?: string;
+            params?: Record<string, unknown>;
+          };
+          if (body.method === "notification.reply") return body;
+        }
+        return undefined;
+      }, 3000);
+      expect(frame.params).toEqual({
+        pluginId: "notify",
+        notificationId: id,
+        text: "continue",
+        panelId: "home",
+        event: "reply",
+        context: { runId: "r1" },
+      });
     } finally {
       harness.host.shutdown();
     }

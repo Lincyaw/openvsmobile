@@ -16,6 +16,15 @@ process.stdout.write(
         level: "info",
         title: "hello from notify fixture",
         body: "phase-6a smoke",
+        spoken: {
+          body: "Notify fixture completed",
+          detail: "phase-6a smoke",
+        },
+        reply: {
+          event: "reply",
+          context: { runId: "run-1" },
+          placeholder: "Reply",
+        },
       },
     },
   }) + "\n",

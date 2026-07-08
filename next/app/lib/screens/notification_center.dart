@@ -283,6 +283,21 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
     }
   }
 
+  Future<void> _replyToNotification(AppNotification n) async {
+    final reply = n.reply;
+    if (reply == null) return;
+    final placeholder = reply.placeholder == null || reply.placeholder!.isEmpty
+        ? 'Reply'
+        : reply.placeholder!;
+    final text = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => _NotificationReplySheet(placeholder: placeholder),
+    );
+    if (!mounted || text == null || text.trim().isEmpty) return;
+    await widget.appState.notifications.reply(n.id, text);
+  }
+
   @override
   Widget build(BuildContext context) {
     final notifs = widget.appState.notifications;
@@ -393,6 +408,7 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
                               _scheduleMarkVisible();
                             },
                             onAction: _onAction,
+                            onReply: _replyToNotification,
                             onLongPressMenu: () => _showLongPressMenu(g.first),
                           ),
                         );
@@ -406,6 +422,7 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
                           deviceId: widget.appState.deviceId,
                           expanded: expanded,
                           onAction: _onAction,
+                          onReply: _replyToNotification,
                           visibilityKeyForMember: (member) => _visibilityKeyFor(
                             _memberEntryKey(entryKey, member.id),
                           ),
@@ -833,6 +850,7 @@ class _NotificationCard extends StatelessWidget {
   final bool highlighted;
   final VoidCallback onToggleExpand;
   final Future<void> Function(NotificationAction) onAction;
+  final Future<void> Function(AppNotification) onReply;
   final VoidCallback onLongPressMenu;
 
   const _NotificationCard({
@@ -841,6 +859,7 @@ class _NotificationCard extends StatelessWidget {
     required this.highlighted,
     required this.onToggleExpand,
     required this.onAction,
+    required this.onReply,
     required this.onLongPressMenu,
   });
 
@@ -851,6 +870,8 @@ class _NotificationCard extends StatelessWidget {
     final n = notification;
     final hasBody = n.body != null && n.body!.isNotEmpty;
     final hasExpandableDetails = hasBody || n.fields.isNotEmpty;
+    final hasActions =
+        n.links.isNotEmpty || n.action != null || n.reply != null;
     final stripeColor = _levelColor(cs, n.level);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -917,7 +938,7 @@ class _NotificationCard extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
-                        if (n.links.isNotEmpty || n.action != null) ...[
+                        if (hasActions) ...[
                           const SizedBox(height: 8),
                           Wrap(
                             spacing: 8,
@@ -936,6 +957,12 @@ class _NotificationCard extends StatelessWidget {
                                 _ActionButton(
                                   action: n.action!,
                                   onPressed: () => onAction(n.action!),
+                                ),
+                              if (n.reply != null)
+                                OutlinedButton.icon(
+                                  icon: const Icon(Icons.reply, size: 16),
+                                  label: const Text('Reply'),
+                                  onPressed: () => onReply(n),
                                 ),
                             ],
                           ),
@@ -976,6 +1003,80 @@ class _NotificationCard extends StatelessWidget {
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _NotificationReplySheet extends StatefulWidget {
+  final String placeholder;
+
+  const _NotificationReplySheet({required this.placeholder});
+
+  @override
+  State<_NotificationReplySheet> createState() =>
+      _NotificationReplySheetState();
+}
+
+class _NotificationReplySheetState extends State<_NotificationReplySheet> {
+  final TextEditingController _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final value = _controller.text;
+    if (value.trim().isEmpty) return;
+    Navigator.of(context).pop(value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+        left: AppSpacing.lg,
+        right: AppSpacing.lg,
+        top: AppSpacing.lg,
+        bottom: MediaQuery.viewInsetsOf(context).bottom + AppSpacing.lg,
+      ),
+      child: SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextField(
+              controller: _controller,
+              autofocus: true,
+              minLines: 1,
+              maxLines: 4,
+              textInputAction: TextInputAction.send,
+              decoration: InputDecoration(
+                labelText: widget.placeholder,
+                prefixIcon: const Icon(Icons.reply),
+              ),
+              onSubmitted: (_) => _submit(),
+            ),
+            const SizedBox(height: AppSpacing.md),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Cancel'),
+                ),
+                const SizedBox(width: AppSpacing.sm),
+                FilledButton.icon(
+                  onPressed: _submit,
+                  icon: const Icon(Icons.send),
+                  label: const Text('Send'),
+                ),
+              ],
+            ),
+          ],
         ),
       ),
     );
@@ -1029,6 +1130,7 @@ class _GroupCard extends StatelessWidget {
   final String deviceId;
   final bool expanded;
   final Future<void> Function(NotificationAction) onAction;
+  final Future<void> Function(AppNotification) onReply;
   final GlobalKey Function(AppNotification member) visibilityKeyForMember;
   final VoidCallback onToggleExpand;
   const _GroupCard({
@@ -1036,6 +1138,7 @@ class _GroupCard extends StatelessWidget {
     required this.deviceId,
     required this.expanded,
     required this.onAction,
+    required this.onReply,
     required this.visibilityKeyForMember,
     required this.onToggleExpand,
   });
@@ -1046,7 +1149,10 @@ class _GroupCard extends StatelessWidget {
     final cs = theme.colorScheme;
     final newest = members.first;
     final stripe = _levelColor(cs, newest.level);
-    final hasLatestActions = newest.links.isNotEmpty || newest.action != null;
+    final hasLatestActions =
+        newest.links.isNotEmpty ||
+        newest.action != null ||
+        newest.reply != null;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       child: Card(
@@ -1121,6 +1227,12 @@ class _GroupCard extends StatelessWidget {
                                 _ActionButton(
                                   action: newest.action!,
                                   onPressed: () => onAction(newest.action!),
+                                ),
+                              if (newest.reply != null)
+                                OutlinedButton.icon(
+                                  icon: const Icon(Icons.reply, size: 16),
+                                  label: const Text('Reply'),
+                                  onPressed: () => onReply(newest),
                                 ),
                             ],
                           ),

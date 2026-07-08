@@ -221,6 +221,36 @@ describe("validateNotificationInput (unit)", () => {
     expect(out.level).toBe("warning");
     expect(out.important).toBe(true);
   });
+
+  it("accepts spoken text and plugin reply metadata", () => {
+    const out = validateNotificationInput({
+      source: "agent",
+      level: "info",
+      title: "Agent finished",
+      spoken: {
+        body: "Agent finished with one warning",
+        detail: "Open the notification to review details",
+      },
+      reply: {
+        target: { kind: "plugin", pluginId: "agent", panelId: "home" },
+        event: "reply",
+        context: { runId: "r1" },
+        placeholder: "Reply to agent",
+        confirmRequired: true,
+      },
+    });
+    expect(out.spoken).toEqual({
+      body: "Agent finished with one warning",
+      detail: "Open the notification to review details",
+    });
+    expect(out.reply).toEqual({
+      target: { kind: "plugin", pluginId: "agent", panelId: "home" },
+      event: "reply",
+      context: { runId: "r1" },
+      placeholder: "Reply to agent",
+      confirmRequired: true,
+    });
+  });
 });
 
 describe("NotificationStore (unit, no transport)", () => {
@@ -249,6 +279,32 @@ describe("NotificationStore (unit, no transport)", () => {
         title: "default ttl",
       });
       expect(typeof c.notification.ttlUntil).toBe("number");
+    } finally {
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("round-trips spoken and reply metadata through the payload blob", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ovsm-store-"));
+    const store = new NotificationStore({ dbPath: join(dir, "n.db") });
+    try {
+      const inserted = store.insert({
+        source: "agent",
+        level: "info",
+        title: "Agent finished",
+        spoken: { body: "Agent finished" },
+        reply: {
+          target: { kind: "plugin", pluginId: "agent" },
+          event: "reply",
+        },
+      });
+      const reread = store.get(inserted.notification.id);
+      expect(reread?.spoken).toEqual({ body: "Agent finished" });
+      expect(reread?.reply).toEqual({
+        target: { kind: "plugin", pluginId: "agent" },
+        event: "reply",
+      });
     } finally {
       store.close();
       rmSync(dir, { recursive: true, force: true });

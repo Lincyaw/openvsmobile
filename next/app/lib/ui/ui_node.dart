@@ -98,6 +98,78 @@ enum UiStackAlignment {
 /// Axis for [UiScroll]. Default is [vertical].
 enum UiScrollAxis { vertical, horizontal }
 
+/// Eyes-free focus role hint supplied by plugins.
+enum UiFocusRole { status, action, input, danger }
+
+@immutable
+class UiNodeAccessibility {
+  final String? accessibilityLabel;
+  final String? accessibilityHint;
+  final String? spokenValue;
+  final UiFocusRole? focusRole;
+  final int? focusOrder;
+  final String? voiceInputEvent;
+
+  const UiNodeAccessibility({
+    this.accessibilityLabel,
+    this.accessibilityHint,
+    this.spokenValue,
+    this.focusRole,
+    this.focusOrder,
+    this.voiceInputEvent,
+  });
+
+  bool get isEmpty =>
+      accessibilityLabel == null &&
+      accessibilityHint == null &&
+      spokenValue == null &&
+      focusRole == null &&
+      focusOrder == null &&
+      voiceInputEvent == null;
+
+  factory UiNodeAccessibility.fromJson(Map<String, dynamic> json) {
+    return UiNodeAccessibility(
+      accessibilityLabel: _nonEmptyString(json['accessibilityLabel']),
+      accessibilityHint: _nonEmptyString(json['accessibilityHint']),
+      spokenValue: _nonEmptyString(json['spokenValue']),
+      focusRole: _focusRole(json['focusRole']),
+      focusOrder: _focusOrder(json['focusOrder']),
+      voiceInputEvent: _nonEmptyString(json['voiceInputEvent']),
+    );
+  }
+
+  static String? _nonEmptyString(Object? raw) {
+    if (raw is String && raw.isNotEmpty) return raw;
+    return null;
+  }
+
+  static int? _focusOrder(Object? raw) {
+    if (raw is int && raw >= 0) return raw;
+    if (raw is double && raw == raw.truncateToDouble() && raw >= 0) {
+      return raw.toInt();
+    }
+    return null;
+  }
+
+  static UiFocusRole? _focusRole(Object? raw) {
+    switch (raw) {
+      case 'status':
+        return UiFocusRole.status;
+      case 'action':
+        return UiFocusRole.action;
+      case 'input':
+        return UiFocusRole.input;
+      case 'danger':
+        return UiFocusRole.danger;
+      default:
+        return null;
+    }
+  }
+}
+
+final Expando<UiNodeAccessibility> _uiNodeAccessibility =
+    Expando<UiNodeAccessibility>('UiNodeAccessibility');
+
 /// Discriminated columns for [UiGrid] — a positive integer or the
 /// `'adaptive'` sentinel.
 @immutable
@@ -120,9 +192,23 @@ sealed class UiNode {
   final String id;
   const UiNode(this.id);
 
+  UiNodeAccessibility get accessibility =>
+      _uiNodeAccessibility[this] ?? const UiNodeAccessibility();
+
   /// Parse a raw map (as decoded from the JSON-RPC `ui.tree` payload).
   /// Throws `FormatException` for malformed input.
   static UiNode fromJson(Object? raw) {
+    final node = _fromJson(raw);
+    if (raw is Map<String, dynamic>) {
+      final accessibility = UiNodeAccessibility.fromJson(raw);
+      if (!accessibility.isEmpty) {
+        _uiNodeAccessibility[node] = accessibility;
+      }
+    }
+    return node;
+  }
+
+  static UiNode _fromJson(Object? raw) {
     if (raw is! Map<String, dynamic>) {
       throw const FormatException('UiNode: expected JSON object');
     }

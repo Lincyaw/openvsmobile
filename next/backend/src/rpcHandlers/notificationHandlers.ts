@@ -25,6 +25,7 @@ export const METHOD_NOTIFICATION_LIST = "notification.list";
 export const METHOD_NOTIFICATION_MARK_READ = "notification.markRead";
 export const METHOD_NOTIFICATION_DELETE = "notification.delete";
 export const METHOD_NOTIFICATION_MARK_IMPORTANT = "notification.markImportant";
+export const METHOD_NOTIFICATION_REPLY = "notification.reply";
 
 export function register(methods: MethodRegistry): void {
   methods.set(METHOD_NOTIFICATION_SUBSCRIBE, (ctx) => {
@@ -109,6 +110,47 @@ export function register(methods: MethodRegistry): void {
     // Returning `{ ok: true }` lets clients fire-and-forget without needing
     // per-call error handling.
     ctx.state.notificationHub.markImportant(id, importantRaw);
+    return { ok: true };
+  });
+
+  methods.set(METHOD_NOTIFICATION_REPLY, (ctx, params) => {
+    const p = asBag(params);
+    const id = requireString(p, "id");
+    const text = requireString(p, "text");
+    if (text.length === 0) {
+      throw new RpcError(RPC_ERR.invalidParams, "text must be a non-empty string");
+    }
+    const notification = ctx.state.notificationHub.get(id);
+    if (notification === null) {
+      throw new RpcError(RPC_ERR.invalidParams, `notification ${id} not found`);
+    }
+    const reply = notification.reply;
+    if (reply === undefined) {
+      throw new RpcError(
+        RPC_ERR.invalidParams,
+        `notification ${id} is not replyable`,
+      );
+    }
+    const host = ctx.state.pluginHost;
+    if (host === null) {
+      throw new RpcError(RPC_ERR.notReady, "plugin host not initialized");
+    }
+    const outbound: {
+      pluginId: string;
+      notificationId: string;
+      text: string;
+      panelId?: string;
+      event?: string;
+      context?: unknown;
+    } = {
+      pluginId: reply.target.pluginId,
+      notificationId: id,
+      text,
+    };
+    if (reply.target.panelId !== undefined) outbound.panelId = reply.target.panelId;
+    if (reply.event !== undefined) outbound.event = reply.event;
+    if (reply.context !== undefined) outbound.context = reply.context;
+    host.dispatchNotificationReply(outbound);
     return { ok: true };
   });
 }

@@ -255,6 +255,31 @@ function pluginHasCapability(
   return caps[requirement] === true;
 }
 
+function withPluginReplyTarget(
+  raw: Record<string, unknown>,
+  pluginId: string,
+): Record<string, unknown> {
+  if (!raw.reply || typeof raw.reply !== "object" || Array.isArray(raw.reply)) {
+    return raw;
+  }
+  const reply = raw.reply as Record<string, unknown>;
+  const targetRaw =
+    reply.target && typeof reply.target === "object" && !Array.isArray(reply.target)
+      ? (reply.target as Record<string, unknown>)
+      : {};
+  return {
+    ...raw,
+    reply: {
+      ...reply,
+      target: {
+        ...targetRaw,
+        kind: "plugin",
+        pluginId,
+      },
+    },
+  };
+}
+
 /// Internal → wire-state collapse. The frontend only needs the four
 /// outcomes a user can act on; the wider internal vocabulary stays inside
 /// the host.
@@ -936,10 +961,10 @@ export class PluginHost {
     // a non-empty string `source`; injecting the plugin id here means
     // a plugin that omits `source` (correct usage — the field is
     // host-overwritten anyway) still passes validation.
-    const overridden = {
+    const overridden = withPluginReplyTarget({
       ...(raw as Record<string, unknown>),
       source: plugin.manifest.id,
-    };
+    }, plugin.manifest.id);
     const input = validateNotificationInput(overridden);
     return this.notificationPublisher(input);
   }
@@ -1418,6 +1443,52 @@ export class PluginHost {
     entry.process.send({
       jsonrpc: "2.0",
       method: "ui.event",
+      params: outboundParams,
+    });
+  }
+
+  /// Forward a notification inline reply from the app into the owning
+  /// plugin. The target plugin id is not supplied by the app; it is loaded
+  /// from the persisted notification's `reply.target`, so a reply cannot
+  /// drift to whichever terminal/tab happens to be visible.
+  public dispatchNotificationReply(params: {
+    pluginId: string;
+    notificationId: string;
+    text: string;
+    panelId?: string;
+    event?: string;
+    context?: unknown;
+  }): void {
+    const entry = this.plugins.get(params.pluginId);
+    if (entry === undefined) {
+      throw new RpcError(
+        RPC_ERR.invalidParams,
+        `notification.reply: no such plugin "${params.pluginId}"`,
+      );
+    }
+    if (entry.state !== "active" || entry.process === undefined) {
+      throw new RpcError(
+        RPC_ERR.invalidParams,
+        `notification.reply: plugin "${params.pluginId}" is not active (${entry.state})`,
+      );
+    }
+    if (entry.manifest.capabilities.ui !== true) {
+      throw new RpcError(
+        RPC_ERR.capabilityNotDeclared,
+        `notification.reply: plugin "${params.pluginId}" did not declare the "ui" capability`,
+      );
+    }
+    const outboundParams: Record<string, unknown> = {
+      pluginId: params.pluginId,
+      notificationId: params.notificationId,
+      text: params.text,
+    };
+    if (params.panelId !== undefined) outboundParams.panelId = params.panelId;
+    if (params.event !== undefined) outboundParams.event = params.event;
+    if (params.context !== undefined) outboundParams.context = params.context;
+    entry.process.send({
+      jsonrpc: "2.0",
+      method: "notification.reply",
       params: outboundParams,
     });
   }

@@ -375,6 +375,16 @@ describe("PluginHost", () => {
       expect(captured.title).toBe("hello from notify fixture");
       expect(captured.body).toBe("phase-6a smoke");
       expect(captured.level).toBe("info");
+      expect(captured.spoken).toEqual({
+        body: "Notify fixture completed",
+        detail: "phase-6a smoke",
+      });
+      expect(captured.reply).toEqual({
+        target: { kind: "plugin", pluginId: "notify" },
+        event: "reply",
+        context: { runId: "run-1" },
+        placeholder: "Reply",
+      });
       // The fixture deliberately sends `source: "system"` — the host
       // must overwrite it with the plugin id BEFORE publish, otherwise
       // a plugin could impersonate the system or another plugin.

@@ -16,6 +16,7 @@ import 'dart:io' show File;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter_highlight/flutter_highlight.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_slidable/flutter_slidable.dart';
@@ -58,6 +59,11 @@ class UiRenderer extends StatelessWidget {
   Widget build(BuildContext context) => _render(context, tree);
 
   Widget _render(BuildContext context, UiNode node) {
+    final child = _renderNode(context, node);
+    return _withNodeSemantics(node, child);
+  }
+
+  Widget _renderNode(BuildContext context, UiNode node) {
     final key = ValueKey<String>('ui:${node.id}');
     switch (node) {
       case UiColumn(:final children, :final gap):
@@ -232,6 +238,30 @@ class UiRenderer extends StatelessWidget {
       case UiSlider():
         return _UiSliderRenderer(key: key, node: node, onEvent: onEvent);
     }
+  }
+
+  Widget _withNodeSemantics(UiNode node, Widget child) {
+    final accessibility = node.accessibility;
+    if (accessibility.isEmpty) return child;
+    final role = accessibility.focusRole;
+    final label = accessibility.accessibilityLabel ?? accessibility.spokenValue;
+    final value = accessibility.accessibilityLabel == null
+        ? null
+        : accessibility.spokenValue;
+    return Semantics(
+      key: ValueKey<String>('ui:${node.id}:semantics'),
+      label: label,
+      hint: accessibility.accessibilityHint,
+      value: value,
+      excludeSemantics: label != null || value != null,
+      button: role == UiFocusRole.action || role == UiFocusRole.danger,
+      textField: role == UiFocusRole.input,
+      liveRegion: role == UiFocusRole.status,
+      sortKey: accessibility.focusOrder == null
+          ? null
+          : OrdinalSortKey(accessibility.focusOrder!.toDouble()),
+      child: child,
+    );
   }
 
   // ---- Batch 2 container helpers ----

@@ -142,6 +142,57 @@ UiNode _allKindsTree() {
 }
 
 void main() {
+  test('UiNode.fromJson preserves eyes-free metadata', () {
+    final node = UiNode.fromJson({
+      'kind': 'Text',
+      'id': 'status',
+      'text': 'Done',
+      'accessibilityLabel': 'Agent status',
+      'accessibilityHint': 'Double tap to open details',
+      'spokenValue': 'Agent finished with 3 changed files',
+      'focusRole': 'status',
+      'focusOrder': 2,
+      'voiceInputEvent': 'voice.reply',
+    });
+
+    expect(node.accessibility.accessibilityLabel, 'Agent status');
+    expect(node.accessibility.accessibilityHint, 'Double tap to open details');
+    expect(
+      node.accessibility.spokenValue,
+      'Agent finished with 3 changed files',
+    );
+    expect(node.accessibility.focusRole, UiFocusRole.status);
+    expect(node.accessibility.focusOrder, 2);
+    expect(node.accessibility.voiceInputEvent, 'voice.reply');
+  });
+
+  testWidgets('renders eyes-free metadata as Semantics', (tester) async {
+    final semantics = tester.ensureSemantics();
+    try {
+      final tree = UiNode.fromJson({
+        'kind': 'Text',
+        'id': 'status',
+        'text': 'Done',
+        'accessibilityLabel': 'Agent status',
+        'accessibilityHint': 'Double tap to open details',
+        'spokenValue': 'Agent finished with 3 changed files',
+        'focusRole': 'status',
+        'focusOrder': 2,
+      });
+
+      await tester.pumpWidget(_host(tree));
+
+      final node = tester.getSemantics(
+        find.byKey(const ValueKey<String>('ui:status:semantics')),
+      );
+      expect(node.label, 'Agent status');
+      expect(node.value, 'Agent finished with 3 changed files');
+      expect(node.hint, 'Double tap to open details');
+    } finally {
+      semantics.dispose();
+    }
+  });
+
   testWidgets('renders every widget kind without throwing', (tester) async {
     await tester.pumpWidget(_host(_allKindsTree()));
     // The error pump would have surfaced via takeException; ensure we

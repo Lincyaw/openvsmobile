@@ -131,6 +131,89 @@ class OpenTerminalAction extends NotificationAction {
   });
 }
 
+class NotificationSpoken {
+  final String? title;
+  final String body;
+  final String? detail;
+
+  const NotificationSpoken({this.title, required this.body, this.detail});
+
+  static NotificationSpoken? fromJson(Map<String, dynamic>? json) {
+    if (json == null) return null;
+    final body = json['body'];
+    if (body is! String || body.isEmpty) return null;
+    final title = json['title'];
+    final detail = json['detail'];
+    return NotificationSpoken(
+      title: title is String && title.isNotEmpty ? title : null,
+      body: body,
+      detail: detail is String && detail.isNotEmpty ? detail : null,
+    );
+  }
+}
+
+sealed class NotificationReplyTarget {
+  const NotificationReplyTarget();
+
+  static NotificationReplyTarget? fromJson(Map<String, dynamic>? json) {
+    if (json == null) return null;
+    switch (json['kind']) {
+      case 'plugin':
+        final pluginId = json['pluginId'];
+        if (pluginId is! String || pluginId.isEmpty) return null;
+        final panelId = json['panelId'];
+        return PluginNotificationReplyTarget(
+          pluginId: pluginId,
+          panelId: panelId is String && panelId.isNotEmpty ? panelId : null,
+        );
+      default:
+        return null;
+    }
+  }
+}
+
+class PluginNotificationReplyTarget extends NotificationReplyTarget {
+  final String pluginId;
+  final String? panelId;
+
+  const PluginNotificationReplyTarget({required this.pluginId, this.panelId});
+}
+
+class NotificationReply {
+  final NotificationReplyTarget target;
+  final String? event;
+  final Object? context;
+  final String? placeholder;
+  final bool confirmRequired;
+
+  const NotificationReply({
+    required this.target,
+    this.event,
+    this.context,
+    this.placeholder,
+    this.confirmRequired = false,
+  });
+
+  static NotificationReply? fromJson(Map<String, dynamic>? json) {
+    if (json == null) return null;
+    final target = NotificationReplyTarget.fromJson(
+      json['target'] is Map<String, dynamic>
+          ? json['target'] as Map<String, dynamic>
+          : null,
+    );
+    if (target == null) return null;
+    final event = json['event'];
+    final placeholder = json['placeholder'];
+    return NotificationReply(
+      target: target,
+      event: event is String && event.isNotEmpty ? event : null,
+      context: json['context'],
+      placeholder: placeholder is String ? placeholder : null,
+      confirmRequired: json['confirmRequired'] == true,
+    );
+  }
+}
+
 /// One persisted notification entry. Server-assigned fields (`id`,
 /// `timestamp`, `supersededBy`, `readBy`, `ttlUntil`) are always present
 /// when the backend pushes/returns; sender-only fields are nullable.
@@ -146,6 +229,8 @@ class AppNotification {
   final List<NotificationField> fields;
   final List<NotificationLink> links;
   final NotificationAction? action;
+  final NotificationSpoken? spoken;
+  final NotificationReply? reply;
   final String? groupKey;
   final String? supersedes;
   final String? supersededBy;
@@ -166,6 +251,8 @@ class AppNotification {
     this.fields = const [],
     this.links = const [],
     this.action,
+    this.spoken,
+    this.reply,
     this.groupKey,
     this.supersedes,
     this.supersededBy,
@@ -187,6 +274,8 @@ class AppNotification {
     fields: fields,
     links: links,
     action: action,
+    spoken: spoken,
+    reply: reply,
     groupKey: groupKey,
     supersedes: supersedes,
     supersededBy: supersededBy,
@@ -207,6 +296,8 @@ class AppNotification {
     fields: fields,
     links: links,
     action: action,
+    spoken: spoken,
+    reply: reply,
     groupKey: groupKey,
     supersedes: supersedes,
     supersededBy: supersededBy,
@@ -243,6 +334,16 @@ class AppNotification {
       action: NotificationAction.fromJson(
         json['action'] is Map<String, dynamic>
             ? json['action'] as Map<String, dynamic>
+            : null,
+      ),
+      spoken: NotificationSpoken.fromJson(
+        json['spoken'] is Map<String, dynamic>
+            ? json['spoken'] as Map<String, dynamic>
+            : null,
+      ),
+      reply: NotificationReply.fromJson(
+        json['reply'] is Map<String, dynamic>
+            ? json['reply'] as Map<String, dynamic>
             : null,
       ),
       groupKey: json['groupKey'] as String?,

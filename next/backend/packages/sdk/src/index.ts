@@ -70,11 +70,22 @@ export type AccentToken =
   | "muted";
 /// Icon / avatar / hit-target size buckets.
 export type SizeToken = "xs" | "sm" | "md" | "lg" | "xl";
+/// Eyes-free focus role hint for accessibility / voice surfaces.
+export type UiFocusRole = "status" | "action" | "input" | "danger";
 
 /// `StyleSlot` is the union of "raw pixel/color value" and "named token".
 /// Numbers stay accepted for back-compat (existing `gap: 8` keeps working)
 /// while new code can write `gap: "sm"`. Renderer resolves both.
 export type StyleSlot<TToken extends string> = number | TToken;
+
+export interface UiNodeMetadata {
+  accessibilityLabel?: string;
+  accessibilityHint?: string;
+  spokenValue?: string;
+  focusRole?: UiFocusRole;
+  focusOrder?: number;
+  voiceInputEvent?: string;
+}
 
 export interface UiColumn {
   kind: "Column";
@@ -508,7 +519,7 @@ export interface UiSlider {
   onChangeEvent?: string;
 }
 
-export type UiNode =
+export type UiNode = (
   | UiColumn
   | UiRow
   | UiSection
@@ -541,7 +552,9 @@ export type UiNode =
   | UiSearchField
   | UiCheckbox
   | UiRadioGroup
-  | UiSlider;
+  | UiSlider
+) &
+  UiNodeMetadata;
 
 // ---- Batch 4 imperative modals (§4.3) ----
 //
@@ -600,6 +613,12 @@ export interface UiBottomSheet {
 /// verbatim — that is the only way to keep focus / scroll state alive
 /// across re-renders.
 export const ui = {
+  withMetadata<T extends { id: string; kind: string }>(
+    node: T,
+    metadata: UiNodeMetadata,
+  ): T & UiNodeMetadata {
+    return Object.assign(node, metadata);
+  },
   column(p: {
     id?: string;
     gap?: StyleSlot<SpacingToken>;
@@ -1125,29 +1144,63 @@ export type NotificationAction =
   | { kind: "open-workspace"; workspaceId: string }
   | {
       kind: "open-terminal";
-      sessionId: string;
+      sessionId?: string;
       backendId?: string;
       externalSessionId?: string;
     };
 
-/// Inbound payload a plugin hands to `ctx.showNotification`. Matches the
-/// host's `NotificationInput` verbatim. `source` is required by the type
-/// but the host overrides it to the plugin's id on receipt — supplying
-/// anything else here is harmless, just ignored.
+export interface NotificationSpoken {
+  title?: string;
+  body: string;
+  detail?: string;
+}
+
+export interface NotificationReplyTargetPlugin {
+  kind: "plugin";
+  pluginId: string;
+  panelId?: string;
+}
+
+export type NotificationReplyTarget = NotificationReplyTargetPlugin;
+
+export interface NotificationReply {
+  /// Optional for plugin-authored notifications: the host injects and
+  /// overrides this to `{ kind: "plugin", pluginId: <this plugin> }`.
+  target?: NotificationReplyTarget;
+  event?: string;
+  context?: unknown;
+  placeholder?: string;
+  confirmRequired?: boolean;
+}
+
+/// Inbound payload a plugin hands to `ctx.showNotification`. The host
+/// overrides `source` to the plugin's id on receipt — supplying anything
+/// else here is harmless, and omitting it is the normal plugin path.
 export interface NotificationInput {
-  source: string;
+  source?: string;
   level: NotificationLevel;
   title: string;
   body?: string;
   fields?: NotificationField[];
   links?: NotificationLink[];
   action?: NotificationAction;
+  spoken?: NotificationSpoken;
+  reply?: NotificationReply;
   groupKey?: string;
   supersedes?: string;
   important?: boolean;
   ttl?: number;
   timestamp?: number;
   widget?: unknown;
+}
+
+export interface NotificationReplyInput {
+  notificationId: string;
+  text: string;
+  pluginId?: string;
+  panelId?: string;
+  event?: string;
+  context?: unknown;
 }
 
 export interface PluginContext {
@@ -1259,6 +1312,13 @@ export interface PluginConfig {
   onWorkspaceActivated?(
     ctx: PluginContext,
     workspace: WorkspaceRef | null,
+  ): void | Promise<void>;
+  /// Invoked when the app sends an inline reply to a notification whose
+  /// `reply.target` resolves to this plugin. The plugin owns backend-specific
+  /// interpretation: append to a Codex session, send to a gateway, or ignore.
+  onNotificationReply?(
+    ctx: PluginContext,
+    reply: NotificationReplyInput,
   ): void | Promise<void>;
 }
 
@@ -1589,6 +1649,50 @@ export function createPlugin(config: PluginConfig): PluginRunner {
               "error",
               `onWorkspaceActivated threw: ${(err as Error).message ?? String(err)}`,
             );
+          }
+          return;
+        }
+
+        if (msg.method === "notification.reply") {
+          const params = (msg.params ?? {}) as Partial<NotificationReplyInput>;
+          if (
+            typeof params.notificationId !== "string" ||
+            typeof params.text !== "string"
+          ) {
+            respond(msg.id, {
+              code: RPC_ERR_INVALID_PARAMS,
+              message:
+                "notification.reply params must include string notificationId/text",
+            });
+            return;
+          }
+          const reply: NotificationReplyInput = {
+            notificationId: params.notificationId,
+            text: params.text,
+          };
+          if (typeof params.pluginId === "string") reply.pluginId = params.pluginId;
+          if (typeof params.panelId === "string") reply.panelId = params.panelId;
+          if (typeof params.event === "string") reply.event = params.event;
+          if (params.context !== undefined) reply.context = params.context;
+          if (config.onNotificationReply === undefined) {
+            respond(msg.id, undefined, {});
+            return;
+          }
+          try {
+            await config.onNotificationReply(ctx, reply);
+            respond(msg.id, undefined, {});
+          } catch (err) {
+            if (msg.id === undefined) {
+              ctx.log(
+                "error",
+                `onNotificationReply threw: ${(err as Error).message ?? String(err)}`,
+              );
+              return;
+            }
+            respond(msg.id, {
+              code: RPC_ERR_INTERNAL,
+              message: (err as Error).message,
+            });
           }
           return;
         }

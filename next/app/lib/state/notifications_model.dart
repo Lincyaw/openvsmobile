@@ -177,6 +177,8 @@ class NotificationsModel extends ChangeNotifier {
       fields: old.fields,
       links: old.links,
       action: old.action,
+      spoken: old.spoken,
+      reply: old.reply,
       groupKey: old.groupKey,
       supersedes: old.supersedes,
       supersededBy: newId,
@@ -403,6 +405,20 @@ class NotificationsModel extends ChangeNotifier {
         notifyListeners();
       }
       _reportError('Could not change pin state: $e');
+    }
+  }
+
+  Future<void> reply(String id, String text) async {
+    if (text.trim().isEmpty) return;
+    final n = _items[id];
+    if (n == null || n.reply == null) {
+      _reportError('Notification is not replyable');
+      return;
+    }
+    try {
+      await _client.call('notification.reply', {'id': id, 'text': text});
+    } catch (e) {
+      _reportError('Could not send notification reply: $e');
     }
   }
 

@@ -31,6 +31,7 @@ AppNotification _n({
   String? body,
   List<NotificationField> fields = const [],
   NotificationAction? action,
+  NotificationReply? reply,
   String? groupKey,
 }) => AppNotification(
   id: id,
@@ -40,6 +41,7 @@ AppNotification _n({
   body: body,
   fields: fields,
   action: action,
+  reply: reply,
   groupKey: groupKey,
   timestamp: ts ?? DateTime.now().millisecondsSinceEpoch,
 );
@@ -178,6 +180,38 @@ void main() {
     expect(opened, hasLength(1));
     expect(opened.single.sessionId, 'session-1');
     expect(opened.single.externalSessionId, 'claude-main');
+  });
+
+  testWidgets('replyable notification sends notification.reply', (
+    tester,
+  ) async {
+    final client = _RecordingBackendClient();
+    final appState = AppState(client: client, deviceId: 'me');
+    addTearDown(appState.dispose);
+    appState.notifications.onShow(
+      _n(
+        id: 'agent-waiting',
+        title: 'Agent waiting',
+        reply: const NotificationReply(
+          target: PluginNotificationReplyTarget(pluginId: 'agent'),
+          placeholder: 'Reply to agent',
+        ),
+      ),
+    );
+
+    await _pumpCenter(tester, appState);
+
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Reply'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'continue');
+    await tester.tap(find.widgetWithText(FilledButton, 'Send'));
+    await tester.pumpAndSettle();
+
+    final calls = client.calls
+        .where((c) => c.method == 'notification.reply')
+        .toList();
+    expect(calls, hasLength(1));
+    expect(calls.single.params, {'id': 'agent-waiting', 'text': 'continue'});
   });
 
   testWidgets('filter pill narrows the list', (tester) async {

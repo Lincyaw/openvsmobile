@@ -20,6 +20,7 @@ import {
   ui,
   type AccentToken,
   type NotificationInput,
+  type NotificationReplyInput,
   type PluginContext,
   type SizeToken,
   type SpacingToken,
@@ -128,6 +129,26 @@ describe("ui.* constructors", () => {
     const fixed = ui.text({ id: "stable-id", text: "hi" });
     expect(auto.id.length).toBeGreaterThan(0);
     expect(fixed.id).toBe("stable-id");
+  });
+
+  it("attaches eyes-free metadata to any constructed node", () => {
+    const node = ui.withMetadata(ui.text({ id: "status", text: "Done" }), {
+      accessibilityLabel: "Agent status",
+      spokenValue: "Agent finished",
+      focusRole: "status",
+      focusOrder: 1,
+      voiceInputEvent: "voice.reply",
+    });
+    expect(node).toMatchObject({
+      kind: "Text",
+      id: "status",
+      text: "Done",
+      accessibilityLabel: "Agent status",
+      spokenValue: "Agent finished",
+      focusRole: "status",
+      focusOrder: 1,
+      voiceInputEvent: "voice.reply",
+    });
   });
 
   it("rejects malformed widget by absence (TS surface) but accepts the §4.3 vocabulary", () => {
@@ -473,6 +494,50 @@ describe("createPlugin: ui.event dispatch", () => {
     expect(ackMsg.id).toBe(7);
     expect(ackMsg.result?.commandId).toBe("hello.greet");
     expect(ackMsg.result?.args?.who).toBe("world");
+  });
+
+  it("forwards inbound notification.reply to onNotificationReply", async () => {
+    const h = buildHarness();
+    const captured: NotificationReplyInput[] = [];
+    const plugin = createPlugin({
+      onNotificationReply(_ctx, reply): void {
+        captured.push(reply);
+      },
+    });
+    plugin.run({ stdin: h.stdinIn, stdout: h.stdoutOut });
+    await Promise.resolve();
+    h.pushInbound({
+      jsonrpc: "2.0",
+      id: 9,
+      method: "notification.reply",
+      params: {
+        pluginId: "agent",
+        notificationId: "n1",
+        text: "continue",
+        panelId: "home",
+        event: "reply",
+        context: { runId: "r1" },
+      },
+    });
+    const [ack] = await h.waitForOutbound(1);
+    expect(captured).toEqual([
+      {
+        pluginId: "agent",
+        notificationId: "n1",
+        text: "continue",
+        panelId: "home",
+        event: "reply",
+        context: { runId: "r1" },
+      },
+    ]);
+    const ackMsg = JSON.parse(ack as string) as {
+      id?: unknown;
+      result?: unknown;
+      error?: unknown;
+    };
+    expect(ackMsg.id).toBe(9);
+    expect(ackMsg.result).toBeDefined();
+    expect(ackMsg.error).toBeUndefined();
   });
 
   it("ctx.showAlert serializes ui.showAlert request and resolves on host's reply", async () => {

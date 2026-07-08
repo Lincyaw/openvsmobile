@@ -74,6 +74,28 @@ export type NotificationAction =
       externalSessionId?: string;
     };
 
+export interface NotificationSpoken {
+  title?: string;
+  body: string;
+  detail?: string;
+}
+
+export interface NotificationReplyTargetPlugin {
+  kind: "plugin";
+  pluginId: string;
+  panelId?: string;
+}
+
+export type NotificationReplyTarget = NotificationReplyTargetPlugin;
+
+export interface NotificationReply {
+  target: NotificationReplyTarget;
+  event?: string;
+  context?: unknown;
+  placeholder?: string;
+  confirmRequired?: boolean;
+}
+
 /// The wire-shape Notification — what fan-out emits, what `notification.list`
 /// returns, what the foreground service POSTs back to the client UI. Matches
 /// design §4.5 verbatim. `widget` is opaque JSON in v0 (renderer is PR-D).
@@ -86,6 +108,8 @@ export interface Notification {
   fields?: NotificationField[];
   links?: NotificationLink[];
   action?: NotificationAction;
+  spoken?: NotificationSpoken;
+  reply?: NotificationReply;
   groupKey?: string;
   supersedes?: string;
   supersededBy?: string;
@@ -109,6 +133,8 @@ export interface NotificationInput {
   fields?: NotificationField[];
   links?: NotificationLink[];
   action?: NotificationAction;
+  spoken?: NotificationSpoken;
+  reply?: NotificationReply;
   groupKey?: string;
   supersedes?: string;
   important?: boolean;
@@ -217,6 +243,71 @@ function validateLinks(raw: unknown): NotificationLink[] | undefined {
   return out;
 }
 
+function validateSpoken(raw: unknown): NotificationSpoken | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!isPlainObject(raw)) fail("spoken must be an object");
+  const body = raw.body;
+  if (typeof body !== "string" || body.length === 0) {
+    fail("spoken.body must be a non-empty string");
+  }
+  const out: NotificationSpoken = { body };
+  if (raw.title !== undefined && raw.title !== null) {
+    if (typeof raw.title !== "string" || raw.title.length === 0) {
+      fail("spoken.title must be a non-empty string when provided");
+    }
+    out.title = raw.title;
+  }
+  if (raw.detail !== undefined && raw.detail !== null) {
+    if (typeof raw.detail !== "string" || raw.detail.length === 0) {
+      fail("spoken.detail must be a non-empty string when provided");
+    }
+    out.detail = raw.detail;
+  }
+  return out;
+}
+
+function validateReply(raw: unknown): NotificationReply | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!isPlainObject(raw)) fail("reply must be an object");
+  if (!isPlainObject(raw.target)) fail("reply.target must be an object");
+  const targetRaw = raw.target;
+  if (targetRaw.kind !== "plugin") {
+    fail('reply.target.kind must be "plugin"');
+  }
+  const pluginId = targetRaw.pluginId;
+  if (typeof pluginId !== "string" || pluginId.length === 0) {
+    fail("reply.target.pluginId must be a non-empty string");
+  }
+  const target: NotificationReplyTargetPlugin = { kind: "plugin", pluginId };
+  if (targetRaw.panelId !== undefined && targetRaw.panelId !== null) {
+    if (typeof targetRaw.panelId !== "string" || targetRaw.panelId.length === 0) {
+      fail("reply.target.panelId must be a non-empty string when provided");
+    }
+    target.panelId = targetRaw.panelId;
+  }
+  const out: NotificationReply = { target };
+  if (raw.event !== undefined && raw.event !== null) {
+    if (typeof raw.event !== "string" || raw.event.length === 0) {
+      fail("reply.event must be a non-empty string when provided");
+    }
+    out.event = raw.event;
+  }
+  if (raw.context !== undefined) out.context = raw.context;
+  if (raw.placeholder !== undefined && raw.placeholder !== null) {
+    if (typeof raw.placeholder !== "string") {
+      fail("reply.placeholder must be a string when provided");
+    }
+    out.placeholder = raw.placeholder;
+  }
+  if (raw.confirmRequired !== undefined && raw.confirmRequired !== null) {
+    if (typeof raw.confirmRequired !== "boolean") {
+      fail("reply.confirmRequired must be boolean when provided");
+    }
+    out.confirmRequired = raw.confirmRequired;
+  }
+  return out;
+}
+
 /// Validate + normalize a raw inbound payload. Throws RpcError (with code
 /// `invalidParams`) on schema violations — the HTTP layer maps that to 400,
 /// the RPC layer surfaces it as the standard JSON-RPC error frame.
@@ -253,6 +344,8 @@ export function validateNotificationInput(raw: unknown): NotificationInput {
   const fields = validateFields(raw.fields);
   const links = validateLinks(raw.links);
   const action = validateAction(raw.action);
+  const spoken = validateSpoken(raw.spoken);
+  const reply = validateReply(raw.reply);
 
   let groupKey: string | undefined;
   if (raw.groupKey !== undefined && raw.groupKey !== null) {
@@ -309,6 +402,8 @@ export function validateNotificationInput(raw: unknown): NotificationInput {
   if (fields !== undefined) out.fields = fields;
   if (links !== undefined) out.links = links;
   if (action !== undefined) out.action = action;
+  if (spoken !== undefined) out.spoken = spoken;
+  if (reply !== undefined) out.reply = reply;
   if (groupKey !== undefined) out.groupKey = groupKey;
   if (supersedes !== undefined) out.supersedes = supersedes;
   if (important !== undefined) out.important = important;
@@ -344,6 +439,8 @@ interface PayloadBlob {
   fields?: NotificationField[];
   links?: NotificationLink[];
   action?: NotificationAction;
+  spoken?: NotificationSpoken;
+  reply?: NotificationReply;
   widget?: unknown;
 }
 
@@ -529,6 +626,8 @@ export class NotificationStore {
     if (input.fields !== undefined) payload.fields = input.fields;
     if (input.links !== undefined) payload.links = input.links;
     if (input.action !== undefined) payload.action = input.action;
+    if (input.spoken !== undefined) payload.spoken = input.spoken;
+    if (input.reply !== undefined) payload.reply = input.reply;
     if (input.widget !== undefined) payload.widget = input.widget;
     const payloadJson =
       Object.keys(payload).length > 0 ? JSON.stringify(payload) : null;
@@ -743,6 +842,8 @@ function rowToNotification(row: DbRow): Notification {
       if (blob.fields !== undefined) out.fields = blob.fields;
       if (blob.links !== undefined) out.links = blob.links;
       if (blob.action !== undefined) out.action = blob.action;
+      if (blob.spoken !== undefined) out.spoken = blob.spoken;
+      if (blob.reply !== undefined) out.reply = blob.reply;
       if (blob.widget !== undefined) out.widget = blob.widget;
     } catch {
       // Corrupt payload blob → drop the optional fields silently. The row's
@@ -838,6 +939,10 @@ export class NotificationHub {
   public list(query: ListQuery): { items: Notification[]; cursor?: number } {
     this.maybeSweepOnList();
     return this.store.list(query);
+  }
+
+  public get(id: string): Notification | null {
+    return this.store.get(id);
   }
 
   public markRead(ids: string[], deviceId: string): void {

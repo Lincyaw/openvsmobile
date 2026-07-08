@@ -31,6 +31,8 @@ AppNotification _make({
   NotificationLevel level = NotificationLevel.info,
   String title = 'hi',
   String? body,
+  NotificationSpoken? spoken,
+  NotificationReply? reply,
   int? timestamp,
   String? groupKey,
   String? supersededBy,
@@ -42,6 +44,8 @@ AppNotification _make({
   level: level,
   title: title,
   body: body,
+  spoken: spoken,
+  reply: reply,
   timestamp: timestamp ?? DateTime.now().millisecondsSinceEpoch,
   groupKey: groupKey,
   supersededBy: supersededBy,
@@ -59,6 +63,39 @@ NotificationsModel _model({String deviceId = 'this-device'}) {
 }
 
 void main() {
+  group('parse', () {
+    test('preserves spoken and reply metadata', () {
+      final n = AppNotification.fromJson({
+        'id': 'n1',
+        'source': 'agent',
+        'level': 'info',
+        'title': 'Agent finished',
+        'timestamp': 100,
+        'spoken': {
+          'body': 'Agent finished with one warning',
+          'detail': 'Open details to review',
+        },
+        'reply': {
+          'target': {'kind': 'plugin', 'pluginId': 'agent', 'panelId': 'home'},
+          'event': 'reply',
+          'context': {'runId': 'r1'},
+          'placeholder': 'Reply to agent',
+          'confirmRequired': true,
+        },
+      });
+
+      expect(n.spoken?.body, 'Agent finished with one warning');
+      expect(n.spoken?.detail, 'Open details to review');
+      expect(n.reply?.event, 'reply');
+      expect(n.reply?.context, {'runId': 'r1'});
+      expect(n.reply?.placeholder, 'Reply to agent');
+      expect(n.reply?.confirmRequired, isTrue);
+      final target = n.reply?.target as PluginNotificationReplyTarget;
+      expect(target.pluginId, 'agent');
+      expect(target.panelId, 'home');
+    });
+  });
+
   group('onShow / sort', () {
     test('adds notifications and sorts by timestamp DESC', () {
       final m = _model();
@@ -172,6 +209,32 @@ void main() {
       m.onShow(_make(id: '2', source: 'alpha'));
       m.onShow(_make(id: '3', source: 'alpha'));
       expect(m.knownSources, ['alpha', 'zeta']);
+    });
+  });
+
+  group('reply', () {
+    test('sends notification.reply for a replyable notification', () async {
+      final client = _RecordingBackendClient({});
+      final errors = <String>[];
+      final m = NotificationsModel(
+        client: client,
+        deviceId: () => 'phone',
+        reportError: errors.add,
+      );
+      m.onShow(
+        _make(
+          id: 'n1',
+          reply: const NotificationReply(
+            target: PluginNotificationReplyTarget(pluginId: 'agent'),
+          ),
+        ),
+      );
+
+      await m.reply('n1', 'continue');
+
+      expect(errors, isEmpty);
+      expect(client.calls.single.method, 'notification.reply');
+      expect(client.calls.single.params, {'id': 'n1', 'text': 'continue'});
     });
   });
 
