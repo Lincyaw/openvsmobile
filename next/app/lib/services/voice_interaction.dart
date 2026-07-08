@@ -1,11 +1,23 @@
 import 'package:flutter/services.dart';
 
+const Set<String> retryableSpeechRecognitionErrorCodes = {
+  'AUDIO_ERROR',
+  'CLIENT_ERROR',
+  'NETWORK_ERROR',
+  'NETWORK_TIMEOUT',
+  'SERVER_ERROR',
+};
+
+bool shouldRetrySpeechRecognitionOffline(PlatformException error) {
+  return retryableSpeechRecognitionErrorCodes.contains(error.code);
+}
+
 abstract class VoiceInteraction {
   const VoiceInteraction();
 
   Future<bool> isSpeechRecognitionAvailable();
 
-  Future<String?> recognizeOnce({String? prompt});
+  Future<String?> recognizeOnce({String? prompt, bool preferOffline = false});
 
   Future<bool> speak(String text);
 
@@ -30,9 +42,13 @@ class PlatformVoiceInteraction extends VoiceInteraction {
   }
 
   @override
-  Future<String?> recognizeOnce({String? prompt}) async {
+  Future<String?> recognizeOnce({
+    String? prompt,
+    bool preferOffline = false,
+  }) async {
     final result = await _channel.invokeMethod<String>('recognizeOnce', {
       if (prompt != null && prompt.isNotEmpty) 'prompt': prompt,
+      if (preferOffline) 'preferOffline': true,
     });
     final trimmed = result?.trim();
     return trimmed == null || trimmed.isEmpty ? null : trimmed;

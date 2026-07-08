@@ -64,6 +64,7 @@ class _FakeVoiceInteraction extends VoiceInteraction {
   final String? recognizedText;
   final Object? recognitionError;
   final Completer<String?>? recognitionCompleter;
+  final List<Object?> recognitionResponses;
   final bool speechRecognitionAvailable;
   final List<String> spoken = <String>[];
   final List<String> calls = <String>[];
@@ -72,8 +73,9 @@ class _FakeVoiceInteraction extends VoiceInteraction {
     this.recognizedText,
     this.recognitionError,
     this.recognitionCompleter,
+    List<Object?> recognitionResponses = const [],
     this.speechRecognitionAvailable = true,
-  });
+  }) : recognitionResponses = List<Object?>.from(recognitionResponses);
 
   @override
   Future<bool> isSpeechRecognitionAvailable() async {
@@ -82,8 +84,17 @@ class _FakeVoiceInteraction extends VoiceInteraction {
   }
 
   @override
-  Future<String?> recognizeOnce({String? prompt}) async {
-    calls.add('recognizeOnce:${prompt ?? ""}');
+  Future<String?> recognizeOnce({
+    String? prompt,
+    bool preferOffline = false,
+  }) async {
+    calls.add('recognizeOnce:${prompt ?? ""}:offline=$preferOffline');
+    if (recognitionResponses.isNotEmpty) {
+      final response = recognitionResponses.removeAt(0);
+      if (response is PlatformException) throw response;
+      if (response is Exception) throw response;
+      return response as String?;
+    }
     final error = recognitionError;
     if (error != null) throw error;
     final completer = recognitionCompleter;
@@ -120,6 +131,20 @@ Future<void> _doubleTap(
   await tester.pump(gap);
   await tester.tap(finder);
   await tester.pumpAndSettle();
+}
+
+Future<void> _tapWithMove(
+  WidgetTester tester,
+  Finder finder,
+  Offset delta,
+) async {
+  final center = tester.getCenter(finder);
+  final gesture = await tester.startGesture(center);
+  await tester.pump(const Duration(milliseconds: 16));
+  await gesture.moveBy(delta);
+  await tester.pump(const Duration(milliseconds: 16));
+  await gesture.up();
+  await tester.pump();
 }
 
 void main() {
@@ -564,6 +589,61 @@ void main() {
     expect(voice.calls, contains('speakAndWait:AgentM finished the task'));
   });
 
+  testWidgets('eyes-free mode tolerates small tap movement on confirm', (
+    tester,
+  ) async {
+    final panel = const PluginPanelStub(id: 'chat', title: 'Chat');
+    final appState = await _appStateWithSeed([
+      _info(id: 'agentm', name: 'AgentM', panels: [panel]),
+    ]);
+    addTearDown(appState.dispose);
+
+    appState.uiPanels.debugInjectPush(<String, dynamic>{
+      'pluginId': 'agentm',
+      'panelId': 'chat',
+      'version': 1,
+      'tree': <String, dynamic>{
+        'kind': 'Button',
+        'id': 'confirm',
+        'label': 'Confirm action',
+        'focusRole': 'action',
+        'focusOrder': 1,
+        'voiceShortcut': true,
+      },
+    });
+
+    final dispatched = <UiNodeEvent>[];
+    appState.uiPanels.debugDispatchOverride =
+        ({required pluginId, required panelId, required event}) async {
+          dispatched.add(event);
+        };
+
+    final info = appState.plugins.plugin('agentm')!;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PluginEyesFreeScreen(
+          appState: appState,
+          info: info,
+          panel: panel,
+          voice: _FakeVoiceInteraction(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final surface = find.byKey(
+      const ValueKey<String>('eyes-free-gesture-surface'),
+    );
+    await _tapWithMove(tester, surface, const Offset(38, 8));
+    await tester.pump(const Duration(milliseconds: 50));
+    await _tapWithMove(tester, surface, const Offset(-35, -6));
+    await tester.pumpAndSettle();
+
+    expect(dispatched, hasLength(1));
+    expect(dispatched.single.nodeId, 'confirm');
+    expect(dispatched.single.type, 'tap');
+  });
+
   testWidgets(
     'eyes-free mode keeps selected action stable across tree updates',
     (tester) async {
@@ -849,6 +929,83 @@ void main() {
       expect(voice.spoken.join('\n'), contains('No speech was recognized'));
     },
   );
+
+  testWidgets('eyes-free mode retries network speech failures offline', (
+    tester,
+  ) async {
+    final panel = const PluginPanelStub(id: 'chat', title: 'Chat');
+    final appState = await _appStateWithSeed([
+      _info(id: 'agentm', name: 'AgentM', panels: [panel]),
+    ]);
+    addTearDown(appState.dispose);
+
+    appState.uiPanels.debugInjectPush(<String, dynamic>{
+      'pluginId': 'agentm',
+      'panelId': 'chat',
+      'version': 1,
+      'tree': <String, dynamic>{
+        'kind': 'TextField',
+        'id': 'reply',
+        'label': 'Reply',
+        'placeholder': 'Speak a reply',
+        'accessibilityLabel': 'Dictate and send reply',
+        'focusRole': 'action',
+        'focusOrder': 1,
+        'voiceInputEvent': 'send',
+      },
+    });
+
+    final dispatched = <UiNodeEvent>[];
+    appState.uiPanels.debugDispatchOverride =
+        ({required pluginId, required panelId, required event}) async {
+          dispatched.add(event);
+        };
+
+    final voice = _FakeVoiceInteraction(
+      recognitionResponses: <Object?>[
+        PlatformException(
+          code: 'NETWORK_TIMEOUT',
+          message: 'Speech recognition network error',
+        ),
+        'retry by voice',
+      ],
+    );
+    final info = appState.plugins.plugin('agentm')!;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PluginEyesFreeScreen(
+          appState: appState,
+          info: info,
+          panel: panel,
+          voice: voice,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await _doubleTap(
+      tester,
+      find.byKey(const ValueKey<String>('eyes-free-gesture-surface')),
+    );
+
+    expect(
+      voice.calls.where((call) => call.startsWith('recognizeOnce:')).toList(),
+      <String>[
+        'recognizeOnce:Speak a reply:offline=false',
+        'recognizeOnce:Speak a reply:offline=true',
+      ],
+    );
+    expect(
+      voice.spoken.join('\n'),
+      contains('Speech recognition had a network problem. Listening again.'),
+    );
+    expect(dispatched, hasLength(2));
+    expect(dispatched[0].payload, {'value': 'retry by voice'});
+    expect(dispatched[1].payload, {
+      'value': 'retry by voice',
+      'source': 'voice',
+    });
+  });
 
   testWidgets('eyes-free mode reports unavailable speech recognition', (
     tester,

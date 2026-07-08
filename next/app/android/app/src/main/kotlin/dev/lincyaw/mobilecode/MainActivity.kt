@@ -47,6 +47,7 @@ class MainActivity : FlutterActivity() {
     private var pendingSpeechResult: MethodChannel.Result? = null
     private var pendingSpeechPrompt: String? = null
     private var pendingSpeechFallbackReason: String? = null
+    private var pendingSpeechPreferOffline = false
     private var activeSpeechRecognizer: SpeechRecognizer? = null
     private var textToSpeech: TextToSpeech? = null
     private var textToSpeechReady = false
@@ -126,7 +127,11 @@ class MainActivity : FlutterActivity() {
                 when (call.method) {
                     "recognizeOnce" -> {
                         Log.d(voiceLogTag, "recognizeOnce method call")
-                        recognizeOnce(call.argument<String>("prompt"), result)
+                        recognizeOnce(
+                            call.argument<String>("prompt"),
+                            call.argument<Boolean>("preferOffline") == true,
+                            result
+                        )
                     }
                     "isSpeechRecognitionAvailable" -> {
                         val available = SpeechRecognizer.isRecognitionAvailable(this)
@@ -269,15 +274,24 @@ class MainActivity : FlutterActivity() {
         startSpeechRecognition()
     }
 
-    private fun recognizeOnce(prompt: String?, result: MethodChannel.Result) {
+    private fun recognizeOnce(
+        prompt: String?,
+        preferOffline: Boolean,
+        result: MethodChannel.Result
+    ) {
         if (pendingSpeechResult != null || activeSpeechRecognizer != null) {
             Log.d(voiceLogTag, "recognizeOnce rejected: busy")
             result.error("BUSY", "Speech recognition is already active", null)
             return
         }
-        Log.d(voiceLogTag, "recognizeOnce accepted promptLength=${prompt?.length ?: 0}")
+        Log.d(
+            voiceLogTag,
+            "recognizeOnce accepted promptLength=${prompt?.length ?: 0} " +
+                "preferOffline=$preferOffline"
+        )
         pendingSpeechResult = result
         pendingSpeechPrompt = prompt
+        pendingSpeechPreferOffline = preferOffline
         if (
             ContextCompat.checkSelfPermission(
                 this,
@@ -301,7 +315,10 @@ class MainActivity : FlutterActivity() {
             )
             return
         }
-        Log.d(voiceLogTag, "startSpeechRecognition create recognizer")
+        Log.d(
+            voiceLogTag,
+            "startSpeechRecognition create recognizer preferOffline=$pendingSpeechPreferOffline"
+        )
         val recognizer = SpeechRecognizer.createSpeechRecognizer(this)
         activeSpeechRecognizer = recognizer
         recognizer.setRecognitionListener(object : RecognitionListener {
@@ -351,17 +368,7 @@ class MainActivity : FlutterActivity() {
                 pending?.success(text)
             }
         })
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(
-                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
-            )
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
-            pendingSpeechPrompt?.let {
-                putExtra(RecognizerIntent.EXTRA_PROMPT, it)
-            }
-        }
+        val intent = buildSpeechRecognitionIntent()
         try {
             Log.d(voiceLogTag, "startListening")
             recognizer.startListening(intent)
@@ -374,19 +381,13 @@ class MainActivity : FlutterActivity() {
 
     private fun startSpeechRecognitionActivity() {
         if (pendingSpeechResult == null) return
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(
-                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
-            )
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
-            pendingSpeechPrompt?.let {
-                putExtra(RecognizerIntent.EXTRA_PROMPT, it)
-            }
-        }
+        val intent = buildSpeechRecognitionIntent()
         try {
-            Log.d(voiceLogTag, "startActivityForResult recognizer fallback")
+            Log.d(
+                voiceLogTag,
+                "startActivityForResult recognizer fallback " +
+                    "preferOffline=$pendingSpeechPreferOffline"
+            )
             @Suppress("DEPRECATION")
             startActivityForResult(intent, requestSpeechRecognition)
         } catch (e: ActivityNotFoundException) {
@@ -400,6 +401,33 @@ class MainActivity : FlutterActivity() {
             finishPendingSpeechWithError("START_FAILED", e.message ?: "Speech recognition failed")
         }
     }
+
+    private fun buildSpeechRecognitionIntent(): Intent =
+        Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+            )
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, pendingSpeechPreferOffline)
+            putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS,
+                1_500L
+            )
+            putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,
+                2_000L
+            )
+            putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
+                1_200L
+            )
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
+            pendingSpeechPrompt?.let {
+                putExtra(RecognizerIntent.EXTRA_PROMPT, it)
+            }
+        }
 
     private fun finishSpeechActivity(resultCode: Int, data: Intent?) {
         val pending = pendingSpeechResult ?: return
@@ -433,6 +461,7 @@ class MainActivity : FlutterActivity() {
         pendingSpeechResult = null
         pendingSpeechPrompt = null
         pendingSpeechFallbackReason = null
+        pendingSpeechPreferOffline = false
     }
 
     private fun destroyActiveSpeechRecognizer() {

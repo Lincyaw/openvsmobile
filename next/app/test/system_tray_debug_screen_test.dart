@@ -25,7 +25,10 @@ class _FakeVoiceInteraction extends VoiceInteraction {
   }
 
   @override
-  Future<String?> recognizeOnce({String? prompt}) async {
+  Future<String?> recognizeOnce({
+    String? prompt,
+    bool preferOffline = false,
+  }) async {
     calls.add('recognizeOnce:${prompt ?? ""}');
     return recognizedText;
   }

@@ -10,7 +10,10 @@ class _FakeVoiceInteraction extends VoiceInteraction {
   Future<bool> isSpeechRecognitionAvailable() async => true;
 
   @override
-  Future<String?> recognizeOnce({String? prompt}) async => null;
+  Future<String?> recognizeOnce({
+    String? prompt,
+    bool preferOffline = false,
+  }) async => null;
 
   @override
   Future<bool> speak(String text) async {

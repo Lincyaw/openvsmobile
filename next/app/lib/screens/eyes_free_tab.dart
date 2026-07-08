@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -33,6 +32,7 @@ class EyesFreeTab extends StatefulWidget {
 
 class _EyesFreeTabState extends State<EyesFreeTab> {
   static const _confirmTapWindow = Duration(milliseconds: 700);
+  static const double _tapMovementSlop = 72;
   static const double _confirmTapSlop = 96;
 
   int _index = 0;
@@ -41,7 +41,7 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
   bool _executing = false;
   Offset? _pointerDownPosition;
   bool _pointerMoved = false;
-  DateTime? _lastTapAt;
+  Duration? _lastTapAt;
   Offset? _lastTapPosition;
   String? _lastSpokenStatusKey;
   String? _pendingSpokenStatusKey;
@@ -204,7 +204,13 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
   void _onHorizontalDragEnd(DragEndDetails details) {
     final velocity = details.primaryVelocity ?? 0;
     if (velocity.abs() < 120) return;
+    _clearPendingTap();
     _move(velocity < 0 ? 1 : -1);
+  }
+
+  void _clearPendingTap() {
+    _lastTapAt = null;
+    _lastTapPosition = null;
   }
 
   void _onPointerDown(PointerDownEvent event) {
@@ -220,7 +226,7 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
     final down = _pointerDownPosition;
     if (down == null) return;
     final distance = (event.position - down).distance;
-    if (distance > kTouchSlop && !_pointerMoved) {
+    if (distance > _tapMovementSlop && !_pointerMoved) {
       _pointerMoved = true;
       _debugLog(
         'pointer moved beyond tap slop distance=${distance.toStringAsFixed(1)}',
@@ -230,44 +236,83 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
 
   void _onPointerUp(PointerUpEvent event) {
     final down = _pointerDownPosition;
-    final moved =
-        _pointerMoved ||
-        (down != null && (event.position - down).distance > kTouchSlop);
+    if (down == null) {
+      _debugLog(
+        'pointer up ignored: no active pointer '
+        'x=${event.position.dx.toStringAsFixed(1)} '
+        'y=${event.position.dy.toStringAsFixed(1)}',
+      );
+      return;
+    }
+    final distance = (event.position - down).distance;
+    final moved = _pointerMoved || distance > _tapMovementSlop;
     _pointerDownPosition = null;
     _pointerMoved = false;
     _debugLog(
-      'pointer up moved=$moved x=${event.position.dx.toStringAsFixed(1)} '
+      'pointer up moved=$moved distance=${distance.toStringAsFixed(1)} '
+      'x=${event.position.dx.toStringAsFixed(1)} '
       'y=${event.position.dy.toStringAsFixed(1)}',
     );
-    if (moved) return;
-    _registerConfirmTap(event.position);
+    if (moved) {
+      _debugLog(
+        'tap candidate ignored: moved distance=${distance.toStringAsFixed(1)} '
+        'slop=$_tapMovementSlop',
+      );
+      _clearPendingTap();
+      return;
+    }
+    _registerConfirmTap(event.position, event.timeStamp);
   }
 
-  void _registerConfirmTap(Offset position) {
-    final now = DateTime.now();
+  void _onPointerCancel(PointerCancelEvent event) {
+    _pointerDownPosition = null;
+    _pointerMoved = false;
+    _clearPendingTap();
+    _debugLog(
+      'pointer cancel x=${event.position.dx.toStringAsFixed(1)} '
+      'y=${event.position.dy.toStringAsFixed(1)}',
+    );
+  }
+
+  void _registerConfirmTap(Offset position, Duration timestamp) {
+    final now = timestamp;
     final previousAt = _lastTapAt;
     final previousPosition = _lastTapPosition;
     _lastTapAt = now;
     _lastTapPosition = position;
+    final actions = _actions;
+    final selected = _selected(actions);
     if (previousAt == null || previousPosition == null) {
-      _debugLog('tap recorded: waiting for second tap');
-      return;
-    }
-    final gap = now.difference(previousAt);
-    if (gap > _confirmTapWindow) {
-      _debugLog('tap ignored: gap ${gap.inMilliseconds}ms exceeded window');
-      return;
-    }
-    if ((position - previousPosition).distance > _confirmTapSlop) {
       _debugLog(
-        'tap ignored: distance '
-        '${(position - previousPosition).distance.toStringAsFixed(1)} exceeded slop',
+        'tap recorded: waiting for second tap '
+        'actions=${actions.length} selected=${selected?.action.key ?? "-"} '
+        'executing=$_executing',
+      );
+      return;
+    }
+    final gap = now - previousAt;
+    if (gap > _confirmTapWindow) {
+      _debugLog(
+        'tap ignored: gap ${gap.inMilliseconds}ms exceeded '
+        'window=${_confirmTapWindow.inMilliseconds}ms',
+      );
+      return;
+    }
+    final tapDistance = (position - previousPosition).distance;
+    if (tapDistance > _confirmTapSlop) {
+      _debugLog(
+        'tap ignored: distance ${tapDistance.toStringAsFixed(1)} exceeded '
+        'slop=$_confirmTapSlop',
       );
       return;
     }
     _lastTapAt = null;
     _lastTapPosition = null;
-    _debugLog('double tap confirmed gap=${gap.inMilliseconds}ms');
+    _debugLog(
+      'double tap confirmed gap=${gap.inMilliseconds}ms '
+      'distance=${tapDistance.toStringAsFixed(1)} '
+      'actions=${actions.length} selected=${selected?.action.key ?? "-"}',
+    );
     unawaited(_executeCurrent());
   }
 
@@ -344,7 +389,7 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
       await _stopSpeaking();
       final String? text;
       try {
-        text = await widget.voice.recognizeOnce(prompt: action.prompt);
+        text = await _recognizeOnceWithOfflineRetry(action);
       } on PlatformException catch (e) {
         await _speak(e.message ?? 'Voice input failed');
         return;
@@ -377,6 +422,23 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
       await _speakAndWait('Sent');
     } finally {
       voiceSession.end();
+    }
+  }
+
+  Future<String?> _recognizeOnceWithOfflineRetry(EyesFreeAction action) async {
+    try {
+      return await widget.voice.recognizeOnce(prompt: action.prompt);
+    } on PlatformException catch (e) {
+      if (!shouldRetrySpeechRecognitionOffline(e)) rethrow;
+      _debugLog('voice input retry offline after ${e.code}');
+      await _speakAndWait(
+        'Speech recognition had a network problem. Listening again.',
+      );
+      await _stopSpeaking();
+      return widget.voice.recognizeOnce(
+        prompt: action.prompt,
+        preferOffline: true,
+      );
     }
   }
 
@@ -465,6 +527,9 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
 
   void _exit() {
     _debugLog('exit');
+    _pointerDownPosition = null;
+    _pointerMoved = false;
+    _clearPendingTap();
     HapticFeedback.heavyImpact();
     unawaited(_stopSpeaking());
     widget.onExit();
@@ -486,6 +551,7 @@ class _EyesFreeTabState extends State<EyesFreeTab> {
       onPointerDown: _onPointerDown,
       onPointerMove: _onPointerMove,
       onPointerUp: _onPointerUp,
+      onPointerCancel: _onPointerCancel,
       child: GestureDetector(
         key: const ValueKey<String>('eyes-free-tab-gesture-surface'),
         behavior: HitTestBehavior.opaque,
