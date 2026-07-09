@@ -21,6 +21,12 @@ SERVICE_NAME="openvsmobile.service"
 POLL_TIMEOUT_SECS=10
 STOP_TIMEOUT_SECS=20
 
+# Release installs should be reachable from mobile networks by default. Users
+# can still opt out with OPENVSMOBILE_IROH=0/false/off/no.
+if [[ -z "${OPENVSMOBILE_IROH:-}" ]]; then
+  OPENVSMOBILE_IROH=1
+fi
+
 # ----- usage -----
 usage() {
   cat <<'EOF'
@@ -53,9 +59,10 @@ Env:
                         Useful when the GitHub releases CDN
                         (release-assets.githubusercontent.com) is slow or
                         blocked on the target host.
-  OPENVSMOBILE_IROH=1   Persist optional Iroh remote transport into the
-                        systemd unit. Related OPENVSMOBILE_IROH_* variables
-                        present during install are persisted too.
+  OPENVSMOBILE_IROH=0   Disable the Iroh remote transport. Release installs
+                        enable and persist Iroh by default. Related
+                        OPENVSMOBILE_IROH_* variables present during install
+                        are persisted too.
   OPENVSMOBILE_PAIRING_QR=auto|1|0
                         Print a terminal QR code with the token and ticket
                         on stderr after install. Default "auto" prints only

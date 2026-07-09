@@ -11,17 +11,17 @@ The workflow detects `-rc` / `-beta` / `-alpha` suffixes in the tag and flips th
 Install or upgrade the backend by passing the desired release version once:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/install.sh | OPENVSMOBILE_IROH=1 bash -s -- 0.4.7
+curl -fsSL https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/install.sh | bash -s -- 0.4.7
 ```
 
 The root `install.sh` is a small wrapper that fetches the canonical installer from `next/backend/pkg/install.sh` on `main`, then forwards the arguments unchanged. The installer downloads the matching backend tarball from GitHub Releases based on the version argument.
 
-Iroh remote transport is the default release-install path. The environment
-variable is set on the `bash` side of the pipe so it is persisted into the
-systemd user unit:
+Iroh remote transport is the default release-install path. The installer
+persists `OPENVSMOBILE_IROH=1` into the systemd user unit unless it is
+explicitly disabled:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/install.sh | OPENVSMOBILE_IROH=1 bash -s -- 0.4.7
+curl -fsSL https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/install.sh | OPENVSMOBILE_IROH=0 bash -s -- 0.4.7
 ```
 
 Interactive installs print a pairing QR code on stderr after the backend has

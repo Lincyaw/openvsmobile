@@ -52,10 +52,11 @@ not authentication. The generated Iroh secret key is persisted in
 `~/.config/openvsmobile-next/config.json` so the endpoint id stays stable
 across restarts.
 
-For release installs, run `install.sh` with `OPENVSMOBILE_IROH=1`; the
-installer persists that setting into the systemd user unit and includes the
-`iroh` object in its success JSON. The SSH-bootstrap screen defaults this on
-for new installs.
+Release installs enable Iroh by default. The installer persists
+`OPENVSMOBILE_IROH=1` into the systemd user unit and includes the `iroh`
+object in its success JSON. Set `OPENVSMOBILE_IROH=0` when running
+`install.sh` to force a WebSocket-only backend. The SSH-bootstrap screen
+defaults Iroh on for new installs.
 
 When `install.sh` runs in an interactive terminal it also prints a backend
 pairing QR code to stderr. In the Android app, open Backends, tap Add, then
@@ -68,7 +69,7 @@ Useful knobs:
 
 | Env var | Default | Notes |
 |---------|---------|-------|
-| `OPENVSMOBILE_IROH` | unset | Set to `1` / `true` to enable the Iroh listener. |
+| `OPENVSMOBILE_IROH` | release install: `1`; direct backend process: unset | Set to `0` / `false` to disable the Iroh listener. |
 | `OPENVSMOBILE_IROH_ALPN` | `openvsmobile.rpc.v1` | Must match the app-side backend entry. |
 | `OPENVSMOBILE_IROH_RELAY_MODE` | `default` | `default` / `n0`, `staging`, or `disabled`. |
 | `OPENVSMOBILE_IROH_RELAY_URLS` | unset | Comma-separated custom relay URLs. |
@@ -85,8 +86,9 @@ silently reinitialized.
   in both directions, exactly as described in §4.1 of the design doc.
   Handshake (`auth.handshake`) must be the first message; the
   connection is closed with code 1008 on a bad token.
-- Iroh bi-stream — optional transport for the same JSON-RPC frame stream
-  when `OPENVSMOBILE_IROH=1` is set. The first frame is still
+- Iroh bi-stream — transport for the same JSON-RPC frame stream when
+  `OPENVSMOBILE_IROH=1` is set. Release installs set it by default; direct
+  backend processes must opt in. The first frame is still
   `auth.handshake`; bad tokens close the stream.
 - `POST /notify` — Bearer-token-authed sender API for the notification
   system (§4.5). Same token as the WebSocket; mounted on the same HTTP
