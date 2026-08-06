@@ -49,7 +49,6 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
 
   _AuthMode _authMode = _AuthMode.password;
   bool _showAdvanced = false;
-  bool _enableIroh = true;
   bool _running = false;
   String _status = '';
   final List<String> _log = [];
@@ -110,7 +109,6 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
       githubMirror: _mirrorCtrl.text.trim().isEmpty
           ? null
           : _mirrorCtrl.text.trim(),
-      enableIroh: _enableIroh,
     );
 
     _sub = stream.listen(
@@ -342,18 +340,6 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
                 hintText: 'https://ghproxy.com/https://github.com',
                 helperText:
                     'Override github.com when the releases CDN is slow or blocked. Exported as GITHUB_MIRROR.',
-              ),
-            ),
-            const SizedBox(height: AppSpacing.sm),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              value: _enableIroh,
-              onChanged: _running
-                  ? null
-                  : (v) => setState(() => _enableIroh = v),
-              title: const Text('Enable Iroh remote transport'),
-              subtitle: const Text(
-                'Persists OPENVSMOBILE_IROH=1 into the systemd unit and saves the returned ticket.',
               ),
             ),
           ],

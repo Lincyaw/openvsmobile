@@ -186,7 +186,7 @@ describe("validateUiTree", () => {
     ).toThrow(/style/);
   });
 
-  it("preserves eyes-free metadata on any node", () => {
+  it("preserves accessibility metadata on any node", () => {
     const tree = validateUiTree({
       kind: "Text",
       id: "status",
@@ -196,21 +196,15 @@ describe("validateUiTree", () => {
       spokenValue: "Agent finished with 3 changed files",
       focusRole: "status",
       focusOrder: 2,
-      voiceInputEvent: "voice.reply",
-      voiceOutputText: "Agent finished with 3 changed files",
-      voiceShortcut: true,
     });
     expect(tree.accessibilityLabel).toBe("Agent status");
     expect(tree.accessibilityHint).toBe("Double tap to open details");
     expect(tree.spokenValue).toBe("Agent finished with 3 changed files");
     expect(tree.focusRole).toBe("status");
     expect(tree.focusOrder).toBe(2);
-    expect(tree.voiceInputEvent).toBe("voice.reply");
-    expect(tree.voiceOutputText).toBe("Agent finished with 3 changed files");
-    expect(tree.voiceShortcut).toBe(true);
   });
 
-  it("rejects invalid eyes-free metadata", () => {
+  it("rejects invalid accessibility metadata", () => {
     expect(() =>
       validateUiTree({
         kind: "Text",
@@ -227,22 +221,6 @@ describe("validateUiTree", () => {
         focusOrder: -1,
       }),
     ).toThrow(/focusOrder/);
-    expect(() =>
-      validateUiTree({
-        kind: "Text",
-        id: "status",
-        text: "Done",
-        voiceOutputText: "",
-      }),
-    ).toThrow(/voiceOutputText/);
-    expect(() =>
-      validateUiTree({
-        kind: "Text",
-        id: "status",
-        text: "Done",
-        voiceShortcut: "yes",
-      }),
-    ).toThrow(/voiceShortcut/);
   });
 
   // ---- Batch 1 widgets (§4.3) ----

@@ -12,12 +12,10 @@
 //   * `UiButton` tap fires `UiNodeEvent` with type='tap'.
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_highlight/flutter_highlight.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
-import 'package:mobilecode/services/voice_interaction.dart';
 import 'package:mobilecode/ui/app_tokens.dart';
 import 'package:mobilecode/ui/icon_catalog.dart';
 import 'package:mobilecode/ui/ui_modal_renderer.dart';
@@ -28,7 +26,6 @@ Widget _host(
   UiNode tree, {
   void Function(UiNodeEvent)? onEvent,
   void Function(String gridId, String tileId)? onAppTileLongPress,
-  VoiceInteraction voice = const PlatformVoiceInteraction(),
 }) {
   return MaterialApp(
     home: Scaffold(
@@ -36,66 +33,11 @@ Widget _host(
         child: UiRenderer(
           tree: tree,
           onEvent: onEvent ?? (_) {},
-          voice: voice,
           onAppTileLongPress: onAppTileLongPress,
         ),
       ),
     ),
   );
-}
-
-class _FakeVoiceInteraction extends VoiceInteraction {
-  final String? text;
-  final List<Object?> recognitionResponses;
-  final List<String> spoken = <String>[];
-  final List<String> calls = <String>[];
-  final bool speechRecognitionAvailable;
-
-  _FakeVoiceInteraction(
-    this.text, {
-    List<Object?> recognitionResponses = const [],
-    this.speechRecognitionAvailable = true,
-  }) : recognitionResponses = List<Object?>.from(recognitionResponses);
-
-  @override
-  Future<bool> isSpeechRecognitionAvailable() async {
-    calls.add('isSpeechRecognitionAvailable');
-    return speechRecognitionAvailable;
-  }
-
-  @override
-  Future<String?> recognizeOnce({
-    String? prompt,
-    bool preferOffline = false,
-  }) async {
-    calls.add('recognizeOnce:${prompt ?? ""}:offline=$preferOffline');
-    if (recognitionResponses.isNotEmpty) {
-      final response = recognitionResponses.removeAt(0);
-      if (response is PlatformException) throw response;
-      if (response is Exception) throw response;
-      return response as String?;
-    }
-    return text;
-  }
-
-  @override
-  Future<bool> speak(String text) async {
-    calls.add('speak:$text');
-    spoken.add(text);
-    return true;
-  }
-
-  @override
-  Future<bool> speakAndWait(String text) async {
-    calls.add('speakAndWait:$text');
-    spoken.add(text);
-    return true;
-  }
-
-  @override
-  Future<void> stopSpeaking() async {
-    calls.add('stopSpeaking');
-  }
 }
 
 /// Drives `showUiModal` from inside a MaterialApp so `showDialog` /
@@ -200,7 +142,7 @@ UiNode _allKindsTree() {
 }
 
 void main() {
-  test('UiNode.fromJson preserves eyes-free metadata', () {
+  test('UiNode.fromJson preserves accessibility metadata', () {
     final node = UiNode.fromJson({
       'kind': 'Text',
       'id': 'status',
@@ -210,9 +152,6 @@ void main() {
       'spokenValue': 'Agent finished with 3 changed files',
       'focusRole': 'status',
       'focusOrder': 2,
-      'voiceInputEvent': 'voice.reply',
-      'voiceOutputText': 'Agent finished with 3 changed files',
-      'voiceShortcut': true,
     });
 
     expect(node.accessibility.accessibilityLabel, 'Agent status');
@@ -223,15 +162,9 @@ void main() {
     );
     expect(node.accessibility.focusRole, UiFocusRole.status);
     expect(node.accessibility.focusOrder, 2);
-    expect(node.accessibility.voiceInputEvent, 'voice.reply');
-    expect(
-      node.accessibility.voiceOutputText,
-      'Agent finished with 3 changed files',
-    );
-    expect(node.accessibility.voiceShortcut, isTrue);
   });
 
-  testWidgets('renders eyes-free metadata as Semantics', (tester) async {
+  testWidgets('renders accessibility metadata as Semantics', (tester) async {
     final semantics = tester.ensureSemantics();
     try {
       final tree = UiNode.fromJson({
@@ -344,122 +277,6 @@ void main() {
     expect(events.single.nodeId, 'tf');
     expect(events.single.type, 'changed');
     expect(events.single.payload, {'value': 'hello world'});
-  });
-
-  testWidgets('voice-enabled TextField dictates then fires voice event', (
-    tester,
-  ) async {
-    final events = <UiNodeEvent>[];
-    final voice = _FakeVoiceInteraction('send this by voice');
-    final tree = UiNode.fromJson({
-      'kind': 'TextField',
-      'id': 'tf',
-      'label': 'Message',
-      'placeholder': 'Type or dictate',
-      'voiceInputEvent': 'send',
-    });
-
-    await tester.pumpWidget(_host(tree, onEvent: events.add, voice: voice));
-    await tester.tap(find.text('Speak and send'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('send this by voice'), findsOneWidget);
-    expect(events, hasLength(2));
-    expect(events[0].nodeId, 'tf');
-    expect(events[0].type, 'changed');
-    expect(events[0].payload, {'value': 'send this by voice'});
-    expect(events[1].nodeId, 'tf');
-    expect(events[1].type, 'send');
-    expect(events[1].payload, {
-      'value': 'send this by voice',
-      'source': 'voice',
-    });
-    expect(voice.calls, contains('isSpeechRecognitionAvailable'));
-    final cueIndex = voice.calls.indexWhere(
-      (call) => call.startsWith('speakAndWait:Listening.'),
-    );
-    final stopIndex = voice.calls.indexOf('stopSpeaking');
-    final recognizeIndex = voice.calls.indexWhere(
-      (call) => call.startsWith('recognizeOnce:'),
-    );
-    expect(cueIndex, isNonNegative);
-    expect(stopIndex, isNonNegative);
-    expect(stopIndex, greaterThan(cueIndex));
-    expect(recognizeIndex, greaterThan(stopIndex));
-  });
-
-  testWidgets('voice-enabled TextField retries network failures offline', (
-    tester,
-  ) async {
-    final events = <UiNodeEvent>[];
-    final voice = _FakeVoiceInteraction(
-      null,
-      recognitionResponses: <Object?>[
-        PlatformException(
-          code: 'NETWORK_TIMEOUT',
-          message: 'Speech recognition network error',
-        ),
-        'retry from ui',
-      ],
-    );
-    final tree = UiNode.fromJson({
-      'kind': 'TextField',
-      'id': 'tf',
-      'label': 'Message',
-      'placeholder': 'Type or dictate',
-      'voiceInputEvent': 'send',
-    });
-
-    await tester.pumpWidget(_host(tree, onEvent: events.add, voice: voice));
-    await tester.tap(find.text('Speak and send'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('retry from ui'), findsOneWidget);
-    expect(
-      voice.calls.where((call) => call.startsWith('recognizeOnce:')).toList(),
-      <String>[
-        'recognizeOnce:Type or dictate:offline=false',
-        'recognizeOnce:Type or dictate:offline=true',
-      ],
-    );
-    expect(
-      voice.spoken,
-      contains('Speech recognition had a network problem. Listening again.'),
-    );
-    expect(events, hasLength(2));
-    expect(events[0].payload, {'value': 'retry from ui'});
-    expect(events[1].payload, {'value': 'retry from ui', 'source': 'voice'});
-  });
-
-  testWidgets('voice-enabled TextField reports unavailable recognition', (
-    tester,
-  ) async {
-    final events = <UiNodeEvent>[];
-    final voice = _FakeVoiceInteraction(
-      'ignored',
-      speechRecognitionAvailable: false,
-    );
-    final tree = UiNode.fromJson({
-      'kind': 'TextField',
-      'id': 'tf',
-      'label': 'Message',
-      'placeholder': 'Type or dictate',
-      'voiceInputEvent': 'send',
-    });
-
-    await tester.pumpWidget(_host(tree, onEvent: events.add, voice: voice));
-    await tester.tap(find.text('Speak and send'));
-    await tester.pumpAndSettle();
-
-    expect(events, isEmpty);
-    expect(
-      find.text('Speech recognition is not available on this device'),
-      findsOneWidget,
-    );
-    expect(
-      voice.calls.where((call) => call.startsWith('recognizeOnce:')),
-      isEmpty,
-    );
   });
 
   testWidgets('Button tap emits UiNodeEvent with type=tap', (tester) async {

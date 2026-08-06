@@ -19,7 +19,7 @@ pnpm dev            # tsx — picks up source edits live
 
 `pnpm dev` writes a runtime file at
 `~/.local/state/openvsmobile-next/runtime.json` (mode 0600) with the bound
-port + bearer token. When `OPENVSMOBILE_IROH=1` is set it also includes an
+port + bearer token. By default it also includes an
 `iroh` object with `endpointId`, `ticket`, `alpn`, relay URL, and direct
 addresses. The smoke script reads the WebSocket fields automatically.
 

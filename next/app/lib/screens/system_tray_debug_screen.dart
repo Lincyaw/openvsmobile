@@ -6,21 +6,17 @@ import 'package:flutter/services.dart';
 
 import '../services/diag_log.dart';
 import '../services/system_tray.dart';
-import '../services/voice_activity.dart';
-import '../services/voice_interaction.dart';
 import '../settings_store.dart';
 import '../ui/app_tokens.dart';
 
 class SystemTrayDebugScreen extends StatefulWidget {
   final SystemTrayController controller;
   final SettingsStore settingsStore;
-  final VoiceInteraction voice;
 
   const SystemTrayDebugScreen({
     super.key,
     required this.controller,
     required this.settingsStore,
-    this.voice = const PlatformVoiceInteraction(),
   });
 
   @override
@@ -28,10 +24,6 @@ class SystemTrayDebugScreen extends StatefulWidget {
 }
 
 class _SystemTrayDebugScreenState extends State<SystemTrayDebugScreen> {
-  bool? _speechRecognitionAvailable;
-  bool _voiceBusy = false;
-  String? _voiceStatus;
-
   @override
   void initState() {
     super.initState();
@@ -145,37 +137,6 @@ class _SystemTrayDebugScreenState extends State<SystemTrayDebugScreen> {
               ).showSnackBar(const SnackBar(content: Text('Icon reset')));
             },
           ),
-          const Divider(),
-          _Section('Voice', [
-            ListTile(
-              key: const ValueKey<String>('diagnostics-voice-output'),
-              leading: const Icon(Icons.volume_up_outlined),
-              title: const Text('Test voice output'),
-              subtitle: const Text('Speaks a short diagnostic phrase'),
-              onTap: _voiceBusy ? null : _testVoiceOutput,
-            ),
-            ListTile(
-              key: const ValueKey<String>('diagnostics-voice-availability'),
-              leading: const Icon(Icons.hearing_outlined),
-              title: const Text('Check speech recognition'),
-              subtitle: Text(_speechAvailabilityText()),
-              onTap: _voiceBusy ? null : _checkSpeechRecognition,
-            ),
-            ListTile(
-              key: const ValueKey<String>('diagnostics-voice-input'),
-              leading: const Icon(Icons.mic_none),
-              title: const Text('Test voice input'),
-              subtitle: Text(_voiceStatus ?? 'Dictates one short phrase'),
-              trailing: _voiceBusy
-                  ? const SizedBox.square(
-                      dimension: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : null,
-              onTap: _voiceBusy ? null : _testVoiceInput,
-            ),
-          ]),
-          const Divider(),
           _Section('Trace', [
             _DebugOverlayToggle(settingsStore: widget.settingsStore),
           ]),
@@ -212,97 +173,6 @@ class _SystemTrayDebugScreenState extends State<SystemTrayDebugScreen> {
 
   String _fmtTime(DateTime? t) =>
       t == null ? '—' : t.toLocal().toIso8601String().substring(11, 19);
-
-  String _speechAvailabilityText() {
-    final available = _speechRecognitionAvailable;
-    if (available == null) return 'Checks Android speech recognition service';
-    return available
-        ? 'Speech recognition is available'
-        : 'Speech recognition is not available';
-  }
-
-  Future<void> _testVoiceOutput() async {
-    setState(() => _voiceStatus = 'Speaking test phrase');
-    try {
-      await widget.voice.speakAndWait('MobileCode voice output is working');
-      if (!mounted) return;
-      setState(() => _voiceStatus = 'Voice output finished');
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _voiceStatus = 'Voice output failed: $e');
-    }
-  }
-
-  Future<void> _checkSpeechRecognition() async {
-    try {
-      final available = await widget.voice.isSpeechRecognitionAvailable();
-      if (!mounted) return;
-      setState(() => _speechRecognitionAvailable = available);
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _speechRecognitionAvailable = false);
-    }
-  }
-
-  Future<void> _testVoiceInput() async {
-    if (_voiceBusy) return;
-    setState(() {
-      _voiceBusy = true;
-      _voiceStatus = 'Preparing microphone';
-    });
-    final session = VoiceActivity.instance.begin();
-    try {
-      final available = await widget.voice.isSpeechRecognitionAvailable();
-      if (!mounted) return;
-      setState(() => _speechRecognitionAvailable = available);
-      if (!available) {
-        setState(() {
-          _voiceStatus = 'Speech recognition is not available on this device';
-        });
-        return;
-      }
-      await widget.voice.speakAndWait('Listening. Say a short test phrase.');
-      await widget.voice.stopSpeaking();
-      if (!mounted) return;
-      setState(() => _voiceStatus = 'Listening');
-      final text = await recognizeOnceWithOfflineRetry(
-        voice: widget.voice,
-        prompt: 'Say a short test phrase',
-        beforeRetry: (_) async {
-          if (!mounted) return;
-          setState(() => _voiceStatus = 'Network problem. Listening again');
-          try {
-            await widget.voice.speakAndWait(
-              'Speech recognition had a network problem. Listening again.',
-            );
-          } catch (_) {
-            // Best-effort retry cue.
-          }
-          try {
-            await widget.voice.stopSpeaking();
-          } catch (_) {
-            // Best-effort only.
-          }
-          if (!mounted) return;
-          setState(() => _voiceStatus = 'Listening');
-        },
-      );
-      if (!mounted) return;
-      final trimmed = text?.trim();
-      if (trimmed == null || trimmed.isEmpty) {
-        setState(() => _voiceStatus = 'No speech recognized');
-        return;
-      }
-      setState(() => _voiceStatus = 'Heard: $trimmed');
-      await widget.voice.speakAndWait('Heard: $trimmed');
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _voiceStatus = 'Voice input failed: $e');
-    } finally {
-      session.end();
-      if (mounted) setState(() => _voiceBusy = false);
-    }
-  }
 
   Widget _kv(String label, String value, {String? error}) {
     final isError = error != null && error.isNotEmpty;

@@ -58,9 +58,6 @@ export interface UiNodeMetadata {
   spokenValue?: string;
   focusRole?: UiFocusRole;
   focusOrder?: number;
-  voiceInputEvent?: string;
-  voiceOutputText?: string;
-  voiceShortcut?: boolean;
 }
 
 const SPACING_TOKENS: ReadonlySet<string> = new Set([
@@ -835,32 +832,6 @@ function parseNodeMetadata(
       );
     }
     out.focusOrder = r.focusOrder;
-  }
-  const voiceInputEvent = optString(r.voiceInputEvent, path, "voiceInputEvent");
-  if (voiceInputEvent !== undefined) {
-    if (voiceInputEvent.length === 0) {
-      throw new UiValidationError(
-        `${path}.voiceInputEvent: must be a non-empty string when provided`,
-      );
-    }
-    out.voiceInputEvent = voiceInputEvent;
-  }
-  const voiceOutputText = optString(r.voiceOutputText, path, "voiceOutputText");
-  if (voiceOutputText !== undefined) {
-    if (voiceOutputText.length === 0) {
-      throw new UiValidationError(
-        `${path}.voiceOutputText: must be a non-empty string when provided`,
-      );
-    }
-    out.voiceOutputText = voiceOutputText;
-  }
-  if (r.voiceShortcut !== undefined && r.voiceShortcut !== null) {
-    if (typeof r.voiceShortcut !== "boolean") {
-      throw new UiValidationError(
-        `${path}.voiceShortcut: must be a boolean when provided`,
-      );
-    }
-    out.voiceShortcut = r.voiceShortcut;
   }
   return out;
 }

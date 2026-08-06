@@ -13,17 +13,15 @@
 
 import 'dart:convert';
 import 'dart:io' show File;
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_highlight/flutter_highlight.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_slidable/flutter_slidable.dart';
 import 'package:markdown/markdown.dart' as md;
 
-import '../services/voice_interaction.dart';
-import '../services/voice_activity.dart';
 import 'app_tokens.dart';
 import 'highlight_theme.dart';
 import 'icon_catalog.dart';
@@ -41,7 +39,6 @@ import 'ui_node.dart';
 class UiRenderer extends StatelessWidget {
   final UiNode tree;
   final void Function(UiNodeEvent event) onEvent;
-  final VoiceInteraction voice;
 
   /// Optional screen-local hook: long-press on a [UiAppGrid] tile fires
   /// with the surrounding grid id + the pressed tile's id. NOT part of
@@ -55,7 +52,6 @@ class UiRenderer extends StatelessWidget {
     super.key,
     required this.tree,
     required this.onEvent,
-    this.voice = const PlatformVoiceInteraction(),
     this.onAppTileLongPress,
   });
 
@@ -160,20 +156,11 @@ class UiRenderer extends StatelessWidget {
           label: label,
           initialValue: value,
           placeholder: placeholder,
-          voiceInputEvent: node.accessibility.voiceInputEvent,
-          voice: voice,
           onChanged: (v) => onEvent(
             UiNodeEvent(
               nodeId: node.id,
               type: 'changed',
               payload: {'value': v},
-            ),
-          ),
-          onVoiceEvent: (eventId, value) => onEvent(
-            UiNodeEvent(
-              nodeId: node.id,
-              type: eventId,
-              payload: {'value': value, 'source': 'voice'},
             ),
           ),
         );
@@ -1428,20 +1415,14 @@ class _UiTextFieldRenderer extends StatefulWidget {
   final String? label;
   final String? initialValue;
   final String? placeholder;
-  final String? voiceInputEvent;
-  final VoiceInteraction voice;
   final void Function(String) onChanged;
-  final void Function(String eventId, String value) onVoiceEvent;
   const _UiTextFieldRenderer({
     super.key,
     required this.nodeId,
     required this.label,
     required this.initialValue,
     required this.placeholder,
-    required this.voiceInputEvent,
-    required this.voice,
     required this.onChanged,
-    required this.onVoiceEvent,
   });
 
   @override
@@ -1450,7 +1431,6 @@ class _UiTextFieldRenderer extends StatefulWidget {
 
 class _UiTextFieldRendererState extends State<_UiTextFieldRenderer> {
   late TextEditingController _controller;
-  bool _listening = false;
 
   @override
   void initState() {
@@ -1475,8 +1455,7 @@ class _UiTextFieldRendererState extends State<_UiTextFieldRenderer> {
 
   @override
   Widget build(BuildContext context) {
-    final voiceEvent = widget.voiceInputEvent;
-    final field = TextField(
+    return TextField(
       controller: _controller,
       decoration: InputDecoration(
         labelText: widget.label,
@@ -1486,112 +1465,6 @@ class _UiTextFieldRendererState extends State<_UiTextFieldRenderer> {
       ),
       onChanged: widget.onChanged,
     );
-    if (voiceEvent == null) return field;
-    final label = voiceEvent == 'send' ? 'Speak and send' : 'Speak';
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        field,
-        const SizedBox(height: AppSpacing.sm),
-        FilledButton.tonalIcon(
-          style: FilledButton.styleFrom(
-            alignment: Alignment.centerLeft,
-            minimumSize: const Size.fromHeight(52),
-            padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
-          ),
-          onPressed: _listening ? null : _startVoiceInput,
-          icon: Icon(
-            _listening
-                ? (resolveIconByName('loader') ?? Icons.mic)
-                : (resolveIconByName('mic') ?? Icons.mic_none),
-          ),
-          label: Text(
-            _listening ? 'Listening' : label,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Future<void> _startVoiceInput() async {
-    final eventId = widget.voiceInputEvent;
-    if (eventId == null || _listening) return;
-    setState(() => _listening = true);
-    final voiceSession = VoiceActivity.instance.begin();
-    try {
-      final available = await widget.voice.isSpeechRecognitionAvailable();
-      if (!mounted) return;
-      if (!available) {
-        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-          const SnackBar(
-            content: Text('Speech recognition is not available on this device'),
-          ),
-        );
-        return;
-      }
-      final prompt = widget.placeholder ?? widget.label;
-      try {
-        await widget.voice.speakAndWait(
-          'Listening. ${prompt ?? 'Voice input'}',
-        );
-      } catch (_) {
-        // Best-effort cue before opening the microphone.
-      }
-      try {
-        await widget.voice.stopSpeaking();
-      } catch (_) {
-        // Best-effort: stale TTS should not block visible text input.
-      }
-      final text = await recognizeOnceWithOfflineRetry(
-        voice: widget.voice,
-        prompt: prompt,
-        beforeRetry: (_) async {
-          if (mounted) {
-            ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-              const SnackBar(
-                content: Text(
-                  'Speech recognition had a network problem. Listening again.',
-                ),
-              ),
-            );
-          }
-          try {
-            await widget.voice.speakAndWait(
-              'Speech recognition had a network problem. Listening again.',
-            );
-          } catch (_) {
-            // Best-effort retry cue.
-          }
-          try {
-            await widget.voice.stopSpeaking();
-          } catch (_) {
-            // Best-effort: stale TTS should not block the retry.
-          }
-        },
-      );
-      if (!mounted) return;
-      if (text == null || text.isEmpty) return;
-      _controller.text = text;
-      _controller.selection = TextSelection.collapsed(offset: text.length);
-      widget.onChanged(text);
-      widget.onVoiceEvent(eventId, text);
-    } on PlatformException catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-        SnackBar(content: Text(e.message ?? 'Voice input failed')),
-      );
-    } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.maybeOf(
-        context,
-      )?.showSnackBar(const SnackBar(content: Text('Voice input failed')));
-    } finally {
-      voiceSession.end();
-      if (mounted) setState(() => _listening = false);
-    }
   }
 }
 

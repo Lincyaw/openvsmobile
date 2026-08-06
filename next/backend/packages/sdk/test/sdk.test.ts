@@ -131,15 +131,12 @@ describe("ui.* constructors", () => {
     expect(fixed.id).toBe("stable-id");
   });
 
-  it("attaches eyes-free metadata to any constructed node", () => {
+  it("attaches accessibility metadata to any constructed node", () => {
     const node = ui.withMetadata(ui.text({ id: "status", text: "Done" }), {
       accessibilityLabel: "Agent status",
       spokenValue: "Agent finished",
       focusRole: "status",
       focusOrder: 1,
-      voiceInputEvent: "voice.reply",
-      voiceOutputText: "Agent finished",
-      voiceShortcut: true,
     });
     expect(node).toMatchObject({
       kind: "Text",
@@ -149,9 +146,6 @@ describe("ui.* constructors", () => {
       spokenValue: "Agent finished",
       focusRole: "status",
       focusOrder: 1,
-      voiceInputEvent: "voice.reply",
-      voiceOutputText: "Agent finished",
-      voiceShortcut: true,
     });
   });
 

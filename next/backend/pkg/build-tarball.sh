@@ -2,22 +2,23 @@
 # Build a self-contained tarball of the openvsmobile-next backend.
 #
 # Output:
-#   <output_dir>/openvsmobile-backend-linux-<arch>.tar.gz
-#   <output_dir>/openvsmobile-backend-linux-<arch>.tar.gz.sha256
+#   <output_dir>/openvsmobile-backend-<platform>-<arch>.tar.gz
+#   <output_dir>/openvsmobile-backend-<platform>-<arch>.tar.gz.sha256
 #
 # The tarball bundles a portable Node 25 runtime, the compiled JS, the
 # production node_modules tree (with the native node-pty prebuild for the
 # target arch), and a thin launch.sh. The result must be runnable on a
-# fresh linux-<arch> host with no extra dependencies.
+# fresh <platform>-<arch> host with no extra dependencies.
 #
-# Cross-target works because node-pty publishes prebuilt binaries; we set
-# npm_config_target_{arch,platform} so npm pulls the right one.
+# Platform targeting works because the release workflow builds on a native OS
+# runner for the target platform; we set npm_config_target_{arch,platform} so
+# npm pulls native package variants for the bundle.
 
 set -euo pipefail
 
 # ----- constants -----
 NODE_VERSION="v25.9.0"
-NODE_DIST_BASE="https://nodejs.org/dist/${NODE_VERSION}"
+NODE_DIST_BASE="${NODE_DIST_BASE:-https://nodejs.org/dist/${NODE_VERSION}}"
 
 # ----- usage / args -----
 usage() {
@@ -29,13 +30,18 @@ Args:
   output_dir   Directory to write the tarball + sha256 file
                (default: next/backend/dist-pkg/)
 
+Env:
+  OPENVSMOBILE_TARGET_PLATFORM
+               Target operating system. One of: linux, darwin
+               (default: linux, preserving the original release path).
+  NODE_DIST_BASE
+               Override the Node distribution URL base.
+
 Flags:
   -h, --help   Show this help and exit
 
-The script must run on a linux-x64 host. Cross-targeting arm64 works
-because node-pty ships prebuilt binaries; the npm install is driven with
-npm_config_target_arch / npm_config_target_platform so the right native
-binary is downloaded into node_modules.
+The script should run on the target OS. Linux arm64 and Darwin arm64/x64
+release builds use native CI runners; cross-OS tarballs are not supported.
 EOF
 }
 
@@ -59,20 +65,29 @@ case "$ARCH" in
     ;;
 esac
 
+TARGET_PLATFORM="${OPENVSMOBILE_TARGET_PLATFORM:-linux}"
+case "$TARGET_PLATFORM" in
+  linux|darwin) ;;
+  *)
+    echo "error: unsupported platform '$TARGET_PLATFORM' (want linux or darwin)" >&2
+    exit 2
+    ;;
+esac
+
 # Repo paths (this script lives at next/backend/pkg/build-tarball.sh).
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKEND_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DEFAULT_OUT="$BACKEND_DIR/dist-pkg"
 OUTPUT_DIR="${2:-$DEFAULT_OUT}"
 CACHE_DIR="$BACKEND_DIR/dist-pkg/.cache"
-STAGING_ROOT="$BACKEND_DIR/dist-pkg/.stage-${ARCH}"
+STAGING_ROOT="$BACKEND_DIR/dist-pkg/.stage-${TARGET_PLATFORM}-${ARCH}"
 
 mkdir -p "$OUTPUT_DIR" "$CACHE_DIR"
 
 log() { printf '[build-tarball] %s\n' "$*" >&2; }
 
 # ----- 1. Validate arch (done) and prepare staging -----
-log "target: linux-${ARCH}"
+log "target: ${TARGET_PLATFORM}-${ARCH}"
 log "backend: $BACKEND_DIR"
 log "output:  $OUTPUT_DIR"
 
@@ -80,7 +95,7 @@ rm -rf "$STAGING_ROOT"
 mkdir -p "$STAGING_ROOT"
 
 # ----- 2. Download portable Node -----
-NODE_TARBALL="node-${NODE_VERSION}-linux-${ARCH}.tar.xz"
+NODE_TARBALL="node-${NODE_VERSION}-${TARGET_PLATFORM}-${ARCH}.tar.xz"
 NODE_URL="${NODE_DIST_BASE}/${NODE_TARBALL}"
 CACHED_NODE="$CACHE_DIR/$NODE_TARBALL"
 
@@ -96,7 +111,7 @@ fi
 NODE_EXTRACT="$STAGING_ROOT/.node-extract"
 mkdir -p "$NODE_EXTRACT"
 tar -xf "$CACHED_NODE" -C "$NODE_EXTRACT"
-NODE_HOME="$NODE_EXTRACT/node-${NODE_VERSION}-linux-${ARCH}"
+NODE_HOME="$NODE_EXTRACT/node-${NODE_VERSION}-${TARGET_PLATFORM}-${ARCH}"
 if [[ ! -x "$NODE_HOME/bin/node" ]]; then
   log "error: node binary not found at $NODE_HOME/bin/node"
   exit 1
@@ -165,7 +180,7 @@ if [[ -d "$BACKEND_DIR/packages/sdk" ]]; then
     "$BUILD_DIR/packages/sdk/"
 fi
 
-log "installing production deps for linux-${ARCH} (pnpm, frozen lockfile, hoisted)"
+log "installing production deps for ${TARGET_PLATFORM}-${ARCH} (pnpm, frozen lockfile, hoisted)"
 (
   cd "$BUILD_DIR"
   # Front-load the bundled Node so pnpm and every lifecycle script run
@@ -182,7 +197,7 @@ log "installing production deps for linux-${ARCH} (pnpm, frozen lockfile, hoiste
   # binary that matches the bundled Node even if host Node differs.
   npm_config_target="${NODE_VERSION#v}" \
   npm_config_target_arch="$ARCH" \
-  npm_config_target_platform="linux" \
+  npm_config_target_platform="$TARGET_PLATFORM" \
     pnpm install \
       --prod \
       --frozen-lockfile \
@@ -219,7 +234,7 @@ while IFS= read -r link; do
   # Relative target — resolve against the link's parent and confirm it
   # stays under $BUILD_DIR/node_modules.
   parent="$(dirname "$link")"
-  resolved="$(cd "$parent" && readlink -f "$target" 2>/dev/null || true)"
+  resolved="$("$NODE_HOME/bin/node" -e "try { console.log(require('fs').realpathSync.native(process.argv[1])) } catch { process.exit(1) }" "$parent/$target" 2>/dev/null || true)"
   if [[ -z "$resolved" ]]; then
     # Dangling — bundle won't work either way.
     BAD_SYMLINKS+=("$link -> $target (dangling)")
@@ -308,16 +323,17 @@ fi
 # first install so a fresh environment isn't a blank Plugins tab. The
 # settled "filesystem-only install" decision still holds: the source of
 # truth is the user's plugins dir; this just gives them a starter set
-# they can delete. Bundle clock / notes / sysinfo / agentm-gateway —
+# they can delete. Bundle clock / notes / sysinfo / agentm-gateway /
+# codex-client —
 # small, no npm deps, and enough to prove timers, fs read+write, host
-# introspection, and native AI gateway integration. We never ship a
+# introspection, and native AI gateway/app-server integration. We never ship a
 # plugin's node_modules even if one accidentally appears in-tree; the
 # host SDK is injected at runtime.
 EXAMPLES_SRC="$BACKEND_DIR/../examples/plugins"
 EXAMPLES_DEST="$BUNDLE_DIR/share/example-plugins"
 if [[ -d "$EXAMPLES_SRC" ]]; then
   mkdir -p "$EXAMPLES_DEST"
-  for plugin in clock notes sysinfo agentm-gateway; do
+  for plugin in clock notes sysinfo agentm-gateway codex-client; do
     src="$EXAMPLES_SRC/$plugin"
     if [[ ! -d "$src" ]]; then
       echo "error: example plugin '$plugin' missing at $src" >&2
@@ -329,7 +345,7 @@ if [[ -d "$EXAMPLES_SRC" ]]; then
     cp -R "$src" "$EXAMPLES_DEST/$plugin"
     find "$EXAMPLES_DEST/$plugin" -type d -name node_modules -prune -exec rm -rf {} +
   done
-  log "bundled example plugins: clock notes sysinfo agentm-gateway"
+  log "bundled example plugins: clock notes sysinfo agentm-gateway codex-client"
 fi
 
 # A "production-mode" package.json — same content, but stripped of
@@ -356,7 +372,7 @@ LAUNCH
 chmod +x "$BUNDLE_DIR/launch.sh"
 
 # ----- 6. Pack -----
-TARBALL_NAME="openvsmobile-backend-linux-${ARCH}.tar.gz"
+TARBALL_NAME="openvsmobile-backend-${TARGET_PLATFORM}-${ARCH}.tar.gz"
 TARBALL_PATH="$OUTPUT_DIR/$TARBALL_NAME"
 log "creating $TARBALL_PATH"
 tar -C "$STAGING_ROOT" -czf "$TARBALL_PATH" "openvsmobile-backend"
@@ -364,7 +380,11 @@ tar -C "$STAGING_ROOT" -czf "$TARBALL_PATH" "openvsmobile-backend"
 # ----- 7. Checksum -----
 (
   cd "$OUTPUT_DIR"
-  sha256sum "$TARBALL_NAME" > "${TARBALL_NAME}.sha256"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$TARBALL_NAME" > "${TARBALL_NAME}.sha256"
+  else
+    shasum -a 256 "$TARBALL_NAME" > "${TARBALL_NAME}.sha256"
+  fi
 )
 
 log "done: $TARBALL_PATH"

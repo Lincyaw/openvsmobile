@@ -27,7 +27,6 @@ import '../ui/app_tokens.dart';
 import '../ui/ui_modal_renderer.dart';
 import '../ui/ui_node.dart';
 import '../ui/ui_renderer.dart';
-import 'plugin_eyes_free_screen.dart';
 
 const String _kFilesystemPluginsDir =
     '~/.local/share/openvsmobile-next/plugins/';
@@ -661,11 +660,7 @@ class PluginDetailView extends StatelessWidget {
       child: Scaffold(
         appBar: AppBar(
           title: Text(info.name),
-          actions: [
-            if (info.panels.isNotEmpty)
-              _PluginEyesFreeButton(appState: appState, info: info),
-            _PluginKebabMenu(appState: appState, info: info),
-          ],
+          actions: [_PluginKebabMenu(appState: appState, info: info)],
         ),
         body: _DetailBody(appState: appState, info: info),
       ),
@@ -698,76 +693,6 @@ class _PluginThemeScope extends StatelessWidget {
     return Theme(
       data: base.copyWith(colorScheme: scheme),
       child: child,
-    );
-  }
-}
-
-class _PluginEyesFreeButton extends StatelessWidget {
-  final AppState appState;
-  final PluginInfo info;
-
-  const _PluginEyesFreeButton({required this.appState, required this.info});
-
-  void _open(BuildContext context, PluginPanelStub panel) {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => PluginEyesFreeScreen(
-          appState: appState,
-          info: info,
-          panel: panel,
-          frozen: info.state == PluginWireState.crashed,
-        ),
-      ),
-    );
-  }
-
-  void _choosePanel(BuildContext context) {
-    final panels = info.panels;
-    if (panels.length == 1) {
-      _open(context, panels.single);
-      return;
-    }
-    showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      builder: (sheetContext) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(
-                AppSpacing.lg,
-                AppSpacing.sm,
-                AppSpacing.lg,
-                AppSpacing.sm,
-              ),
-              child: Text(
-                'Eyes-free mode',
-                style: Theme.of(sheetContext).textTheme.titleMedium,
-              ),
-            ),
-            for (final panel in panels)
-              ListTile(
-                leading: const Icon(Icons.record_voice_over_outlined),
-                title: Text(panel.title),
-                onTap: () {
-                  Navigator.of(sheetContext).pop();
-                  _open(context, panel);
-                },
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return IconButton(
-      key: const ValueKey<String>('plugin-eyes-free'),
-      tooltip: 'Eyes-free mode',
-      icon: const Icon(Icons.record_voice_over_outlined),
-      onPressed: () => _choosePanel(context),
     );
   }
 }

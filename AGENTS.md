@@ -50,17 +50,16 @@ next/
               declarative widget renderer for plugin UI (§4.3 of design).
 ```
 
-### Bottom navigation: 5 tabs (settled)
+### Bottom navigation: 4 tabs (settled)
 
-**Files / Terminal / Voice / Plugins / Settings.**
+**Files / Terminal / Plugins / Settings.**
 
 - **Files** — directory tree + read-only viewer + git decorations (color + M/A/U/? badges) + tap-changed-file → diff. **No separate Git tab**; git is a view layer over Files.
 - **Terminal** — local PTY in the Node backend. Multiple PTYs per workspace via header chips. Soft-keyboard companion bar (Esc/Tab/Ctrl-sticky/arrows/Home/End/PgUp/PgDn/Del).
-- **Voice** — host-rendered eyes-free control surface over plugin-exposed shortcuts. It scans typed `ui.tree` nodes marked `voiceShortcut: true` and routes gestures back through `ui.event`; it is not a built-in AI chat client.
 - **Plugins** — entry point for every plugin panel. Lists active plugin panels; drills into the declarative UI tree.
 - **Settings** — server URL/token, pairing, plugin management, About.
 
-The 5-tab arrangement is live in `home_shell.dart`. Earlier drafts of this doc described a transitional "Files / Terminal / More" layout; that migration is complete — Settings is its own tab, Voice is the eyes-free projection, and Plugins is in place. SSH bootstrap and About are reachable from inside Settings.
+The 4-tab arrangement is live in `home_shell.dart`. Earlier drafts of this doc described a transitional "Files / Terminal / More" layout; that migration is complete — Settings is its own tab and Plugins is in place. SSH bootstrap and About are reachable from inside Settings.
 
 ### Core (v0) capabilities — everything else is a plugin
 
@@ -70,8 +69,7 @@ The 5-tab arrangement is live in `home_shell.dart`. Earlier drafts of this doc d
 4. **Terminal** with local PTY, ANSI rendering, soft-keyboard companion.
 5. **Auth + pairing.** Bearer token now; QR-code first-run flow deferred.
 6. **Plugin loader + IPC.** Process-per-plugin via stdio JSON-RPC; capability gates declared in `plugin.json`; UI contributions are *data*, not code.
-7. **Voice / eyes-free control surface** as a host projection over plugin-exposed `voiceShortcut` actions and `ui.event` routing.
-8. **Notification surface** for plugins to post toasts/badges without owning chrome.
+7. **Notification surface** for plugins to post toasts/badges without owning chrome.
 
 If a capability is not on this list, it is **a plugin or it is deferred** — including LSP, AI assistants, code review, debugger, search-across-files, PR browsing.
 
@@ -106,9 +104,9 @@ Closer to **LSP** than to **vscode.\***: anything that speaks JSON-RPC over stdi
 
 ### Distribution
 
-Backend ships as a self-contained linux tarball (portable Node + production node_modules + compiled JS + `launch.sh`) plus an `install.sh` that drops a `systemd --user` unit and emits one line of JSON (`{port, token, version, linger}`) on success.
+Backend ships as a self-contained platform tarball (portable Node + production node_modules + compiled JS + `launch.sh`) plus an `install.sh` that drops a per-user service (`systemd --user` on Linux, LaunchAgent on macOS) and emits one line of JSON (`{port, token, version, linger}`) on success.
 
-Backend tarballs (linux x64 + arm64) and Android APKs (per-ABI + universal) are built and published together on `v*` tags by `.github/workflows/release.yml`. Native runners for backend (x64 + arm64); APK splits emerge from a single host build via `--split-per-abi`. The APK's `kBackendVersion` is substituted from the tag at build time so SSH bootstrap pulls the matching backend. APK signing degrades gracefully: with the four `ANDROID_*` secrets configured it's release-signed, without them it falls back to debug signing with a warning. See [`docs/release.md`](docs/release.md) for the full release workflow and keystore setup. The SSH-bootstrap flow in `next/app/lib/screens/ssh_bootstrap_screen.dart` streams `install.sh` over SSH stdin and parses the JSON line to populate settings.
+Backend tarballs (Linux x64 + arm64, macOS x64 + arm64) and Android APKs (per-ABI + universal) are built and published together on `v*` tags by `.github/workflows/release.yml`. Native runners for backend match each target platform/arch; APK splits emerge from a single host build via `--split-per-abi`. The APK's `kBackendVersion` is substituted from the tag at build time so SSH bootstrap pulls the matching backend. APK signing degrades gracefully: with the four `ANDROID_*` secrets configured it's release-signed, without them it falls back to debug signing with a warning. See [`docs/release.md`](docs/release.md) for the full release workflow and keystore setup. The SSH-bootstrap flow in `next/app/lib/screens/ssh_bootstrap_screen.dart` streams `install.sh` over SSH stdin and parses the JSON line to populate settings.
 
 ## Settled architectural decisions (do not propose reverting)
 

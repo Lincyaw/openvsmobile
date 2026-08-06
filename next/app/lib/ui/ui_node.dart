@@ -98,7 +98,7 @@ enum UiStackAlignment {
 /// Axis for [UiScroll]. Default is [vertical].
 enum UiScrollAxis { vertical, horizontal }
 
-/// Eyes-free focus role hint supplied by plugins.
+/// Accessibility focus role hint supplied by plugins.
 enum UiFocusRole { status, action, input, danger }
 
 @immutable
@@ -108,9 +108,6 @@ class UiNodeAccessibility {
   final String? spokenValue;
   final UiFocusRole? focusRole;
   final int? focusOrder;
-  final String? voiceInputEvent;
-  final String? voiceOutputText;
-  final bool voiceShortcut;
 
   const UiNodeAccessibility({
     this.accessibilityLabel,
@@ -118,9 +115,6 @@ class UiNodeAccessibility {
     this.spokenValue,
     this.focusRole,
     this.focusOrder,
-    this.voiceInputEvent,
-    this.voiceOutputText,
-    this.voiceShortcut = false,
   });
 
   bool get isEmpty =>
@@ -128,10 +122,7 @@ class UiNodeAccessibility {
       accessibilityHint == null &&
       spokenValue == null &&
       focusRole == null &&
-      focusOrder == null &&
-      voiceInputEvent == null &&
-      voiceOutputText == null &&
-      !voiceShortcut;
+      focusOrder == null;
 
   factory UiNodeAccessibility.fromJson(Map<String, dynamic> json) {
     return UiNodeAccessibility(
@@ -140,9 +131,6 @@ class UiNodeAccessibility {
       spokenValue: _nonEmptyString(json['spokenValue']),
       focusRole: _focusRole(json['focusRole']),
       focusOrder: _focusOrder(json['focusOrder']),
-      voiceInputEvent: _nonEmptyString(json['voiceInputEvent']),
-      voiceOutputText: _nonEmptyString(json['voiceOutputText']),
-      voiceShortcut: json['voiceShortcut'] == true,
     );
   }
 

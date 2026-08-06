@@ -95,7 +95,6 @@ class SshBootstrapService {
     required SshAuth auth,
     String? tarballPath,
     String? githubMirror,
-    bool enableIroh = false,
   }) async* {
     final controller = StreamController<BootstrapEvent>();
     unawaited(
@@ -107,7 +106,6 @@ class SshBootstrapService {
         auth: auth,
         tarballPath: tarballPath,
         githubMirror: githubMirror,
-        enableIroh: enableIroh,
       ),
     );
     yield* controller.stream;
@@ -121,7 +119,6 @@ class SshBootstrapService {
     required SshAuth auth,
     String? tarballPath,
     String? githubMirror,
-    required bool enableIroh,
   }) async {
     SSHClient? client;
     SSHSession? session;
@@ -157,7 +154,6 @@ class SshBootstrapService {
       final envParts = <String>[
         if (mirror != null && mirror.isNotEmpty)
           "GITHUB_MIRROR='${_shellSingleQuote(mirror)}'",
-        if (enableIroh) 'OPENVSMOBILE_IROH=1',
       ];
       final envPrefix = envParts.isEmpty ? '' : '${envParts.join(' ')} ';
       final command =

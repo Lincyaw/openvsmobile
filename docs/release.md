@@ -1,6 +1,6 @@
 # Releases
 
-Both halves of the product ship together on `v<semver>` tags (e.g. `v0.2.0`, `v0.2.0-rc1`) driven by `.github/workflows/release.yml`. A single tag push produces one GitHub Release with the backend tarballs (linux x64 + arm64), `install.sh`, and an Android arm64-v8a APK side by side.
+Both halves of the product ship together on `v<semver>` tags (e.g. `v0.2.0`, `v0.2.0-rc1`) driven by `.github/workflows/release.yml`. A single tag push produces one GitHub Release with the backend tarballs (Linux x64 + arm64, macOS x64 + arm64), `install.sh`, and an Android arm64-v8a APK side by side.
 
 The APK's `kBackendVersion` is substituted from the tag at build time, so a released APK always knows the matching backend version. SSH bootstrap uses this to fetch the right tarball.
 
@@ -11,18 +11,14 @@ The workflow detects `-rc` / `-beta` / `-alpha` suffixes in the tag and flips th
 Install or upgrade the backend by passing the desired release version once:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/install.sh | bash -s -- 0.4.7
+curl -fsSL https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/install.sh | bash -s -- 0.4.10
 ```
 
 The root `install.sh` is a small wrapper that fetches the canonical installer from `next/backend/pkg/install.sh` on `main`, then forwards the arguments unchanged. The installer downloads the matching backend tarball from GitHub Releases based on the version argument.
 
-Iroh remote transport is the default release-install path. The installer
-persists `OPENVSMOBILE_IROH=1` into the systemd user unit unless it is
-explicitly disabled:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/install.sh | OPENVSMOBILE_IROH=0 bash -s -- 0.4.7
-```
+Iroh remote transport is the default release-install path. The backend
+tarball bundles the Iroh dependency, and the backend starts the Iroh listener
+unless `OPENVSMOBILE_IROH=0` is set explicitly for WebSocket-only debugging.
 
 Interactive installs print a pairing QR code on stderr after the backend has
 started. The Android app can scan it from Backends -> Add backend -> Scan QR

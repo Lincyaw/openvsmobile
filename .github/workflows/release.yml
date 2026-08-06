@@ -4,7 +4,8 @@
 #   v<semver>   e.g. v0.2.0, v0.2.0-rc1
 #
 # One tag, one GitHub Release, both halves of the product shipped together:
-#   - Backend linux tarballs (x64 + arm64), native runners per arch.
+#   - Backend linux + macOS tarballs (x64 + arm64 where available),
+#     native runners per platform/arch.
 #   - Android APK (arm64-v8a), single host build. Iroh's Android FFI is
 #     currently bundled for arm64 only; do not publish unsupported ABI splits.
 #
@@ -41,16 +42,24 @@ concurrency:
 
 jobs:
   build-backend:
-    name: build backend (${{ matrix.arch }})
+    name: build backend (${{ matrix.platform }}-${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: x64
+          - platform: linux
+            arch: x64
             runner: ubuntu-latest
-          - arch: arm64
+          - platform: linux
+            arch: arm64
             runner: ubuntu-24.04-arm
+          - platform: darwin
+            arch: arm64
+            runner: macos-26
+          - platform: darwin
+            arch: x64
+            runner: macos-26-intel
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -89,17 +98,19 @@ jobs:
           sed -i "s/^  \"version\": \".*\",$/  \"version\": \"${tag}\",/" package.json
           grep "\"version\": \"${tag}\"" package.json
 
-      - name: Build tarball for linux-${{ matrix.arch }}
+      - name: Build tarball for ${{ matrix.platform }}-${{ matrix.arch }}
         working-directory: next/backend
+        env:
+          OPENVSMOBILE_TARGET_PLATFORM: ${{ matrix.platform }}
         run: pkg/build-tarball.sh ${{ matrix.arch }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: backend-${{ matrix.arch }}
+          name: backend-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
-            next/backend/dist-pkg/openvsmobile-backend-linux-${{ matrix.arch }}.tar.gz
-            next/backend/dist-pkg/openvsmobile-backend-linux-${{ matrix.arch }}.tar.gz.sha256
+            next/backend/dist-pkg/openvsmobile-backend-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz
+            next/backend/dist-pkg/openvsmobile-backend-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz.sha256
           if-no-files-found: error
           retention-days: 7
 
@@ -319,11 +330,11 @@ jobs:
             echo 'body<<RELEASE_BODY_EOF'
             echo "## openvsmobile ${GITHUB_REF_NAME}"
             echo
-            echo '### Backend (Linux)'
+            echo '### Backend'
             echo
             echo '| File | SHA-256 |'
             echo '| --- | --- |'
-            for fname in artifacts/openvsmobile-backend-linux-*.tar.gz; do
+            for fname in artifacts/openvsmobile-backend-*.tar.gz; do
               [ -f "$fname" ] || continue
               base="$(basename "$fname")"
               backend_row "$base"
@@ -346,10 +357,10 @@ jobs:
             echo '### Install'
             echo
             version="${GITHUB_REF_NAME#v}"
-            echo 'Direct install with Iroh remote transport enabled:'
+            echo 'Direct install:'
             echo
             echo '```bash'
-            echo "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/install.sh | OPENVSMOBILE_IROH=1 bash -s -- ${version}"
+            echo "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/install.sh | bash -s -- ${version}"
             echo '```'
             echo
             echo "SSH-bootstrap from the app's Settings screen → SSH bootstrap. Iroh is enabled by default."
@@ -381,8 +392,8 @@ jobs:
           prerelease: ${{ steps.prerelease.outputs.value == 'true' }}
           fail_on_unmatched_files: true
           files: |
-            artifacts/openvsmobile-backend-linux-*.tar.gz
-            artifacts/openvsmobile-backend-linux-*.tar.gz.sha256
+            artifacts/openvsmobile-backend-*.tar.gz
+            artifacts/openvsmobile-backend-*.tar.gz.sha256
             artifacts/install.sh
             artifacts/*.apk
             artifacts/*.apk.sha256

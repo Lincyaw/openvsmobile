@@ -95,12 +95,7 @@ it is either deferred or assigned to a plugin.
    backend; QR-code first-run flow.
 6. **Plugin loader and IPC** — discover installed plugins, spawn their
    processes, route messages, surface their declared UI contributions.
-7. **Voice / eyes-free control** — a host-rendered, gesture-first
-   projection over plugin-exposed `voiceShortcut` actions, one-shot
-   `voiceInputEvent` dictation, direct `voiceOutputText` playback, and
-   `ui.event` routing. The host owns TTS / one-shot speech input /
-   haptics; plugins own the assistant or workflow protocol.
-8. **Notification system** — a multi-source, mobile-delivered surface
+7. **Notification system** — a multi-source, mobile-delivered surface
    where structured messages from any sender (CLI tool from a dev
    machine, webhook from CI, plugin running in the host, or the
    backend itself) reach the user even when the app is not in the
@@ -110,19 +105,11 @@ it is either deferred or assigned to a plugin.
    tray. No third-party push provider (FCM, ntfy, UnifiedPush) — the
    transport is the same app stream we already operate. Detail in §4.5.
 
-The Flutter bottom navigation is **Files / Terminal / Voice / Plugins /
-Settings** (5 tabs). Git lives inside Files — there is no standalone
-Git tab. The "Voice" tab is a host-rendered eyes-free projection of
-plugin shortcuts: it scans plugin-owned `ui.tree` panels for actions
-explicitly marked `voiceShortcut: true` and exposes those actions
-through swipe / double-tap / long-press gestures plus TTS. Actions may
-dispatch a normal `ui.event`, dictate text into a plugin-declared
-`voiceInputEvent`, or speak plugin-declared `voiceOutputText` directly.
-It is not a core chat surface and does not know about Claude, Codex,
-AgentM, or any other assistant protocol. The "Plugins" tab remains the
-entry point for plugin management and visual plugin
-panels: it lists active panels and drills into the panel renderer
-defined in §4.3.
+The Flutter bottom navigation is **Files / Terminal / Plugins / Settings**
+(4 tabs). Git lives inside Files — there is no standalone Git tab. The
+"Plugins" tab remains the entry point for plugin management and visual plugin
+panels: it lists active panels and drills into the panel renderer defined in
+§4.3.
 
 Anything not in this list — Claude integration, LSP, code review UI,
 GitHub PRs, search-across-files, debugger — is a plugin.
@@ -351,10 +338,10 @@ for v1 if terminal/file throughput becomes a problem.
 ### 4.1 Frontend ↔ Backend (Flutter ↔ Node)
 
 Transport: **single persistent JSON-RPC stream** carrying JSON-RPC 2.0
-in both directions. The default physical transport is a WebSocket at
-`/rpc`; an optional Iroh bidirectional stream can carry the same frames
-for NAT-traversed remote access. The auth story and eventing story stay
-unified: the same `auth.handshake` is the first message on either
+in both directions. Iroh is the default remote physical transport for
+NAT-traversed access; the backend also exposes a WebSocket at `/rpc` for
+local/LAN compatibility and debugging. The auth story and eventing story
+stay unified: the same `auth.handshake` is the first message on either
 transport, and request/stream semantics do not change.
 
 Envelope (TypeScript-style for readability):
@@ -995,7 +982,7 @@ type Notification = {
         backendId?: string;         // client-local backend id; absent means active backend
         externalSessionId?: string; // e.g. zellij session name; enough for adopt/reattach
       };
-  spoken?: {                       // preferred text for eyes-free announcement
+  spoken?: {                       // preferred accessible announcement text
     title?: string;
     body: string;
     detail?: string;
@@ -1273,8 +1260,8 @@ A transformer is a backend-side pure function `(headers, rawBody) → Partial<No
   removes language seam between core and plugins; single binary surface.
 - Backend exposes a single frontend-backend RPC stream to the Flutter
   client (auth, workspace ops, terminal, git, plugin events all
-  multiplexed). WebSocket at `/rpc` is the default transport; Iroh is an
-  optional transport for remote access without a VPN.
+  multiplexed). Iroh is the default remote transport; WebSocket at `/rpc`
+  remains available for local/LAN compatibility and debugging.
 - Where the backend runs:
   - **Primary target**: paired developer machine (laptop, workbuddy
     node, etc.). The phone is a thin client over network.

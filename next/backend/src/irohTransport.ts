@@ -1,9 +1,9 @@
-// Optional Iroh transport for the same frontend JSON-RPC protocol that
-// normally rides over /rpc WebSocket. Iroh handles peer reachability; the
-// auth token and all workspace/terminal/plugin semantics stay unchanged.
+// Default-on Iroh transport for the same frontend JSON-RPC protocol that
+// also rides over /rpc WebSocket. Iroh handles peer reachability; the auth
+// token and all workspace/terminal/plugin semantics stay unchanged.
 //
-// Enable with:
-//   OPENVSMOBILE_IROH=1
+// Disable with:
+//   OPENVSMOBILE_IROH=0
 //
 // Pairing data is surfaced through runtime.json and stderr as endpoint
 // identity/ticket only. The bearer token is never embedded in Iroh tickets.
@@ -114,7 +114,7 @@ export interface IrohRpcServer {
 
 export function irohEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const raw = env.OPENVSMOBILE_IROH;
-  if (raw === undefined || raw.length === 0) return false;
+  if (raw === undefined || raw.length === 0) return true;
   return !["0", "false", "off", "no"].includes(raw.trim().toLowerCase());
 }
 
@@ -184,7 +184,7 @@ function loadIrohModule(): IrohModule {
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     throw new Error(
-      `OPENVSMOBILE_IROH=1 but @number0/iroh could not be loaded: ${detail}`,
+      `Iroh is enabled but @number0/iroh could not be loaded: ${detail}`,
     );
   }
 }

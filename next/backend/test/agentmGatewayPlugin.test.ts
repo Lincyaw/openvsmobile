@@ -302,15 +302,6 @@ describe("examples/plugins/agentm-gateway", () => {
       expect(findNodeById(initialPanel.tree, "agentm-read-last")?.title).toBe(
         "Read last reply",
       );
-      expect(findNodeById(initialPanel.tree, "agentm-input")?.voiceShortcut).toBe(
-        true,
-      );
-      expect(findNodeById(initialPanel.tree, "agentm-read-last")?.voiceShortcut).toBe(
-        true,
-      );
-      expect(findNodeById(initialPanel.tree, "agentm-interrupt")?.voiceShortcut).toBe(
-        false,
-      );
       expect(findNodeById(initialPanel.tree, "agentm-details")).toBeUndefined();
 
       await call(harness.ctx, "ui.event", {
@@ -341,7 +332,8 @@ describe("examples/plugins/agentm-gateway", () => {
           .activePanels()
           .find((p) => p.pluginId === "agentm-gateway" && p.panelId === "chat");
         if (panel?.tree === undefined) return undefined;
-        return findNodeById(panel.tree, "agentm-interrupt")?.voiceShortcut === true
+        return findNodeById(panel.tree, "agentm-interrupt")?.subtitle ===
+          "Cancels the running request"
           ? panel
           : undefined;
       }, 5000);
@@ -407,7 +399,7 @@ describe("examples/plugins/agentm-gateway", () => {
     }
   });
 
-  it("notifies and exposes voice output for stream-only final replies", async () => {
+  it("notifies and updates the panel for stream-only final replies", async () => {
     if (staging === null) throw new Error("staging dir not set up");
     const socketPath = join(staging, "s.sock");
     const harness = await buildHarness(socketPath);
@@ -448,8 +440,8 @@ describe("examples/plugins/agentm-gateway", () => {
         const status = findNodeById(panel.tree, "agentm-status");
         return status?.body === "AgentM replied." ? panel : undefined;
       }, 5000);
-      expect(findNodeById(finalPanel.tree, "agentm-read-last")?.voiceOutputText).toBe(
-        "mobile stream works",
+      expect(findNodeById(finalPanel.tree, "agentm-read-last")?.subtitle).toBe(
+        "Speaks the latest AgentM message",
       );
 
       await harness.host.shutdown();

@@ -3,9 +3,9 @@
 //
 // Local debug builds use this value as-is.
 // Release builds via .github/workflows/release.yml substitute it from the v* tag.
-const String kBackendVersion = '0.4.7';
+const String kBackendVersion = '0.4.10';
 
-/// Default port the backend's `install.sh` writes into its systemd unit.
+/// Default port used by direct development backends.
 /// Screens that seed a fresh BackendTarget should reference this rather
 /// than hard-coding the literal — keeps the source of truth in one file.
 const int kDefaultBackendPort = 7860;

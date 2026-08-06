@@ -187,13 +187,13 @@ void main() {
     await _pumpHomeShell(tester, appState: appState);
 
     final nav = tester.widget<NavigationBar>(find.byType(NavigationBar));
-    expect(nav.destinations.length, 5);
+    expect(nav.destinations.length, 4);
 
-    // Verify labels and order — Files / Terminal / Voice / Plugins / Settings.
+    // Verify labels and order — Files / Terminal / Plugins / Settings.
     final labels = nav.destinations
         .map((d) => (d as NavigationDestination).label)
         .toList();
-    expect(labels, ['Files', 'Terminal', 'Voice', 'Plugins', 'Settings']);
+    expect(labels, ['Files', 'Terminal', 'Plugins', 'Settings']);
 
     // Verify the unselected icons match the spec (Material outlined family).
     final icons = nav.destinations
@@ -202,7 +202,6 @@ void main() {
     expect(icons, [
       Icons.folder_outlined,
       Icons.terminal_outlined,
-      Icons.record_voice_over_outlined,
       Icons.extension_outlined,
       Icons.settings_outlined,
     ]);
@@ -237,11 +236,6 @@ void main() {
     // Settings tiles ("Backend servers" etc.) should not be on screen now.
     expect(find.text('Backend servers'), findsNothing);
     expect(find.text('About'), findsNothing);
-
-    // Voice tab — native eyes-free surface, separate from plugin detail UI.
-    await tester.tap(find.byIcon(Icons.record_voice_over_outlined));
-    await tester.pumpAndSettle();
-    expect(find.text('No plugins available'), findsOneWidget);
 
     // Terminal tab — switch back; the body changes but we don't need to
     // assert PTY-specific copy (xterm initialization requires a live
@@ -694,9 +688,9 @@ void main() {
         findsNothing,
       );
 
-      // Bottom nav still highlights Settings (index 4).
+      // Bottom nav still highlights Settings (index 3).
       final nav = tester.widget<NavigationBar>(find.byType(NavigationBar));
-      expect(nav.selectedIndex, 4);
+      expect(nav.selectedIndex, 3);
     },
   );
 
@@ -736,6 +730,6 @@ void main() {
 
     expect(find.byType(SettingsTab), findsOneWidget);
     final nav = tester.widget<NavigationBar>(find.byType(NavigationBar));
-    expect(nav.selectedIndex, 4);
+    expect(nav.selectedIndex, 3);
   });
 }

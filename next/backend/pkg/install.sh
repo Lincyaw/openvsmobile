@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Install or upgrade the openvsmobile-next backend as a systemd --user
-# service. Intended to be either curl-piped from a release URL or fed
-# via stdin over an SSH bootstrap.
+# Install or upgrade the openvsmobile-next backend as a per-user service:
+# systemd --user on Linux, LaunchAgent/launchctl on macOS. Intended to be
+# either curl-piped from a release URL or fed via stdin over an SSH bootstrap.
 #
 # stdout contract: on success, exactly ONE line of JSON:
 #   {"port":N,"token":"...","version":"X.Y.Z","linger":true|false}
-# If Iroh was enabled, the JSON also includes `"iroh":{...}` from runtime.json.
+# When Iroh starts successfully, the JSON also includes `"iroh":{...}` from runtime.json.
 # Everything else (progress, warnings, errors) is on stderr.
 
 set -euo pipefail
@@ -18,19 +18,16 @@ RUNTIME_INFO="$STATE_DIR/runtime.json"
 CACHE_DIR="$HOME/.cache/openvsmobile"
 UNIT_PATH="$HOME/.config/systemd/user/openvsmobile.service"
 SERVICE_NAME="openvsmobile.service"
+LAUNCHD_LABEL="dev.lincyaw.openvsmobile.backend"
+PLIST_PATH="$HOME/Library/LaunchAgents/${LAUNCHD_LABEL}.plist"
+LAUNCHD_LOG_PATH="$STATE_DIR/launchd.log"
 POLL_TIMEOUT_SECS=10
 STOP_TIMEOUT_SECS=20
-
-# Release installs should be reachable from mobile networks by default. Users
-# can still opt out with OPENVSMOBILE_IROH=0/false/off/no.
-if [[ -z "${OPENVSMOBILE_IROH:-}" ]]; then
-  OPENVSMOBILE_IROH=1
-fi
 
 # ----- usage -----
 usage() {
   cat <<'EOF'
-Usage: install.sh <version> [--tarball <path>] [--dry-run-systemd] [--force]
+Usage: install.sh <version> [--tarball <path>] [--dry-run-service] [--force]
 
 Args:
   version       Release version without leading 'v' (e.g. 0.1.0).
@@ -40,13 +37,14 @@ Args:
 Flags:
   --tarball <path>      Use a local tarball instead of downloading.
                         The matching .sha256 must sit next to it.
-  --dry-run-systemd     Print the unit file to stderr, skip
-                        daemon-reload / enable / start. Spawns a sandboxed
-                        backend (HOME=mktemp) so it never touches the real
+  --dry-run-service     Print the service file to stderr, skip service
+                        install/start. Spawns a sandboxed backend
+                        (HOME=mktemp) so it never touches the real
                         ~/.config/openvsmobile-next/ or ~/.local/state/.
                         Refuses to run if the real service is currently
                         active (use --force to override).
-  --force               With --dry-run-systemd: proceed even when the real
+  --dry-run-systemd     Deprecated alias for --dry-run-service.
+  --force               With --dry-run-service: proceed even when the real
                         service is active. With a real install: refresh an
                         existing same-version install directory.
   -h, --help            Show this help.
@@ -59,10 +57,9 @@ Env:
                         Useful when the GitHub releases CDN
                         (release-assets.githubusercontent.com) is slow or
                         blocked on the target host.
-  OPENVSMOBILE_IROH=0   Disable the Iroh remote transport. Release installs
-                        enable and persist Iroh by default. Related
-                        OPENVSMOBILE_IROH_* variables present during install
-                        are persisted too.
+  OPENVSMOBILE_IROH=0   Force a WebSocket-only backend. Iroh is bundled and
+                        starts by default; related OPENVSMOBILE_IROH_*
+                        variables present during install are persisted.
   OPENVSMOBILE_PAIRING_QR=auto|1|0
                         Print a terminal QR code with the token and ticket
                         on stderr after install. Default "auto" prints only
@@ -90,6 +87,21 @@ need() {
   command -v "$1" >/dev/null 2>&1 || fatal "missing dependency: $1 (install it and retry)" 7
 }
 
+need_sha256() {
+  if command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1; then
+    return 0
+  fi
+  fatal "missing dependency: sha256sum or shasum (install it and retry)" 7
+}
+
+sha256_hex() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
 append_unit_env_if_set() {
   local key="$1" value escaped
   [[ -n "${!key+x}" ]] || return 0
@@ -103,6 +115,27 @@ append_unit_env_if_set() {
   UNIT_EXTRA_ENV+=$'\n'"Environment=\"$key=$escaped\""
 }
 
+xml_escape() {
+  local value="$1"
+  value="${value//&/&amp;}"
+  value="${value//</&lt;}"
+  value="${value//>/&gt;}"
+  value="${value//\"/&quot;}"
+  value="${value//\'/&apos;}"
+  printf '%s' "$value"
+}
+
+append_plist_env_if_set() {
+  local key="$1" value
+  [[ -n "${!key+x}" ]] || return 0
+  value="${!key}"
+  [[ -n "$value" ]] || return 0
+  if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+    fatal "$key contains a newline; refusing to write invalid launchd EnvironmentVariables entry" 2
+  fi
+  PLIST_EXTRA_ENV+=$'\n'"    <key>$(xml_escape "$key")</key><string>$(xml_escape "$value")</string>"
+}
+
 pid_alive() {
   local pid="${1:-}"
   [[ "$pid" =~ ^[0-9]+$ ]] || return 1
@@ -112,7 +145,18 @@ pid_alive() {
 
 service_main_pid() {
   local pid
-  pid="$(systemctl --user show "$SERVICE_NAME" -p MainPID --value 2>/dev/null || true)"
+  case "$PLATFORM" in
+    linux)
+      pid="$(systemctl --user show "$SERVICE_NAME" -p MainPID --value 2>/dev/null || true)"
+      ;;
+    darwin)
+      pid="$(launchctl print "${LAUNCHD_DOMAIN}/${LAUNCHD_LABEL}" 2>/dev/null \
+        | awk -F'= ' '/^[[:space:]]*pid = / {print $2; exit}' || true)"
+      ;;
+    *)
+      pid="0"
+      ;;
+  esac
   if [[ "$pid" =~ ^[0-9]+$ ]]; then
     printf '%s\n' "$pid"
   else
@@ -134,7 +178,21 @@ wait_service_stopped() {
   local deadline state pid
   deadline=$(( $(date +%s) + STOP_TIMEOUT_SECS ))
   while true; do
-    state="$(systemctl --user is-active "$SERVICE_NAME" 2>/dev/null || true)"
+    case "$PLATFORM" in
+      linux)
+        state="$(systemctl --user is-active "$SERVICE_NAME" 2>/dev/null || true)"
+        ;;
+      darwin)
+        if launchctl print "${LAUNCHD_DOMAIN}/${LAUNCHD_LABEL}" >/dev/null 2>&1; then
+          state="active"
+        else
+          state="inactive"
+        fi
+        ;;
+      *)
+        state="inactive"
+        ;;
+    esac
     pid="$(service_main_pid)"
     if [[ "$state" != "active" && "$state" != "activating" ]] && ! pid_alive "$pid"; then
       return 0
@@ -145,6 +203,38 @@ wait_service_stopped() {
     fi
     sleep 0.2
   done
+}
+
+service_is_active() {
+  case "$PLATFORM" in
+    linux)
+      systemctl --user is-active --quiet "$SERVICE_NAME" 2>/dev/null
+      ;;
+    darwin)
+      local pid
+      pid="$(service_main_pid)"
+      pid_alive "$pid"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+stop_installed_service() {
+  case "$PLATFORM" in
+    linux)
+      systemctl --user stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+      wait_service_stopped || fatal "$SERVICE_NAME did not stop within ${STOP_TIMEOUT_SECS}s"
+      systemctl --user reset-failed "$SERVICE_NAME" >/dev/null 2>&1 || true
+      ;;
+    darwin)
+      launchctl bootout "$LAUNCHD_DOMAIN" "$PLIST_PATH" >/dev/null 2>&1 \
+        || launchctl remove "$LAUNCHD_LABEL" >/dev/null 2>&1 \
+        || true
+      wait_service_stopped || fatal "$LAUNCHD_LABEL did not stop within ${STOP_TIMEOUT_SECS}s"
+      ;;
+  esac
 }
 
 runtime_ready() {
@@ -241,7 +331,7 @@ dl() {
 # ----- args -----
 VERSION=""
 TARBALL_OVERRIDE=""
-DRY_RUN_SYSTEMD=0
+DRY_RUN_SERVICE=0
 FORCE=0
 
 while [[ $# -gt 0 ]]; do
@@ -250,8 +340,10 @@ while [[ $# -gt 0 ]]; do
     --tarball)
       [[ $# -ge 2 ]] || { usage >&2; fatal "--tarball requires a path" 2; }
       TARBALL_OVERRIDE="$2"; shift 2 ;;
+    --dry-run-service)
+      DRY_RUN_SERVICE=1; shift ;;
     --dry-run-systemd)
-      DRY_RUN_SYSTEMD=1; shift ;;
+      DRY_RUN_SERVICE=1; shift ;;
     --force)
       FORCE=1; shift ;;
     -*)
@@ -272,13 +364,29 @@ VERSION="${VERSION#v}"
 INSTALL_DIR="$SHARE_ROOT/v$VERSION"
 CURRENT_LINK="$SHARE_ROOT/current"
 
+# ----- detect platform -----
+RAW_OS="$(uname -s)"
+case "$RAW_OS" in
+  Linux)
+    PLATFORM="linux"
+    ;;
+  Darwin)
+    PLATFORM="darwin"
+    LAUNCHD_DOMAIN="gui/$(id -u)"
+    ;;
+  *)
+    fatal "unsupported operating system: $RAW_OS (need Linux or macOS)" 7
+    ;;
+esac
+log "platform: $PLATFORM ($RAW_OS)"
+
 # ----- detect arch -----
 RAW_ARCH="$(uname -m)"
 case "$RAW_ARCH" in
   x86_64)  ARCH="x64"   ;;
-  aarch64) ARCH="arm64" ;;
+  aarch64|arm64) ARCH="arm64" ;;
   *)
-    fatal "unsupported architecture: $RAW_ARCH (need x86_64 or aarch64)" 7
+    fatal "unsupported architecture: $RAW_ARCH (need x86_64 or arm64/aarch64)" 7
     ;;
 esac
 log "arch: $ARCH ($RAW_ARCH)"
@@ -286,23 +394,28 @@ log "arch: $ARCH ($RAW_ARCH)"
 # ----- check deps -----
 need curl
 need tar
-need sha256sum
+need_sha256
 need file
-# systemctl in user mode — present on any systemd-based distro a non-root
-# user can use. We don't require root.
-if ! command -v systemctl >/dev/null 2>&1; then
-  fatal "missing dependency: systemctl (need systemd --user)" 7
-fi
+case "$PLATFORM" in
+  linux)
+    # systemctl in user mode — present on any systemd-based distro a non-root
+    # user can use. We don't require root.
+    need systemctl
+    ;;
+  darwin)
+    need launchctl
+    ;;
+esac
 
 # ----- dry-run vs real-unit conflict guard (B4) -----
-if [[ "$DRY_RUN_SYSTEMD" -eq 1 ]] && [[ "$FORCE" -eq 0 ]]; then
-  if systemctl --user is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-    fatal "real $SERVICE_NAME is currently active; --dry-run-systemd would spawn a parallel backend (use --force to override)" 5
+if [[ "$DRY_RUN_SERVICE" -eq 1 ]] && [[ "$FORCE" -eq 0 ]]; then
+  if service_is_active; then
+    fatal "real backend service is currently active; --dry-run-service would spawn a parallel backend (use --force to override)" 5
   fi
 fi
 
 # ----- tarball acquisition -----
-TARBALL_NAME="openvsmobile-backend-linux-${ARCH}.tar.gz"
+TARBALL_NAME="openvsmobile-backend-${PLATFORM}-${ARCH}.tar.gz"
 SHA_NAME="${TARBALL_NAME}.sha256"
 
 mkdir -p "$CACHE_DIR"
@@ -337,50 +450,59 @@ fi
 # ----- verify checksum -----
 EXPECTED_HEX="$(awk '{print $1; exit}' "$SHA_PATH")"
 [[ -n "$EXPECTED_HEX" ]] || fatal "could not parse sha256 file: $SHA_PATH"
-ACTUAL_HEX="$(sha256sum "$TARBALL_PATH" | awk '{print $1}')"
+ACTUAL_HEX="$(sha256_hex "$TARBALL_PATH")"
 if [[ "$EXPECTED_HEX" != "$ACTUAL_HEX" ]]; then
   fatal "sha256 mismatch: expected $EXPECTED_HEX, got $ACTUAL_HEX"
 fi
 log "sha256 verified: $ACTUAL_HEX"
 
-# ----- ELF arch verification of bundled .node files (M1) -----
+# ----- native arch verification of bundled .node files (M1) -----
 # Cross-target via npm_config_target_arch only redirects prebuild
-# downloads; node-pty has no linux prebuilds, so it falls back to
-# node-gyp rebuild against the BUILD host's toolchain. An x64 build host
-# producing an "arm64" tarball would silently embed an x86-64 .node and
-# crash on the target. Probe each native module before we commit to the
-# install.
-case "$ARCH" in
-  x64)   EXPECTED_ELF="x86-64" ;;
-  arm64) EXPECTED_ELF="aarch64" ;;
+# downloads; native packages can still silently embed a wrong-host binary
+# when a build job runs on the wrong runner. Probe native modules before
+# we commit to the install.
+EXPECTED_NATIVE_DESC=""
+NATIVE_KIND=""
+case "$PLATFORM/$ARCH" in
+  linux/x64)    EXPECTED_NATIVE_DESC="x86-64"; NATIVE_KIND="ELF" ;;
+  linux/arm64)  EXPECTED_NATIVE_DESC="aarch64"; NATIVE_KIND="ELF" ;;
+  darwin/x64)   EXPECTED_NATIVE_DESC="x86_64"; NATIVE_KIND="Mach-O" ;;
+  darwin/arm64) EXPECTED_NATIVE_DESC="arm64"; NATIVE_KIND="Mach-O" ;;
 esac
 
 PROBE_DIR="$(mktemp -d -t openvsmobile-probe.XXXXXX)"
 # shellcheck disable=SC2064  # we want $PROBE_DIR expanded now, not later
 trap "rm -rf '$PROBE_DIR'" EXIT
 tar -xzf "$TARBALL_PATH" -C "$PROBE_DIR"
-# Only inspect ELF binaries. node-pty's package ships `prebuilds/` dirs
-# for darwin and win32 too (Mach-O / PE32+ files); those are never loaded
-# on a linux host, so flagging their arch as "wrong" would be a false
-# positive. The real risk is a linux .node compiled by node-gyp against
-# the wrong toolchain, which lives at `node_modules/<pkg>/build/Release/*.node`.
-mapfile -d '' -t ALL_NODE_FILES < <(find "$PROBE_DIR" -name '*.node' -print0)
-ELF_NODE_FILES=()
+# Only inspect native binaries for the target platform. Packages can ship
+# prebuilds for several platforms; non-target .node files are ignored.
+ALL_NODE_FILES=()
+while IFS= read -r -d '' nf; do
+  ALL_NODE_FILES+=("$nf")
+done < <(find "$PROBE_DIR" -name '*.node' -print0)
+TARGET_NODE_FILES=()
 for nf in "${ALL_NODE_FILES[@]}"; do
-  if file -b "$nf" | grep -q '^ELF '; then
-    ELF_NODE_FILES+=("$nf")
+  if file -b "$nf" | grep -q "^${NATIVE_KIND} "; then
+    TARGET_NODE_FILES+=("$nf")
   fi
 done
-if [[ ${#ELF_NODE_FILES[@]} -eq 0 ]]; then
-  log "warn: no linux ELF .node files in tarball — node-gyp cross-compile likely failed silently"
+if [[ ${#TARGET_NODE_FILES[@]} -eq 0 ]]; then
+  log "warn: no ${PLATFORM} ${NATIVE_KIND} .node files in tarball — native dependency packaging may have failed silently"
 else
-  for nf in "${ELF_NODE_FILES[@]}"; do
+  for nf in "${TARGET_NODE_FILES[@]}"; do
     desc="$(file -b "$nf")"
-    if ! grep -q "$EXPECTED_ELF" <<<"$desc"; then
-      fatal "native module $nf is not $EXPECTED_ELF (got: $desc); cross-compile produced a wrong-arch binary"
+    if ! grep -q "$EXPECTED_NATIVE_DESC" <<<"$desc"; then
+      # Some packages ship multiple same-platform prebuilds in one package
+      # (for example node-pty/prebuilds/darwin-x64 and darwin-arm64). Skip
+      # the explicitly non-target sibling; still fail wrong-arch binaries in
+      # generic build/Release locations where the path gives no such excuse.
+      if [[ "$nf" == *"/${PLATFORM}-"* && "$nf" != *"/${PLATFORM}-${ARCH}"* ]]; then
+        continue
+      fi
+      fatal "native module $nf is not $EXPECTED_NATIVE_DESC (got: $desc); packaging produced a wrong-arch binary"
     fi
   done
-  log "verified ${#ELF_NODE_FILES[@]} linux native module(s) match $EXPECTED_ELF"
+  log "verified ${#TARGET_NODE_FILES[@]} ${PLATFORM} native module(s) match $EXPECTED_NATIVE_DESC"
 fi
 
 # ----- stop running service BEFORE swapping anything (B1) -----
@@ -391,11 +513,9 @@ fi
 # loaded yet on a first install). `stop` also cancels a pending restart
 # job, which matters after a crash loop: `is-active` may already be false
 # while systemd still has a restart queued that can rewrite old runtime.json.
-if [[ "$DRY_RUN_SYSTEMD" -eq 0 ]]; then
-  log "stopping $SERVICE_NAME before upgrade"
-  systemctl --user stop "$SERVICE_NAME" >/dev/null 2>&1 || true
-  wait_service_stopped || fatal "$SERVICE_NAME did not stop within ${STOP_TIMEOUT_SECS}s"
-  systemctl --user reset-failed "$SERVICE_NAME" >/dev/null 2>&1 || true
+if [[ "$DRY_RUN_SERVICE" -eq 0 ]]; then
+  log "stopping existing backend service before upgrade"
+  stop_installed_service
 fi
 
 # ----- extract (idempotent) -----
@@ -436,12 +556,16 @@ LAUNCH_SCRIPT="$BUNDLE_DIR/launch.sh"
 # ----- atomic symlink current -> install dir -----
 TMP_LINK="$SHARE_ROOT/.current.tmp.$$"
 ln -snf "$INSTALL_DIR" "$TMP_LINK"
-mv -Tf "$TMP_LINK" "$CURRENT_LINK"
+if ! mv -Tf "$TMP_LINK" "$CURRENT_LINK" 2>/dev/null; then
+  rm -f "$CURRENT_LINK"
+  mv -f "$TMP_LINK" "$CURRENT_LINK"
+fi
 log "current -> $INSTALL_DIR"
 
 # ----- seed example plugins on first install -----
 # A fresh environment otherwise lands on an empty Plugins tab. We bundle
-# clock / notes / sysinfo / agentm-gateway in the tarball under share/example-plugins/ and
+# clock / notes / sysinfo / agentm-gateway / codex-client in the tarball under
+# share/example-plugins/ and
 # copy them into the user's plugins dir the FIRST time install.sh runs,
 # but never on subsequent runs — so removing a plugin sticks across
 # upgrades. The settled "filesystem-only install" decision (CLAUDE.md)
@@ -469,7 +593,7 @@ if [[ -d "$EXAMPLES_DIR" ]]; then
     # cp each top-level dir individually so a future addition to
     # share/example-plugins doesn't silently propagate to existing users.
     seeded=()
-    for plugin in clock notes sysinfo agentm-gateway; do
+    for plugin in clock notes sysinfo agentm-gateway codex-client; do
       if [[ -d "$EXAMPLES_DIR/$plugin" ]]; then
         cp -R "$EXAMPLES_DIR/$plugin" "$PLUGINS_DIR/"
         seeded+=("$plugin")
@@ -486,9 +610,9 @@ if [[ -d "$EXAMPLES_DIR" ]]; then
   fi
 fi
 
-# ----- write systemd unit -----
-mkdir -p "$(dirname "$UNIT_PATH")"
+# ----- write per-user service -----
 UNIT_EXTRA_ENV=""
+PLIST_EXTRA_ENV=""
 for env_key in \
   OPENVSMOBILE_IROH \
   OPENVSMOBILE_IROH_ALPN \
@@ -500,8 +624,14 @@ for env_key in \
   OPENVSMOBILE_IROH_MAX_FRAME_BYTES
 do
   append_unit_env_if_set "$env_key"
+  append_plist_env_if_set "$env_key"
 done
-UNIT_CONTENT=$(cat <<UNIT
+
+case "$PLATFORM" in
+  linux)
+    SERVICE_FILE_PATH="$UNIT_PATH"
+    mkdir -p "$(dirname "$SERVICE_FILE_PATH")"
+    SERVICE_CONTENT=$(cat <<UNIT
 [Unit]
 Description=openvsmobile backend
 After=network.target
@@ -521,15 +651,48 @@ RestartSec=3
 WantedBy=default.target
 UNIT
 )
+    ;;
+  darwin)
+    SERVICE_FILE_PATH="$PLIST_PATH"
+    mkdir -p "$(dirname "$SERVICE_FILE_PATH")" "$STATE_DIR"
+    SERVICE_CONTENT=$(cat <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$(xml_escape "$LAUNCHD_LABEL")</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$(xml_escape "$LAUNCH_SCRIPT")</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>$(xml_escape "$HOME")</string>
+    <key>PORT</key><string>0</string>
+    <key>NODE_ENV</key><string>production</string>$PLIST_EXTRA_ENV
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key><false/>
+  </dict>
+  <key>StandardOutPath</key><string>$(xml_escape "$LAUNCHD_LOG_PATH")</string>
+  <key>StandardErrorPath</key><string>$(xml_escape "$LAUNCHD_LOG_PATH")</string>
+</dict>
+</plist>
+PLIST
+)
+    ;;
+esac
 
 # Track LINGER for the JSON-emit step regardless of branch.
 LINGER=false
 
-if [[ "$DRY_RUN_SYSTEMD" -eq 1 ]]; then
-  log "--- BEGIN unit (dry-run) ---"
-  printf '%s\n' "$UNIT_CONTENT" >&2
-  log "--- END unit (dry-run) ---"
-  log "dry-run: skipping daemon-reload/enable/start"
+if [[ "$DRY_RUN_SERVICE" -eq 1 ]]; then
+  log "--- BEGIN service file (dry-run: $SERVICE_FILE_PATH) ---"
+  printf '%s\n' "$SERVICE_CONTENT" >&2
+  log "--- END service file (dry-run) ---"
+  log "dry-run: skipping service install/start"
 
   # Sandbox the spawned backend so it never touches the real
   # ~/.config/openvsmobile-next/ or ~/.local/state/openvsmobile-next/.
@@ -556,28 +719,37 @@ if [[ "$DRY_RUN_SYSTEMD" -eq 1 ]]; then
   # real $RUNTIME_INFO.
   POLL_TARGET="$DRY_RUNTIME"
 else
-  log "writing unit file: $UNIT_PATH"
-  printf '%s\n' "$UNIT_CONTENT" > "$UNIT_PATH"
-
-  # Enable lingering so the service survives logout (and starts at boot).
-  # Linger requires either root or a polkit policy that permits the user.
-  # We do NOT fail the install if this is denied — surface it in the
-  # final JSON instead so the caller knows the service is session-bound.
-  if loginctl enable-linger "$USER" >/dev/null 2>&1; then
-    LINGER=true
-    log "linger enabled for $USER"
-  else
-    log "warn: could not enable linger (non-root SSH without polkit?); service is session-bound"
-  fi
+  log "writing service file: $SERVICE_FILE_PATH"
+  printf '%s\n' "$SERVICE_CONTENT" > "$SERVICE_FILE_PATH"
 
   # Wipe any stale runtime.json from the previous version BEFORE start,
   # so the poll loop's "file appeared" signal unambiguously means "the new
   # process wrote it" (B2).
   rm -f "$RUNTIME_INFO"
 
-  systemctl --user daemon-reload
-  systemctl --user enable --now "$SERVICE_NAME" >/dev/null
-  log "systemd unit enabled and started"
+  case "$PLATFORM" in
+    linux)
+      # Enable lingering so the service survives logout (and starts at boot).
+      # Linger requires either root or a polkit policy that permits the user.
+      # We do NOT fail the install if this is denied — surface it in the
+      # final JSON instead so the caller knows the service is session-bound.
+      if loginctl enable-linger "$USER" >/dev/null 2>&1; then
+        LINGER=true
+        log "linger enabled for $USER"
+      else
+        log "warn: could not enable linger (non-root SSH without polkit?); service is session-bound"
+      fi
+      systemctl --user daemon-reload
+      systemctl --user enable --now "$SERVICE_NAME" >/dev/null
+      log "systemd unit enabled and started"
+      ;;
+    darwin)
+      launchctl bootstrap "$LAUNCHD_DOMAIN" "$PLIST_PATH"
+      launchctl kickstart -k "${LAUNCHD_DOMAIN}/${LAUNCHD_LABEL}" >/dev/null
+      LINGER=true
+      log "LaunchAgent bootstrapped and started ($LAUNCHD_LABEL)"
+      ;;
+  esac
   POLL_TARGET="$RUNTIME_INFO"
 fi
 
@@ -586,12 +758,15 @@ log "waiting for valid $POLL_TARGET (up to ${POLL_TIMEOUT_SECS}s)"
 deadline=$(( $(date +%s) + POLL_TIMEOUT_SECS ))
 while ! runtime_ready "$POLL_TARGET"; do
   if (( $(date +%s) >= deadline )); then
-    if [[ "$DRY_RUN_SYSTEMD" -eq 1 ]]; then
+    if [[ "$DRY_RUN_SERVICE" -eq 1 ]]; then
       log "diagnostic backend log:"
       sed -e 's/^/  /' "$DRY_HOME/.backend.log" >&2 || true
       fatal "backend did not write valid $POLL_TARGET within ${POLL_TIMEOUT_SECS}s (dry-run)"
     fi
-    log "diagnostic: 'systemctl --user status openvsmobile' may explain why"
+    case "$PLATFORM" in
+      linux) log "diagnostic: 'systemctl --user status openvsmobile' may explain why" ;;
+      darwin) log "diagnostic: 'launchctl print ${LAUNCHD_DOMAIN}/${LAUNCHD_LABEL}' and $LAUNCHD_LOG_PATH may explain why" ;;
+    esac
     fatal "backend did not write valid $POLL_TARGET within ${POLL_TIMEOUT_SECS}s"
   fi
   sleep 0.2
@@ -599,7 +774,7 @@ done
 
 # ----- install optional Claude Code / Codex Stop hooks -----
 # This mutates real user agent configs, so keep dry-run hermetic.
-if [[ "$DRY_RUN_SYSTEMD" -eq 0 ]]; then
+if [[ "$DRY_RUN_SERVICE" -eq 0 ]]; then
   install_agent_hooks
 else
   log "dry-run: skipping agent Stop hook scan"

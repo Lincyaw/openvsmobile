@@ -707,8 +707,6 @@ function actionTile({
   hint,
   role = "action",
   eventId = "tap",
-  voiceShortcut = false,
-  voiceOutputText = undefined,
 }) {
   return ui.withMetadata(
     ui.listTile({
@@ -724,8 +722,6 @@ function actionTile({
       spokenValue: subtitle ? `${title}. ${subtitle}` : title,
       focusRole: role,
       focusOrder: order,
-      voiceShortcut,
-      voiceOutputText,
     },
   );
 }
@@ -793,12 +789,10 @@ function buildTree() {
             placeholder: "Speak or type a reply",
           }),
           {
-            accessibilityLabel: "Dictate and send reply",
-            accessibilityHint: "Double tap in eyes-free mode to dictate and send.",
-            focusRole: "action",
+            accessibilityLabel: "Reply",
+            accessibilityHint: "Type a reply to AgentM.",
+            focusRole: "input",
             focusOrder: 2,
-            voiceInputEvent: "send",
-            voiceShortcut: true,
           },
         ),
       ],
@@ -811,7 +805,7 @@ function buildTree() {
         actionTile({
           id: "agentm-send",
           title: "Send typed reply",
-          subtitle: state.draft.trim() ? "Sends the text above" : "Type first or use dictate",
+          subtitle: state.draft.trim() ? "Sends the text above" : "Type a reply first",
           icon: "send",
           order: 3,
           hint: "Sends the typed reply to AgentM.",
@@ -824,8 +818,6 @@ function buildTree() {
           accent: "info",
           order: 4,
           hint: "Reads the latest AgentM reply through speech.",
-          voiceShortcut: true,
-          voiceOutputText: replyText,
         }),
         actionTile({
           id: "agentm-interrupt",
@@ -836,7 +828,6 @@ function buildTree() {
           order: 5,
           role: "danger",
           hint: "Stops the current AgentM turn.",
-          voiceShortcut: state.activeTurn,
         }),
       ],
     }),

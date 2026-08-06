@@ -70,7 +70,7 @@ export type AccentToken =
   | "muted";
 /// Icon / avatar / hit-target size buckets.
 export type SizeToken = "xs" | "sm" | "md" | "lg" | "xl";
-/// Eyes-free focus role hint for accessibility / voice surfaces.
+/// Accessibility focus role hint supplied by plugins.
 export type UiFocusRole = "status" | "action" | "input" | "danger";
 
 /// `StyleSlot` is the union of "raw pixel/color value" and "named token".
@@ -84,9 +84,6 @@ export interface UiNodeMetadata {
   spokenValue?: string;
   focusRole?: UiFocusRole;
   focusOrder?: number;
-  voiceInputEvent?: string;
-  voiceOutputText?: string;
-  voiceShortcut?: boolean;
 }
 
 export interface UiColumn {

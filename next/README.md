@@ -11,10 +11,59 @@ artifacts is P6 and not part of this iteration.
 ```
 next/
 ├── backend/   # Node 25+ / TypeScript backend (auth + workspace + fs + terminal)
-└── app/       # Flutter Android client (Files / Terminal / Voice / Plugins / Settings)
+└── app/       # Flutter Android client (Files / Terminal / Plugins / Settings)
 ```
 
-## Running the backend
+## Install the backend
+
+For normal use, install the released backend tarball instead of running from
+source. The same one-liner works on Linux and macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/install.sh | bash -s -- <version>
+```
+
+Example:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/install.sh | bash -s -- 0.4.10
+```
+
+What it does:
+
+- Detects `linux` / `darwin` and `x64` / `arm64`.
+- Downloads `openvsmobile-backend-<platform>-<arch>.tar.gz` from GitHub Releases.
+- Installs under `~/.local/share/openvsmobile/` and updates the `current` symlink.
+- Starts a per-user service: `systemd --user` on Linux, LaunchAgent on macOS.
+- Prints one JSON line on stdout and, in interactive terminals, a pairing QR on stderr.
+
+Iroh is bundled and enabled by default. The QR normally pairs the app through
+Iroh, with the bearer token still required for auth. Use
+`OPENVSMOBILE_IROH=0` only when you explicitly need a WebSocket-only backend:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/install.sh | OPENVSMOBILE_IROH=0 bash -s -- <version>
+```
+
+In the Android app, pair it from:
+
+```text
+Backends -> Add backend -> Scan QR
+```
+
+Useful service commands:
+
+```bash
+# Linux
+systemctl --user status openvsmobile.service
+systemctl --user restart openvsmobile.service
+
+# macOS
+launchctl print "gui/$(id -u)/dev.lincyaw.openvsmobile.backend"
+launchctl kickstart -k "gui/$(id -u)/dev.lincyaw.openvsmobile.backend"
+```
+
+## Run the backend from source
 
 Requirements: Node ≥ 25, pnpm (or npm), a C/C++ toolchain (for the
 `node-pty` native build).
@@ -34,15 +83,15 @@ comes from the environment it is NOT printed to the log.
 
 To override the port: `PORT=8123 pnpm run dev`.
 
-### Optional Iroh remote transport
+### Iroh remote transport
 
-WebSocket remains the default local/LAN path. If the backend is on a
-home server behind NAT, you can also expose the same JSON-RPC stream over
-Iroh:
+Iroh is the default remote transport. The backend also keeps the WebSocket
+`/rpc` listener for local/LAN compatibility, but QR pairing prefers Iroh
+whenever the runtime info contains an endpoint ticket.
 
 ```bash
 cd next/backend
-OPENVSMOBILE_IROH=1 pnpm run dev
+pnpm run dev
 ```
 
 On startup the backend logs an Iroh endpoint id and ticket, and writes
@@ -52,11 +101,11 @@ not authentication. The generated Iroh secret key is persisted in
 `~/.config/openvsmobile-next/config.json` so the endpoint id stays stable
 across restarts.
 
-Release installs enable Iroh by default. The installer persists
-`OPENVSMOBILE_IROH=1` into the systemd user unit and includes the `iroh`
-object in its success JSON. Set `OPENVSMOBILE_IROH=0` when running
-`install.sh` to force a WebSocket-only backend. The SSH-bootstrap screen
-defaults Iroh on for new installs.
+Release installs bundle the Iroh dependency and start Iroh by default. The
+installer includes the `iroh` object in its success JSON, so SSH bootstrap
+and terminal QR pairing save the Iroh ticket automatically. For debugging or
+restricted environments, set `OPENVSMOBILE_IROH=0` when running `install.sh`
+to force a WebSocket-only backend.
 
 When `install.sh` runs in an interactive terminal it also prints a backend
 pairing QR code to stderr. In the Android app, open Backends, tap Add, then
@@ -69,7 +118,7 @@ Useful knobs:
 
 | Env var | Default | Notes |
 |---------|---------|-------|
-| `OPENVSMOBILE_IROH` | release install: `1`; direct backend process: unset | Set to `0` / `false` to disable the Iroh listener. |
+| `OPENVSMOBILE_IROH` | `1` | Set to `0` / `false` only for WebSocket-only debugging. |
 | `OPENVSMOBILE_IROH_ALPN` | `openvsmobile.rpc.v1` | Must match the app-side backend entry. |
 | `OPENVSMOBILE_IROH_RELAY_MODE` | `default` | `default` / `n0`, `staging`, or `disabled`. |
 | `OPENVSMOBILE_IROH_RELAY_URLS` | unset | Comma-separated custom relay URLs. |
@@ -86,10 +135,9 @@ silently reinitialized.
   in both directions, exactly as described in §4.1 of the design doc.
   Handshake (`auth.handshake`) must be the first message; the
   connection is closed with code 1008 on a bad token.
-- Iroh bi-stream — transport for the same JSON-RPC frame stream when
-  `OPENVSMOBILE_IROH=1` is set. Release installs set it by default; direct
-  backend processes must opt in. The first frame is still
-  `auth.handshake`; bad tokens close the stream.
+- Iroh bi-stream — default remote transport for the same JSON-RPC frame
+  stream. The first frame is still `auth.handshake`; bad tokens close the
+  stream. Set `OPENVSMOBILE_IROH=0` to suppress the listener.
 - `POST /notify` — Bearer-token-authed sender API for the notification
   system (§4.5). Same token as the WebSocket; mounted on the same HTTP
   server. Body is a `Notification` minus server-assigned fields. See
@@ -167,8 +215,8 @@ Flutter preferences file that stores this list.
   3. **Browse new…** — drills through directories step-by-step.
      Workspaces are opened via this picker; **there is no raw path
      text input anywhere in the UI**.
-- **Bottom navigation.** Five tabs: **Files**, **Terminal**, **Voice**,
-  **Plugins**, and **Settings**.
+- **Bottom navigation.** Four tabs: **Files**, **Terminal**, **Plugins**,
+  and **Settings**.
 - **Files.** Lazy-expand tree of the current workspace. Tap a text
   file to open a read-only viewer with syntax highlighting, line
   numbers, and in-file search; binary files show a placeholder. In
@@ -181,10 +229,6 @@ Flutter preferences file that stores this list.
   Tap a row to open the full-screen terminal; long-press for close /
   detach actions. The detail view includes a companion key bar and
   persists the terminal font size preference.
-- **Voice.** Eyes-free control surface over plugin-exposed actions.
-  Plugins remain the protocol owners; the app only scans typed `ui.tree`
-  accessibility metadata, routes gesture events through `ui.event`, and
-  handles declared one-shot voice input / output locally.
 - **Plugins.** Installed plugin launcher plus native rendering for
   plugin-owned `ui.tree` panels. Plugin commands can be invoked from
   the detail surface; crashed plugins keep their last rendered panel
@@ -263,7 +307,7 @@ Backend → Frontend (notifications):
 Notification storage notes:
 
 - Optional notification payload fields include `spoken: { title?, body,
-  detail? }` for eyes-free announcement text and `reply` for inline
+  detail? }` for accessible announcement text and `reply` for inline
   replies. Plugin-authored notifications may omit `reply.target`; the
   host injects `{ kind: "plugin", pluginId }` before validation and
   persistence.
@@ -294,11 +338,12 @@ scope until install is.
 
 ### Bundled example plugins (first-install seed)
 
-The release tarball carries four small example plugins under
+The release tarball carries five small example plugins under
 `share/example-plugins/`: **clock** (timer-driven re-render),
 **notes** (TextField + filesystem read/write), **sysinfo**
 (`node:os` snapshot), and **agentm-gateway** (a mobile-native AgentM
-gateway peer). On a host that has never seen `install.sh` before, the
+gateway peer), and **codex-client** (a native client for Codex
+app-server). On a host that has never seen `install.sh` before, the
 installer copies these into
 `~/.local/share/openvsmobile-next/plugins/` (or
 `$OPENVSMOBILE_PLUGINS_DIR` if set) so the Plugins tab isn't blank on
@@ -320,8 +365,17 @@ chat-client peer. Configure it through plugin-safe environment variables such
 as `OPENVSMOBILE_PLUGIN_AGENTM_CONNECT=unix:///tmp/agentm-gw-$(id -u).sock`
 or `OPENVSMOBILE_PLUGIN_AGENTM_CONNECT=ws://host:port`, plus optional
 `OPENVSMOBILE_PLUGIN_AGENTM_TOKEN`. It renders a native reply/action panel,
-supports the app's eyes-free gesture mode, and turns final AgentM replies
-into replyable notifications.
+and turns final AgentM replies into replyable notifications.
+
+`codex-client` connects to the stable Codex app-server RPC surface over its
+WebSocket transport. It supports threads, streamed replies, interruption,
+command/file approvals, and replyable completion notifications without adding
+Codex-specific behavior to core. It defaults to a loopback app-server at
+`ws://127.0.0.1:4500`; configure another endpoint with
+`OPENVSMOBILE_PLUGIN_CODEX_CONNECT`. Remote endpoints must use `wss://` and a
+bearer token read from `OPENVSMOBILE_PLUGIN_CODEX_CREDENTIAL_FILE`. See
+[`examples/plugins/codex-client/README.md`](examples/plugins/codex-client/README.md)
+for setup and security details.
 
 ### UI descriptor protocol (`ui.*`)
 
@@ -344,16 +398,10 @@ state survive a full re-render even when leaf values mutate. The
 (pluginId, panelId) and drops any push whose `version <= lastVersion`,
 so reordered or duplicate pushes never roll the UI back.
 
-Any `UiNode` may also carry eyes-free metadata:
-`accessibilityLabel`, `accessibilityHint`, `spokenValue`, `focusRole`,
-`focusOrder`, `voiceInputEvent`, `voiceOutputText`, and `voiceShortcut`.
-Flutter renders the accessibility fields as native semantics;
-`voiceInputEvent` lets a voice input layer turn dictated text into a
-normal `ui.event`; `voiceOutputText` lets a double-tap speak plugin-owned
-content directly without routing through notifications. The top-level
-Voice tab only includes actions explicitly marked
-`voiceShortcut: true`, so dense plugin panels do not become oversized
-blind command menus.
+Any `UiNode` may also carry accessibility metadata:
+`accessibilityLabel`, `accessibilityHint`, `spokenValue`, `focusRole`, and
+`focusOrder`. Flutter renders these fields as native semantics so plugin
+panels stay usable with platform accessibility tooling.
 
 A panel's lifetime ends when its plugin's process exits or is disabled
 — the host emits one final `ui.tree { tree: null, version: ++ }` per

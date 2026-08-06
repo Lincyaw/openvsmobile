@@ -2,9 +2,6 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <!-- Camera is used only by the backend-pairing QR scanner. -->
     <uses-permission android:name="android.permission.CAMERA"/>
-    <!-- One-shot dictation for eyes-free plugin controls. Requested only
-         when the user taps a voice-enabled field. -->
-    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <!-- Foreground service for notification delivery (design §4.5). The
          service holds an always-on WS so backend notifications reach the
          system tray even when the app is backgrounded. POST_NOTIFICATIONS
