@@ -95,7 +95,13 @@ jobs:
           # post-start check refuses to proceed when the file version
           # disagrees with the installer's expected version, so this must
           # happen before building the backend tarball.
-          sed -i "s/^  \"version\": \".*\",$/  \"version\": \"${tag}\",/" package.json
+          TAG="$tag" node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const pkgPath = 'package.json';
+          const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+          pkg.version = process.env.TAG;
+          fs.writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
+          NODE
           grep "\"version\": \"${tag}\"" package.json
 
       - name: Build tarball for ${{ matrix.platform }}-${{ matrix.arch }}
