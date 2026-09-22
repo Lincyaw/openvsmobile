@@ -1258,3 +1258,52 @@ describe("ProcessState external-session helpers", () => {
     state.shutdownAll();
   });
 });
+
+describe("ensureZellijOnPath", () => {
+  const home = "/home/u";
+  const exe = (...ok: string[]) => (p: string) => ok.includes(p);
+
+  it("leaves PATH untouched when zellij is already reachable", async () => {
+    const { ensureZellijOnPath } = await import("../src/multiplexer.js");
+    const env: NodeJS.ProcessEnv = { PATH: "/usr/bin:/bin" };
+    const r = ensureZellijOnPath({
+      env,
+      home,
+      isExecutable: exe("/usr/bin/zellij", "/home/u/.cargo/bin/zellij"),
+    });
+    expect(r).toEqual({ status: "onPath" });
+    expect(env.PATH).toBe("/usr/bin:/bin");
+  });
+
+  it("prepends the first fallback dir that holds an executable zellij", async () => {
+    const { ensureZellijOnPath } = await import("../src/multiplexer.js");
+    const env: NodeJS.ProcessEnv = { PATH: "/usr/bin:/bin" };
+    const r = ensureZellijOnPath({
+      env,
+      home,
+      isExecutable: exe("/home/u/.local/bin/zellij", "/usr/local/bin/zellij"),
+    });
+    expect(r).toEqual({ status: "extended", dir: "/home/u/.local/bin" });
+    expect(env.PATH).toBe("/home/u/.local/bin:/usr/bin:/bin");
+  });
+
+  it("copes with an empty PATH", async () => {
+    const { ensureZellijOnPath } = await import("../src/multiplexer.js");
+    const env: NodeJS.ProcessEnv = {};
+    const r = ensureZellijOnPath({
+      env,
+      home,
+      isExecutable: exe("/snap/bin/zellij"),
+    });
+    expect(r).toEqual({ status: "extended", dir: "/snap/bin" });
+    expect(env.PATH).toBe("/snap/bin");
+  });
+
+  it("reports missing without touching PATH when nothing matches", async () => {
+    const { ensureZellijOnPath } = await import("../src/multiplexer.js");
+    const env: NodeJS.ProcessEnv = { PATH: "/usr/bin" };
+    const r = ensureZellijOnPath({ env, home, isExecutable: () => false });
+    expect(r).toEqual({ status: "missing" });
+    expect(env.PATH).toBe("/usr/bin");
+  });
+});

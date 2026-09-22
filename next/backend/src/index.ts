@@ -13,7 +13,7 @@ import { ProcessState } from "./state.js";
 import { handleNotifyHttp } from "./notifyHttp.js";
 import { HookHandler } from "./hookHttp.js";
 import { PluginHost } from "./plugins/host.js";
-import { probeMultiplexer } from "./multiplexer.js";
+import { ensureZellijOnPath, probeMultiplexer } from "./multiplexer.js";
 import { TerminalPersistence } from "./terminalPersistence.js";
 import {
   runtimeInfoPath,
@@ -61,6 +61,17 @@ async function main(): Promise<void> {
   // returns `{ kind: "none" }` and terminal.ts transparently spawns
   // the user's shell directly. The probe logs a single stderr line on
   // failure, never throws, and is hard-bounded by a 2s timeout.
+  //
+  // Service managers (systemd --user, launchd) hand us a PATH with only
+  // the system directories, so a zellij installed under ~/.cargo/bin or
+  // Homebrew is invisible unless we look for it ourselves first.
+  const zellijPath = ensureZellijOnPath();
+  if (zellijPath.status === "extended") {
+    console.error(
+      `[openvsmobile-next] zellij found in ${zellijPath.dir} ` +
+        `(not on the service PATH); prepended it to PATH`,
+    );
+  }
   const multiplexer = await probeMultiplexer();
   if (multiplexer.kind === "zellij") {
     console.error(

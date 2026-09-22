@@ -18,7 +18,9 @@
 // hard timeout so a stuck zellij CLI cannot wedge the backend.
 
 import { execFile, type ExecFileException } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { accessSync, constants as fsConstants, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -52,6 +54,69 @@ export function zellijSessionName(terminalId: string): string {
 const VALID_ID = /^[a-zA-Z0-9_-]+$/;
 export function isSessionIdSafe(id: string): boolean {
   return VALID_ID.test(id);
+}
+
+/// Directories where a user-level zellij install commonly lives but that
+/// a `systemd --user` / launchd service PATH never includes (those carry
+/// only the system directories). Consulted by `ensureZellijOnPath` when
+/// `zellij` is absent from PATH so a backend installed via `install.sh`
+/// finds the same binary the user runs from their login shell.
+export function zellijFallbackDirs(home: string): string[] {
+  return [
+    join(home, ".cargo", "bin"),
+    join(home, ".local", "bin"),
+    join(home, "bin"),
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/snap/bin",
+  ];
+}
+
+export type ZellijPathResolution =
+  | { readonly status: "onPath" }
+  | { readonly status: "extended"; readonly dir: string }
+  | { readonly status: "missing" };
+
+export interface ZellijPathOptions {
+  /// Environment to inspect and (when extended) mutate. Defaults to
+  /// `process.env` so the fix propagates to every later `execFile` /
+  /// PTY spawn, which snapshot `process.env` at call time.
+  env?: NodeJS.ProcessEnv;
+  home?: string;
+  isExecutable?: (path: string) => boolean;
+}
+
+function defaultIsExecutable(path: string): boolean {
+  try {
+    accessSync(path, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/// Make sure `zellij` resolves through PATH before the boot probe runs.
+/// If it already does, nothing changes. Otherwise the first fallback
+/// directory holding an executable `zellij` is prepended to PATH. Pure
+/// apart from that one env mutation; never throws.
+export function ensureZellijOnPath(
+  opts: ZellijPathOptions = {},
+): ZellijPathResolution {
+  const env = opts.env ?? process.env;
+  const home = opts.home ?? homedir();
+  const isExecutable = opts.isExecutable ?? defaultIsExecutable;
+  const current = env.PATH ?? "";
+  const onPath = current.split(delimiter).filter((d) => d.length > 0);
+  for (const dir of onPath) {
+    if (isExecutable(join(dir, "zellij"))) return { status: "onPath" };
+  }
+  for (const dir of zellijFallbackDirs(home)) {
+    if (onPath.includes(dir)) continue;
+    if (!isExecutable(join(dir, "zellij"))) continue;
+    env.PATH = current.length > 0 ? `${dir}${delimiter}${current}` : dir;
+    return { status: "extended", dir };
+  }
+  return { status: "missing" };
 }
 
 /// Outcome of the boot-time probe. Stored process-wide; consulted by
