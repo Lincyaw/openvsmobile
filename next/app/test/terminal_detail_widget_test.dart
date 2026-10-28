@@ -162,7 +162,7 @@ void main() {
     );
   });
 
-  testWidgets('compact companion bar keeps End visible and Kbd on second row', (
+  testWidgets('compact companion bar fits both rows and the keyboard toggle', (
     tester,
   ) async {
     tester.view.physicalSize = const Size(360, 640);
@@ -181,13 +181,108 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
 
-    final endRect = tester.getRect(find.text('End'));
-    final kbdRect = tester.getRect(find.text('Kbd'));
-    final selRect = tester.getRect(find.text('Sel'));
+    // The test font draws every glyph full-width, so only the leading keys
+    // of each row are guaranteed on-screen here; real fonts fit all five.
+    final dpadLeft = tester.getRect(find.text('←')).left;
+    for (final label in ['Esc', 'Ctrl', 'Alt', 'Home', 'End', 'PgUp']) {
+      expect(tester.getRect(find.text(label)).right, lessThan(dpadLeft));
+    }
+    final toggle = tester.getRect(
+      find.byKey(const ValueKey('terminal-keyboard-toggle')),
+    );
+    expect(toggle.right, lessThanOrEqualTo(360));
+    expect(
+      toggle.bottom,
+      lessThanOrEqualTo(tester.getRect(find.text('←')).top),
+    );
+  });
 
-    expect(endRect.left, greaterThanOrEqualTo(0));
-    expect(endRect.right, lessThanOrEqualTo(360));
-    expect(kbdRect.top, greaterThan(endRect.top));
-    expect(kbdRect.left, greaterThan(selRect.left));
+  group('key bar input', () {
+    late Terminal terminal;
+    late List<String> captured;
+    late List<String> textInputCalls;
+
+    Future<void> mount(WidgetTester tester) async {
+      terminal = Terminal(maxLines: 1000);
+      terminal.resize(80, 24);
+      captured = <String>[];
+      terminal.onOutput = captured.add;
+      textInputCalls = <String>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.textInput, (call) async {
+            textInputCalls.add(call.method);
+            return null;
+          });
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(SystemChannels.textInput, null);
+      });
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: TerminalSessionView(terminal: terminal)),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      captured.clear();
+      textInputCalls.clear();
+    }
+
+    testWidgets('key bar keys do not reopen the soft keyboard', (tester) async {
+      await mount(tester);
+      await tester.tap(find.text('PgUp'));
+      await tester.tap(find.text('↓'));
+      await tester.tap(find.text('Ctrl'));
+      await tester.pump();
+      expect(captured, ['\x1b[5~', '\x1b[B']);
+      expect(textInputCalls, isNot(contains('TextInput.show')));
+    });
+
+    testWidgets('sticky Ctrl survives terminal replies and applies to typing', (
+      tester,
+    ) async {
+      await mount(tester);
+      await tester.tap(find.text('Ctrl'));
+      await tester.pump();
+      // Primary device-attributes query: xterm answers through onOutput.
+      terminal.write('\x1b[c');
+      expect(captured, isNotEmpty);
+      expect(captured.single.codeUnitAt(0), 0x1b);
+      terminal.textInput('c');
+      await tester.pump();
+      expect(captured.last, '\x03');
+      // Disarmed after one character.
+      terminal.textInput('c');
+      expect(captured.last, 'c');
+    });
+
+    testWidgets('sticky Alt prefixes ESC; Shift+Tab emits back-tab', (
+      tester,
+    ) async {
+      await mount(tester);
+      await tester.tap(find.text('Alt'));
+      await tester.pump();
+      terminal.textInput('n');
+      expect(captured.last, '\x1bn');
+      await tester.tap(find.text('⇧Tab'));
+      await tester.pump();
+      expect(captured.last, '\x1b[Z');
+    });
+
+    testWidgets('holding an arrow key auto-repeats', (tester) async {
+      await mount(tester);
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.text('←')),
+      );
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 300));
+      await gesture.up();
+      await tester.pump();
+      final count = captured.length;
+      expect(count, greaterThan(3));
+      expect(captured.every((s) => s == '\x1bOD' || s == '\x1b[D'), isTrue);
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(captured.length, count, reason: 'repeat must stop on lift');
+    });
   });
 }

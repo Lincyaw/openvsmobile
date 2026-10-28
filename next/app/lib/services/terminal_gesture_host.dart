@@ -61,11 +61,6 @@ class TerminalScrollbackModel extends ChangeNotifier {
   }
 }
 
-/// Callback receiving the [TerminalGestureHostState] so callers can drive
-/// force-select without holding a `GlobalKey<TerminalGestureHostState>`
-/// (which would treat State as a public API).
-typedef ForceSelectRegistrar = void Function(VoidCallback forceSelect);
-
 typedef FontScaleHandler = void Function(double scaleFactor);
 
 /// Wraps a [TerminalView] (passed as `child`) with the single gesture
@@ -81,7 +76,6 @@ class TerminalGestureHost extends StatefulWidget {
     required this.scrollback,
     required this.scrollbackController,
     required this.child,
-    this.registerForceSelect,
     this.requestKeyboard,
     this.onFontScale,
   });
@@ -107,11 +101,6 @@ class TerminalGestureHost extends StatefulWidget {
   final ScrollController scrollbackController;
 
   final Widget child;
-
-  /// Called once when the host's State is available; the callback hands
-  /// the parent a closure that triggers force-select-at-cursor. Lets the
-  /// soft-keyboard toolbar drive selection without reaching into State.
-  final ForceSelectRegistrar? registerForceSelect;
 
   /// Parent-owned keyboard request hook. The parent may own the FocusNode, so
   /// give it a chance to restore focus before asking xterm to show the IME.
@@ -180,6 +169,16 @@ class TerminalGestureHostState extends State<TerminalGestureHost>
   }
 
   void _dispatchTwoFingerPage({required bool down}) {
+    // Normal buffer: page through our own scrollback. Sending PgUp/PgDn to
+    // a shell prompt would only print `~` or walk readline history.
+    if (!widget.terminal.isUsingAltBuffer) {
+      final page = (widget.terminal.viewHeight - 1).clamp(1, 1 << 16).toInt();
+      if (_diagOn) {
+        _logDispatch('two-finger-page', 'scrollback ${down ? page : -page}');
+      }
+      widget.scrollback.scrollBy(down ? page : -page);
+      return;
+    }
     final key = down ? TerminalKey.pageDown : TerminalKey.pageUp;
     if (_diagOn) {
       _logDispatch('two-finger-page', down ? 'PgDn' : 'PgUp');
@@ -216,7 +215,6 @@ class TerminalGestureHostState extends State<TerminalGestureHost>
       _multiTouchLastCentroid = _multiTouchStartCentroid;
       _twoFingerPageResidualDy = 0;
       _multiTouchMovedPointers.clear();
-      _closeKeyboard();
     }
   }
 
@@ -309,10 +307,6 @@ class TerminalGestureHostState extends State<TerminalGestureHost>
     });
   }
 
-  void _closeKeyboard() {
-    widget.terminalViewKey.currentState?.closeKeyboard();
-  }
-
   void _stopFling() {
     final fling = _fling;
     if (fling == null) return;
@@ -337,7 +331,6 @@ class TerminalGestureHostState extends State<TerminalGestureHost>
     widget.terminal.addListener(_onTerminalChanged);
     widget.terminalController.addListener(_onSelectionChanged);
     widget.scrollback.addListener(_syncScrollSink);
-    widget.registerForceSelect?.call(forceSelectAtCursor);
   }
 
   @override
@@ -356,9 +349,6 @@ class TerminalGestureHostState extends State<TerminalGestureHost>
     if (oldWidget.scrollback != widget.scrollback) {
       oldWidget.scrollback.removeListener(_syncScrollSink);
       widget.scrollback.addListener(_syncScrollSink);
-    }
-    if (oldWidget.registerForceSelect != widget.registerForceSelect) {
-      widget.registerForceSelect?.call(forceSelectAtCursor);
     }
   }
 
@@ -409,6 +399,8 @@ class TerminalGestureHostState extends State<TerminalGestureHost>
     if (clampedLines != widget.scrollback.offsetLines) {
       widget.scrollback.clampTo(clampedLines);
     }
+    // Handles are positioned from viewport offsets; re-place them.
+    if (_mode == _Mode.select && mounted) setState(() {});
   }
 
   // ---------- cell-math helpers ----------
@@ -451,22 +443,18 @@ class TerminalGestureHostState extends State<TerminalGestureHost>
     final state = widget.terminalViewKey.currentState;
     if (state == null) return;
     _stopFling();
-    _closeKeyboard();
+    // Keyboard visibility is deliberately left alone: toggling it here
+    // resizes the PTY mid-gesture and the word under the finger moves.
     state.renderTerminal.selectWord(localPos);
     _selectAnchor = localPos;
     setState(() => _mode = _Mode.select);
   }
 
-  void _exitSelect({bool clear = true, bool restoreKeyboard = true}) {
-    if (clear) {
-      widget.terminalController.clearSelection();
-    }
+  void _exitSelect() {
+    widget.terminalController.clearSelection();
     _selectAnchor = null;
     if (_mode != _Mode.view) {
       setState(() => _mode = _Mode.view);
-    }
-    if (restoreKeyboard) {
-      _requestKeyboard();
     }
   }
 
@@ -599,40 +587,35 @@ class TerminalGestureHostState extends State<TerminalGestureHost>
 
   // ---------- recognizer callbacks ----------
 
-  void _onTapDown(TapDownDetails details) {
-    if (_pinchActive || _activePointers.length > 1) return;
-    final state = widget.terminalViewKey.currentState;
-    if (state == null) return;
-    // Focus first so the soft keyboard is brought up before any TUI
-    // mouse-down round-trips.
-    _requestKeyboard();
-    if (_mode == _Mode.select) return;
-    if (widget.terminal.mouseMode != MouseMode.none) {
-      state.renderTerminal.mouseEvent(
-        TerminalMouseButton.left,
-        TerminalMouseButtonState.down,
-        details.localPosition,
-      );
-    }
-  }
-
+  // Only a confirmed tap acts. Acting on tap-down (fired ~100ms into any
+  // press) would pop the keyboard at the start of slow drags and long
+  // presses, and leave TUIs with a mouse-down that never gets its up when
+  // the drag / long-press recognizer wins the arena.
   void _onTapUp(TapUpDetails details) {
     if (_pinchActive || _activePointers.length > 1) return;
     final state = widget.terminalViewKey.currentState;
     if (state == null) return;
     if (_mode == _Mode.select) {
-      // A stray tap outside the toolbar exits select mode, matching most
-      // mobile editors. The Dismiss button covers the explicit path.
+      // A tap outside the toolbar only dismisses the selection, matching
+      // Android text fields; a second tap brings the keyboard up.
       _exitSelect();
       return;
     }
+    // Mouse click goes out before the keyboard request so its cell is
+    // computed against the layout the user actually tapped.
     if (widget.terminal.mouseMode != MouseMode.none) {
-      state.renderTerminal.mouseEvent(
-        TerminalMouseButton.left,
+      for (final buttonState in const [
+        TerminalMouseButtonState.down,
         TerminalMouseButtonState.up,
-        details.localPosition,
-      );
+      ]) {
+        state.renderTerminal.mouseEvent(
+          TerminalMouseButton.left,
+          buttonState,
+          details.localPosition,
+        );
+      }
     }
+    _requestKeyboard();
   }
 
   void _onLongPressStart(LongPressStartDetails details) {
@@ -670,13 +653,13 @@ class TerminalGestureHostState extends State<TerminalGestureHost>
         'cellH=${_cellHeight().toStringAsFixed(1)} ${_modeSnapshot()}',
       );
     }
-    // In select mode, long-press has already seeded _selectAnchor to the
-    // word boundary. Overwriting it here would break "long-press to
-    // select a word, then drag to extend from the word boundary".
-    if (_mode == _Mode.select && _selectAnchor == null) {
-      _selectAnchor = d.localPosition;
-    }
   }
+
+  /// While selecting, a plain swipe scrolls the transcript so the handles
+  /// can reach off-screen lines. Alt-buffer swipes would make the TUI
+  /// redraw under a selection anchored to stale cells, so they are dropped.
+  bool get _selectBlocksScroll =>
+      _mode == _Mode.select && (_dragRouting?.isAltBuffer ?? true);
 
   void _onVerticalDragUpdate(DragUpdateDetails d) {
     if (_pinchActive || _activePointers.length > 1 || _dragRouting == null) {
@@ -687,15 +670,9 @@ class TerminalGestureHostState extends State<TerminalGestureHost>
       d.globalPosition,
     );
 
-    if (_mode == _Mode.select) {
-      final state = widget.terminalViewKey.currentState;
-      if (state != null && _selectAnchor != null) {
-        state.renderTerminal.selectCharacters(_selectAnchor!, d.localPosition);
-      }
-      return;
-    }
+    if (_selectBlocksScroll) return;
 
-    // ViewMode: quantize to cells and dispatch via the adapter helper.
+    // Quantize to cells and dispatch via the adapter helper.
     final cellH = _cellHeight();
     if (cellH <= 0) {
       if (_diagOn) {
@@ -723,8 +700,7 @@ class TerminalGestureHostState extends State<TerminalGestureHost>
   }
 
   void _onVerticalDragEnd(DragEndDetails d) {
-    if (_mode == _Mode.select) return;
-    if (_pinchActive || _dragRouting == null) {
+    if (_pinchActive || _dragRouting == null || _selectBlocksScroll) {
       _velocity = null;
       _resetDragState();
       return;
@@ -889,7 +865,6 @@ class TerminalGestureHostState extends State<TerminalGestureHost>
                   GestureRecognizerFactoryWithHandlers<TapGestureRecognizer>(
                     () => TapGestureRecognizer(debugOwner: this),
                     (r) {
-                      r.onTapDown = _onTapDown;
                       r.onTapUp = _onTapUp;
                     },
                   ),
@@ -936,14 +911,6 @@ class TerminalGestureHostState extends State<TerminalGestureHost>
           ),
       ],
     );
-  }
-
-  /// Force-select entry point for the soft-keyboard toolbar.
-  void forceSelectAtCursor() {
-    final state = widget.terminalViewKey.currentState;
-    if (state == null) return;
-    final size = state.renderTerminal.size;
-    _enterSelect(Offset(size.width / 2, size.height / 2));
   }
 }
 

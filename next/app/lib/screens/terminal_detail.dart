@@ -10,6 +10,7 @@
 
 import 'dart:async';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:xterm/xterm.dart';
@@ -170,19 +171,27 @@ class TerminalSessionView extends StatefulWidget {
   State<TerminalSessionView> createState() => _TerminalSessionViewState();
 }
 
-class _TerminalSessionViewState extends State<TerminalSessionView> {
+class _TerminalSessionViewState extends State<TerminalSessionView>
+    with WidgetsBindingObserver {
   final TerminalController _ctrl = TerminalController();
   final FocusNode _terminalFocus = FocusNode(debugLabel: 'terminal-session');
   final GlobalKey<TerminalViewState> _terminalViewKey =
       GlobalKey<TerminalViewState>();
   final ScrollController _scrollback = ScrollController();
   final TerminalScrollbackModel _scrollbackModel = TerminalScrollbackModel();
-  VoidCallback? _forceSelectAtCursor;
 
-  /// Sticky-modifier state. When armed, the next keystroke routed through
-  /// the Terminal's onOutput (soft keyboard or toolbar) has Ctrl applied,
-  /// then auto-disarms. Termux-style.
+  /// Sticky-modifier state. When armed, the next soft-keyboard character
+  /// has Ctrl / Alt applied, then the modifier auto-disarms. Termux-style.
   bool _ctrlArmed = false;
+  bool _altArmed = false;
+
+  /// Set while the key bar itself calls `keyInput` with the modifiers
+  /// already applied, so [_onOutputProxy] does not apply them twice.
+  bool _modifiersApplied = false;
+
+  /// Mirrors the IME's on-screen state so the key bar's keyboard button
+  /// can toggle rather than only open.
+  bool _keyboardVisible = false;
   double _terminalFontSize = kTerminalFontSizeDefault;
   void Function(String)? _origOnOutput;
   Timer? _fontSaveTimer;
@@ -195,7 +204,17 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
     super.initState();
     _origOnOutput = widget.terminal.onOutput;
     widget.terminal.onOutput = _onOutputProxy;
+    WidgetsBinding.instance.addObserver(this);
     _loadTerminalPrefs();
+  }
+
+  @override
+  void didChangeMetrics() {
+    if (!mounted) return;
+    final visible = View.of(context).viewInsets.bottom > 0;
+    if (visible != _keyboardVisible) {
+      setState(() => _keyboardVisible = visible);
+    }
   }
 
   @override
@@ -266,6 +285,7 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     if (_watchedRouteAnim != null && _routeAnimListener != null) {
       _watchedRouteAnim!.removeStatusListener(_routeAnimListener!);
     }
@@ -280,16 +300,35 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
     super.dispose();
   }
 
-  /// Intercepts every byte heading to the PTY. When Ctrl is armed, swap
-  /// a single ASCII letter / [\]^_ / ? for its control byte and disarm.
+  /// Intercepts every byte heading to the PTY and applies armed sticky
+  /// modifiers to the next typed character.
+  ///
+  /// onOutput also carries traffic the user did not type: mouse clicks,
+  /// wheel events from swipes, and the terminal's own replies to queries
+  /// (DA, DSR). All of those are escape sequences, so anything starting
+  /// with ESC passes through untouched and leaves the modifier armed.
   void _onOutputProxy(String data) {
-    if (_ctrlArmed) {
-      final transformed = _ctrlMaybeTransform(data);
-      _origOnOutput?.call(transformed);
-      if (mounted) setState(() => _ctrlArmed = false);
+    final armed = _ctrlArmed || _altArmed;
+    if (!armed ||
+        _modifiersApplied ||
+        data.isEmpty ||
+        data.codeUnitAt(0) == 0x1b) {
+      _origOnOutput?.call(data);
       return;
     }
-    _origOnOutput?.call(data);
+    var out = _ctrlArmed ? _ctrlMaybeTransform(data) : data;
+    if (_altArmed && data.length == 1) out = '\x1b$out';
+    _origOnOutput?.call(out);
+    _disarmModifiers();
+  }
+
+  void _disarmModifiers() {
+    if (!_ctrlArmed && !_altArmed) return;
+    if (!mounted) {
+      _ctrlArmed = _altArmed = false;
+      return;
+    }
+    setState(() => _ctrlArmed = _altArmed = false);
   }
 
   String _ctrlMaybeTransform(String data) {
@@ -302,21 +341,34 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
     return data;
   }
 
-  void _toggleCtrl() {
-    setState(() => _ctrlArmed = !_ctrlArmed);
-    _requestTerminalKeyboard();
-  }
+  // Key-bar keys never touch keyboard visibility: a user who hid the IME
+  // to read output must be able to page with PgUp / arrows without the
+  // keyboard popping back and resizing the PTY.
+  void _toggleCtrl() => setState(() => _ctrlArmed = !_ctrlArmed);
 
-  void _sendKey(TerminalKey key) {
-    widget.terminal.keyInput(key, ctrl: _ctrlArmed);
-    if (_ctrlArmed && mounted) {
-      setState(() => _ctrlArmed = false);
+  void _toggleAlt() => setState(() => _altArmed = !_altArmed);
+
+  void _sendKey(TerminalKey key, {bool shift = false}) {
+    _modifiersApplied = true;
+    try {
+      widget.terminal.keyInput(
+        key,
+        shift: shift,
+        ctrl: _ctrlArmed,
+        alt: _altArmed,
+      );
+    } finally {
+      _modifiersApplied = false;
     }
-    _requestTerminalKeyboard();
+    _disarmModifiers();
   }
 
-  void _forceSelect() {
-    _forceSelectAtCursor?.call();
+  void _toggleKeyboard() {
+    if (_keyboardVisible) {
+      _terminalViewKey.currentState?.closeKeyboard();
+    } else {
+      _requestTerminalKeyboard();
+    }
   }
 
   void _scaleFont(double factor) {
@@ -349,7 +401,6 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
             terminalViewKey: _terminalViewKey,
             scrollback: _scrollbackModel,
             scrollbackController: _scrollback,
-            registerForceSelect: (cb) => _forceSelectAtCursor = cb,
             requestKeyboard: _requestTerminalKeyboard,
             onFontScale: _scaleFont,
             child: TerminalView(
@@ -375,35 +426,46 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
         ),
         _KeyToolbar(
           ctrlArmed: _ctrlArmed,
+          altArmed: _altArmed,
+          keyboardVisible: _keyboardVisible,
           onCtrl: _toggleCtrl,
+          onAlt: _toggleAlt,
           onKey: _sendKey,
-          onKeyboard: _requestTerminalKeyboard,
-          onForceSelect: _forceSelect,
+          onKeyboard: _toggleKeyboard,
         ),
       ],
     );
   }
 }
 
+// Key-bar geometry. Rows are 40dp so each key keeps a ~36dp touch target
+// while the bar stays two rows tall above the IME.
+const double _kKeyRowHeight = 40;
+const double _kDpadCell = 40;
+
 class _KeyToolbar extends StatelessWidget {
   final bool ctrlArmed;
+  final bool altArmed;
+  final bool keyboardVisible;
   final VoidCallback onCtrl;
-  final void Function(TerminalKey) onKey;
+  final VoidCallback onAlt;
+  final void Function(TerminalKey key, {bool shift}) onKey;
   final VoidCallback onKeyboard;
-  final VoidCallback onForceSelect;
   const _KeyToolbar({
     required this.ctrlArmed,
+    required this.altArmed,
+    required this.keyboardVisible,
     required this.onCtrl,
+    required this.onAlt,
     required this.onKey,
     required this.onKeyboard,
-    required this.onForceSelect,
   });
 
   @override
   Widget build(BuildContext context) {
-    // Two rows of non-arrow keys on the left (Ctrl leads), with the four
-    // arrows pulled out into a keyboard-style inverted-T d-pad pinned to
-    // the right so the cluster reads like a physical arrow key block.
+    // Two rows of non-arrow keys on the left (modifiers lead), with the
+    // arrows in a keyboard-style inverted-T d-pad pinned to the right.
+    // Keys that users hold (arrows, Del, PgUp/PgDn) auto-repeat.
     return Material(
       elevation: 2,
       child: SafeArea(
@@ -417,18 +479,32 @@ class _KeyToolbar extends StatelessWidget {
                   _KeyRow(
                     children: [
                       _KeyBtn(
+                        label: 'Esc',
+                        onTap: () => onKey(TerminalKey.escape),
+                      ),
+                      _KeyBtn(
                         label: 'Ctrl',
                         onTap: onCtrl,
                         highlighted: ctrlArmed,
+                      ),
+                      _KeyBtn(
+                        label: 'Alt',
+                        onTap: onAlt,
+                        highlighted: altArmed,
                       ),
                       _KeyBtn(
                         label: 'Tab',
                         onTap: () => onKey(TerminalKey.tab),
                       ),
                       _KeyBtn(
-                        label: 'Esc',
-                        onTap: () => onKey(TerminalKey.escape),
+                        label: '⇧Tab',
+                        semanticLabel: 'Shift Tab',
+                        onTap: () => onKey(TerminalKey.tab, shift: true),
                       ),
+                    ],
+                  ),
+                  _KeyRow(
+                    children: [
                       _KeyBtn(
                         label: 'Home',
                         onTap: () => onKey(TerminalKey.home),
@@ -437,34 +513,33 @@ class _KeyToolbar extends StatelessWidget {
                         label: 'End',
                         onTap: () => onKey(TerminalKey.end),
                       ),
-                    ],
-                  ),
-                  _KeyRow(
-                    children: [
                       _KeyBtn(
                         label: 'PgUp',
+                        repeat: true,
                         onTap: () => onKey(TerminalKey.pageUp),
                       ),
                       _KeyBtn(
                         label: 'PgDn',
+                        repeat: true,
                         onTap: () => onKey(TerminalKey.pageDown),
                       ),
                       _KeyBtn(
                         label: 'Del',
+                        repeat: true,
                         onTap: () => onKey(TerminalKey.delete),
                       ),
-                      // Explicit selection entry point for users who prefer
-                      // the companion bar over long-press.
-                      _KeyBtn(label: 'Sel', onTap: onForceSelect),
-                      _KeyBtn(label: 'Kbd', onTap: onKeyboard),
                     ],
                   ),
                 ],
               ),
             ),
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xs),
-              child: _DPad(onKey: onKey),
+              padding: const EdgeInsets.only(right: AppSpacing.xs),
+              child: _DPad(
+                onKey: onKey,
+                keyboardVisible: keyboardVisible,
+                onKeyboard: onKeyboard,
+              ),
             ),
           ],
         ),
@@ -483,7 +558,7 @@ class _KeyRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      height: 31,
+      height: _kKeyRowHeight,
       child: ListView(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(
@@ -496,20 +571,27 @@ class _KeyRow extends StatelessWidget {
   }
 }
 
-/// Keyboard-style arrow cluster: `↑` on top, `← ↓ →` below. Every slot is a
-/// fixed-width cell (empty slots flank the top arrow) so `↑` sits exactly
-/// above `↓`. Two rows of [_kDpadRowHeight] match the two left-hand
-/// [_KeyRow]s, keeping the toolbar a uniform height.
+/// Keyboard-style arrow cluster: `↑` on top, `← ↓ →` below, every slot a
+/// fixed-width cell so `↑` sits exactly above `↓`. The free top-left slot
+/// holds the show/hide-keyboard toggle.
 class _DPad extends StatelessWidget {
-  final void Function(TerminalKey) onKey;
-  const _DPad({required this.onKey});
+  final void Function(TerminalKey key, {bool shift}) onKey;
+  final bool keyboardVisible;
+  final VoidCallback onKeyboard;
+  const _DPad({
+    required this.onKey,
+    required this.keyboardVisible,
+    required this.onKeyboard,
+  });
 
-  static const double _cell = 35;
-  static const double _kDpadRowHeight = 31;
-
-  Widget _btn(String label, TerminalKey key) => SizedBox(
-    width: _cell,
-    child: _KeyBtn(label: label, onTap: () => onKey(key)),
+  Widget _arrow(String label, String semantic, TerminalKey key) => SizedBox(
+    width: _kDpadCell,
+    child: _KeyBtn(
+      label: label,
+      semanticLabel: semantic,
+      repeat: true,
+      onTap: () => onKey(key),
+    ),
   );
 
   @override
@@ -518,24 +600,34 @@ class _DPad extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         SizedBox(
-          height: _kDpadRowHeight,
+          height: _kKeyRowHeight,
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const SizedBox(width: _cell),
-              _btn('↑', TerminalKey.arrowUp),
-              const SizedBox(width: _cell),
+              SizedBox(
+                width: _kDpadCell,
+                child: _KeyBtn(
+                  key: const ValueKey('terminal-keyboard-toggle'),
+                  icon: keyboardVisible ? Icons.keyboard_hide : Icons.keyboard,
+                  semanticLabel: keyboardVisible
+                      ? 'Hide keyboard'
+                      : 'Show keyboard',
+                  onTap: onKeyboard,
+                ),
+              ),
+              _arrow('↑', 'Up', TerminalKey.arrowUp),
+              const SizedBox(width: _kDpadCell),
             ],
           ),
         ),
         SizedBox(
-          height: _kDpadRowHeight,
+          height: _kKeyRowHeight,
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              _btn('←', TerminalKey.arrowLeft),
-              _btn('↓', TerminalKey.arrowDown),
-              _btn('→', TerminalKey.arrowRight),
+              _arrow('←', 'Left', TerminalKey.arrowLeft),
+              _arrow('↓', 'Down', TerminalKey.arrowDown),
+              _arrow('→', 'Right', TerminalKey.arrowRight),
             ],
           ),
         ),
@@ -544,51 +636,119 @@ class _DPad extends StatelessWidget {
   }
 }
 
-class _KeyBtn extends StatelessWidget {
-  final String label;
+/// A key-bar button. With [repeat], holding it fires [onTap] repeatedly
+/// after a short delay, like a hardware key.
+class _KeyBtn extends StatefulWidget {
+  final String? label;
+  final IconData? icon;
+  final String? semanticLabel;
   final VoidCallback onTap;
   final bool highlighted;
+  final bool repeat;
   const _KeyBtn({
-    required this.label,
+    super.key,
+    this.label,
+    this.icon,
+    this.semanticLabel,
     required this.onTap,
     this.highlighted = false,
-  });
+    this.repeat = false,
+  }) : assert(label != null || icon != null);
+
+  @override
+  State<_KeyBtn> createState() => _KeyBtnState();
+}
+
+class _KeyBtnState extends State<_KeyBtn> {
+  static const _repeatDelay = Duration(milliseconds: 350);
+  static const _repeatInterval = Duration(milliseconds: 60);
+
+  Timer? _repeatTimer;
 
   void _handleTap() {
     HapticFeedback.selectionClick();
-    onTap();
+    widget.onTap();
+  }
+
+  void _startRepeat() {
+    _handleTap();
+    _repeatTimer?.cancel();
+    _repeatTimer = Timer.periodic(_repeatInterval, (_) => widget.onTap());
+  }
+
+  void _stopRepeat() {
+    _repeatTimer?.cancel();
+    _repeatTimer = null;
+  }
+
+  @override
+  void dispose() {
+    _stopRepeat();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    const padding = EdgeInsets.symmetric(horizontal: 7);
-    const minSize = Size(29, 25);
+    const padding = EdgeInsets.symmetric(horizontal: 6);
+    const minSize = Size(36, 36);
     const density = VisualDensity.compact;
-    final text = Text(label, style: Theme.of(context).textTheme.labelSmall);
+    final Widget content = widget.icon != null
+        ? Icon(widget.icon, size: 18)
+        : Text(widget.label!, style: Theme.of(context).textTheme.labelMedium);
+    Widget button = widget.highlighted
+        ? FilledButton(
+            onPressed: _handleTap,
+            style: FilledButton.styleFrom(
+              padding: padding,
+              visualDensity: density,
+              minimumSize: minSize,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            child: content,
+          )
+        : OutlinedButton(
+            onPressed: _handleTap,
+            style: OutlinedButton.styleFrom(
+              padding: padding,
+              visualDensity: density,
+              minimumSize: minSize,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            child: content,
+          );
+    if (widget.repeat) {
+      // A long-press recognizer beside the button's tap recognizer: a
+      // quick tap still wins as a single press, holding past the delay
+      // switches to auto-repeat until the finger lifts.
+      button = RawGestureDetector(
+        gestures: <Type, GestureRecognizerFactory>{
+          LongPressGestureRecognizer:
+              GestureRecognizerFactoryWithHandlers<LongPressGestureRecognizer>(
+                () => LongPressGestureRecognizer(duration: _repeatDelay),
+                (r) {
+                  r.onLongPressStart = (_) => _startRepeat();
+                  r.onLongPressEnd = (_) => _stopRepeat();
+                  r.onLongPressCancel = _stopRepeat;
+                },
+              ),
+        },
+        child: button,
+      );
+    }
+    if (widget.semanticLabel != null) {
+      button = Semantics(
+        label: widget.semanticLabel,
+        excludeSemantics: true,
+        button: true,
+        child: button,
+      );
+    }
     return Focus(
       canRequestFocus: false,
       descendantsAreFocusable: false,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 2),
-        child: highlighted
-            ? FilledButton(
-                onPressed: _handleTap,
-                style: FilledButton.styleFrom(
-                  padding: padding,
-                  visualDensity: density,
-                  minimumSize: minSize,
-                ),
-                child: text,
-              )
-            : OutlinedButton(
-                onPressed: _handleTap,
-                style: OutlinedButton.styleFrom(
-                  padding: padding,
-                  visualDensity: density,
-                  minimumSize: minSize,
-                ),
-                child: text,
-              ),
+        child: button,
       ),
     );
   }

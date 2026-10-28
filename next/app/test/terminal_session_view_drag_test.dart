@@ -115,6 +115,71 @@ void main() {
     expect(captured.every((s) => s == '\x1b[5~'), isTrue);
   });
 
+  testWidgets('normal buffer: two-finger pan pages scrollback, sends no keys', (
+    tester,
+  ) async {
+    final terminal = Terminal(maxLines: 1000);
+    terminal.resize(80, 24);
+    for (var i = 0; i < 200; i++) {
+      terminal.write('line $i\r\n');
+    }
+    final captured = <String>[];
+    terminal.onOutput = captured.add;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: TerminalSessionView(terminal: terminal)),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    final terminalFinder = find.byType(TerminalView);
+    final center = tester.getCenter(terminalFinder);
+    final first = await tester.startGesture(center + const Offset(-20, 0));
+    final second = await tester.startGesture(center + const Offset(20, 0));
+    await tester.pump();
+    await first.moveTo(center + const Offset(-20, 120));
+    await second.moveTo(center + const Offset(20, 120));
+    await tester.pump();
+    await first.up();
+    await second.up();
+    await tester.pump();
+
+    expect(captured, isEmpty);
+  });
+
+  testWidgets('mouse mode: tap sends press+release; long-press sends nothing', (
+    tester,
+  ) async {
+    final terminal = Terminal(maxLines: 1000);
+    terminal.resize(80, 24);
+    terminal.write('\x1b[?1049h\x1b[?1000h\x1b[?1006h');
+    final captured = <String>[];
+    terminal.onOutput = captured.add;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: TerminalSessionView(terminal: terminal)),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    final center = tester.getCenter(find.byType(TerminalView));
+    await tester.tapAt(center);
+    await tester.pump();
+    expect(captured, hasLength(2));
+    expect(captured[0], endsWith('M'));
+    expect(captured[1], endsWith('m'));
+
+    captured.clear();
+    await tester.longPressAt(center);
+    await tester.pump();
+    expect(captured, isEmpty, reason: 'no orphan mouse-down on long press');
+    expect(find.text('Copy'), findsOneWidget);
+  });
+
   testWidgets('two-finger pinch increases terminal font size', (tester) async {
     final terminal = Terminal(maxLines: 1000);
     terminal.resize(80, 24);
