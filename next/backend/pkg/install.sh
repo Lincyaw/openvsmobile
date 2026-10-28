@@ -136,6 +136,35 @@ append_plist_env_if_set() {
   PLIST_EXTRA_ENV+=$'\n'"    <key>$(xml_escape "$key")</key><string>$(xml_escape "$value")</string>"
 }
 
+# Value of $key as persisted in the service file of a previous install,
+# undoing the escaping above. Lets an upgrade (e.g. the app's SSH
+# bootstrap, which sets no OPENVSMOBILE_IROH_* env) keep relay settings
+# chosen at first install instead of silently reverting to defaults.
+persisted_service_env() {
+  local key="$1" line
+  case "$PLATFORM" in
+    linux)
+      [[ -f "$UNIT_PATH" ]] || return 1
+      line="$(grep -m1 -F "Environment=\"$key=" "$UNIT_PATH")" || return 1
+      line="${line#Environment=\"$key=}"
+      line="${line%\"}"
+      line="${line//\\\"/\"}"
+      line="${line//\\\\/\\}"
+      ;;
+    darwin)
+      [[ -f "$PLIST_PATH" ]] || return 1
+      line="$(grep -m1 -F "<key>$key</key><string>" "$PLIST_PATH")" || return 1
+      line="${line#*<key>$key</key><string>}"
+      line="${line%</string>*}"
+      # sed, not ${//}: bash >= 5.2 treats '&' in a replacement as the match.
+      line="$(printf '%s' "$line" | sed -e 's/&quot;/"/g' -e "s/&apos;/'/g" \
+        -e 's/&lt;/</g' -e 's/&gt;/>/g' -e 's/&amp;/\&/g')"
+      ;;
+    *) return 1 ;;
+  esac
+  printf '%s' "$line"
+}
+
 pid_alive() {
   local pid="${1:-}"
   [[ "$pid" =~ ^[0-9]+$ ]] || return 1
@@ -625,6 +654,13 @@ for env_key in \
   OPENVSMOBILE_IROH_ONLINE_TIMEOUT_MS \
   OPENVSMOBILE_IROH_MAX_FRAME_BYTES
 do
+  # Unset → keep what the previous install persisted; set (even to "")
+  # → the caller decides, and "" drops the variable.
+  if [[ -z "${!env_key+x}" ]] && persisted="$(persisted_service_env "$env_key")"; then
+    printf -v "$env_key" '%s' "$persisted"
+    export "${env_key?}"   # so the --dry-run-service probe backend sees it too
+    log "keeping $env_key from the existing service file"
+  fi
   append_unit_env_if_set "$env_key"
   append_plist_env_if_set "$env_key"
 done
