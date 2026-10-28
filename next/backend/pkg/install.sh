@@ -635,8 +635,10 @@ case "$PLATFORM" in
 [Unit]
 Description=openvsmobile backend
 After=network.target
-StartLimitIntervalSec=60
-StartLimitBurst=5
+# Never give up restarting. Under host memory pressure earlyoom / the
+# kernel OOM killer can SIGKILL us several times a minute; a start limit
+# would leave the unit permanently failed after the storm passes.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -644,8 +646,8 @@ ExecStart=%h/.local/share/openvsmobile/current/openvsmobile-backend/launch.sh
 Environment=PORT=0
 Environment=NODE_ENV=production
 $UNIT_EXTRA_ENV
-Restart=on-failure
-RestartSec=3
+Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=default.target

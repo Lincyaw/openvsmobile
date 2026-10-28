@@ -21,9 +21,6 @@ import { execFile, type ExecFileException } from "node:child_process";
 import { accessSync, constants as fsConstants, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
 
 /// Hard cap on every zellij CLI call. The probe runs once at startup; the
 /// per-terminal `kill-session` runs at dispose. Two seconds is generous —
@@ -165,17 +162,53 @@ export function zellijEnvironment(
   return out;
 }
 
+/// How long past `timeoutMs` a killed child gets to report its exit
+/// before the call stops waiting for it.
+const KILL_GRACE_MS = 500;
+
+/// `execFile`'s own `timeout` only sends `killSignal` and then waits for
+/// the child to exit. With the default SIGTERM, a child that ignores it
+/// (seen with snap-packaged zellij while the user's dbus was being
+/// OOM-killed) keeps the promise pending forever, and the boot-time
+/// probe wedges the whole backend before it ever listens. So: SIGKILL
+/// on timeout, plus an independent deadline that rejects regardless of
+/// whether the child ever reports back.
 export const realExecRunner: ExecRunner = {
-  async run(command, args, options) {
-    const { stdout, stderr } = await execFileAsync(command, [...args], {
-      timeout: options.timeoutMs,
-      env: zellijEnvironment(),
-      // 64 KB output cap. Far more than `zellij --version` or
-      // `kill-session` ever produces; anything larger means something
-      // is wrong upstream and we'd rather fail fast.
-      maxBuffer: 64 * 1024,
+  run(command, args, options) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const child = execFile(
+        command,
+        [...args],
+        {
+          timeout: options.timeoutMs,
+          killSignal: "SIGKILL",
+          env: zellijEnvironment(),
+          // 64 KB output cap. Far more than `zellij --version` or
+          // `kill-session` ever produces; anything larger means something
+          // is wrong upstream and we'd rather fail fast.
+          maxBuffer: 64 * 1024,
+        },
+        (err, stdout, stderr) => {
+          clearTimeout(deadline);
+          if (settled) return;
+          settled = true;
+          if (err) reject(err);
+          else resolve({ stdout: stdout.toString(), stderr: stderr.toString() });
+        },
+      );
+      const deadline = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        child.kill("SIGKILL");
+        reject(
+          Object.assign(
+            new Error(`${command} did not exit within ${options.timeoutMs}ms`),
+            { killed: true },
+          ),
+        );
+      }, options.timeoutMs + KILL_GRACE_MS);
     });
-    return { stdout: stdout.toString(), stderr: stderr.toString() };
   },
 };
 
@@ -315,7 +348,7 @@ function describeExecError(err: unknown): string {
   if (err === null || typeof err !== "object") return String(err);
   const e = err as ExecFileException & { signal?: string };
   if (e.code === "ENOENT") return "binary not found";
-  if (e.signal === "SIGTERM") return "timed out";
+  if (e.killed === true) return "timed out";
   if (typeof e.code === "number") return `exit ${e.code}`;
   if (typeof e.message === "string") return e.message;
   return "unknown error";

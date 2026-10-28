@@ -888,6 +888,17 @@ describe("probeMultiplexer", () => {
       expect(info.version).toBe("zellij 0.44.1");
     }
   });
+
+  it("real runner gives up on a child that ignores SIGTERM", async () => {
+    const { realExecRunner } = await import("../src/multiplexer.js");
+    const started = Date.now();
+    await expect(
+      realExecRunner.run("sh", ["-c", 'trap "" TERM; sleep 10'], {
+        timeoutMs: 200,
+      }),
+    ).rejects.toMatchObject({ killed: true });
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
 });
 
 describe("zellij CLI wrappers", () => {
