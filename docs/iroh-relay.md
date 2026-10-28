@@ -33,7 +33,7 @@ The relay is `iroh-relay` from the iroh project, version 1.x:
 cargo install iroh-relay --version '^1' --features server
 ```
 
-### Intranet, plain HTTP
+### Plain HTTP (intranet or public)
 
 ```toml
 # /etc/iroh-relay.toml
@@ -50,13 +50,20 @@ iroh-relay -c /etc/iroh-relay.toml
 
 Relay traffic stays end-to-end encrypted between the backend and the
 phone (QUIC with their endpoint keys); the relay only forwards packets.
-Plain HTTP exposes connection metadata to the network, not content.
+Plain HTTP exposes connection metadata to the network, not content. It
+does expose the relay token: anyone on the path can capture it and use
+your relay (but not read your traffic).
+
+The URL may be an IP address; no domain is needed. The relay can share a
+host with other services, such as a Tailscale `derper`, as long as the
+ports differ.
 
 Without TLS the relay cannot offer QUIC address discovery (QAD), so the
 endpoints only learn their own interface addresses. Direct paths still
 work wherever those addresses are routable between the phone and the
-backend, which is the usual intranet case; across NATs traffic stays on
-the relay.
+backend, which is the usual intranet case. Across NATs (backend behind a
+home router, phone on mobile data) traffic mostly stays on the relay,
+unless the router grants a UPnP port mapping.
 
 ### With TLS and QAD
 
@@ -81,13 +88,45 @@ The certificate must chain to a public CA: the app and backend verify the
 relay with the bundled web PKI roots. Self-signed and internal-CA relay
 certificates are not supported yet.
 
+### Custom ports
+
+All three listeners can move:
+
+```toml
+http_bind_addr = "0.0.0.0:8080"
+
+[tls]
+https_bind_addr = "0.0.0.0:8443"   # relay
+quic_bind_addr  = "0.0.0.0:9842"   # QAD (UDP)
+```
+
+Then put the port in the relay URL and set the QAD port on the backend:
+`OPENVSMOBILE_IROH_RELAY_URLS=https://relay.example.com:8443` and
+`OPENVSMOBILE_IROH_RELAY_QUIC_PORT=9842`. Both reach the app through
+pairing.
+
+The built-in `cert_mode = "LetsEncrypt"` validates over TLS-ALPN on port
+443, so it only works when the relay listens on 443. On any other port,
+obtain the certificate separately (for example `acme.sh` with a DNS
+challenge) and point the relay at the files:
+
+```toml
+[tls]
+cert_mode = "Reloading"    # re-reads the files, so renewals need no restart
+manual_cert_path = "/etc/iroh-relay/cert.pem"
+manual_key_path  = "/etc/iroh-relay/key.pem"
+https_bind_addr = "0.0.0.0:8443"
+```
+
 `access.shared_token` restricts the relay to clients that present the
 token. Leave it out only on a network where anyone may use the relay.
 
 ## 2. Point the backend at it
 
-Set these when running `install.sh` (they are persisted into the service
-unit) or in the service environment:
+Set these when running `install.sh`. They are persisted into the service
+unit, and a later `install.sh` run without them, such as an upgrade from
+the app's SSH bootstrap, keeps the persisted values. Set a variable to an
+empty value (`OPENVSMOBILE_IROH_RELAY_URLS=`) to remove it.
 
 | Variable | Meaning |
 | --- | --- |
@@ -116,7 +155,8 @@ does not send `iroh.relay` keeps the n0 behaviour.
 
 For a backend added by hand, the editor's **Relay URLs** field takes the
 same comma-separated list. Leave it empty for n0, or enter `none` for
-LAN-only. A relay token can only arrive through pairing.
+LAN-only. A relay token and a non-default QAD port can only arrive through
+pairing.
 
 ## Not yet supported
 

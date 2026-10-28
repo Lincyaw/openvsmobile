@@ -3,7 +3,7 @@
 //
 // Local debug builds use this value as-is.
 // Release builds via .github/workflows/release.yml substitute it from the v* tag.
-const String kBackendVersion = '0.4.10';
+const String kBackendVersion = '0.4.12';
 
 /// Default port used by direct development backends.
 /// Screens that seed a fresh BackendTarget should reference this rather

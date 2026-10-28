@@ -26,7 +26,7 @@ curl -fsSL https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/install.s
 Example:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/install.sh | bash -s -- 0.4.10
+curl -fsSL https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/install.sh | bash -s -- 0.4.12
 ```
 
 What it does:
