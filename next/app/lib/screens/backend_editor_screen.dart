@@ -53,6 +53,7 @@ class _BackendEditorScreenState extends State<BackendEditorScreen> {
   late final TextEditingController _irohTicketCtrl;
   late final TextEditingController _irohEndpointIdCtrl;
   late final TextEditingController _irohAlpnCtrl;
+  late final TextEditingController _irohRelayCtrl;
   late final BackendTransport _transport;
   bool _saving = false;
 
@@ -79,6 +80,9 @@ class _BackendEditorScreenState extends State<BackendEditorScreen> {
     _irohAlpnCtrl = TextEditingController(
       text: widget.initial.irohAlpn ?? 'openvsmobile.rpc.v1',
     );
+    _irohRelayCtrl = TextEditingController(
+      text: relayFieldText(widget.initial.irohRelay),
+    );
     _transport = widget.initial.transport;
   }
 
@@ -91,6 +95,7 @@ class _BackendEditorScreenState extends State<BackendEditorScreen> {
     _irohTicketCtrl.dispose();
     _irohEndpointIdCtrl.dispose();
     _irohAlpnCtrl.dispose();
+    _irohRelayCtrl.dispose();
     super.dispose();
   }
 
@@ -271,6 +276,10 @@ class _BackendEditorScreenState extends State<BackendEditorScreen> {
         transport: BackendTransport.iroh,
         irohTicket: ticket,
         irohAlpn: alpn,
+        irohRelay: parseRelayField(
+          _irohRelayCtrl.text,
+          previous: widget.initial.irohRelay,
+        ),
       );
       await client.start();
       final deadline = DateTime.now().add(const Duration(seconds: 10));
@@ -333,6 +342,12 @@ class _BackendEditorScreenState extends State<BackendEditorScreen> {
           ? (_irohAlpnCtrl.text.trim().isEmpty
                 ? 'openvsmobile.rpc.v1'
                 : _irohAlpnCtrl.text.trim())
+          : null,
+      irohRelay: _transport == BackendTransport.iroh
+          ? parseRelayField(
+              _irohRelayCtrl.text,
+              previous: widget.initial.irohRelay,
+            )
           : null,
       clearIroh: _transport == BackendTransport.websocket,
     );
@@ -484,7 +499,67 @@ class _BackendEditorScreenState extends State<BackendEditorScreen> {
       decoration: const InputDecoration(labelText: 'ALPN'),
       validator: (v) => (v == null || v.trim().isEmpty) ? 'required' : null,
     ),
+    const SizedBox(height: 12),
+    TextFormField(
+      controller: _irohRelayCtrl,
+      decoration: const InputDecoration(
+        labelText: 'Relay URLs',
+        hintText: 'empty = n0 public relays; "none" = LAN only',
+        helperText:
+            'Self-hosted relays, comma separated. Set = never contact n0.',
+      ),
+      validator: validateRelayField,
+    ),
   ];
+}
+
+/// Text shown in the "Relay URLs" field for stored settings.
+@visibleForTesting
+String relayFieldText(IrohRelaySettings? relay) {
+  if (relay == null || relay.isN0) return '';
+  if (relay.mode == 'disabled') return 'none';
+  return relay.relays.map((r) => r.url).join(', ');
+}
+
+List<String> _relayFieldUrls(String text) => text
+    .split(RegExp(r'[,\s]+'))
+    .map((s) => s.trim())
+    .where((s) => s.isNotEmpty)
+    .toList();
+
+@visibleForTesting
+String? validateRelayField(String? text) {
+  final raw = (text ?? '').trim();
+  if (raw.isEmpty || raw.toLowerCase() == 'none') return null;
+  for (final url in _relayFieldUrls(raw)) {
+    final uri = Uri.tryParse(url);
+    if (uri == null ||
+        !(uri.scheme == 'http' || uri.scheme == 'https') ||
+        uri.host.isEmpty) {
+      return 'not an http(s) URL: $url';
+    }
+  }
+  return null;
+}
+
+/// Field text → settings. A relay already known from pairing keeps its
+/// QUIC port; a newly typed https relay gets iroh's default QAD port and
+/// an http relay none (QAD needs TLS on the relay).
+@visibleForTesting
+IrohRelaySettings parseRelayField(String text, {IrohRelaySettings? previous}) {
+  final raw = text.trim();
+  if (raw.isEmpty) return IrohRelaySettings.n0;
+  if (raw.toLowerCase() == 'none') return IrohRelaySettings.disabled;
+  final known = {for (final r in previous?.relays ?? const []) r.url: r};
+  return IrohRelaySettings.custom([
+    for (final url in _relayFieldUrls(raw))
+      known[url] ??
+          known['$url/'] ??
+          IrohRelayEntry(
+            url: url,
+            quicPort: url.startsWith('https:') ? kDefaultRelayQuicPort : null,
+          ),
+  ]);
 }
 
 class _TransportHeader extends StatelessWidget {

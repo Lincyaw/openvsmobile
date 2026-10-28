@@ -30,6 +30,11 @@ export function buildPairingPayload(runtime, options = {}) {
     };
     const endpointId = optionalString(iroh.endpointId);
     if (endpointId) payload.iroh.endpointId = endpointId;
+    // Omitted for n0 so older apps and the default path keep the
+    // smallest possible QR; the app treats "absent" as n0.
+    if (iroh.relay && typeof iroh.relay === "object" && iroh.relay.mode !== "n0") {
+      payload.iroh.relay = iroh.relay;
+    }
     if (version) payload.version = version;
     return payload;
   }

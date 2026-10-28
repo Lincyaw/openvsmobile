@@ -198,6 +198,11 @@ void main() {
       find.widgetWithText(TextFormField, 'Bearer token (not ticket)'),
       'iroh-token',
     );
+    await tester.scrollUntilVisible(
+      find.text('Save'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
     await tester.tap(find.text('Save'));
     await tester.pumpAndSettle();
 

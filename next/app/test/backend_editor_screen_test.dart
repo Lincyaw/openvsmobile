@@ -130,9 +130,15 @@ void main() {
       ),
     );
 
+    // name, ticket, endpoint id, ALPN, relay URLs, token
     await tester.enterText(
-      find.byType(TextFormField).at(4),
+      find.byType(TextFormField).at(5),
       'endpoint-not-a-token',
+    );
+    await tester.scrollUntilVisible(
+      find.text('Save'),
+      200,
+      scrollable: find.byType(Scrollable).first,
     );
     await tester.tap(find.text('Save'));
     await tester.pump();

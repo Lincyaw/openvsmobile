@@ -8,6 +8,10 @@ import computer.iroh.Endpoint
 import computer.iroh.EndpointOptions
 import computer.iroh.EndpointTicket
 import computer.iroh.IrohAndroid
+import computer.iroh.RelayConfig
+import computer.iroh.RelayMap
+import computer.iroh.RelayMode
+import computer.iroh.presetMinimal
 import computer.iroh.presetN0
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.EventChannel
@@ -99,11 +103,17 @@ class IrohRpcBridge(
             result.error("INVALID_ARG", "Missing Iroh ticket", null)
             return
         }
+        val options = try {
+            endpointOptions(call.argument<Map<String, Any?>>("relay"))
+        } catch (t: Throwable) {
+            result.error("INVALID_ARG", "Invalid Iroh relay settings: ${t.message}", null)
+            return
+        }
 
         scope.launch {
             var endpoint: Endpoint? = null
             try {
-                endpoint = Endpoint.bind(EndpointOptions(preset = presetN0()))
+                endpoint = Endpoint.bind(options)
                 val addr = EndpointTicket.fromString(ticket).endpointAddr()
                 val conn = endpoint.connect(addr, alpn.toByteArray(Charsets.UTF_8))
                 val bi = conn.openBi()
@@ -132,6 +142,39 @@ class IrohRpcBridge(
                     result.error("IROH_CONNECT", t.message ?: t.toString(), null)
                 }
             }
+        }
+    }
+
+    /// Mirror the backend's relay settings (runtime.json `iroh.relay`).
+    /// Absent / "n0" keeps the n0 preset. "custom" and "disabled" use the
+    /// minimal preset so the phone never probes n0 relays or queries n0
+    /// DNS/pkarr for a backend that does not use them.
+    private fun endpointOptions(relay: Map<String, Any?>?): EndpointOptions {
+        return when (val mode = relay?.get("mode") as String?) {
+            null, "n0" -> EndpointOptions(preset = presetN0())
+            "disabled" -> EndpointOptions(
+                preset = presetMinimal(),
+                relayMode = RelayMode.disabled(),
+            )
+            "custom" -> {
+                val map = RelayMap.empty()
+                val entries = relay?.get("relays") as? List<*> ?: emptyList<Any?>()
+                for (entry in entries) {
+                    val e = entry as? Map<*, *> ?: continue
+                    val url = e["url"] as? String ?: continue
+                    val quicPort = (e["quicPort"] as? Number)?.toInt()
+                    map.insert(
+                        RelayConfig(
+                            url = url,
+                            quicPort = quicPort?.toUShort(),
+                            authToken = e["authToken"] as? String,
+                        ),
+                    )
+                }
+                require(!map.isEmpty()) { "custom relay mode without relays" }
+                EndpointOptions(preset = presetMinimal(), relayMode = RelayMode.custom(map))
+            }
+            else -> throw IllegalArgumentException("unknown relay mode $mode")
         }
     }
 

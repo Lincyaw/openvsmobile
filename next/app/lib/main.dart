@@ -186,6 +186,7 @@ class _MobileCodeAppState extends State<MobileCodeApp>
         transport: active.transport,
         irohTicket: active.irohTicket,
         irohAlpn: active.irohAlpn,
+        irohRelay: active.irohRelay,
         deviceId: did,
       );
       _scheduleOpenLastWorkspaceWhenConnected(active, sessionOrdinal);
@@ -551,6 +552,7 @@ class _MobileCodeAppState extends State<MobileCodeApp>
       transport: active.transport,
       irohTicket: active.irohTicket,
       irohAlpn: active.irohAlpn,
+      irohRelay: active.irohRelay,
       deviceId: _deviceId,
     );
     _scheduleOpenLastWorkspaceWhenConnected(active, sessionOrdinal);

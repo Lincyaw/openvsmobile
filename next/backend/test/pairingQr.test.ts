@@ -64,6 +64,33 @@ describe("openvsmobile-pairing-qr", () => {
             alpn: "openvsmobile.rpc.v1",
           },
         });
+        expect(payload.iroh.relay).toBeUndefined();
+      },
+    );
+  });
+
+  it("carries self-hosted relay settings so the app mirrors them", () => {
+    const relay = {
+      mode: "custom",
+      relays: [{ url: "https://relay.corp/", quicPort: 7842 }],
+    };
+    withRuntime(
+      {
+        port: 39811,
+        token: "tok",
+        version: "0.4.7",
+        iroh: { endpointId: "endpoint", ticket: "ticket", relay },
+      },
+      (runtimePath) => {
+        const result = runQr([
+          "--runtime",
+          runtimePath,
+          "--version",
+          "0.4.7",
+          "--json-only",
+        ]);
+        expect(result.status).toBe(0);
+        expect(JSON.parse(result.stdout).iroh.relay).toEqual(relay);
       },
     );
   });

@@ -19,6 +19,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import type { IrohRelaySettings } from "./irohTransport.js";
 
 export interface RuntimeInfo {
   schema: 1;
@@ -33,6 +34,7 @@ export interface RuntimeInfo {
     alpn: string;
     relayUrl: string | null;
     directAddresses: string[];
+    relay: IrohRelaySettings;
   };
 }
 

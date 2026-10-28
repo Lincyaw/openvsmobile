@@ -5,6 +5,17 @@
 // Disable with:
 //   OPENVSMOBILE_IROH=0
 //
+// Relay selection (see resolveRelaySettings):
+//   default                         n0 public relays + n0 DNS/pkarr discovery
+//   OPENVSMOBILE_IROH_RELAY_URLS=…  only these relays; no n0 relay probing,
+//                                   no n0 DNS/pkarr. Direct p2p stays on.
+//   OPENVSMOBILE_IROH_RELAY_TOKEN=…  bearer token for relays that run
+//                                   `access.shared_token`
+//   OPENVSMOBILE_IROH_RELAY_MODE=disabled
+//                                   no relays, no n0 discovery (LAN only)
+// The resolved settings are published in runtime.json so the app builds
+// its own endpoint the same way and never probes relays we don't use.
+//
 // Pairing data is surfaced through runtime.json and stderr as endpoint
 // identity/ticket only. The bearer token is never embedded in Iroh tickets.
 
@@ -28,16 +39,23 @@ interface IrohModule {
   EndpointTicket: {
     fromAddr(addr: IrohEndpointAddr): { toString(): string };
   };
+  RelayMap: {
+    empty(): IrohRelayMap;
+  };
   RelayMode: {
     disabled(): unknown;
     staging(): unknown;
     defaultMode(): unknown;
-    customFromUrls(urls: string[]): unknown;
+    custom(map: IrohRelayMap): unknown;
   };
   SecretKey: {
     generate(): IrohSecretKey;
     fromBytes(bytes: ByteArray): IrohSecretKey;
   };
+}
+
+interface IrohRelayMap {
+  insert(config: IrohRelayEntry): void;
 }
 
 interface IrohSecretKey {
@@ -46,6 +64,7 @@ interface IrohSecretKey {
 
 interface IrohEndpointBuilder {
   applyN0(): void;
+  applyMinimal(): void;
   secretKey(bytes: ByteArray): void;
   alpns(alpns: ByteArray[]): void;
   relayMode(mode: unknown): void;
@@ -99,13 +118,37 @@ interface IrohRecvStream {
   read(sizeLimit: number): Promise<ByteArray>;
 }
 
+/// One self-hosted relay. `quicPort` set means the relay also serves
+/// QUIC address discovery (QAD), which lets endpoints learn their public
+/// address and holepunch through NATs; unset means relay-forwarding only.
+/// `authToken` is presented to relays configured with
+/// `access.shared_token`, so only paired devices can use the relay.
+export interface IrohRelayEntry {
+  url: string;
+  quicPort?: number;
+  authToken?: string;
+}
+
+/// Which relays (and with them, which discovery services) an endpoint
+/// uses. Both sides of a connection should agree, so this travels to the
+/// app via runtime.json / pairing. Anything other than "n0" / "staging"
+/// means "never contact n0 infrastructure".
+export type IrohRelaySettings =
+  | { mode: "n0" }
+  | { mode: "staging" }
+  | { mode: "disabled" }
+  | { mode: "custom"; relays: IrohRelayEntry[] };
+
 export interface IrohRuntimeInfo {
   endpointId: string;
   ticket: string;
   alpn: string;
   relayUrl: string | null;
   directAddresses: string[];
+  relay: IrohRelaySettings;
 }
+
+const DEFAULT_RELAY_QUIC_PORT = 7842;
 
 export interface IrohRpcServer {
   info: IrohRuntimeInfo;
@@ -123,11 +166,18 @@ export async function startIrohRpcServer(
 ): Promise<IrohRpcServer | null> {
   if (!irohEnabled()) return null;
 
+  const relay = resolveRelaySettings();
   const iroh = loadIrohModule();
   const alpn = process.env.OPENVSMOBILE_IROH_ALPN || DEFAULT_ALPN;
   const alpnBytes = bytes(alpn);
   const builder = iroh.Endpoint.builder();
-  builder.applyN0();
+  if (relay.mode === "n0" || relay.mode === "staging") {
+    builder.applyN0();
+  } else {
+    // Minimal = crypto provider only: no n0 relay map, no pkarr
+    // publishing to dns.iroh.link, no DNS address lookups.
+    builder.applyMinimal();
+  }
   builder.secretKey(resolveSecretKey(iroh));
   builder.alpns([alpnBytes]);
 
@@ -136,9 +186,9 @@ export async function startIrohRpcServer(
     builder.bindAddr(bindAddr.trim());
   }
 
-  const waitsForOnline = configureRelayMode(builder, iroh);
+  builder.relayMode(relayModeFor(iroh, relay));
   const endpoint = await builder.bind();
-  if (waitsForOnline) {
+  if (relay.mode !== "disabled") {
     const timeoutMs = parsePositiveInt(
       process.env.OPENVSMOBILE_IROH_ONLINE_TIMEOUT_MS,
       DEFAULT_ONLINE_TIMEOUT_MS,
@@ -158,6 +208,7 @@ export async function startIrohRpcServer(
     alpn,
     relayUrl: addr.relayUrl(),
     directAddresses: addr.directAddresses(),
+    relay,
   };
 
   let closed = false;
@@ -218,36 +269,90 @@ function decodeSecretKey(encoded: string): ByteArray {
   return Array.from(buf);
 }
 
-function configureRelayMode(
-  builder: IrohEndpointBuilder,
-  iroh: IrohModule,
-): boolean {
-  const custom = parseCsv(process.env.OPENVSMOBILE_IROH_RELAY_URLS);
-  if (custom.length > 0) {
-    builder.relayMode(iroh.RelayMode.customFromUrls(custom));
-    return true;
+/// Parse the relay env vars. Pure; throws on malformed config so a typo
+/// fails the boot loudly instead of silently falling back to n0.
+export function resolveRelaySettings(
+  env: NodeJS.ProcessEnv = process.env,
+): IrohRelaySettings {
+  const urls = parseCsv(env.OPENVSMOBILE_IROH_RELAY_URLS);
+  if (urls.length > 0) {
+    const quicPort = parseQuicPort(env.OPENVSMOBILE_IROH_RELAY_QUIC_PORT);
+    const authToken = env.OPENVSMOBILE_IROH_RELAY_TOKEN?.trim();
+    return {
+      mode: "custom",
+      relays: urls.map((raw) => {
+        const url = parseRelayUrl(raw);
+        const entry: IrohRelayEntry = { url: url.toString() };
+        // QAD needs TLS on the relay, so a plain-http relay never gets a
+        // QUIC port: probing one would only send packets that cannot be
+        // answered.
+        if (url.protocol === "https:" && quicPort !== null) {
+          entry.quicPort = quicPort;
+        }
+        if (authToken) entry.authToken = authToken;
+        return entry;
+      }),
+    };
   }
 
-  const mode =
-    process.env.OPENVSMOBILE_IROH_RELAY_MODE?.trim().toLowerCase() ||
-    "default";
+  const mode = env.OPENVSMOBILE_IROH_RELAY_MODE?.trim().toLowerCase() || "default";
   switch (mode) {
     case "disabled":
     case "off":
     case "none":
-      builder.relayMode(iroh.RelayMode.disabled());
-      return false;
+      return { mode: "disabled" };
     case "staging":
-      builder.relayMode(iroh.RelayMode.staging());
-      return true;
+      return { mode: "staging" };
     case "default":
     case "n0":
-      builder.relayMode(iroh.RelayMode.defaultMode());
-      return true;
+      return { mode: "n0" };
     default:
       throw new Error(
         `invalid OPENVSMOBILE_IROH_RELAY_MODE=${mode}; expected default, staging, or disabled`,
       );
+  }
+}
+
+function parseRelayUrl(raw: string): URL {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`invalid relay URL in OPENVSMOBILE_IROH_RELAY_URLS: ${raw}`);
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new Error(
+      `relay URL must be http:// or https://, got ${raw} in OPENVSMOBILE_IROH_RELAY_URLS`,
+    );
+  }
+  return url;
+}
+
+/// Unset → iroh's default QAD port; "0"/"off" → no QAD.
+function parseQuicPort(raw: string | undefined): number | null {
+  if (raw === undefined || raw.trim().length === 0) return DEFAULT_RELAY_QUIC_PORT;
+  const trimmed = raw.trim().toLowerCase();
+  if (trimmed === "0" || trimmed === "off" || trimmed === "none") return null;
+  const n = Number(trimmed);
+  if (!Number.isInteger(n) || n < 1 || n > 65535) {
+    throw new Error(`invalid OPENVSMOBILE_IROH_RELAY_QUIC_PORT=${raw}`);
+  }
+  return n;
+}
+
+function relayModeFor(iroh: IrohModule, relay: IrohRelaySettings): unknown {
+  switch (relay.mode) {
+    case "n0":
+      return iroh.RelayMode.defaultMode();
+    case "staging":
+      return iroh.RelayMode.staging();
+    case "disabled":
+      return iroh.RelayMode.disabled();
+    case "custom": {
+      const map = iroh.RelayMap.empty();
+      for (const entry of relay.relays) map.insert(entry);
+      return iroh.RelayMode.custom(map);
+    }
   }
 }
 

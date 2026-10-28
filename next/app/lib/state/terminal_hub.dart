@@ -620,6 +620,7 @@ class _BackendTerminalController {
       transport: _target.transport,
       irohTicket: _target.irohTicket,
       irohAlpn: _target.irohAlpn,
+      irohRelay: _target.irohRelay,
       deviceId: _deviceId,
     );
   }

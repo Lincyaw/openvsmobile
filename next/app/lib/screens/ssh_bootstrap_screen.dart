@@ -166,6 +166,7 @@ class _SshBootstrapScreenState extends State<SshBootstrapScreen> {
       irohTicket: iroh?.ticket,
       irohEndpointId: iroh?.endpointId,
       irohAlpn: iroh?.alpn,
+      irohRelay: iroh?.relay,
       origin: BackendOrigin.sshInstall,
       originRef: user.isEmpty ? host : '$user@$host',
       addedAt: DateTime.now().millisecondsSinceEpoch,

@@ -10,6 +10,7 @@
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -142,6 +143,104 @@ BackendTransport _transportFromString(String s) => switch (s) {
   _ => BackendTransport.websocket,
 };
 
+/// iroh's default port for QUIC address discovery on a relay.
+const int kDefaultRelayQuicPort = 7842;
+
+/// One self-hosted Iroh relay. `quicPort` set means the relay also serves
+/// QUIC address discovery, which is what lets the two endpoints learn
+/// their public addresses and holepunch a direct path through NATs.
+/// `authToken` is presented to relays running `access.shared_token`.
+class IrohRelayEntry {
+  final String url;
+  final int? quicPort;
+  final String? authToken;
+  const IrohRelayEntry({required this.url, this.quicPort, this.authToken});
+
+  Map<String, dynamic> toJson() => {
+    'url': url,
+    if (quicPort != null) 'quicPort': quicPort,
+    if (authToken != null) 'authToken': authToken,
+  };
+
+  @override
+  bool operator ==(Object other) =>
+      other is IrohRelayEntry &&
+      other.url == url &&
+      other.quicPort == quicPort &&
+      other.authToken == authToken;
+
+  @override
+  int get hashCode => Object.hash(url, quicPort, authToken);
+}
+
+/// Which relays the app's Iroh endpoint uses for one backend. Mirrors the
+/// backend's `runtime.json` `iroh.relay` object so both sides agree:
+/// `n0` = public n0 relays + n0 DNS discovery (the default when a backend
+/// does not say otherwise); `custom` / `disabled` = never contact n0
+/// infrastructure, so the phone does not probe relays nobody uses.
+class IrohRelaySettings {
+  final String mode;
+  final List<IrohRelayEntry> relays;
+  const IrohRelaySettings._(this.mode, this.relays);
+
+  static const n0 = IrohRelaySettings._('n0', []);
+  static const disabled = IrohRelaySettings._('disabled', []);
+
+  factory IrohRelaySettings.custom(List<IrohRelayEntry> relays) =>
+      IrohRelaySettings._('custom', List.unmodifiable(relays));
+
+  bool get isN0 => mode == 'n0';
+
+  /// Lenient: anything unrecognised or malformed reads as `null` so the
+  /// caller falls back to n0, the behaviour of older backends.
+  static IrohRelaySettings? fromJson(Object? raw) {
+    if (raw is! Map) return null;
+    switch (raw['mode']) {
+      case 'n0':
+        return n0;
+      case 'staging':
+        // Staging relays are an n0 developer knob; the app has no staging
+        // preset, and n0 production relays interoperate with it.
+        return n0;
+      case 'disabled':
+        return disabled;
+      case 'custom':
+        final relays = <IrohRelayEntry>[];
+        for (final r in (raw['relays'] as List?) ?? const []) {
+          if (r is! Map) continue;
+          final url = r['url'];
+          if (url is! String || url.trim().isEmpty) continue;
+          final port = r['quicPort'];
+          final token = r['authToken'];
+          relays.add(
+            IrohRelayEntry(
+              url: url.trim(),
+              quicPort: port is num ? port.toInt() : null,
+              authToken: token is String && token.isNotEmpty ? token : null,
+            ),
+          );
+        }
+        return relays.isEmpty ? null : IrohRelaySettings.custom(relays);
+      default:
+        return null;
+    }
+  }
+
+  Map<String, dynamic> toJson() => {
+    'mode': mode,
+    if (mode == 'custom') 'relays': [for (final r in relays) r.toJson()],
+  };
+
+  @override
+  bool operator ==(Object other) =>
+      other is IrohRelaySettings &&
+      other.mode == mode &&
+      listEquals(other.relays, relays);
+
+  @override
+  int get hashCode => Object.hash(mode, Object.hashAll(relays));
+}
+
 /// One reachable backend instance — host:port + bearer token, plus a
 /// user-editable display name and bookkeeping for the last workspace opened
 /// against it (so a switch back can auto-reopen).
@@ -155,6 +254,9 @@ class BackendTarget {
   final String? irohTicket;
   final String? irohEndpointId;
   final String? irohAlpn;
+
+  /// Relay settings for the Iroh transport; null = n0 defaults.
+  final IrohRelaySettings? irohRelay;
   final BackendOrigin origin;
 
   /// Free-form back-pointer to whatever produced this target: for
@@ -179,6 +281,7 @@ class BackendTarget {
     this.irohTicket,
     this.irohEndpointId,
     this.irohAlpn,
+    this.irohRelay,
     required this.origin,
     this.originRef,
     this.cluster,
@@ -205,6 +308,7 @@ class BackendTarget {
     String? irohTicket,
     String? irohEndpointId,
     String? irohAlpn,
+    IrohRelaySettings? irohRelay,
     bool clearIroh = false,
     BackendOrigin? origin,
     String? originRef,
@@ -225,6 +329,7 @@ class BackendTarget {
           ? null
           : (irohEndpointId ?? this.irohEndpointId),
       irohAlpn: clearIroh ? null : (irohAlpn ?? this.irohAlpn),
+      irohRelay: clearIroh ? null : (irohRelay ?? this.irohRelay),
       origin: origin ?? this.origin,
       originRef: originRef ?? this.originRef,
       cluster: cluster ?? this.cluster,
@@ -246,6 +351,7 @@ class BackendTarget {
     if (irohTicket != null) 'irohTicket': irohTicket,
     if (irohEndpointId != null) 'irohEndpointId': irohEndpointId,
     if (irohAlpn != null) 'irohAlpn': irohAlpn,
+    if (irohRelay != null) 'irohRelay': irohRelay!.toJson(),
     'origin': _originToString(origin),
     if (originRef != null) 'originRef': originRef,
     if (cluster != null) 'cluster': cluster,
@@ -264,6 +370,7 @@ class BackendTarget {
     irohTicket: j['irohTicket'] as String?,
     irohEndpointId: j['irohEndpointId'] as String?,
     irohAlpn: j['irohAlpn'] as String?,
+    irohRelay: IrohRelaySettings.fromJson(j['irohRelay']),
     origin: _originFromString((j['origin'] as String?) ?? 'manual'),
     originRef: j['originRef'] as String?,
     cluster: j['cluster'] as String?,

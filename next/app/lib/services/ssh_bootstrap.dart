@@ -12,6 +12,7 @@ import 'dart:typed_data';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/services.dart' show rootBundle;
 
+import '../settings_store.dart';
 import '../version.dart';
 
 sealed class SshAuth {
@@ -49,12 +50,16 @@ class BootstrapIrohInfo {
   final String alpn;
   final String? relayUrl;
   final List<String> directAddresses;
+
+  /// Relay settings the backend runs with; null = n0 defaults.
+  final IrohRelaySettings? relay;
   const BootstrapIrohInfo({
     required this.endpointId,
     required this.ticket,
     required this.alpn,
     required this.relayUrl,
     required this.directAddresses,
+    this.relay,
   });
 }
 
@@ -283,6 +288,7 @@ class SshBootstrapService {
       directAddresses: ((raw['directAddresses'] as List?) ?? const [])
           .whereType<String>()
           .toList(growable: false),
+      relay: IrohRelaySettings.fromJson(raw['relay']),
     );
   }
 

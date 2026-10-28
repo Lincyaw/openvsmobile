@@ -55,6 +55,7 @@ class BackendPairing {
             _string(iroh, const ['alpn']) ??
             _string(parsed, const ['irohAlpn', 'alpn']) ??
             kDefaultIrohAlpn,
+        irohRelay: IrohRelaySettings.fromJson(iroh?['relay']),
         origin: BackendOrigin.pairingQr,
         originRef: 'pairing-qr',
         addedAt: now,

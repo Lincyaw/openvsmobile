@@ -184,6 +184,7 @@ class BackendClient {
   BackendTransport _transport = BackendTransport.websocket;
   String? _irohTicket;
   String? _irohAlpn;
+  IrohRelaySettings? _irohRelay;
 
   // --- Socket / RPC plumbing ---
   _RpcSocket? _channel;
@@ -218,6 +219,7 @@ class BackendClient {
     BackendTransport transport = BackendTransport.websocket,
     String? irohTicket,
     String? irohAlpn,
+    IrohRelaySettings? irohRelay,
     String? deviceId,
   }) {
     _host = host;
@@ -226,6 +228,7 @@ class BackendClient {
     _transport = transport;
     _irohTicket = irohTicket;
     _irohAlpn = irohAlpn;
+    _irohRelay = irohRelay;
     _deviceId = deviceId;
   }
 
@@ -444,6 +447,7 @@ class BackendClient {
           alpn: (_irohAlpn == null || _irohAlpn!.trim().isEmpty)
               ? 'openvsmobile.rpc.v1'
               : _irohAlpn!.trim(),
+          relay: _irohRelay,
         );
     }
   }
@@ -785,10 +789,12 @@ class _IrohRpcSocket implements _RpcSocket {
   static Future<_IrohRpcSocket> connect({
     required String ticket,
     required String alpn,
+    IrohRelaySettings? relay,
   }) async {
     final id = await _methods.invokeMethod<int>('connect', {
       'ticket': ticket,
       'alpn': alpn,
+      if (relay != null && !relay.isN0) 'relay': relay.toJson(),
     });
     if (id == null) {
       throw StateError('Iroh connect returned no connection id');
