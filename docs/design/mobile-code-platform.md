@@ -114,6 +114,17 @@ panels: it lists active panels and drills into the panel renderer defined in
 Anything not in this list — Claude integration, LSP, code review UI,
 GitHub PRs, search-across-files, debugger — is a plugin.
 
+### 2.1 Command-line client
+
+An additional CLI client (`ovsm`) projects the same §2 terminal and workspace
+resources over the existing authenticated Iroh or WebSocket RPC. Local machine aliases
+select endpoints; session UUIDs identify terminals within an endpoint. Interactive
+selection and attachment serve human users, while explicit commands with JSON
+output serve scripts and agent skills. Selecting a session does not activate a
+workspace globally. Local detach closes only the client connection; terminal
+writes remain user-directed. The CLI adds no AI runtime, polling, or separate
+server-side session model. See [CLI usage](../../next/cli/README.md).
+
 ## 3. Plugin model
 
 Closer to **LSP** than to **vscode.\***: anything that can speak JSON-RPC over stdio is a plugin. The host treats plugins as untrusted peers reached over a process boundary, not as extensions inheriting the host's runtime authority.

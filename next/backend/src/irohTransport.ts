@@ -20,14 +20,13 @@
 // identity/ticket only. The bearer token is never embedded in Iroh tickets.
 
 import { createRequire } from "node:module";
-import { EventEmitter } from "node:events";
+import { IrohRpcSocket, type IrohConnection } from "./irohRpcSocket.js";
 import type { WebSocket } from "ws";
 import { loadIrohSecretKey, saveIrohSecretKey } from "./config.js";
 import { Connection, type ConnectionDeps } from "./connection.js";
 
 const require = createRequire(import.meta.url);
 const DEFAULT_ALPN = "openvsmobile.rpc.v1";
-const DEFAULT_FRAME_LIMIT = 1024 * 1024;
 const DEFAULT_ONLINE_TIMEOUT_MS = 10_000;
 
 type ByteArray = number[];
@@ -94,28 +93,6 @@ interface IrohIncoming {
 
 interface IrohAccepting {
   connect(): Promise<IrohConnection>;
-}
-
-interface IrohConnection {
-  acceptBi(): Promise<IrohBiStream>;
-  remoteId(): { toString(): string };
-  close(errorCode: bigint, reason: ByteArray): void;
-  closed(): Promise<string>;
-}
-
-interface IrohBiStream {
-  send: IrohSendStream;
-  recv: IrohRecvStream;
-}
-
-interface IrohSendStream {
-  writeAll(buf: ByteArray): Promise<void>;
-  finish(): Promise<void>;
-  reset(errorCode: bigint): Promise<void>;
-}
-
-interface IrohRecvStream {
-  read(sizeLimit: number): Promise<ByteArray>;
 }
 
 /// One self-hosted relay. `quicPort` set means the relay also serves
@@ -418,132 +395,6 @@ async function handleIncoming(
     } catch {
       // Already gone.
     }
-  }
-}
-
-class IrohRpcSocket extends EventEmitter {
-  public readonly OPEN = 1;
-  public readonly CLOSING = 2;
-  public readonly CLOSED = 3;
-  public readyState = this.OPEN;
-  public bufferedAmount = 0;
-  private pending = "";
-  private writeChain: Promise<void> = Promise.resolve();
-  private readonly maxFrameBytes: number;
-
-  constructor(
-    private readonly stream: IrohBiStream,
-    private readonly conn: IrohConnection,
-  ) {
-    super();
-    this.maxFrameBytes = parsePositiveInt(
-      process.env.OPENVSMOBILE_IROH_MAX_FRAME_BYTES,
-      DEFAULT_FRAME_LIMIT,
-    );
-  }
-
-  public start(): void {
-    void this.readLoop();
-    void this.conn.closed().then(
-      () => this.finishClose(),
-      () => this.finishClose(),
-    );
-  }
-
-  public send(msg: string, cb?: (err?: Error) => void): void {
-    if (this.readyState !== this.OPEN) {
-      cb?.(new Error("Iroh stream is closed"));
-      return;
-    }
-    const payload = Buffer.from(`${msg}\n`, "utf8");
-    this.bufferedAmount += payload.length;
-    this.writeChain = this.writeChain
-      .then(async () => {
-        await this.stream.send.writeAll(Array.from(payload));
-      })
-      .then(
-        () => cb?.(),
-        (err: unknown) => {
-          const error = err instanceof Error ? err : new Error(String(err));
-          cb?.(error);
-          this.emit("error", error);
-          this.finishClose();
-        },
-      )
-      .finally(() => {
-        this.bufferedAmount = Math.max(0, this.bufferedAmount - payload.length);
-      });
-  }
-
-  public close(code = 0, reason = ""): void {
-    if (this.readyState !== this.OPEN) return;
-    this.readyState = this.CLOSING;
-    this.writeChain
-      .then(() => this.stream.send.finish())
-      .catch(() => {})
-      .finally(() => {
-        try {
-          this.conn.close(BigInt(code), bytes(String(reason).slice(0, 256)));
-        } catch {
-          // Already closed.
-        }
-        this.finishClose();
-      });
-  }
-
-  public terminate(): void {
-    if (this.readyState === this.CLOSED) return;
-    this.readyState = this.CLOSING;
-    try {
-      this.stream.send.reset(1n).catch(() => {});
-    } catch {
-      // Already gone.
-    }
-    try {
-      this.conn.close(1n, bytes("terminated"));
-    } catch {
-      // Already gone.
-    }
-    this.finishClose();
-  }
-
-  private async readLoop(): Promise<void> {
-    try {
-      while (this.readyState === this.OPEN) {
-        const chunk = await this.stream.recv.read(16 * 1024);
-        if (chunk.length === 0) break;
-        this.acceptBytes(Buffer.from(chunk).toString("utf8"));
-      }
-    } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      this.emit("error", error);
-    } finally {
-      this.finishClose();
-    }
-  }
-
-  private acceptBytes(text: string): void {
-    this.pending += text;
-    if (Buffer.byteLength(this.pending, "utf8") > this.maxFrameBytes) {
-      this.emit("error", new Error("Iroh JSON-RPC frame too large"));
-      this.terminate();
-      return;
-    }
-    for (;;) {
-      const idx = this.pending.indexOf("\n");
-      if (idx < 0) return;
-      const frame = this.pending.slice(0, idx).trimEnd();
-      this.pending = this.pending.slice(idx + 1);
-      if (frame.length > 0) {
-        this.emit("message", frame);
-      }
-    }
-  }
-
-  private finishClose(): void {
-    if (this.readyState === this.CLOSED) return;
-    this.readyState = this.CLOSED;
-    this.emit("close");
   }
 }
 

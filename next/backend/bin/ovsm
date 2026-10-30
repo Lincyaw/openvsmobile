@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -x "$HERE/node/bin/node" ]]; then
+  exec "$HERE/node/bin/node" "$HERE/dist/cli/main.js" "$@"
+fi
+exec node "$HERE/dist/cli/main.js" "$@"

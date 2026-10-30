@@ -505,3 +505,9 @@ The acceptance steps from the brief have been exercised:
   - Requests issued during a transient state are queued for up to
     15 s; terminal writes are dropped instead of queued because a
     stale sessionId after reconnect wouldn't make sense.
+
+### Command-line client
+
+The `ovsm` client connects to named backend machines and existing terminal
+sessions over the same Iroh or WebSocket RPC as the app. It supports interactive attach
+and JSON commands for scripts and agent skills. See [CLI usage](cli/README.md).
