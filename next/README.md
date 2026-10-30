@@ -85,6 +85,8 @@ To override the port: `PORT=8123 pnpm run dev`.
 
 ### Iroh remote transport
 
+For a one-command private relay, run `python3 next/backend/pkg/relay.py --domain relay.example.com --email ops@example.com` from the repository root. See [relay setup](../docs/iroh-relay.md#one-command-setup) for prerequisites and backend configuration.
+
 Iroh is the default remote transport. The backend also keeps the WebSocket
 `/rpc` listener for local/LAN compatibility, but QR pairing prefers Iroh
 whenever the runtime info contains an endpoint ticket.

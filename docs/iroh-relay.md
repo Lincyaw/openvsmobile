@@ -11,6 +11,114 @@ relay and turns n0 discovery off. Direct peer-to-peer paths stay enabled:
 the relay carries the first packets and stays as the fallback path, and
 the connection moves to a direct IP path as soon as one works.
 
+## Download with curl
+
+For an existing certificate, run the standalone script directly without cloning
+this repository (Docker Engine, Compose, Python 3.11+ and curl must be installed):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/next/backend/pkg/relay.py | python3 - \
+  --domain relay.example.com \
+  --https-port 9443 \
+  --quic-port 9842 \
+  --tls-cert /path/to/fullchain.pem \
+  --tls-key /path/to/privkey.pem
+```
+
+The Aliyun DNS helper requires both Python files in the same directory. Download
+both before using the DNS-01 instructions below:
+
+```sh
+mkdir -p ~/.local/share/openvsmobile-relay-tools
+cd ~/.local/share/openvsmobile-relay-tools
+curl -fsSLO https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/next/backend/pkg/relay.py
+curl -fsSLO https://raw.githubusercontent.com/Lincyaw/openvsmobile/main/next/backend/pkg/relay-aliyun.py
+```
+
+Replace `main` in these URLs with a commit SHA to pin the scripts to a specific
+revision. Persistent relay state is stored separately from the downloaded code.
+
+## One-command setup
+
+On the relay machine, install Docker Engine with the Compose plugin, Python
+3.11+, and curl. The script pulls the pinned official `n0computer/iroh-relay:v1.0.3`
+image; no Rust build is needed. From this repository:
+
+```sh
+python3 next/backend/pkg/relay.py --domain relay.example.com --email ops@example.com
+```
+
+Point the domain's DNS records at the machine first and allow inbound TCP 80/443
+and UDP 7842 in the host firewall and cloud security group. The script handles
+TLS via Let's Encrypt (or supplied certificates on custom ports), generates a relay token, starts the container, and waits
+for a verified HTTPS health check. DNS should point directly to the host for the
+TLS-ALPN certificate challenge. It does not modify DNS or firewall rules.
+
+Default state directory: `~/.local/share/openvsmobile-relay/`. Repeat the same
+command (or run it without options) to reuse the token and certificate storage;
+configuration changes recreate the container. Docker's `unless-stopped` restart
+policy keeps the relay running when the Docker daemon restarts. Use the same
+`--dir` for all commands if you override the directory. Separate directories use
+separate Compose project names.
+
+```sh
+python3 next/backend/pkg/relay.py status
+python3 next/backend/pkg/relay.py logs
+python3 next/backend/pkg/relay.py down
+python3 next/backend/pkg/relay.py                    # start again
+# Generate files without pulling an image or starting a service:
+python3 next/backend/pkg/relay.py --domain relay.example.com --email ops@example.com --configure-only
+```
+
+If the current user cannot access Docker, run the commands with `sudo`; the
+default state directory then belongs to root. Use an explicit absolute `--dir`
+when switching between sudo and non-sudo invocations. The script never installs
+Docker, changes Docker group membership, or touches an existing backend service.
+
+For trusted intranet HTTP without a domain or certificates:
+
+```sh
+python3 next/backend/pkg/relay.py --http --host 10.20.0.5 --port 3340
+```
+
+HTTP sends the relay access token in cleartext; use HTTPS on public networks.
+`--host` is the address clients use; `--bind` selects the local IP on which Docker
+publishes ports (default `0.0.0.0`). For a local smoke test, use `--host 127.0.0.1
+--bind 127.0.0.1`. HTTP disables QAD.
+
+All generated credential files have mode 0600, and the state directory has mode
+0700. Tokens are never printed. After a successful start, configure each backend
+using either generated file:
+
+- `backend.env`: shell exports for a source-run backend or `install.sh`.
+- `openvsmobile-relay.conf`: a drop-in for the existing Linux backend user service.
+
+Copy `openvsmobile-relay.conf` securely to the **backend machine**, then, as the
+user running that backend:
+
+```sh
+mkdir -p ~/.config/systemd/user/openvsmobile.service.d
+install -m 600 /secure/openvsmobile-relay.conf ~/.config/systemd/user/openvsmobile.service.d/relay.conf
+systemctl --user daemon-reload
+systemctl --user restart openvsmobile.service
+```
+
+Alternatively, source `backend.env` before starting the backend or running the
+backend installer with its required version argument. Exporting variables in a
+shell does not change an already-running systemd service.
+
+Finally re-pair the app, or import the backend's updated runtime JSON in the CLI:
+
+```sh
+ssh dev 'cat ~/.local/state/openvsmobile-next/runtime.json' | ./bin/ovsm host import dev
+```
+
+The generated relay files contain relay credentials only; they are not backend
+pairing payloads. A health check proves relay HTTP/TLS readiness. If first-time
+certificate issuance exceeds `--timeout` (default 120 seconds), the command
+fails and leaves the container available for diagnosis with `logs`. QAD/NAT
+traversal still depends on UDP reachability and the clients' networks.
+
 ## What changes on the wire
 
 Measured on one host over 20 s, endpoint idle after start:
@@ -32,6 +140,97 @@ The relay is `iroh-relay` from the iroh project, version 1.x:
 ```sh
 cargo install iroh-relay --version '^1' --features server
 ```
+
+### Aliyun DNS-01: no existing certificate, ports 80/443 occupied
+
+Use the helper to issue the certificate through Aliyun DNS, then start the relay
+with TCP 8443 and UDP 9842. It uses the pinned official acme.sh image and the
+[`dns_ali` provider](https://github.com/acmesh-official/acme.sh/wiki/dnsapi#11-use-aliyun-domain-api-to-automatically-issue-cert).
+DNS-01 creates and removes a TXT record; no listener on port 80 or 443 is needed.
+
+Create an Aliyun RAM AccessKey with permission to read, add and delete the DNS
+records needed for the zone. Store it **on the relay machine** in a mode-0600
+file, for example `~/.config/openvsmobile-relay/aliyun.env`, with these two lines
+(unquoted values, no `export` prefix):
+
+```text
+Ali_Key=YOUR_ACCESS_KEY_ID
+Ali_Secret=YOUR_ACCESS_KEY_SECRET
+```
+
+```sh
+chmod 600 ~/.config/openvsmobile-relay/aliyun.env
+python3 next/backend/pkg/relay-aliyun.py \
+  --domain relay.example.com \
+  --email YOUR_EMAIL \
+  --credentials ~/.config/openvsmobile-relay/aliyun.env \
+  --https-port 8443 \
+  --quic-port 9842
+```
+
+Replace `YOUR_EMAIL` with the certificate account email. The helper registers a
+Let's Encrypt account, issues an EC certificate using DNS-01, exports its chain
+and key, and invokes `relay.py` with those files. It does not change the domain's
+A/AAAA records or existing web services. Allow TCP 8443 and UDP 9842 to the relay
+host, and point the domain at it.
+
+State is kept in `~/.local/share/openvsmobile-relay-aliyun/`; use the same `--dir`
+when overriding it. Credentials, ACME account state, keys and diagnostic logs
+stay private. DNS credentials are passed through a Docker env file, never argv
+or terminal output. The relay configuration and backend connection files are
+in the `relay/` subdirectory. API credentials are not copied into the relay
+container or backend connection files.
+
+```sh
+python3 next/backend/pkg/relay-aliyun.py status
+python3 next/backend/pkg/relay-aliyun.py logs
+python3 next/backend/pkg/relay-aliyun.py down
+python3 next/backend/pkg/relay-aliyun.py             # start again using saved settings
+python3 next/backend/pkg/relay-aliyun.py renew       # renew if due; restart only on change
+```
+
+No renewal timer is installed. Run `renew` periodically using your existing
+scheduler (daily is sufficient); it keeps the relay running when the certificate
+has not changed. On certificate failure the old relay stays running, and the
+private `acme.log` contains diagnostics. Rerunning the original setup command
+also checks renewal. `--configure-only` writes the private DNS certificate plan
+without calling DNS/ACME or starting containers, so it works before Docker is
+available. The helper requires both Python scripts from this repository.
+
+### HTTPS when ports 80/443 are occupied
+
+Use a different TCP port with an existing publicly trusted full-chain certificate
+and matching unencrypted PEM key covering the relay domain (a wildcard is also
+valid when it covers the domain). For example:
+
+```sh
+python3 next/backend/pkg/relay.py \
+  --domain relay.example.com \
+  --https-port 8443 \
+  --quic-port 9842 \
+  --tls-cert /path/to/fullchain.pem \
+  --tls-key /path/to/privkey.pem
+```
+
+This publishes only **TCP 8443** and **UDP 9842**. The container's internal HTTP
+listener is not published, so the host's ports 80/443 remain available to existing
+services. The generated backend configuration uses
+`https://relay.example.com:8443` and QAD port `9842`; reapply that configuration
+and re-pair clients after a port change. HTTPS health checks verify the domain's
+certificate at the chosen port.
+
+If no certificate exists yet, issue one with DNS-01 using your existing ACME
+client; DNS-01 does not require ports 80/443 on this host. The relay's built-in
+Let's Encrypt mode uses TLS-ALPN on public port 443, so the script requires
+`--tls-cert` and `--tls-key` for a non-443 HTTPS port.
+
+The script validates the certificate/key pair and copies the PEM files into its
+private state directory. It remembers the original paths (including symlinks).
+After renewal, rerun the script with the same `--dir` to copy the updated files
+and recreate the container; configure this command as the ACME deploy hook if
+you want it automated. Keep the original files accessible to that user. The
+relay reads its private copies with `cert_mode = "Reloading"`. Source certificate
+files are never modified.
 
 ### Plain HTTP (intranet or public)
 
