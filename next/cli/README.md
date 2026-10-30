@@ -1,8 +1,9 @@
 # Command-line client (`ovsm`)
 
 A second client for the existing backend, using the same authenticated JSON-RPC
-stream as the Android app, over Iroh or WebSocket. This implements the terminal, workspace discovery,
-and pairing concerns in design §2; it adds no backend RPCs or AI runtime.
+stream as the Android app, over Iroh or WebSocket. This implements terminal,
+workspace discovery, and pairing concerns in design §2; it adds no backend RPCs
+or AI runtime.
 
 ## Run from source
 
@@ -16,10 +17,89 @@ pnpm build
 pnpm cli --help
 ```
 
-Release backend tarballs include `bin/ovsm`, which uses the bundled Node runtime.
+Backend tarballs built from a revision containing this CLI include `bin/ovsm`,
+which uses the bundled Node runtime. Older releases may predate the CLI; build
+from source if your bundle does not contain it.
 Invoke it by its path inside the extracted bundle. No backend needs to run on the
 client machine. For source builds, `bin/ovsm` uses Node from PATH. Linux and macOS
 are supported by the launcher; Windows packaging is deferred.
+
+## Quick start
+
+A relay forwards encrypted traffic. An OpenVSMobile backend owns workspaces and
+terminal sessions. Run the backend on each machine whose terminals you want to
+use; the relay alone does not provide a shell or a session list. See
+[private relay setup](../../docs/iroh-relay.md) if using your own relay.
+
+After building the CLI, run these commands from `next/backend`. Replace `dev`
+with the SSH destination for the **backend machine and user running that
+backend**, then choose any local machine alias, such as `work`:
+
+```bash
+# Import the backend ticket, backend token and relay settings together.
+ssh dev 'cat ~/.local/state/openvsmobile-next/runtime.json' | ./bin/ovsm host import work
+./bin/ovsm host list
+./bin/ovsm --host work session list
+./bin/ovsm --host work connect
+```
+
+If the backend has no terminal sessions yet, create one explicitly:
+
+```bash
+./bin/ovsm --host work --json session create
+./bin/ovsm --host work session attach SESSION_UUID
+```
+
+Use the `sessionId` returned by `session create` as `SESSION_UUID`. To create a
+session in an existing workspace, first list workspaces and pass its UUID:
+
+```bash
+./bin/ovsm --host work --json workspace list
+./bin/ovsm --host work --json session create --workspace WORKSPACE_UUID
+```
+
+`Ctrl-]` detaches without ending the remote session. `Ctrl-C` is sent to the
+remote process. Repeat the import under another alias to connect another
+backend, then use `--host ALIAS` to select it. The same session UUID on a
+different backend is a different target, so scripts should always specify the
+host alias as well as the session UUID.
+
+## Use an existing private relay
+
+Configure the **backend machine** first using the relay's private connection
+settings. For the native systemd deployment, these live in
+`/etc/openvsmobile-relay/backend.env` on the relay host. For Docker deployments,
+they live in the setup script's state directory. Copy that file securely to the
+backend machine, then follow the
+[backend service configuration steps](../../docs/iroh-relay.md#2-point-the-backend-at-it).
+The backend's next `runtime.json` and pairing QR will carry the custom relay
+settings, including the relay access token.
+
+Import that updated runtime file with the quick-start command above. Do not
+import `backend.env` into `ovsm`: it configures a backend process, while
+`host import` expects the backend's JSON pairing data. Do not use the relay's
+HTTPS URL as a WebSocket backend URL; they speak different protocols.
+
+There are two credentials: the **relay token** authorizes access to the relay;
+the **backend token** authorizes the CLI/app to access terminal and workspace
+RPCs. Importing the backend pairing JSON carries both without manually mixing
+them. A bare `host add NAME iroh:TICKET` uses public n0 relay defaults and is not
+the setup command for a private relay.
+
+## Live validation
+
+The CLI has been exercised against a private public-facing relay with the test
+backend and CLI in separate local network namespaces. The namespaces prevented
+direct UDP connections between the peers, and every selected connection path
+reported `isRelay: true` and `isIp: false`. The checks covered session creation
+and listing, command input and actual shell output, interactive attachment,
+forced disconnect/reconnect, and session survival after local detach. Temporary
+test backends and PTYs were removed afterward.
+
+These are CLI/backend transport checks. They do not constitute an Android
+on-device UI or background-service test. Public relay access requires HTTPS/TLS
+and the correct token; QAD-based direct-path discovery also needs the configured
+UDP port to be reachable.
 
 ## Machines and sessions
 

@@ -11,6 +11,132 @@ relay and turns n0 discovery off. Direct peer-to-peer paths stay enabled:
 the relay carries the first packets and stays as the fallback path, and
 the connection moves to a direct IP path as soon as one works.
 
+## Which machine does what?
+
+| Role | Runs | What the client connects to |
+| --- | --- | --- |
+| Relay host | `iroh-relay` | HTTPS relay URL, for example `https://relay.example.com:9443`; UDP `9842` provides QAD. |
+| Backend machine | OpenVSMobile Node backend and its PTYs | Backend endpoint ticket plus backend bearer token; pairing data also carries relay settings. |
+| Client machine | `ovsm` CLI, or the Android app | Imports the backend's pairing data and selects its terminal sessions. |
+
+The relay and backend may be on different machines. A successful relay
+`/healthz` response proves HTTP/TLS readiness; it does not provide terminal RPCs.
+Configure the backend to use the relay, then import its updated runtime JSON
+into the CLI. See the [CLI quick start](../next/cli/README.md#quick-start).
+
+## Native Linux service
+
+The Python setup scripts below use Docker. A native Linux installation can run
+the same relay binary directly under systemd with a supplied certificate. This
+is the arrangement validated on a small-memory server: idle service memory was
+approximately 6–9 MiB, with a 64 MiB cgroup limit. Memory usage grows with client
+count and traffic; the idle measurement is not a capacity guarantee.
+
+For Linux x86_64, the following downloads the version used for that validation.
+Use the corresponding upstream architecture asset on other machines:
+
+```sh
+curl -fsSL https://github.com/n0-computer/iroh/releases/download/v1.0.3/iroh-relay-v1.0.3-x86_64-unknown-linux-musl.tar.gz -o /tmp/iroh-relay.tar.gz
+sudo install -d -m 755 /opt/openvsmobile-relay
+sudo tar -xzf /tmp/iroh-relay.tar.gz -C /opt/openvsmobile-relay
+/opt/openvsmobile-relay/iroh-relay --version
+sudo install -d -m 700 /etc/openvsmobile-relay
+sudo install -m 600 /path/to/fullchain.pem /etc/openvsmobile-relay/fullchain.pem
+sudo install -m 600 /path/to/privkey.pem /etc/openvsmobile-relay/privkey.pem
+```
+
+The public A/AAAA record and certificate must cover the **exact hostname** used
+in the relay URL. An apex-domain certificate does not automatically cover a
+subdomain; check its SAN entries. For example, `www.example.com` may be valid
+while `relay.example.com` is not. Public clients must trust the certificate chain.
+
+Create a private shared token and use the same value for `RELAY_TOKEN` in the
+relay config and backend environment examples below. Keep the files mode 0600;
+do not put real tokens or private keys in repository files.
+
+`/etc/openvsmobile-relay/config.toml`:
+
+```toml
+enable_relay = true
+http_bind_addr = "127.0.0.1:0"
+enable_quic_addr_discovery = true
+enable_metrics = false
+access.shared_token = ["RELAY_TOKEN"]
+
+[tls]
+cert_mode = "Reloading"
+manual_cert_path = "/run/credentials/openvsmobile-relay.service/relay-cert"
+manual_key_path = "/run/credentials/openvsmobile-relay.service/relay-key"
+https_bind_addr = "0.0.0.0:9443"
+quic_bind_addr = "0.0.0.0:9842"
+```
+
+`/etc/openvsmobile-relay/backend.env` (for copying to backend machines):
+
+```sh
+export OPENVSMOBILE_IROH=1
+export OPENVSMOBILE_IROH_RELAY_URLS=https://relay.example.com:9443
+export OPENVSMOBILE_IROH_RELAY_TOKEN=RELAY_TOKEN
+export OPENVSMOBILE_IROH_RELAY_QUIC_PORT=9842
+```
+
+`/etc/systemd/system/openvsmobile-relay.service`:
+
+```ini
+[Unit]
+Description=OpenVSMobile private Iroh relay
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+DynamicUser=yes
+LoadCredential=relay-config:/etc/openvsmobile-relay/config.toml
+LoadCredential=relay-cert:/etc/openvsmobile-relay/fullchain.pem
+LoadCredential=relay-key:/etc/openvsmobile-relay/privkey.pem
+ExecStart=/opt/openvsmobile-relay/iroh-relay -c %d/relay-config
+Restart=on-failure
+RestartSec=10
+MemoryHigh=32M
+MemoryMax=64M
+MemorySwapMax=32M
+CPUQuota=25%
+TasksMax=24
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
+```
+
+The service uses systemd credentials to give the dynamic service user access to
+its private configuration and keys. It publishes TCP 9443 and UDP 9842; its HTTP
+listener uses an ephemeral loopback port, leaving public ports 80/443 alone.
+
+```sh
+sudo chmod 600 /etc/openvsmobile-relay/config.toml /etc/openvsmobile-relay/backend.env
+sudo systemctl daemon-reload
+sudo systemctl enable --now openvsmobile-relay.service
+sudo systemctl status openvsmobile-relay.service --no-pager
+curl --fail --show-error https://relay.example.com:9443/healthz
+sudo systemctl show openvsmobile-relay.service -p MemoryCurrent -p NRestarts
+sudo journalctl -u openvsmobile-relay.service -n 30 --no-pager
+```
+
+After renewing the certificate, replace the files under
+`/etc/openvsmobile-relay/` and restart this service. `LoadCredential` supplies
+copies at service start, so updating the source files alone does not refresh
+the running service's copies. Restart or stop only
+`openvsmobile-relay.service`; it is a system unit. The Node backend's
+`openvsmobile.service` is a separate **user** unit, managed with
+`systemctl --user`. Do not stop the entire user manager to control one service.
+
 ## Download with curl
 
 For an existing certificate, run the standalone script directly without cloning
@@ -344,6 +470,52 @@ A malformed URL or port makes the backend fail at start instead of
 silently falling back to n0. On success, `runtime.json` shows
 `iroh.relayUrl` set to your relay and an `iroh.relay` object with the
 resolved settings.
+
+### Apply a private backend.env to an existing Linux backend service
+
+These commands run on the backend machine as the user that owns the backend
+service. Replace `relay-admin` with the relay host's SSH destination. The source
+path shown is for the native deployment; use the setup state directory's
+`backend.env` for a Docker deployment.
+
+```sh
+install -d -m 700 ~/.config/openvsmobile-next
+scp relay-admin:/etc/openvsmobile-relay/backend.env ~/.config/openvsmobile-next/relay-shell.env
+chmod 600 ~/.config/openvsmobile-next/relay-shell.env
+# backend.env contains shell export statements; EnvironmentFile expects assignments.
+(umask 077; sed 's/^export //' ~/.config/openvsmobile-next/relay-shell.env > ~/.config/openvsmobile-next/relay.env)
+mkdir -p ~/.config/systemd/user/openvsmobile.service.d
+cat > ~/.config/systemd/user/openvsmobile.service.d/relay.conf <<'EOF'
+[Service]
+EnvironmentFile=%h/.config/openvsmobile-next/relay.env
+EOF
+systemctl --user daemon-reload
+systemctl --user restart openvsmobile.service
+systemctl --user is-active openvsmobile.service
+```
+
+This persists the settings for the backend service. For a source-run backend,
+`source` the shell-export file before `pnpm dev` instead. After the restart,
+re-import that backend's `~/.local/state/openvsmobile-next/runtime.json` on the
+client machine. It contains the **backend** endpoint ticket and bearer token in
+addition to the relay settings. The relay's `backend.env` is not a pairing file.
+
+## Troubleshooting the connection
+
+| Symptom | Check |
+| --- | --- |
+| Relay `/healthz` works, but the CLI cannot connect | Import the backend's runtime JSON, not the relay URL or `backend.env`; verify the backend is running. |
+| TLS hostname mismatch | Use a hostname listed in the certificate's SANs and pointing to this relay. `www` and the apex are separate DNS records. |
+| Health check works with `curl --resolve` only | The listener and certificate work, but normal DNS resolution still needs to succeed. |
+| Relay registration is rejected | Use the relay access token carried by the backend's pairing data; the backend bearer token is a different credential. |
+| Session list is empty | Create a session with `session create`, or adopt an existing zellij session; the relay does not own PTYs. |
+| A stopped service restarts | Stop the owning unit in the correct scope. `systemctl --user` controls user services; `systemctl` controls system services. |
+
+A full CLI check should create/list a session, send a command, read its actual
+output, attach, reconnect after a disconnection, and detach without losing the
+session. The public-relay validation used two isolated local networks and
+verified selected paths were relayed; a health check alone is a narrower test.
+The Android app still needs separate on-device validation.
 
 ## 3. Pair the app
 

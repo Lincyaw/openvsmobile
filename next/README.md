@@ -512,4 +512,6 @@ The acceptance steps from the brief have been exercised:
 
 The `ovsm` client connects to named backend machines and existing terminal
 sessions over the same Iroh or WebSocket RPC as the app. It supports interactive attach
-and JSON commands for scripts and agent skills. See [CLI usage](cli/README.md).
+and JSON commands for scripts and agent skills. Start with the
+[CLI quick start](cli/README.md#quick-start); use the
+[relay guide](../docs/iroh-relay.md) to connect a backend through a private relay.

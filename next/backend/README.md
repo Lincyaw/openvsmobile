@@ -25,6 +25,19 @@ addresses, and the resolved `relay` settings. The smoke script reads the
 WebSocket fields automatically. To use a self-hosted relay instead of
 n0's public infrastructure, see [`docs/iroh-relay.md`](../../docs/iroh-relay.md).
 
+## CLI client and private relay
+
+For terminal access from another machine, build the CLI with `pnpm build`, then
+run `./bin/ovsm --help`. Follow the [CLI quick start](../cli/README.md#quick-start)
+to import backend pairing data, select a machine and attach to a session.
+
+A relay provides network reachability; this backend owns PTYs and workspaces.
+When using a private relay, configure this backend with the relay environment
+settings and restart it, then re-import its updated `runtime.json` into the CLI
+or re-pair the app. The [relay guide](../../docs/iroh-relay.md) covers native
+systemd and Docker deployments, custom TLS/QAD ports, credentials, and applying
+relay settings to an existing backend user service.
+
 ## Node version
 
 `package.json` pins `engines.node >= 25`. The release tarball bundles its
